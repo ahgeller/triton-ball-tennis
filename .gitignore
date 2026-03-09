@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+
+# Local env / editor
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Generated video outputs
+output_videos/*.mp4
+output_videos/*.avi
+output_videos/*.mov
+
+# Large local inputs
+input_videos/*.mp4
+input_videos/*.avi
+input_videos/*.mov
+
+# Python cache folders in subdirs
+**/__pycache__/
+
