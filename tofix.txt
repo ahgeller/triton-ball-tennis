@@ -1,0 +1,4 @@
+1. Still adding in tracks that are blacklisted (recursively)
+2. Motion detection ball way too big, also seems to be overfitting and saying its moved to places its not
+3. green lines should NEVER be adjusted to match orange / blue lines, it should be the other way around and only slightly
+4. still need to train the yolo model on the new input

@@ -751,7 +751,7 @@ def run(cfg):
     # Pre-process top candidate tracks for visualization (Pass 2)
     # Map: track_id -> { frame_idx: (cx, cy, is_obs) }
     vis_tracks = {}
-    vis_track_list = sorted(all_tracks, key=lambda t: float(t.score), reverse=True)[:20]
+    vis_track_list = sorted(all_tracks, key=lambda t: float(t.score), reverse=True)
     for trk in vis_track_list:
         tid = int(trk.track_id)
         vis_tracks[tid] = {}
@@ -766,6 +766,29 @@ def run(cfg):
             src = str(getattr(gr, "source", ""))
             exact = src in ("det", "motion", "guide")
             guide_map[gi] = (float(gr.cx), float(gr.cy), exact)
+
+        # Second-pass backfill: for frames still missing from guide_map (per_frame was also
+        # None — e.g. the first frames right after a hit before the chosen track's span),
+        # fill from the observations of the top candidate tracks so the guide video shows
+        # *all* detected ball trajectories even when the selector's chosen guide didn't
+        # reach back that far.
+        if all_tracks:
+            # Build per-frame lookup: frame -> (cx, cy, conf, exact) from all tracks,
+            # preferring the highest-confidence detection at each frame.
+            aux_by_frame: Dict[int, Tuple[float, float, bool]] = {}
+            filtered_for_backfill = [t for t in all_tracks if float(getattr(t, "score_breakdown", {}).get("inside_strict_frac", getattr(t, "score_breakdown", {}).get("inside_frac", 0.0))) > 0.0 and float(getattr(t, "score_breakdown", {}).get("motion_frac", 0.0)) > 0.0]
+            for trk in sorted(filtered_for_backfill, key=lambda t: float(t.score), reverse=True):
+                for o in trk.observations:
+                    f = int(o.frame)
+                    if f in guide_map:
+                        continue  # already covered by chosen track
+                    prev = aux_by_frame.get(f)
+                    if prev is None or float(o.conf) > float(prev[2]):
+                        exact = bool(getattr(o, "on_motion", False)) or float(o.conf) > 0.3
+                        aux_by_frame[f] = (float(o.cx), float(o.cy), exact)
+            for f, (cx, cy, exact) in aux_by_frame.items():
+                if f not in guide_map:
+                    guide_map[f] = (cx, cy, exact)
     if info_timing:
         timing["selector_post"] = timing.get("selector_post", 0.0) + (time.perf_counter() - selector_post_t0)
         timing["selector_total"] = time.perf_counter() - selector_perf_t0
@@ -800,7 +823,9 @@ def run(cfg):
 
     # Per-track short history for visualization: tid -> list of (x, y)
     vis_track_trails = {int(t.track_id): [] for t in vis_track_list}
-    vis_trail_len = 30
+    vis_trail_len = 120  # Long enough to show full rally segments in guide video
+    # Pre-build score lookup for label rendering (avoids repeated attribute access per frame)
+    vis_track_scores = {int(t.track_id): float(t.score) for t in vis_track_list}
 
     trail_kps = last_kps
     ground_model = None
@@ -941,15 +966,21 @@ def run(cfg):
                             p1 = (int(seg[i][0]), int(seg[i][1]))
                             cv2.line(guide_frame, p0, p1, tcolor, 1, cv2.LINE_AA)
 
-                # Draw current position and ID
+                # Draw current position and ID+score
                 if is_active_frame:
                     cx, cy = int(pt[0]), int(pt[1])
-                    # Circle
-                    cv2.circle(guide_frame, (cx, cy), 3, tcolor, 2)
-                    # Text ID
-                    label = f"{tid}"
-                    cv2.putText(guide_frame, label, (cx + 6, cy + 6), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, tcolor, 1)
+                    is_chosen_trk = (chosen_track is not None and tid == int(chosen_track.track_id))
+                    dot_r = 5 if is_chosen_trk else 3
+                    dot_th = -1 if is_chosen_trk else 2
+                    # Dark outline so label is readable on any background
+                    cv2.circle(guide_frame, (cx, cy), dot_r + 2, (15, 15, 15), -1)
+                    cv2.circle(guide_frame, (cx, cy), dot_r, tcolor, dot_th)
+                    scr = vis_track_scores.get(tid, 0.0)
+                    label = f"{tid}({scr:.0f})"
+                    cv2.putText(guide_frame, label, (cx + 6, cy + 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (15, 15, 15), 2)
+                    cv2.putText(guide_frame, label, (cx + 6, cy + 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, tcolor, 1)
 
         # Draw chosen result — color-coded by source
         if display_result is not None:
@@ -1195,8 +1226,8 @@ def run(cfg):
                 p0 = (trail[i-1][2], trail[i-1][3])
                 p1 = (trail[i][2], trail[i][3])
 
-                # Guide view: show chosen trail state colors (det/carry/interp).
-                if (not is_gap) and guide_frame is not None and src in ("det", "carry", "interp"):
+                # Guide view: show chosen trail state colors for all sources.
+                if (not is_gap) and guide_frame is not None and src in ("det", "carry", "interp", "motion", "guide"):
                     gbase = _trail_base_color(src)
                     galpha = 0.55 + 0.45 * (i / len(trail))
                     gcolor = (int(gbase[0] * galpha), int(gbase[1] * galpha), int(gbase[2] * galpha))
@@ -1205,8 +1236,8 @@ def run(cfg):
                     cv2.line(guide_frame, p0, p1, gcolor, gth, cv2.LINE_AA)
 
                 # Transfer selected state trails to main output.
-                # Keep: green det, orange motion, blue carry.
-                if (not is_gap) and src not in ("det", "motion", "carry"):
+                # Keep: green det, orange motion, blue carry, yellow interp, white guide.
+                if (not is_gap) and src not in ("det", "motion", "carry", "guide", "interp"):
                     continue
 
                 if is_gap:
@@ -1307,6 +1338,8 @@ def run(cfg):
                     p1 = guide_trail[i]
                     if p0 is None or p1 is None:
                         continue
+                    if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > max(200.0, w * 0.15):
+                        continue
                     seg_exact = bool(p0[2] and p1[2])
                     seg_color = COLOR_GUIDE if seg_exact else COLOR_GUIDE_INTERP
                     seg_th = 2 if seg_exact else 1
@@ -1322,13 +1355,6 @@ def run(cfg):
                 gr = 6 if gexact else 4
                 cv2.circle(guide_frame, gc, gr + 2, (15, 15, 15), 2)
                 cv2.circle(guide_frame, gc, gr, gcol, -1)
-                cv2.putText(
-                    guide_frame,
-                    "GUIDE exact" if gexact else "GUIDE interp",
-                    (gc[0] + 10, gc[1] - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, gcol, 1
-                )
-
             cv2.putText(guide_frame, f"F{fi}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             if chosen_track is not None:
@@ -1438,33 +1464,18 @@ def run(cfg):
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 220), 1)
 
 
-            # Extract ALL raw motion blobs from the boost mask and anchor them to bottom-center
-            if boost_m is not None:
-                contours, _ = cv2.findContours(boost_m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                current_blobs = []
-                for c in contours:
-                    area = cv2.contourArea(c)
-                    if area < 15 or area > 500:
-                        continue
-                        
-                    bx, by, bw, bh = cv2.boundingRect(c)
-                    if bw > 0 and bh > 0:
-                        aspect = max(bw, bh) / max(min(bw, bh), 1)
-                        if aspect > 3.0:
-                            continue
-                        fill_ratio = area / max(bw * bh, 1)
-                        if fill_ratio < 0.25:
-                            continue
-                            
-                        M = cv2.moments(c)
-                        if M["m00"] > 0:
-                            blob_cx = float(bx) + float(bw) / 2.0
-                            blob_cy = float(by) + float(bh)
-                            blob_r = math.sqrt(area / math.pi)
+            # Extract ALL raw motion blobs from the motion ROIs and anchor them to bottom-center
+            current_blobs = []
+            if fi < len(all_rois) and all_rois[fi] is not None:
+                for rx1, ry1, rx2, ry2 in all_rois[fi]:
+                    blob_cx = (rx1 + rx2) / 2.0
+                    blob_cy = ry2
+                    area = max((rx2 - rx1) * (ry2 - ry1), 4.0)
+                    blob_r = math.sqrt(area / math.pi)
+                    current_blobs.append((float(blob_cx), float(blob_cy), float(blob_r)))
 
-                            current_blobs.append((blob_cx, blob_cy, blob_r))
-
-                MAX_DIST = 40.0
+            if True:
+                MAX_DIST = max(120.0, w * 0.08)
                 unmatched = current_blobs.copy()
                 for trk in raw_motion_tracks:
                     last_fi, last_x, last_y, last_r = trk[-1]
@@ -1491,7 +1502,7 @@ def run(cfg):
             for trk in raw_motion_tracks:
                 valid_pts = [pt for pt in trk if fi - pt[0] <= MAX_AGE]
                 # Remove random isolated dots and very short noise tracks
-                if len(valid_pts) < 4:
+                if len(valid_pts) < 2:
                     continue
                 
                 # Filter out points that are too dense to avoid splprep waves/crashing

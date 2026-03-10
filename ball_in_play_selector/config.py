@@ -34,7 +34,7 @@ class SelectorConfig:
     assoc_min_speed_for_dir: float = 2.5   # INCREASED from 2.0 for better direction checks
     assoc_speed_ratio_min: float = 0.15    # LOWERED from 0.18 for more lenient matching
     assoc_speed_ratio_max: float = 3.80    # INCREASED from 3.20 for fast ball tolerance
-    assoc_dir_cos_min: float = -0.45       # LOWERED from -0.30 for direction flexibility
+    assoc_dir_cos_min: float = -1.0        # ALLOW bounces and racket hits
     assoc_accel_frac: float = 0.09         # INCREASED from 0.07 for acceleration tolerance
     assoc_area_ratio_min: float = 0.15     # LOWERED from 0.20 for size variation
     assoc_area_ratio_max: float = 6.00     # INCREASED from 5.00 for close-up balls
@@ -55,7 +55,7 @@ class SelectorConfig:
     ultra_track_buffer: int = 240
     ultra_match_thresh: float = 0.75
     ultra_track_thresh: float = 0.12
-    ultra_new_track_thresh: float = 0.50
+    ultra_new_track_thresh: float = 0.15
     ultra_track_low_thresh: float = 0.02
     ultra_proximity_thresh: float = 0.25
     ultra_appearance_thresh: float = 0.25
@@ -97,8 +97,8 @@ class SelectorConfig:
     timeline_min_track_score: float = 2.0  # hard floor for timeline candidates
     timeline_coverage_weight: float = 1000.0  # emphasize covering more of the video
     timeline_score_weight: float = 6.0  # keep score as secondary preference
-    timeline_max_gap_frac: float = 0.24  # tighter max forward gap between stitched tracks
-    timeline_overlap_tol_frac: float = 0.012  # small overlap tolerance for handover
+    timeline_max_gap_frac: float = 0.85  # tighter max forward gap between stitched tracks
+    timeline_overlap_tol_frac: float = 0.050  # small overlap tolerance for handover
     timeline_small_gap_frac: float = 0.02  # "small gap" window for strict jump rejects
     timeline_small_gap_jump_reject_frac: float = 0.28  # reject moderate jumps on tiny gaps
     timeline_switch_penalty: float = 34.0  # stronger cost for switching track ids
@@ -156,7 +156,7 @@ class SelectorConfig:
     motion_pred_residual_frac: float = 0.065 # max residual from predicted pos (diag frac)
     motion_speed_ratio_min: float = 0.25    # min ratio (motion_speed / track_speed)
     motion_speed_ratio_max: float = 2.50    # max ratio (motion_speed / track_speed)
-    motion_dir_cos_min: float = -0.15       # cos(angle) > -0.15 means angle < ~98 deg
+    motion_dir_cos_min: float = -1.0       # ALLOW bounces and racket hits
     motion_accel_frac: float = 0.06         # max acceleration (diag frac / frame^2)
     motion_guided_soft_resid_frac: float = 0.025
     motion_guided_blob_weight_hi: float = 0.85

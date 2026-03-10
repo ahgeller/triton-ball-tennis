@@ -177,9 +177,9 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
             blob_mag = math.sqrt(dx*dx + dy*dy)
             if blob_mag > 2.0:
                 cos_sim = (dx * last_vel[0] + dy * last_vel[1]) / (blob_mag * vel_mag)
-                # Hard reject: blob is perpendicular or backward to trajectory
+                # Allow bounces: penalize backward motion but do not hard-reject
                 if cos_sim < 0.05:
-                    continue
+                    vel_penalty = 80.0
                 elif cos_sim < 0.3:
                     vel_penalty = 50.0
             elif blob_mag <= 2.0 and vel_mag > 5.0:
@@ -222,13 +222,13 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
         player_penalty = 0.0
         pd_player = _player_dist_local(blob_cx, blob_cy)
         if pd_player is not None:
-            # If the blob is inside a player and not tightly on the predicted ball path,
-            # drop it before it can steal motion fallback.
+            # Replaced hard 'continue' with a penalty so racket hits inside the player box
+            # aren't instantly destroyed when the ball deviates from the forward prediction.
             if pd_player <= 0.0 and dist_from_pred > max(8.0, 0.60 * anchor_r_pred):
-                continue
+                player_penalty += 45.0
             near_player_band = max(10.0, 0.85 * anchor_r_pred)
             if pd_player < near_player_band:
-                player_penalty += (near_player_band - pd_player) * 5.0
+                player_penalty += (near_player_band - max(0.0, pd_player)) * 5.0
 
         # ── Continuity preference from previous motion blob ──
         # If we had a motion blob last frame, prefer blobs near it (penalty, not reject).
@@ -563,8 +563,8 @@ def select_ball_in_play(
               f"from {total_dets} total detections across {total_frames} frames")
 
     # Step 1.5: merge fragmented tracks (same ball lost at bounces)
-    tracks = merge_tracks(tracks, cfg, court_poly=court_polygon,
-                          player_boxes_by_frame=player_boxes_by_frame)
+    #tracks = merge_tracks(tracks, cfg, court_poly=court_polygon,
+                          #player_boxes_by_frame=player_boxes_by_frame)
 
     if debug:
         print(f"[selector] After merging: {len(tracks)} tracks")
@@ -812,12 +812,16 @@ def select_ball_in_play(
             )
         )
     )
+    # trail_only mode: apply static-jump and spike filters but NOT the leading-trim
+    # (which would strip the early observations we need for gap-fill coverage).
     chosen_guide, dropped_guide_spikes = _build_track_guide(
         chosen,
         total_frames,
         cfg,
         max_interp_gap=guide_interp_gap,
         apply_filters=(frame_mode == "legacy"),
+        filter_static_jumps=(frame_mode != "legacy"),  # always filter static snaps
+        all_dets=all_dets,  # snap KF gap-fills to real detections when available
     )
     det_owner_by_obj = _build_detection_owner_map(tracks)
     if timeline_chain:
@@ -1008,7 +1012,7 @@ def select_ball_in_play(
                 key=lambda tr: float(tr.score),
                 reverse=True,
             )
-            min_gap_fill_frames = max(10, int(round(0.003 * max(total_frames, 1))))
+            min_gap_fill_frames = max(3, int(round(0.002 * max(total_frames, 1))))
             max_extra_tracks = 6
             for cand in extras:
                 if len(added_gap_tracks) >= max_extra_tracks:
@@ -1019,7 +1023,7 @@ def select_ball_in_play(
                     total_frames,
                     cfg,
                     max_interp_gap=guide_interp_gap,
-                    apply_filters=False,
+                    apply_filters=True,
                 )
                 if not cand_guide:
                     continue
@@ -1066,7 +1070,7 @@ def select_ball_in_play(
                     run_start = int(run[0])
                     cut_start = run_start
                     cut_end = int(run[-1])
-                    handoff_gate = max(12.0, 0.060 * float(court_ref_length))
+                    handoff_gate = max(15.0, 0.080 * float(court_ref_length))
 
                     # Trim stitched run start so it hands off from previous output.
                     prev_idx = run_start - 1
@@ -2677,7 +2681,8 @@ def select_ball_in_play(
                                         cx=gx,
                                         cy=gy,
                                         conf=0.18,
-                                        interpolated=False, bbox=None, source='guide')
+                                        interpolated=False, bbox=None, source='guide',
+                                        search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
                                     stats['guide'] += 1
                                     last_pos = (gx, gy)
                                     soft_carry_count = min(
@@ -2721,7 +2726,8 @@ def select_ball_in_play(
                             _guide_path_consistent(gx, gy, last_pos, guide_vel_c, frames_since_det, cfg, diag, guide_exact=guide_exact)):
                         result[t] = FrameResult(
                             cx=gx, cy=gy,
-                            conf=0.18, interpolated=False, bbox=None, source='guide')
+                            conf=0.18, interpolated=False, bbox=None, source='guide',
+                            search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
                         stats['guide'] += 1
                         last_pos = (gx, gy)
                         last_motion_vel = None
@@ -2776,7 +2782,8 @@ def select_ball_in_play(
                         _guide_path_consistent(gx, gy, last_pos, guide_vel_c2, frames_since_det, cfg, diag, guide_exact=guide_exact)):
                     result[t] = FrameResult(
                         cx=gx, cy=gy,
-                        conf=0.18, interpolated=False, bbox=None, source='guide')
+                        conf=0.18, interpolated=False, bbox=None, source='guide',
+                        search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
                     stats['guide'] += 1
                     last_pos = (gx, gy)
                     last_motion_vel = None
@@ -2819,7 +2826,8 @@ def select_ball_in_play(
                     conf=0.18,
                     interpolated=False,
                     bbox=None,
-                    source='guide')
+                    source='guide',
+                    search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
                 stats['guide'] += 1
                 if lost_counted:
                     stats['lost'] = max(0, stats['lost'] - 1)
@@ -2876,11 +2884,19 @@ def select_ball_in_play(
         for f in range(prev_i + 1, curr_i):
             if result[f] is None:
                 t_frac = (f - prev_i) / gap
+                cx_interp = prev_r.cx + (curr_r.cx - prev_r.cx) * t_frac
+                cy_interp = prev_r.cy + (curr_r.cy - prev_r.cy) * t_frac
+                r_interp = float(getattr(prev_r, "search_radius", 0.0))
+                r_end = float(getattr(curr_r, "search_radius", 0.0))
+                r_interp = r_interp + (r_end - r_interp) * t_frac
                 result[f] = FrameResult(
-                    cx=prev_r.cx + (curr_r.cx - prev_r.cx) * t_frac,
-                    cy=prev_r.cy + (curr_r.cy - prev_r.cy) * t_frac,
+                    cx=cx_interp,
+                    cy=cy_interp,
                     conf=min(prev_r.conf, curr_r.conf) * 0.7,
-                    interpolated=True, bbox=None, source='interp')
+                    interpolated=True, bbox=None, source='interp',
+                    search_cx=cx_interp, search_cy=cy_interp, search_radius=r_interp)
+                if emit_guide_debug_meta and guide_debug_meta is not None and f < len(guide_debug_meta):
+                    guide_debug_meta[f] = (float(cx_interp), float(cy_interp), False, False, False, float(r_interp))
 
     if debug:
         filled = sum(1 for r in result if r is not None)
@@ -2950,4 +2966,3 @@ def select_ball_in_play(
             rr_dbg.guide_search_radius = float(gsr)
 
     return result, chosen, tracks
-

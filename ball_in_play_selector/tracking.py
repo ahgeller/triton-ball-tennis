@@ -140,16 +140,29 @@ def _filter_guide_observations(
         if not jump_to_static and step_ab > min_moving_speed and step_bc < static_speed:
             # Check if b is on motion mask - if not, it's likely a static ball
             if not b_on_motion:
-                # Also check if this point is in a different location than expected trajectory
-                expected_x = a.cx + (a.cx - obs[max(0, i-1)].cx if i > 0 else 0) * dt_ab
-                expected_y = a.cy + (a.cy - obs[max(0, i-1)].cy if i > 0 else 0) * dt_ab
+                # Use the forward velocity from a to predict where b should be
+                if i >= 2:
+                    prev_obs = obs[i - 1]  # the point before a in the raw list
+                    # But 'a' is keep[-1], so estimate velocity from keep
+                    if len(keep) >= 2:
+                        a_prev = keep[-2]
+                        dt_prev = max(int(a.frame - a_prev.frame), 1)
+                        fwd_vx = (a.cx - a_prev.cx) / dt_prev
+                        fwd_vy = (a.cy - a_prev.cy) / dt_prev
+                    else:
+                        fwd_vx, fwd_vy = 0.0, 0.0
+                else:
+                    fwd_vx, fwd_vy = 0.0, 0.0
+                expected_x = a.cx + fwd_vx * dt_ab
+                expected_y = a.cy + fwd_vy * dt_ab
                 deviation = _xy_dist(b.cx, b.cy, expected_x, expected_y)
                 # If we deviated significantly AND landed at a non-moving spot
                 if deviation > max_step * 0.5:
                     jump_to_static = True
         
         # IMPROVED: Case 3 - Position cluster check
-        # If this observation is in a tight cluster with nearby observations but no motion
+        # If this observation is in a tight cluster with nearby observations but no motion,
+        # AND the ball doesn't move away quickly after, it's a static ball cluster.
         if not jump_to_static and not b_on_motion:
             # Check if nearby observations (in time) cluster spatially
             cluster_start = max(0, i - 2)
@@ -160,9 +173,20 @@ def _filter_guide_observations(
                 ys = [o.cy for o in cluster_obs]
                 cluster_extent = math.sqrt((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2)
                 cluster_motion = sum(1 for o in cluster_obs if bool(getattr(o, "on_motion", False)))
-                # Small cluster with no motion = static ball
+                # Small cluster with no motion = static ball — but only if the ball
+                # doesn't escape quickly afterwards (which would indicate a real bounce).
                 if cluster_extent < max_step * 0.5 and cluster_motion == 0:
-                    jump_to_static = True
+                    # Check if the point AFTER the cluster moves away fast (real bounce)
+                    escape_check_end = min(n, cluster_end + 2)
+                    escape_obs = obs[cluster_end:escape_check_end]
+                    last_cluster = cluster_obs[-1]
+                    escapes = any(
+                        _xy_dist(last_cluster.cx, last_cluster.cy, eo.cx, eo.cy) /
+                        max(int(eo.frame - last_cluster.frame), 1) > static_speed * 2.0
+                        for eo in escape_obs
+                    )
+                    if not escapes:
+                        jump_to_static = True
 
         is_spike = False
         if dt_ac > 0 and dt_ac <= max_neighbor_gap:
@@ -686,6 +710,38 @@ def build_tracks_ultra(
             trk.update(det_obs)
 
     tracks = [trk for trk in tracks_by_id.values() if trk.num_obs >= 2]
+    
+    # Retroactive backfill: ByteTrack/BOTSORT hides \"unconfirmed\" tracks (length 1),
+    # meaning the very first YOLO detection of every rally/hit is silently dropped!
+    # We recover it by projecting the velocity backwards one frame and grabbing the YOLO box.
+    for trk in tracks:
+        obs0 = trk.observations[0]
+        f_idx = obs0.frame
+        if f_idx > 0 and len(trk.observations) >= 2:
+            obs1 = trk.observations[1]
+            dt = max(obs1.frame - obs0.frame, 1)
+            vx = (obs1.cx - obs0.cx) / dt
+            vy = (obs1.cy - obs0.cy) / dt
+            
+            # Predict where the ball was 1 frame before the track \"started\"
+            pred_x = obs0.cx - vx
+            pred_y = obs0.cy - vy
+            
+            prev_dets = all_dets[f_idx - 1]
+            if prev_dets:
+                best_d = None
+                best_dist = float('inf')
+                for d in prev_dets:
+                    dist = math.hypot(d.cx - pred_x, d.cy - pred_y)
+                    # Allow a generous physical radius for the backfill
+                    if dist < max(30.0, 0.08 * diag) and dist < best_dist:
+                        best_dist = dist
+                        best_d = d
+                
+                if best_d is not None:
+                    trk.observations.insert(0, best_d)
+                    trk.first_frame = best_d.frame
+                    
     tracks.sort(key=lambda tr: (tr.first_frame, tr.last_obs_frame))
     return tracks
 
@@ -978,9 +1034,8 @@ def merge_tracks(
                     if speed_ratio < 0.22 or speed_ratio > 2.20:
                         continue
                     if obs_speed > 1e-6:
-                        cos_sim = ((obs_vx * a_vel[0]) + (obs_vy * a_vel[1])) / max(obs_speed * exp_speed, 1e-6)
-                        if cos_sim < -0.10:
-                            continue
+                        # Removed direction reversal penalty so racket hits (cos_sim ~ -1.0) can merge
+                        pass
 
                 if dist <= max_dist and dist < best_score:
                     best_j = j
@@ -1094,12 +1149,20 @@ def _build_track_guide(
     cfg: SelectorConfig,
     max_interp_gap: int = 20,
     apply_filters: bool = True,
+    filter_static_jumps: bool = False,
+    all_dets: Optional[List[List["Detection"]]] = None,
 ) -> Tuple[Dict[int, Tuple[float, float, bool]], int]:
     """
     Build per-frame guide positions from a chosen track.
     
     Gap-fill uses physics-based KF prediction (gravity + drag) instead of
     linear interpolation, producing parabolic arcs during carry frames.
+    
+    apply_filters: full filter suite (legacy mode).
+    filter_static_jumps: lighter filter — only removes static-ball snaps and
+        position spikes, without trimming the leading edge. Used in trail_only
+        mode to prevent guide from jumping to parked balls without losing
+        early-rally coverage.
     
     Returns: (frame_idx -> (cx, cy, is_exact_observation), dropped_spike_count)
     """
@@ -1115,6 +1178,14 @@ def _build_track_guide(
         obs, dropped = _filter_guide_observations(obs, cfg, diag)
         obs, dropped_static_prefix = _trim_leading_static_guide_obs(obs, cfg, diag)
         dropped += dropped_static_prefix
+        obs, dropped_static_runs = _prune_static_guide_runs(obs, cfg, diag)
+        dropped += dropped_static_runs
+    elif filter_static_jumps:
+        # Lightweight: only remove spikes and static-ball snaps.
+        # Do NOT trim the leading edge — that would lose early rally coverage.
+        obs, dropped = _filter_guide_observations(obs, cfg, diag)
+        # Still prune tight spatial clusters with no motion (parked balls that
+        # got merged into the stitched track via gap-fill observations).
         obs, dropped_static_runs = _prune_static_guide_runs(obs, cfg, diag)
         dropped += dropped_static_runs
     if not obs:
@@ -1201,6 +1272,41 @@ def _build_track_guide(
               f" | has_kf={has_kf}, gravity={cfg.gravity_px_per_frame2:.3f} px/f²"
               f" | gravity_enabled={cfg.gravity_enabled}")
 
+    # ── Snap interpolated (non-exact) gap frames to real detections ──
+    # KF gap-fill produces smooth arcs, but if the ball was actually detected
+    # in those frames (e.g. right after a hit, before the next chain segment's
+    # first observation), snap the guide to the real detection instead of the
+    # physics prediction. This fixes the "missing early trajectory" problem where
+    # a detection appears in the ROI but no green trail is drawn because the frame
+    # was covered only by a KF prediction, not a chain-track observation.
+    if all_dets is not None:
+        snap_radius = max(20.0, 0.06 * diag)  # conservative: must be genuinely close
+        snapped = 0
+        for f, gval in list(guide.items()):
+            gx, gy, g_exact = gval
+            if g_exact:
+                continue  # already an exact observation, don't override
+            if not (0 <= f < len(all_dets)):
+                continue
+            frame_dets = all_dets[f]
+            if not frame_dets:
+                continue
+            # Find the closest detection on motion within the snap radius.
+            best_d: Optional["Detection"] = None
+            best_dist = snap_radius
+            for d in frame_dets:
+                if not bool(getattr(d, "on_motion", False)):
+                    continue  # only snap to moving detections — avoids static balls
+                dd = _xy_dist(float(d.cx), float(d.cy), gx, gy)
+                if dd < best_dist:
+                    best_dist = dd
+                    best_d = d
+            if best_d is not None:
+                guide[f] = (float(best_d.cx), float(best_d.cy), True)
+                snapped += 1
+        if snapped > 0:
+            print(f"[guide] Snapped {snapped} gap-fill frames to real on-motion detections")
+
     # ── Physics-based tail extension ──
     # Use KF prediction instead of constant-velocity extrapolation.
     if apply_filters and len(obs) >= 2:
@@ -1245,4 +1351,3 @@ def _build_track_guide(
                     guide[f] = (last.cx + vx * dti, last.cy + vy * dti, False)
 
     return guide, dropped
-

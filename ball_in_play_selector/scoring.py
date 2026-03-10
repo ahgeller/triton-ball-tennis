@@ -302,6 +302,35 @@ def _select_timeline_chain(
             if piid != pjid:
                 trans -= float(cfg.timeline_period_switch_penalty)
 
+            # ── Velocity-continuity penalty ──
+            # If the outgoing velocity of track i and incoming velocity of track j
+            # are directionally inconsistent, penalize the transition. This catches
+            # cases where the DP picks a path through an unrelated static or
+            # crossing detection cluster just because it's spatially nearby.
+            exp_vx, exp_vy = ti.last_vel
+            exp_speed = math.sqrt(exp_vx * exp_vx + exp_vy * exp_vy)
+            obs_vx = (j_start.cx - i_end.cx) / max(dt, 1)
+            obs_vy = (j_start.cy - i_end.cy) / max(dt, 1)
+            obs_speed = math.sqrt(obs_vx * obs_vx + obs_vy * obs_vy)
+            fps_ref_speed = max(diag * 0.015, 2.0)  # ~1% diag/frame = meaningful motion
+            if exp_speed > fps_ref_speed and obs_speed > fps_ref_speed:
+                dot = obs_vx * exp_vx + obs_vy * exp_vy
+                cos_sim = dot / max(obs_speed * exp_speed, 1e-6)
+                # Removed direction reversal penalties because racket hits and bounces reverse direction (cos_sim -> -1.0)
+                # Also penalize large speed-ratio changes that suggest different balls
+                speed_ratio = obs_speed / max(exp_speed, 1e-6)
+                if speed_ratio > 3.5 or speed_ratio < 0.15:
+                    trans -= float(cfg.timeline_jump_penalty) * 0.5
+
+            # ── Tiny-bridge penalty ──
+            # A track with very few observations spanning a tiny window that creates
+            # a large dead zone after it (the next viable track is far away) is likely
+            # noise. Apply a small penalty proportional to how tiny the bridge is
+            # relative to the gap it opens up on the far side.
+            tj_span = max(int(tj.last_obs_frame) - int(tj.first_frame) + 1, 1)
+            if tj_span < max(6, int(round(0.005 * tden))) and tj.num_obs < 10:
+                trans -= float(cfg.timeline_switch_penalty) * 0.4
+
             cand = dp[i] + base[j] + trans
             if cand > dp[j]:
                 dp[j] = cand
@@ -630,4 +659,3 @@ def select_best_track(
     if not tracks:
         return None
     return max(tracks, key=lambda t: float(t.score))
-

@@ -1,0 +1,30 @@
+{
+  version: 2,
+  mediaFileName: 'PomonaPitzer Women vs. UCSD.mp4',
+  cutSegments: [
+    {
+      start: 656.163062,
+      end: 661.596092,
+      name: '',
+      selected: true,
+    },
+    {
+      start: 677.682567,
+      end: 681.474231,
+      name: '',
+      selected: true,
+    },
+    {
+      start: 689.915041,
+      end: 699.973513,
+      name: '',
+      selected: true,
+    },
+    {
+      start: 724.146667,
+      end: 734.898614,
+      name: '',
+      selected: true,
+    },
+  ],
+}
