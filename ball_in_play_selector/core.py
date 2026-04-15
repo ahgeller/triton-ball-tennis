@@ -718,14 +718,16 @@ def select_ball_in_play(
                     f"(obs={trk.num_obs}, inside={inside_frac:.0%}, nearP={near_player_frac:.0%})"
                 )
 
-        # Hard reject tracks with zero inside% or zero motion%, regardless of timeline stitching.
-        if strict_inside_frac <= zero_eps or motion_frac <= zero_eps:
+        # Hard reject tracks with very low inside% or zero motion%.
+        # strict_inside_frac < 2% = barely ever on court (covers both truly-zero and
+        # compression-artifact detections that sneak past the num_obs threshold).
+        if strict_inside_frac < 0.02 or motion_frac <= zero_eps:
             zero_metric_track_ids.add(trk.track_id)
             _add_blocked_obs(trk.observations)
             if debug:
                 why = []
-                if strict_inside_frac <= zero_eps:
-                    why.append("in%=0")
+                if strict_inside_frac < 0.02:
+                    why.append(f"in%={strict_inside_frac:.1%}<2%")
                 if motion_frac <= zero_eps:
                     why.append("mot%=0")
                 print(
@@ -891,10 +893,13 @@ def select_ball_in_play(
                     chosen_obs_by_frame[f] = obs
 
         # State-circle radius is anchored to court size (sideline reference length).
-        state_radius_base = max(10.0, 0.095 * float(court_ref_length))
+        # Reduced from 0.095 to 0.050: the old value produced ~76-85px circles on
+        # 1080p footage, which was large enough to pick up wrong detections (players,
+        # shadows) during carry/interp gaps.
+        state_radius_base = max(10.0, 0.050 * float(court_ref_length))
         state_radius_green = state_radius_base
         state_radius_blue = state_radius_base
-        state_radius_yellow = state_radius_base * 1.35
+        state_radius_yellow = state_radius_base * 1.20
 
         gap_run = 0
         blue_gap_frames = max(1, int(getattr(cfg, "carry_interp_frames", 5)))
@@ -928,6 +933,18 @@ def select_ball_in_play(
                 if frame_dets:
                     cand = []
                     for d in frame_dets:
+                        # Skip detections owned by blacklisted tracks or in blocked regions
+                        # to prevent recursive contamination where a blacklisted position
+                        # drives the next frame's prediction, which then picks up more
+                        # blacklisted detections.
+                        det_owner_blk = det_owner_by_obj.get(id(d)) if has_owner_map else None
+                        if det_owner_blk is not None and int(det_owner_blk) in blocked_owner_ids:
+                            continue
+                        key_blk = (d.frame, round(d.cx), round(d.cy))
+                        if key_blk in sideline_det_frames:
+                            continue
+                        if _is_blocked_by_radius(d):
+                            continue
                         dd = _xy_dist(float(d.cx), float(d.cy), guide_cx, guide_cy)
                         if dd <= state_r:
                             cand.append((dd, d))

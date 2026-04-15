@@ -110,7 +110,8 @@ class BallKalmanFilter:
         self.kf.P = np.diag([10.0, 10.0, 100.0, 100.0])
         
         # Measurement Noise
-        # Assume observation noise is ~2 pixels
+        # Measurement noise is adapted per-update (based on det confidence).
+        # Initialize with a reasonable default (~2px std).
         self.kf.R = np.diag([4.0, 4.0])
         
         # Process Noise
@@ -124,6 +125,33 @@ class BallKalmanFilter:
         self._court_w_m: float = 10.97
         # Cached reference px/m scale (updated each predict call)
         self._ref_px_per_m: Optional[float] = None
+
+    def _meas_sigma_px(self, conf: Optional[float]) -> float:
+        """Map detection confidence -> measurement std-dev in pixels."""
+        if conf is None:
+            return 2.5
+        c = float(conf)
+        if not math.isfinite(c):
+            return 3.5
+        c = max(0.0, min(1.0, c))
+        # High-confidence detections are precise; low-confidence boxes are noisy.
+        # 0.0 -> ~7px, 1.0 -> ~2px
+        return 2.0 + (1.0 - c) * 5.0
+
+    def _mahalanobis_d2(self, z_x: float, z_y: float, R: np.ndarray) -> float:
+        """Compute squared Mahalanobis distance for measurement residual."""
+        x = self._x()
+        H = self.kf.H
+        z = np.array([z_x, z_y], dtype=float)
+        hx = np.dot(H, x).astype(float)
+        y = (z - hx).reshape(2, 1)
+        S = (H @ self.kf.P @ H.T) + R
+        try:
+            Sinv = np.linalg.inv(S)
+        except np.linalg.LinAlgError:
+            Sinv = np.linalg.pinv(S)
+        d2 = float((y.T @ Sinv @ y).item())
+        return d2
 
     def set_homography(
         self,
@@ -198,28 +226,48 @@ class BallKalmanFilter:
         radius = np.clip(std_pos * scale_mult, 10.0, 100.0)
         return float(radius)
 
-    def update(self, z_x: float, z_y: float):
-        """Update filter with new detection."""
-        z = np.array([[z_x], [z_y]])
-        
+    def update(self, z_x: float, z_y: float, conf: Optional[float] = None) -> float:
+        """Update filter with a measurement.
+
+        Returns squared Mahalanobis distance (innovation) used for gating/diagnostics.
+        """
+        sigma = self._meas_sigma_px(conf)
+        R = np.diag([sigma * sigma, sigma * sigma]).astype(float)
+        self.kf.R = R
+
+        # Uncertainty-aware gating: if the measurement is an outlier, inflate R so the
+        # filter doesn't snap hard, but still allows strong corrections when uncertainty is high.
+        d2 = self._mahalanobis_d2(z_x, z_y, R)
+
+        # Chi-square thresholds for 2 DoF:
+        # 0.99 => 9.21, 0.999 => 13.82
+        gate_soft = 9.21
+        gate_hard = 13.82
+        if d2 > gate_hard:
+            # Big outlier: trust measurement less + allow velocity to change more.
+            scale = min(12.0, max(1.5, math.sqrt(d2 / gate_hard)))
+            self.kf.R = np.diag([(sigma * scale) ** 2, (sigma * scale) ** 2]).astype(float)
+            self.kf.P[2, 2] += 120.0 * scale
+            self.kf.P[3, 3] += 120.0 * scale
+        elif d2 > gate_soft:
+            # Mild outlier: soften update a bit.
+            scale = min(4.0, max(1.2, math.sqrt(d2 / gate_soft)))
+            self.kf.R = np.diag([(sigma * scale) ** 2, (sigma * scale) ** 2]).astype(float)
+
+        z = np.array([[z_x], [z_y]], dtype=float)
         x = self._x()
-        hx = np.dot(self.kf.H, x)
-        residual = np.array([z_x, z_y]) - hx
-        sq_err = float(residual[0]**2 + residual[1]**2)
-        
-        # 1. High residual jump (e.g. racket hit or fast slice)
-        if sq_err > 400.0:  # Distance > 20 pixels
-            # Massive jump -> inflate velocity uncertainty 
-            self.kf.P[2, 2] += 200.0
-            self.kf.P[3, 3] += 200.0
-            
-        # 2. Y-Velocity inversion (Bounce)
+
+        # Bounce heuristic (only if descending and measurement is significantly above prediction).
+        # This keeps bounces plausible without forbidding racket hits (which can look similar).
+        hx = np.dot(self.kf.H, x).astype(float)
+        residual = np.array([z_x, z_y], dtype=float) - hx
         pred_vy = float(x[3])
         if pred_vy > 2.0 and float(residual[1]) < -10.0:
             self.kf.x[3, 0] = -abs(pred_vy) * max(0.0, float(self.cfg.bounce_restitution))
-            self.kf.P[3, 3] += 100.0
-        
+            self.kf.P[3, 3] += 80.0
+
         self.kf.update(z)
+        return d2
 
     def get_velocity(self) -> Tuple[float, float]:
         x = self._x()

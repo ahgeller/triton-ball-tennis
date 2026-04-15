@@ -179,6 +179,7 @@ def run(cfg):
     protect_mask_cuda_cache_key = None
     prev_boost_for_flicker = None
     prev_raw_motion_cuda = None  # CUDA boolean mask from previous frame — avoids CPU→GPU re-upload in WTA
+    prev_raw_motion_u8 = None    # CPU uint8 mask from previous frame for HSV WTA background
     collect_motion_stats = bool(cfg.save_motion_debug)
     motion_raw_px_before_exclude = 0
     motion_boost_px_before_exclude = 0
@@ -283,24 +284,24 @@ def run(cfg):
         # Update Weighted Temporal Average Backgrounds
         if use_cuda:
             if master_bg_v is None:
+                # Initialize CUDA background at raw S+V values.
                 master_bg_v = curr_v_t.clone()
                 master_bg_s = curr_s_t.clone()
-                
+
                 thr = float(cfg.motion_thresh) / 255.0
-                master_var_v = torch.full_like(curr_v_t, thr**2)
-                master_var_s = torch.full_like(curr_s_t, thr**2)
+                master_var_v = torch.full_like(master_bg_v, thr**2)
+                master_var_s = torch.full_like(master_bg_s, thr**2)
             else:
-                v_diff_sq = (curr_v_t - master_bg_v)**2
-                s_diff_sq = (curr_s_t - master_bg_s)**2
-                
-                # Freeze background updates where raw motion was detected last frame.
-                # Use the CUDA raw_motion tensor returned by preprocess_frame_cuda (prev frame)
-                # instead of re-uploading raw_motion_u8 from CPU every frame.
+                v_diff_sq = (curr_v_t - master_bg_v) ** 2
+                s_diff_sq = (curr_s_t - master_bg_s) ** 2
+
+                # Slow background updates where raw motion was detected last frame.
+                motion_freeze_alpha = float(getattr(cfg, 'motion_freeze_alpha', 0.004))
                 if prev_raw_motion_cuda is not None:
-                    alpha_mask = torch.where(prev_raw_motion_cuda, 0.0, float(cfg.wta_alpha))
+                    alpha_mask = torch.where(prev_raw_motion_cuda, motion_freeze_alpha, float(cfg.wta_alpha))
                 else:
                     alpha_mask = float(cfg.wta_alpha)
-                    
+
                 master_var_v.mul_(1.0 - alpha_mask).add_(alpha_mask * v_diff_sq)
                 master_var_s.mul_(1.0 - alpha_mask).add_(alpha_mask * s_diff_sq)
                 master_bg_v.mul_(1.0 - alpha_mask).add_(curr_v_t * alpha_mask)
@@ -309,11 +310,13 @@ def run(cfg):
             if master_hsv is None:
                 master_hsv = hsv_curr.copy().astype(np.float32)
             else:
-                if raw_motion_u8 is not None:
-                    # For OpenCV, we need to create a mask where alpha is 0 for motion pixels
-                    alpha_arr = np.full_like(master_hsv[:,:,0], cfg.wta_alpha, dtype=np.float32)
-                    alpha_arr[raw_motion_u8 > 0] = 0.0
-                    alpha_arr = np.stack([alpha_arr]*3, axis=-1)
+                if prev_raw_motion_u8 is not None:
+                    # CPU HSV background: mirror CUDA behavior with reduced but non-zero
+                    # updates at previous-frame motion pixels to avoid permanent ghosts.
+                    motion_freeze_alpha = float(getattr(cfg, 'motion_freeze_alpha', 0.004))
+                    alpha_arr = np.full_like(master_hsv[:, :, 0], cfg.wta_alpha, dtype=np.float32)
+                    alpha_arr[prev_raw_motion_u8 > 0] = motion_freeze_alpha
+                    alpha_arr = np.stack([alpha_arr] * 3, axis=-1)
                     master_hsv = master_hsv * (1.0 - alpha_arr) + hsv_curr.astype(np.float32) * alpha_arr
                 else:
                     cv2.accumulateWeighted(hsv_curr, master_hsv, cfg.wta_alpha)
@@ -518,6 +521,9 @@ def run(cfg):
                     prev_raw_motion_cuda = torch.from_numpy(raw_motion_u8).to(cuda_device, non_blocking=True) > 0
                 else:
                     prev_raw_motion_cuda = None
+            else:
+                # CPU path: keep previous-frame raw motion for HSV WTA background updates.
+                prev_raw_motion_u8 = raw_motion_u8.copy() if raw_motion_u8 is not None else None
             if info_timing:
                 timing["pass1_pre_postmask"] = timing.get("pass1_pre_postmask", 0.0) + (time.perf_counter() - postmask_t0)
         if info_timing:
@@ -767,28 +773,11 @@ def run(cfg):
             exact = src in ("det", "motion", "guide")
             guide_map[gi] = (float(gr.cx), float(gr.cy), exact)
 
-        # Second-pass backfill: for frames still missing from guide_map (per_frame was also
-        # None — e.g. the first frames right after a hit before the chosen track's span),
-        # fill from the observations of the top candidate tracks so the guide video shows
-        # *all* detected ball trajectories even when the selector's chosen guide didn't
-        # reach back that far.
-        if all_tracks:
-            # Build per-frame lookup: frame -> (cx, cy, conf, exact) from all tracks,
-            # preferring the highest-confidence detection at each frame.
-            aux_by_frame: Dict[int, Tuple[float, float, bool]] = {}
-            filtered_for_backfill = [t for t in all_tracks if float(getattr(t, "score_breakdown", {}).get("inside_strict_frac", getattr(t, "score_breakdown", {}).get("inside_frac", 0.0))) > 0.0 and float(getattr(t, "score_breakdown", {}).get("motion_frac", 0.0)) > 0.0]
-            for trk in sorted(filtered_for_backfill, key=lambda t: float(t.score), reverse=True):
-                for o in trk.observations:
-                    f = int(o.frame)
-                    if f in guide_map:
-                        continue  # already covered by chosen track
-                    prev = aux_by_frame.get(f)
-                    if prev is None or float(o.conf) > float(prev[2]):
-                        exact = bool(getattr(o, "on_motion", False)) or float(o.conf) > 0.3
-                        aux_by_frame[f] = (float(o.cx), float(o.cy), exact)
-            for f, (cx, cy, exact) in aux_by_frame.items():
-                if f not in guide_map:
-                    guide_map[f] = (cx, cy, exact)
+        # Note: we intentionally do NOT backfill guide_map from other (orange/blue) tracks.
+        # The green guide must only reflect the chosen track's positions.  Non-chosen tracks
+        # are already visible in the guide video via vis_tracks (their own colored dots/lines).
+        # Backfilling would make the green guide "snap to" orange/blue positions in gaps,
+        # which is the opposite of what we want (orange/blue should follow green, not vice versa).
     if info_timing:
         timing["selector_post"] = timing.get("selector_post", 0.0) + (time.perf_counter() - selector_post_t0)
         timing["selector_total"] = time.perf_counter() - selector_perf_t0
@@ -1153,6 +1142,14 @@ def run(cfg):
                         if dist > bridge_px:
                             trail.append(None)
                             prev = None
+                        elif prev_src in ("carry", "interp") and src == "det" and dist > 6.0:
+                            # carry/interp→det reacquisition: the reconnection line should be
+                            # black, not green, so the green trail only shows actual
+                            # detection-to-detection paths and doesn't appear to "jump"
+                            # from the carry position to wherever the ball was reacquired.
+                            trail.append((trail_cx, trail_cy, trail_cx, trail_cy, 'gap', 0.0))
+                            trail.append(None)
+                            prev = None
                         else:
                             reset_smoothing = True
 
@@ -1176,18 +1173,10 @@ def run(cfg):
                     # Reacquire and carry frames stay exact.
                     smooth_x, smooth_y = trail_cx, trail_cy
                 elif src == "det":
-                    # Light smoothing for green trail only on gentle continuation.
-                    step = float(np.hypot(trail_cx - prev[0], trail_cy - prev[1]))
-                    sharp_turn = bool(prev2 is not None and _trail_direction_break(
-                        prev2, prev, (trail_cx, trail_cy)))
-                    if prev_src == "det" and step <= max(18.0, 0.030 * float(np.hypot(w, h))) and not sharp_turn:
-                        alpha_det = 0.82
-                        sx = alpha_det * trail_cx + (1.0 - alpha_det) * prev[2]
-                        sy = alpha_det * trail_cy + (1.0 - alpha_det) * prev[3]
-                        smooth_x, smooth_y = int(round(sx)), int(round(sy))
-                    else:
-                        # Keep sharp turns/bounces exact.
-                        smooth_x, smooth_y = trail_cx, trail_cy
+                    # Green trail always uses exact detection positions — no smoothing.
+                    # Smoothing would pull the green line toward adjacent carry/interp
+                    # positions and misrepresent the actual YOLO detection location.
+                    smooth_x, smooth_y = trail_cx, trail_cy
                 else:
                     # Smooth only non-green sources.
                     alpha_s = _trail_smooth_alpha(src)
@@ -1464,18 +1453,42 @@ def run(cfg):
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 220), 1)
 
 
-            # Extract ALL raw motion blobs from the motion ROIs and anchor them to bottom-center
+            # Extract motion blob centroids from boost_m within each ROI.
+            # Using actual contour centroids instead of ROI center/bottom gives the
+            # correct ball position when motion is asymmetrically distributed in the ROI.
             current_blobs = []
             if fi < len(all_rois) and all_rois[fi] is not None:
                 for rx1, ry1, rx2, ry2 in all_rois[fi]:
-                    blob_cx = (rx1 + rx2) / 2.0
-                    blob_cy = ry2
-                    area = max((rx2 - rx1) * (ry2 - ry1), 4.0)
-                    blob_r = math.sqrt(area / math.pi)
-                    current_blobs.append((float(blob_cx), float(blob_cy), float(blob_r)))
+                    irx1, iry1 = int(rx1), int(ry1)
+                    irx2, iry2 = int(rx2), int(ry2)
+                    found_in_roi = False
+                    if boost_m is not None and boost_m.size > 0:
+                        roi_mask = boost_m[iry1:iry2, irx1:irx2]
+                        if roi_mask.size > 0 and roi_mask.max() > 0:
+                            cnts, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            for cnt in cnts:
+                                area = cv2.contourArea(cnt)
+                                if area < 1.0:
+                                    continue
+                                bx_r, by_r, bw_r, bh_r = cv2.boundingRect(cnt)
+                                # Anchor to bottom-center of blob bounding rect,
+                                # matching green trail which anchors at bottom of YOLO bbox.
+                                cx = irx1 + bx_r + bw_r / 2.0
+                                cy = iry1 + by_r + bh_r
+                                blob_r = min(10.0, max(4.0, math.sqrt(area / math.pi)))
+                                current_blobs.append((float(cx), float(cy), float(blob_r)))
+                                found_in_roi = True
+                    if not found_in_roi:
+                        # Fallback: use ROI center when boost_m has no blobs here
+                        blob_cx = (rx1 + rx2) / 2.0
+                        blob_cy = (ry1 + ry2) / 2.0
+                        blob_r = min(10.0, max(4.0, min(rx2 - rx1, ry2 - ry1) * 0.12))
+                        current_blobs.append((float(blob_cx), float(blob_cy), float(blob_r)))
 
             if True:
-                MAX_DIST = max(120.0, w * 0.08)
+                # Reduced from max(120, w*0.08) — the old value (~153px for 1920px video)
+                # allowed unrelated motion regions to be merged into the same track.
+                MAX_DIST = max(40.0, w * 0.025)
                 unmatched = current_blobs.copy()
                 for trk in raw_motion_tracks:
                     last_fi, last_x, last_y, last_r = trk[-1]

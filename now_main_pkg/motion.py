@@ -42,7 +42,6 @@ from .rendering import _build_court_side_guides, draw_court_side_guides
 
 _MOTION_BUFFERS = {}
 _KERNEL_CACHE = {}
-_GAUSS_KERNEL_CACHE = {}
 _KERNEL_3x3 = np.ones((3, 3), np.uint8)
 
 class MotionBuffers:
@@ -266,10 +265,13 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
                     survived = False
                     
         if survived:
-            # Draw a perfectly solid circle representing this blob's mass and position
+            # Draw a solid circle representing this blob's position.
+            # Cap radius to ~12px so the boost mask doesn't balloon far beyond the
+            # actual ball — large blobs (motion blur, shadows) would otherwise create
+            # huge yellow regions in the debug view and over-expand the YOLO input.
             cx = int(centroids[i][0] + 0.5)
             cy = int(centroids[i][1] + 0.5)
-            radius = int(math.sqrt(area / math.pi) + 0.5)
+            radius = min(int(math.sqrt(area / math.pi) + 0.5), 12)
             cv2.circle(result, (cx, cy), max(radius, 1), 255, -1)
             drawn_any = True
             
@@ -655,24 +657,6 @@ def _dilate_motion_cuda(raw_motion, dilate_k):
         return mm.squeeze() > 0.5
     return raw_motion
 
-def _gaussian_blur_2d(t, kernel_size=3, sigma=1.0):
-    """
-    Applies a 2D Gaussian blur to a PyTorch tensor (B, C, H, W).
-    Useful for smoothing out H.264 compression artifacts before differencing.
-    """
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-    c = t.shape[1]
-    cache_key = (t.dtype, t.device, kernel_size, sigma, c)
-    if cache_key not in _GAUSS_KERNEL_CACHE:
-        x = torch.arange(kernel_size, dtype=t.dtype, device=t.device) - kernel_size // 2
-        kernel_1d = torch.exp(- (x ** 2) / (2 * sigma ** 2))
-        kernel_1d = kernel_1d / kernel_1d.sum()
-        kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
-        kernel_2d = kernel_2d.expand(c, 1, kernel_size, kernel_size).contiguous()
-        _GAUSS_KERNEL_CACHE[cache_key] = kernel_2d
-    padding = kernel_size // 2
-    return F.conv2d(t, _GAUSS_KERNEL_CACHE[cache_key], padding=padding, groups=c)
 
 @torch.no_grad()
 def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg,
@@ -730,12 +714,6 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
         delta = maxc - minc
         curr_v = maxc
         curr_s = torch.where(maxc > 1e-6, delta / (maxc + 1e-6), torch.zeros_like(maxc))
-        
-        # Apply slight Gaussian Blur to V and S to smear out compression block breathing
-        vs_tensor = torch.stack([curr_v, curr_s]).unsqueeze(0)  # Shape: (1, 2, H, W)
-        vs_blurred = _gaussian_blur_2d(vs_tensor, kernel_size=3, sigma=0.8).squeeze(0)
-        curr_v = vs_blurred[0]
-        curr_s = vs_blurred[1]
 
     protect_t = protect_mask_cuda_cached
     if protect_t is None:
@@ -754,59 +732,37 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
         thr_sq = thr ** 2
         k_sq = float(getattr(cfg, 'motion_k_std', 3.5)) ** 2
         v_min = float(cfg.motion_v_min) / 255.0
-        
-        # Blur for motion difference calculation to suppress compression block breathing
-        vs_mot = torch.stack([curr_v, curr_s, prev_v, prev_s]).unsqueeze(0)
-        vs_mot_blur = _gaussian_blur_2d(vs_mot, kernel_size=3, sigma=0.8).squeeze(0)
-        mot_curr_v, mot_curr_s, mot_bg_v, mot_bg_s = vs_mot_blur[0], vs_mot_blur[1], vs_mot_blur[2], vs_mot_blur[3]
-        
+
         # If ROIs are specified, only compute motion diff inside the ROI regions
         if rois is not None:
             raw_motion = torch.zeros_like(curr_v, dtype=torch.bool)
             for roi in rois:
                 rx1, ry1, rx2, ry2 = roi
-                v_curr_roi = mot_curr_v[ry1:ry2, rx1:rx2]
-                v_bg_roi = mot_bg_v[ry1:ry2, rx1:rx2]
+                v_curr_roi = curr_v[ry1:ry2, rx1:rx2]
+                v_bg_roi = prev_v[ry1:ry2, rx1:rx2]
                 v_var = master_var_v[ry1:ry2, rx1:rx2]
-                
-                s_curr_roi = mot_curr_s[ry1:ry2, rx1:rx2]
-                s_bg_roi = mot_bg_s[ry1:ry2, rx1:rx2]
+
+                s_curr_roi = curr_s[ry1:ry2, rx1:rx2]
+                s_bg_roi = prev_s[ry1:ry2, rx1:rx2]
                 s_var = master_var_s[ry1:ry2, rx1:rx2]
 
                 v_diff_sq = (v_curr_roi - v_bg_roi)**2
                 s_diff_sq = (s_curr_roi - s_bg_roi)**2
-                
-                v_thresh_sq = torch.clamp(v_var * k_sq, min=thr_sq)
-                s_thresh_sq = torch.clamp(s_var * k_sq, min=thr_sq) * 1.5  # Penalize saturation noise
+
+                v_thresh_sq = thr_sq + v_var * k_sq
+                s_thresh_sq = (thr_sq + s_var * k_sq) * 1.5  # Penalize saturation noise
 
                 motion_roi = ((v_diff_sq > v_thresh_sq) | (s_diff_sq > s_thresh_sq)) & (v_curr_roi > v_min)
-                
-                # Soft Morphological Opening inside ROI (Soft Erode then Dilate) 
-                # 1. Soft Erode: Use average pooling to count neighbors. Kill strictly isolated 1-pixel noise (sum < 1.5).
-                mf = motion_roi.float().unsqueeze(0).unsqueeze(0)
-                mf_sum = F.avg_pool2d(mf, 3, stride=1, padding=1) * 9.0
-                mf = (mf_sum >= 1.5).float()
-                # 2. Dilate SECOND: This restores the size of the REAL motion blobs that survived
-                mf = F.max_pool2d(mf, 3, stride=1, padding=1)    # Dilate
-                motion_roi_clean = (mf.squeeze(0).squeeze(0) > 0.5)
-
-                raw_motion[ry1:ry2, rx1:rx2] = raw_motion[ry1:ry2, rx1:rx2] | motion_roi_clean
+                raw_motion[ry1:ry2, rx1:rx2] = raw_motion[ry1:ry2, rx1:rx2] | motion_roi
         else:
-            # Full-frame motion (original path)
-            v_diff_sq = (mot_curr_v - mot_bg_v)**2
-            s_diff_sq = (mot_curr_s - mot_bg_s)**2
-            
-            v_thresh_sq = torch.clamp(master_var_v * k_sq, min=thr_sq)
-            s_thresh_sq = torch.clamp(master_var_s * k_sq, min=thr_sq) * 1.5
-            
-            motion = ((v_diff_sq > v_thresh_sq) | (s_diff_sq > s_thresh_sq)) & (mot_curr_v > v_min)
-            
-            # Soft Morphological Opening (Soft Erode then Dilate)
-            mf = motion.float().unsqueeze(0).unsqueeze(0)
-            mf_sum = F.avg_pool2d(mf, 3, stride=1, padding=1) * 9.0
-            mf = (mf_sum >= 1.5).float()
-            mf = F.max_pool2d(mf, 3, stride=1, padding=1)    # Dilate
-            raw_motion = (mf.squeeze(0).squeeze(0) > 0.5)
+            # Full-frame motion
+            v_diff_sq = (curr_v - prev_v)**2
+            s_diff_sq = (curr_s - prev_s)**2
+
+            v_thresh_sq = thr_sq + master_var_v * k_sq
+            s_thresh_sq = (thr_sq + master_var_s * k_sq) * 1.5
+
+            raw_motion = ((v_diff_sq > v_thresh_sq) | (s_diff_sq > s_thresh_sq)) & (curr_v > v_min)
 
     raw_motion_u8 = boost_mask_u8 = None
     boost_has_blobs = False
@@ -923,16 +879,4 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     out = _emit(bgr, raw_motion_u8, boost_mask_u8, curr_v, curr_s)
     _finalize_perf()
     return out
-
-    def preprocess_frame(self, frame_bgr: np.ndarray):
-        h0, w0 = frame_bgr.shape[:2]
-        t = torch.from_numpy(frame_bgr).to(device=self.device, dtype=torch.float32)
-        t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
-        t = t[:, [2, 1, 0], :, :] / 255.0
-        if h0 != self.input_h or w0 != self.input_w:
-            t = F.interpolate(t, size=(self.input_h, self.input_w), mode="bilinear", align_corners=False)
-        if self.fp16:
-            t = t.half()
-        scale = (w0 / float(self.input_w), h0 / float(self.input_h))
-        return t, scale
 

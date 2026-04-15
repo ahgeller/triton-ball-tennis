@@ -1241,7 +1241,7 @@ def _build_track_guide(
                     dt_seed = so.frame - seed_obs[si - 1].frame
                     for _ in range(max(dt_seed, 1)):
                         kf_tmp.predict()
-                    kf_tmp.update(float(so.cx), float(so.cy))
+                    kf_tmp.update(float(so.cx), float(so.cy), conf=getattr(so, "conf", None))
 
                 # Now predict forward through the gap
                 for f in range(a.frame + 1, b.frame):
@@ -1335,7 +1335,7 @@ def _build_track_guide(
                     dt_seed = so.frame - seed_obs[si - 1].frame
                     for _ in range(max(dt_seed, 1)):
                         kf_tail.predict()
-                    kf_tail.update(float(so.cx), float(so.cy))
+                    kf_tail.update(float(so.cx), float(so.cy), conf=getattr(so, "conf", None))
                 for f in range(int(last.frame) + 1, end_f + 1):
                     if f in guide:
                         continue

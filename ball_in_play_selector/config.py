@@ -153,11 +153,11 @@ class SelectorConfig:
 
     # ── Motion fallback physics gate ──────────────────────────────
     motion_use_min_det_speed: float = 1.5   # min speed (px/frame) to trust motion direction
-    motion_pred_residual_frac: float = 0.065 # max residual from predicted pos (diag frac)
+    motion_pred_residual_frac: float = 0.082 # allow more drift from prediction for far falling/reacquired balls
     motion_speed_ratio_min: float = 0.25    # min ratio (motion_speed / track_speed)
-    motion_speed_ratio_max: float = 2.50    # max ratio (motion_speed / track_speed)
+    motion_speed_ratio_max: float = 3.20    # tolerate stronger speed mismatch when prediction lags real drop
     motion_dir_cos_min: float = -1.0       # ALLOW bounces and racket hits
-    motion_accel_frac: float = 0.06         # max acceleration (diag frac / frame^2)
+    motion_accel_frac: float = 0.075        # allow sharper one-frame motion changes before rejecting
     motion_guided_soft_resid_frac: float = 0.025
     motion_guided_blob_weight_hi: float = 0.85
     motion_guided_blob_weight_lo: float = 0.85

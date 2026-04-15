@@ -118,13 +118,25 @@ class Track:
         else:
             dt = det.frame - self.last_frame
             if dt > 0:
+                # Bootstrap velocity from the first two observations so the filter
+                # doesn't spend the early frames predicting with vx=vy=0.
+                if len(self.observations) == 1 and self.kf is not None:
+                    prev = self.observations[-1]
+                    vx0 = (float(det.cx) - float(prev.cx)) / float(dt)
+                    vy0 = (float(det.cy) - float(prev.cy)) / float(dt)
+                    self.kf.kf.x[2, 0] = vx0
+                    self.kf.kf.x[3, 0] = vy0
+                    # Reduce initial velocity uncertainty a bit after bootstrapping.
+                    self.kf.kf.P[2, 2] = min(float(self.kf.kf.P[2, 2]), 60.0)
+                    self.kf.kf.P[3, 3] = min(float(self.kf.kf.P[3, 3]), 60.0)
+
                 # Step the KF forward `dt` times before updating
                 for _ in range(dt - 1):
                     self.kf.predict()
                 
                 # Predict to current frame, then update with measurement
                 self.kf.predict()
-                self.kf.update(det.cx, det.cy)
+                self.kf.update(det.cx, det.cy, conf=getattr(det, "conf", None))
                 self.last_vel = self.kf.get_velocity()
                 
             # Update historical area for stable rolling average (keep last 5)

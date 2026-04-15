@@ -97,9 +97,10 @@ class Config:
     motion_dilate: int = 5
     
     # motion detection - IMPROVED for better ball continuity
-    wta_alpha: float = 0.02              # Lowered so slow-moving balls aren't absorbed into the background
-    motion_thresh: float = 9.0           # Lower base threshold to catch subtle/slow movements
-    motion_k_std: float = 2.5            # Lower std-dev multiplier so dimmer/slower balls are caught
+    wta_alpha: float = 0.02               # Base background update rate at static pixels
+    motion_freeze_alpha: float = 0.015    # Faster background/variance adaptation at motion pixels to let parked balls settle
+    motion_thresh: float = 11.0           # Minimum pixel diff floor (additive term in threshold); too high makes system blind to very weak motion
+    motion_k_std: float = 3.0             # Std-dev multiplier; balanced with additive floor so variance can suppress static-ball halos
     motion_v_min: float = 40.0           # Lowered to catch dimmer ball motion in shadows
     motion_temporal_soft: bool = False   # Disabled: this was causing the "lingering" yellow artifacts you noticed
     motion_temporal_lo_frac: float = 0.45
@@ -109,7 +110,7 @@ class Config:
     motion_flicker_max_area: int = 350
     motion_flicker_prev_dilate: int = 12
     motion_flicker_keep_radius_frac: float = 0.14
-    boost_max_blob_area: int = 1200
+    boost_max_blob_area: int = 600   # Reduced from 1200: large blobs (sqrt(1200/pi)≈19px radius) overshoot the ball
     boost_min_blob_area: int = 0
     
     # Ball persistence hysteresis settings
