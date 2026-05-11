@@ -45,7 +45,20 @@ python tools/extract_label_frames.py `
   --clip-name pomona_baseline
 ```
 
-This writes 80 PNGs and `pomona_baseline_starter.json` into the out dir. Open each PNG, verify the pre-filled (x, y) against the ball, and edit if wrong (or set `visible: false` if the ball is not present). When done, remove the `_review`/`_pipeline_*` fields and move the file to `validation/annotations/pomona_baseline.json`.
+This writes 80 PNGs and `pomona_baseline_starter.json` into the out dir.
+
+Then launch the click labeler to correct them:
+
+```powershell
+python tools/label_assist.py `
+  --starter validation/labels/pomona_baseline/pomona_baseline_starter.json `
+  --frames-dir validation/labels/pomona_baseline `
+  --out validation/annotations/pomona_baseline.json
+```
+
+Keys: left-click = set ball center, `v` = toggle visible, `c` = confirm pre-fill as-is, `u` = undo, `n`/`SPACE` = next, `p` = prev, `s` = save, `q`/`ESC` = save + quit. The yellow crosshair is the pipeline's pre-fill; the red crosshair is your label. Should take ~10–15 minutes for 80 frames.
+
+When you exit, `validation/annotations/pomona_baseline.json` is written in the canonical schema (no review fields). After that, `tools/run_validation.py --clip pomona_baseline --skip-pipeline` produces your first real report.
 
 **B. From scratch.** Copy `validation/annotations/pomona_baseline.template.json` to `validation/annotations/<clip>.json` and fill in the `ball` array (50–100 frames concentrated around failure moments — see §2 below for what to target).
 
