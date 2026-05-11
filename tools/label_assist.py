@@ -85,19 +85,28 @@ def _draw_hud(img, idx: int, total: int, row: Dict[str, Any], dirty: bool):
     cv2.putText(img, text, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
 
 
+def _draw_open_marker(img, x: int, y: int, color, radius: int, tick_gap: int, tick_len: int):
+    """Draw a hollow ring + 4 outward ticks. The pixel under (x, y) is untouched."""
+    import cv2
+    cv2.circle(img, (x, y), radius, color, 1, cv2.LINE_AA)
+    # ticks point outward, leaving a clear gap of `tick_gap` around the center.
+    cv2.line(img, (x, y - tick_gap), (x, y - tick_gap - tick_len), color, 1, cv2.LINE_AA)
+    cv2.line(img, (x, y + tick_gap), (x, y + tick_gap + tick_len), color, 1, cv2.LINE_AA)
+    cv2.line(img, (x - tick_gap, y), (x - tick_gap - tick_len, y), color, 1, cv2.LINE_AA)
+    cv2.line(img, (x + tick_gap, y), (x + tick_gap + tick_len, y), color, 1, cv2.LINE_AA)
+
+
 def _draw_markers(img, prefill: Tuple[Optional[float], Optional[float]],
                   current: Tuple[Optional[float], Optional[float]],
                   visible: bool):
-    import cv2
-    # Yellow = pipeline pre-fill (always shown for context)
+    # Yellow = pipeline pre-fill (always shown for context). Larger, thinner.
     if prefill[0] is not None and prefill[1] is not None:
-        cv2.drawMarker(img, (int(prefill[0]), int(prefill[1])), (0, 220, 220),
-                       cv2.MARKER_CROSS, 40, 2)
-    # Red = current labeled position (only if visible)
+        _draw_open_marker(img, int(prefill[0]), int(prefill[1]),
+                          (0, 220, 220), radius=18, tick_gap=22, tick_len=8)
+    # Red = current labeled position (only if visible). Smaller, tighter.
     if visible and current[0] is not None and current[1] is not None:
-        cv2.drawMarker(img, (int(current[0]), int(current[1])), (0, 0, 255),
-                       cv2.MARKER_CROSS, 30, 2)
-        cv2.circle(img, (int(current[0]), int(current[1])), 12, (0, 0, 255), 1)
+        _draw_open_marker(img, int(current[0]), int(current[1]),
+                          (0, 0, 255), radius=12, tick_gap=16, tick_len=6)
 
 
 def main() -> int:
