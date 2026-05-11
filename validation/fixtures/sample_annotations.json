@@ -1,0 +1,14 @@
+{
+  "video": "validation/fixtures/sample.mp4",
+  "ball": [
+    {"frame": 0, "x": 101.0, "y": 199.0, "visible": true},
+    {"frame": 1, "x": 111.0, "y": 206.0, "visible": true},
+    {"frame": 2, "x": 120.0, "y": 210.0, "visible": true},
+    {"frame": 3, "x": 130.0, "y": 218.0, "visible": true},
+    {"frame": 4, "visible": false}
+  ],
+  "events": [
+    {"frame": 2, "type": "hit"}
+  ],
+  "ignore_ranges": []
+}

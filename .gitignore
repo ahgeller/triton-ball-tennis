@@ -4,6 +4,7 @@ __pycache__/
 # Local env / editor
 .venv/
 venv/
+.codex_tmp/
 .idea/
 .vscode/
 
@@ -11,6 +12,9 @@ venv/
 output_videos/*.mp4
 output_videos/*.avi
 output_videos/*.mov
+output_videos/*tracking*.json
+output_videos/*gridtracknet*.json
+validation/reports/
 
 # Large local inputs
 input_videos/*.mp4
@@ -19,4 +23,3 @@ input_videos/*.mov
 
 # Python cache folders in subdirs
 **/__pycache__/
-

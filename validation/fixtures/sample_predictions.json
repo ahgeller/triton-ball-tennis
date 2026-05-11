@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "summary": {
+    "filled_frames": 4,
+    "filled_percent": 80.0
+  },
+  "frames": [
+    {"frame": 0, "present": true, "x": 100.0, "y": 200.0, "conf": 0.9, "source": "det", "interpolated": false},
+    {"frame": 1, "present": true, "x": 110.0, "y": 205.0, "conf": 0.8, "source": "det", "interpolated": false},
+    {"frame": 2, "present": true, "x": 121.0, "y": 211.0, "conf": 0.2, "source": "carry", "interpolated": true},
+    {"frame": 3, "present": false},
+    {"frame": 4, "present": true, "x": 140.0, "y": 225.0, "conf": 0.7, "source": "motion", "interpolated": false}
+  ]
+}

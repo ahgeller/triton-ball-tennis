@@ -1,0 +1,18 @@
+{
+  "_comment": "Hand-labeled ground truth for the roadmap baseline clip. Copy this file to pomona_baseline.json and fill in the ball array. Target 50-100 labeled frames concentrated around: serves, rallies, net play, orange disconnects, YOLO misses, wrong-ball grabs, carry overuse, bounce/contact moments, adjacent-court interference, parked-ball confusion. Sparse labels across the whole video are LESS valuable than dense labels around known failure moments.",
+  "video": "input_videos/PomonaPitzer Women vs. UCSD-cut-merged-1773082079341.mp4",
+  "ball": [
+    {"_example": "delete this row when you start labeling"},
+    {"frame": 0, "visible": false},
+    {"frame": 1, "x": 0.0, "y": 0.0, "visible": true}
+  ],
+  "events": [
+    {"_example": "delete this row when you start labeling"},
+    {"frame": 0, "type": "bounce"},
+    {"frame": 0, "type": "hit"}
+  ],
+  "ignore_ranges": [
+    {"_example": "frame ranges to skip during validation (e.g. pre-roll, replays)"},
+    {"start": 0, "end": 0}
+  ]
+}
