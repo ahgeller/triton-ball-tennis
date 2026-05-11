@@ -71,8 +71,8 @@ def _delta_marker(before: Any, after: Any, direction: str) -> Tuple[str, str]:
     if diff == 0.0:
         return f"{diff:+.4g}", "="
     if direction == "higher":
-        return f"{diff:+.4g}", ("v" if diff > 0 else "^")
-    return f"{diff:+.4g}", ("v" if diff < 0 else "^")
+        return f"{diff:+.4g}", ("^" if diff > 0 else "v")
+    return f"{diff:+.4g}", ("^" if diff < 0 else "v")
 
 
 def _print_metric_table(b: Dict[str, Any], a: Dict[str, Any]) -> int:
