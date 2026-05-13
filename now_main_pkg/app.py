@@ -679,6 +679,7 @@ def run(cfg):
         pre_frame_cuda = None
         pre_frame = frame_curr
         det_pending = None
+        player_pending = None
         roi_for_pack = None
 
         if cache_pass2_frames is not None:
@@ -733,7 +734,10 @@ def run(cfg):
         _do_yolo = True
         if skip_n > 1 and frame_idx % skip_n != 0:
             # Only skip when ROI tracker says ball is visible (smooth motion)
-            if skip_require_roi and roi_tracker.last_pos is not None and roi_tracker.frames_since_det <= 3:
+            if skip_require_roi and any(
+                getattr(track, "frames_since_det", 10**9) <= 3
+                for track in getattr(roi_tracker, "tracks", [])
+            ):
                 _do_yolo = False
             elif not skip_require_roi:
                 _do_yolo = False
@@ -747,7 +751,12 @@ def run(cfg):
         if do_aux_detect:
             court_kps = court_det.detect(frame_curr, frame_idx=frame_idx)
             player_det.set_court_keypoints(court_kps)
-            player_boxes = player_det.detect(frame_curr, frame_idx)
+            player_pending = player_det.detect_async_start(
+                frame_curr,
+                frame_idx,
+                frame_gpu_t=curr_frame_gpu_t if use_cuda else None,
+            )
+            player_boxes = [list(pb) for pb in player_det.cached_boxes] if player_det.cached_boxes else []
             last_aux_detect_frame = frame_idx
         else:
             court_kps = court_det.keypoints
@@ -964,6 +973,14 @@ def run(cfg):
                 prev_raw_motion_u8 = raw_motion_u8.copy() if raw_motion_u8 is not None else None
             if info_timing:
                 timing["pass1_pre_postmask"] = timing.get("pass1_pre_postmask", 0.0) + (time.perf_counter() - postmask_t0)
+
+        if player_pending is not None:
+            if info_timing:
+                aux_finish_t0 = time.perf_counter()
+            player_boxes = player_det.detect_async_finish(player_pending)
+            player_pending = None
+            if info_timing:
+                timing["pass1_aux_detect"] = timing.get("pass1_aux_detect", 0.0) + (time.perf_counter() - aux_finish_t0)
         if info_timing:
             timing["pass1_preprocess"] = timing.get("pass1_preprocess", 0.0) + (time.perf_counter() - pre_t0)
 
@@ -2222,7 +2239,7 @@ def main():
                    help="Player model path (.engine)")
     g.add_argument("--court-model", default="models/courtdetection.engine",
                    help="Court model path (.engine)")
-    g.add_argument("--player-interval", type=int, default=8, help="Player detect every N frames (default: 5)")
+    g.add_argument("--player-interval", type=int, default=1, help="Player detect every N frames (default: 1)")
     g.add_argument("--player-interval-stable", type=int, default=15,
                    help="Player detect interval when stable (default: 10)")
     g.add_argument("--num-players", type=int, default=4, help="Max players to track (default: 4)")

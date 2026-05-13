@@ -2636,8 +2636,9 @@ def select_ball_in_play(
                     blob = (guided_cx, guided_cy, blob_area, is_latched)
                     # Velocity Smoothing: When applying motion tracking velocity, blend it
                     # with the previous stable state so a single erratic frame doesn't ruin the arc.
-                    raw_mot_vx = (guided_cx - carry_anchor_pos[0]) / dt
-                    raw_mot_vy = (guided_cy - carry_anchor_pos[1]) / dt
+                    motion_dt = max(int(anchor_dt), 1)
+                    raw_mot_vx = (guided_cx - carry_anchor_pos[0]) / motion_dt
+                    raw_mot_vy = (guided_cy - carry_anchor_pos[1]) / motion_dt
                     
                     if last_motion_vel is not None:
                         # Blend with previous motion velocity

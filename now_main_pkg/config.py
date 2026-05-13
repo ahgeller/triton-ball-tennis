@@ -66,7 +66,7 @@ class Config:
     # Player & court detection
     player_model_path: Optional[str] = "models/player.engine"
     court_model_path: Optional[str] = "models/courtdetection.engine"
-    player_detect_interval: int = 30
+    player_detect_interval: int = 1
     player_detect_interval_stable: int = 60  # interval when players haven't moved much
     player_stable_thresh_frac: float = 0.02  # movement < this * diag = "stable"
     court_detect_interval: int = 500

@@ -147,6 +147,25 @@ class _TensorRTRuntimeSession:
         scale = (w0 / float(self.input_w), h0 / float(self.input_h))
         return t, scale
 
+    def preprocess_cuda_chw_frame(self, frame_bgr_chw):
+        """Preprocess an already-uploaded CHW BGR float tensor in [0, 1]."""
+        if frame_bgr_chw is None:
+            return None, None
+        if frame_bgr_chw.dim() == 3:
+            t = frame_bgr_chw.unsqueeze(0)
+        elif frame_bgr_chw.dim() == 4:
+            t = frame_bgr_chw
+        else:
+            return None, None
+        h0, w0 = int(t.shape[-2]), int(t.shape[-1])
+        t = t[:, [2, 1, 0], :, :].contiguous()
+        if h0 != self.input_h or w0 != self.input_w:
+            t = F.interpolate(t, size=(self.input_h, self.input_w), mode="bilinear", align_corners=False)
+        if self.fp16:
+            t = t.half()
+        scale = (w0 / float(self.input_w), h0 / float(self.input_h))
+        return t, scale
+
     def forward_tensor(self, t):
         if self.dynamic and tuple(t.shape) != tuple(self.bindings[self.input_name].shape):
             if self.is_trt10:
@@ -394,10 +413,13 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
             return None, None
 
         t = frame_bgr_cuda
-        if t.dtype != torch.float32:
-            t = t.float()
-        if t.max() > 1.5:
-            t = t / 255.0
+        if t.dtype == torch.uint8:
+            t = t.to(dtype=torch.float32).mul_(1.0 / 255.0)
+        else:
+            if t.dtype != torch.float32:
+                t = t.float()
+            if t.max() > 1.5:
+                t = t / 255.0
         t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
         t = t[:, [2, 1, 0], :, :]
         if h0 != self.input_h or w0 != self.input_w:
@@ -503,7 +525,10 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         if self.output_mode == "postprocessed":
             if preds.dim() == 3:
                 preds = preds[0]
-            for det in preds:
+            rows = preds.detach().float().cpu().numpy()
+            if rows.size == 0 or rows.shape[1] < 6:
+                return dets
+            for det in rows:
                 conf = float(det[4])
                 if conf < self.cfg.conf:
                     continue
@@ -588,9 +613,9 @@ class PlayerDetector:
         self._frame_diag = 1.0
         self.session: Optional[_TensorRTRuntimeSession] = None
         
-        # We must track every frame (or very close to it) for the Kalman filter
-        # and ReID model in BoTSORT to function properly.
-        self._current_interval = 1 
+        # Detection cadence is controlled by the CLI/config, while ByteTrack
+        # still receives an update every frame and coasts on empty detections.
+        self._current_interval = max(1, int(getattr(cfg, "player_detect_interval", 1)))
         
         # BoTSORT maintains its own robust internal dictionary of {ID: BoundingBox}
         self.slots = {} 
@@ -677,38 +702,68 @@ class PlayerDetector:
         dets = np.column_stack((boxes_xyxy, scores, class_ids))
         return dets
 
-    def detect(self, frame, frame_idx):
+    def detect_async_start(self, frame, frame_idx, frame_gpu_t=None):
         if self.session is None or self.tracker is None:
-            return []
+            return {"disabled": True}
             
         h, w = frame.shape[:2]
         self._frame_diag = (w**2 + h**2)**0.5
         
-        # We only run the heavy YOLO TensorRT model every N frames
+        pending = {
+            "disabled": False,
+            "frame": frame,
+            "frame_idx": int(frame_idx),
+            "h": int(h),
+            "w": int(w),
+            "court_kps": self.court_kps,
+            "outputs": None,
+        }
+
+        # We only run the heavy YOLO TensorRT model every N frames.
+        # The tracker itself is still finished every frame with empty detections.
         if frame_idx % self._current_interval != 0:
-            # Pass empty detections to tell the tracker to coast the boxes forward
+            return pending
+
+        t = None
+        if frame_gpu_t is not None and HAS_TORCH and isinstance(frame_gpu_t, torch.Tensor):
+            t, _ = self.session.preprocess_cuda_chw_frame(frame_gpu_t)
+        if t is None:
+            t, _ = self.session.preprocess_frame(frame)
+        pending["outputs"] = self.session.forward_tensor(t)
+        pending["input_tensor"] = t
+        return pending
+
+    def detect_async_finish(self, pending):
+        if not pending or pending.get("disabled", False):
+            return []
+
+        frame = pending["frame"]
+        w = int(pending["w"])
+        h = int(pending["h"])
+        court_kps = pending.get("court_kps")
+
+        if pending.get("outputs") is None:
+            # Pass empty detections to tell the tracker to coast the boxes forward.
             dets = np.empty((0, 6))
         else:
-            t, _ = self.session.preprocess_frame(frame)
-            outputs = self.session.forward_tensor(t)
             self.session.wait()
-            
+
             # Raw YOLO detections [x1, y1, x2, y2, conf, cls]
-            dets = self._decode_player_boxes(outputs[0], w, h)
-            
+            dets = self._decode_player_boxes(pending["outputs"][0], w, h)
+
             # Filter raw YOLO detections by court keypoint distance if necessary
-            # before passing to the tracker so it doesn't learn noise
-            if self.court_kps and len(dets) > self.cfg.num_players:
+            # before passing to the tracker so it doesn't learn noise.
+            if court_kps and len(dets) > self.cfg.num_players:
                 scored_dets = []
                 for row in dets:
                     bx1, by1, bx2, by2 = row[:4]
                     bcx, bcy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
-                    dist = min(((bcx - self.court_kps[ki])**2 + (bcy - self.court_kps[ki+1])**2)**0.5 
-                               for ki in range(0, len(self.court_kps), 2))
+                    dist = min(((bcx - court_kps[ki])**2 + (bcy - court_kps[ki+1])**2)**0.5
+                               for ki in range(0, len(court_kps), 2))
                     scored_dets.append((dist, row))
                 scored_dets.sort(key=lambda x: x[0])
                 dets = np.array([r for _, r in scored_dets[:self.cfg.num_players]])
-                
+
             if len(dets) == 0:
                 dets = np.empty((0, 6))
             
@@ -728,6 +783,9 @@ class PlayerDetector:
                 
         self.cached_boxes = boxes
         return boxes
+
+    def detect(self, frame, frame_idx):
+        return self.detect_async_finish(self.detect_async_start(frame, frame_idx))
 
     def get_player_dict(self):
         return dict(self.slots)
