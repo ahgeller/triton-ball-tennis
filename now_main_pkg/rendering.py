@@ -351,18 +351,21 @@ def _trail_base_color(src):
     return _SOURCE_BASE_COLOR.get(src, (255, 220, 80))
 
 def _trail_smooth_alpha(src):
-    # Higher alpha follows the raw point more closely.
+    # Higher alpha follows the raw point more closely (less drag).
+    # build_motion_tracks no longer applies its own EMA, so motion can
+    # follow the raw centroid much more closely here without re-introducing
+    # double-smoothed lag.
     if src == "det":
         return 0.48
     if src == "motion":
-        return 0.44
+        return 0.75
     if src == "interp":
-        return 0.38
+        return 0.55
     if src == "guide":
-        return 0.36
+        return 0.45
     if src == "carry":
-        return 0.34
-    return 0.40
+        return 0.45
+    return 0.50
 
 def _trail_jump_fracs(src, cfg: Config):
     if src == "det":

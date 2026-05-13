@@ -7,6 +7,8 @@ venv/
 .codex_tmp/
 .idea/
 .vscode/
+.vs/
+.claude/settings.local.json
 
 # Generated video outputs
 output_videos/*.mp4

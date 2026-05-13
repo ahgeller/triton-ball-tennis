@@ -53,15 +53,10 @@ class ROITrack:
         self.coasting_rois = []  # Stores (frame_idx, rx1, ry1, rx2, ry2)
 
     def predict_roi(self, dt: int, phys_cfg: SelectorConfig) -> Tuple[float, float]:
-        """Simple linear predictor for ROI tracking (no air drag decay)."""
-        x, y = self.last_pos
-        vx, vy = self.last_vel
-        g = phys_cfg.gravity_px_per_frame2 if phys_cfg.gravity_enabled else 0.0
-        for _ in range(dt):
-            x += vx
-            y += vy
-            vy += g
-        return (x, y)
+        """Predict ball position using the same gravity+drag projectile model as
+        the carry/blue-line path (ball_in_play_selector.physics._predict_projectile),
+        so the ROI box and the blue carry trail agree on where the ball is going."""
+        return _predict_projectile(self.last_pos, self.last_vel, dt, phys_cfg)
         
     def predicted_center(self, phys_cfg: SelectorConfig) -> Tuple[float, float]:
         dt = max(self.frames_since_det, 1)
@@ -255,7 +250,13 @@ class ROIMotionTracker:
                 # Expand slightly if confidence is low, but not massively
                 radius_visual = base * (1.0 + ((1.0 - t.last_conf) * 0.25))
             else:
-                base = min(self.cfg.roi_lost_radius_frac * self.diag, t.last_diag_box * 2.0) if t.last_diag_box > 0 else self.cfg.roi_lost_radius_frac * self.diag
+                # When lost, prefer the diag-frac base — the ball's own bbox is tiny and
+                # would pin the search region to the ball's size, defeating the purpose of
+                # widening on loss. Take the larger of (config base) and (last_diag_box * 4)
+                # so the lost search region is genuinely wider than the ball.
+                base = self.cfg.roi_lost_radius_frac * self.diag
+                if t.last_diag_box > 0:
+                    base = max(base, t.last_diag_box * 4.0)
                 growth = self.cfg.roi_lost_expand_per_frame * self.diag * t.frames_since_det
                 radius_visual = min(base + growth, self.cfg.roi_max_radius_frac * self.diag)
 

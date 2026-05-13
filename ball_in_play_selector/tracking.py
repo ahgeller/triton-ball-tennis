@@ -411,19 +411,30 @@ def build_motion_tracks(
     cfg: SelectorConfig
 ) -> List[MotionTrack]:
     """
-    Extract perfectly circular/smoothed centroid tracks from all valid motion frames.
-    These continuous trails can be used to patch YOLO gaps (latching).
+    Extract continuous centroid tracks from per-frame motion blobs.
+
+    Association uses velocity-predicted matching with a radius that scales with
+    track speed and gap, so fast balls don't break the track. Per-track median
+    area gives a shape-consistency check so tracks don't drift onto unrelated
+    blobs (rackets, edges). Output centroids are raw — no EMA — so the trail
+    doesn't lag behind the actual ball.
     """
     import cv2
     import math
-    
-    active_tracks: List[List[Tuple[int, float, float]]] = []
-    completed_tracks: List[List[Tuple[int, float, float]]] = []
-    MAX_DIST = 40.0
-    
+
+    diag = math.hypot(float(cfg.width), float(cfg.height))
+    base_radius = max(20.0, 0.012 * diag)        # ~26 px on 1080p
+    max_radius = max(80.0, 0.045 * diag)         # ~99 px on 1080p
+    MAX_GAP = 4                                  # max frames since last point before track is dead
+    MIN_TRACK_LEN = 4
+
+    # Each active track: dict with points, areas, median_area, vel
+    active_tracks: List[Dict[str, Any]] = []
+    completed_tracks: List[Dict[str, Any]] = []
+
     for fi, pk in enumerate(boost_masks_packed):
         mask = _ensure_mask_u8(pk)
-        current_blobs = []
+        current_blobs: List[Dict[str, float]] = []
         if mask is not None:
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for c in contours:
@@ -431,73 +442,108 @@ def build_motion_tracks(
                 if area < 15 or area > 500:
                     continue
                 bx, by, bw, bh = cv2.boundingRect(c)
-                if bw > 0 and bh > 0:
-                    aspect = max(bw, bh) / max(min(bw, bh), 1)
-                    if aspect > 3.0:
-                        continue
-                    fill_ratio = area / max(bw * bh, 1)
-                    if fill_ratio < 0.25:
-                        continue
-                    M = cv2.moments(c)
-                    if M["m00"] > 0:
-                        blob_cx = M["m10"] / M["m00"]
-                        blob_cy = M["m01"] / M["m00"]
-                        current_blobs.append((blob_cx, blob_cy))
-                        
-        unmatched = current_blobs.copy()
-        
-        # Match to existing active tracks
+                if bw <= 0 or bh <= 0:
+                    continue
+                aspect = max(bw, bh) / max(min(bw, bh), 1)
+                if aspect > 3.0:
+                    continue
+                fill_ratio = area / max(bw * bh, 1)
+                if fill_ratio < 0.25:
+                    continue
+                M = cv2.moments(c)
+                if M["m00"] > 0:
+                    current_blobs.append({
+                        "cx": M["m10"] / M["m00"],
+                        "cy": M["m01"] / M["m00"],
+                        "area": float(area),
+                    })
+
+        # Sort tracks by recency so freshest tracks claim blobs first.
+        active_tracks.sort(key=lambda t: -t["points"][-1][0])
+
+        matched_blob_idx = set()
         for trk in active_tracks:
-            last_fi, last_x, last_y = trk[-1]
-            if fi - last_fi <= 3:  # Allow 3 frame gap
-                best_dist = MAX_DIST
-                best_match = None
-                for b in unmatched:
-                    dist = math.hypot(b[0] - last_x, b[1] - last_y)
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_match = b
-                if best_match is not None:
-                    trk.append((fi, best_match[0], best_match[1]))
-                    unmatched.remove(best_match)
-                    
-        # Start new tracks
-        for b in unmatched:
-            active_tracks.append([(fi, b[0], b[1])])
-            
-        # Retire old tracks periodically to save search time
-        MAX_AGE = 50
-        kept_active = []
+            last_fi, last_x, last_y = trk["points"][-1]
+            gap = fi - last_fi
+            if gap <= 0 or gap > MAX_GAP:
+                continue
+
+            vx, vy = trk["vel"]
+            pred_x = last_x + vx * gap
+            pred_y = last_y + vy * gap
+
+            # Adaptive radius: base + speed*gap + per-gap slack. Caps at max_radius.
+            speed = math.hypot(vx, vy)
+            radius = base_radius + speed * gap * 0.9 + max(0, gap - 1) * 14.0
+            if radius > max_radius:
+                radius = max_radius
+
+            track_med_area = trk.get("median_area")
+            best_dist = radius
+            best_idx = -1
+            for i, b in enumerate(current_blobs):
+                if i in matched_blob_idx:
+                    continue
+                dist = math.hypot(b["cx"] - pred_x, b["cy"] - pred_y)
+                if dist > radius:
+                    continue
+                # Shape consistency vs track's running area median.
+                if track_med_area and track_med_area > 0:
+                    ratio = b["area"] / track_med_area
+                    if ratio < 0.30 or ratio > 3.5:
+                        continue
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+
+            if best_idx >= 0:
+                b = current_blobs[best_idx]
+                trk["points"].append((fi, b["cx"], b["cy"]))
+                trk["areas"].append(b["area"])
+                if len(trk["areas"]) > 12:
+                    trk["areas"] = trk["areas"][-12:]
+                sa = sorted(trk["areas"])
+                trk["median_area"] = sa[len(sa) // 2]
+                # Velocity from last two real points (skip gap normalization on dt).
+                f1, x1, y1 = trk["points"][-2]
+                f2, x2, y2 = trk["points"][-1]
+                dt = max(1, f2 - f1)
+                trk["vel"] = ((x2 - x1) / dt, (y2 - y1) / dt)
+                matched_blob_idx.add(best_idx)
+
+        # Unmatched blobs spawn new tracks.
+        for i, b in enumerate(current_blobs):
+            if i in matched_blob_idx:
+                continue
+            active_tracks.append({
+                "points": [(fi, b["cx"], b["cy"])],
+                "areas": [b["area"]],
+                "median_area": b["area"],
+                "vel": (0.0, 0.0),
+            })
+
+        # Retire tracks that have aged out.
+        kept = []
         for trk in active_tracks:
-            if fi - trk[-1][0] > MAX_AGE:
-                if len(trk) >= 4:
+            last_fi = trk["points"][-1][0]
+            if fi - last_fi > MAX_GAP:
+                if len(trk["points"]) >= MIN_TRACK_LEN:
                     completed_tracks.append(trk)
             else:
-                kept_active.append(trk)
-        active_tracks = kept_active
-        
+                kept.append(trk)
+        active_tracks = kept
+
     for trk in active_tracks:
-        if len(trk) >= 4:
+        if len(trk["points"]) >= MIN_TRACK_LEN:
             completed_tracks.append(trk)
-            
-    # Apply very light EMA smoothing and generate final MotionTrack objects
+
+    # No EMA: smoothed mirrors raw centroids so the trail doesn't lag.
     result = []
-    for tid, pts in enumerate(completed_tracks):
-        smoothed = []
-        sx, sy = pts[0][1], pts[0][2]
-        smoothed.append((sx, sy))
-        for pt in pts[1:]:
-            # 80% new point, 20% previous to prevent micro-jitter without causing lag
-            sx = 0.80 * pt[1] + 0.20 * sx
-            sy = 0.80 * pt[2] + 0.20 * sy
-            smoothed.append((sx, sy))
-        
-        result.append(MotionTrack(
-            track_id=tid,
-            points=pts,
-            smoothed=smoothed
-        ))
-        
+    for tid, trk in enumerate(completed_tracks):
+        pts = trk["points"]
+        smoothed = [(p[1], p[2]) for p in pts]
+        result.append(MotionTrack(track_id=tid, points=pts, smoothed=smoothed))
+
     print(f"[selector] Extracted {len(result)} continuous motion tracks.")
     return result
 

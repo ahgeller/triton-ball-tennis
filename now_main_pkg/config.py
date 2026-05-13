@@ -110,6 +110,24 @@ class Config:
     motion_flicker_max_area: int = 350
     motion_flicker_prev_dilate: int = 12
     motion_flicker_keep_radius_frac: float = 0.14
+    motion_raw_temporal_gate: bool = True  # C++ probe-style frame-to-frame proof before raw foreground becomes motion evidence
+    motion_raw_temporal_hi: float = 18.0
+    motion_raw_temporal_lo: float = 8.0
+    motion_raw_temporal_very_hi: float = 36.0
+    motion_raw_close_size: int = 2
+    motion_raw_open_size: int = 0
+    motion_raw_component_filter: bool = False  # Off by default; too strict for the main tracker so far
+    motion_raw_component_min_area: int = 2
+    motion_raw_component_max_area: int = 260
+    motion_raw_component_max_dim: int = 38
+    motion_raw_component_max_aspect: float = 5.5
+    motion_raw_component_min_fill: float = 0.14
+    motion_raw_ball_color_gate: bool = True  # Keep raw motion only near loose tennis-ball color support
+    motion_raw_color_h_min: float = 18.0
+    motion_raw_color_h_max: float = 75.0
+    motion_raw_color_dilate: int = 5
+    motion_raw_color_s_min: float = 0.12
+    motion_raw_color_v_min: float = 0.18
     boost_max_blob_area: int = 600   # Reduced from 1200: large blobs (sqrt(1200/pi)≈19px radius) overshoot the ball
     boost_min_blob_area: int = 0
     
@@ -130,9 +148,9 @@ class Config:
     # ROI-based motion — only compute motion/CC near ball
     roi_motion_enabled: bool = True
     roi_visible_radius_frac: float = 0.012   # ROI radius as frame diag frac when ball is visible
-    roi_lost_radius_frac: float = 0.01      # ROI radius when ball is lost
-    roi_lost_expand_per_frame: float = 0.0005 # grow lost ROI by this * diag per lost frame
-    roi_max_radius_frac: float = 0.06       # cap ROI radius
+    roi_lost_radius_frac: float = 0.020      # ROI radius when ball is lost (wider than visible so YOLO has room to re-find)
+    roi_lost_expand_per_frame: float = 0.0022 # grow lost ROI by this * diag per lost frame
+    roi_max_radius_frac: float = 0.085       # cap ROI radius
     roi_motion_bleed_frac: float = 0.0       # extend the underlying cropping boundary for motion processing to capture long blurred streaks without affecting the tight visual box
     roi_fullframe_interval: int = 0         # 0 = never do full-frame fallback; N = every N frames
 
@@ -148,8 +166,11 @@ class Config:
     output_debug_path: str = "output_videos/prof_test_motion_debug.mp4"
     output_yolo_input_debug_path: str = "output_videos/prof_test_yolo_input_debug.mp4"
     debug_show_raw_motion: bool = False
+    debug_probe_motion_style: bool = True
     save_guide_video: bool = False
     output_guide_path: str = "output_videos/prof_test_guide_debug.mp4"
+    save_motion_tracks_video: bool = False
+    output_motion_tracks_debug_path: str = "output_videos/prof_test_motion_tracks_debug.mp4"
     guide_interp_max_gap: int = 12
     print_selector_tracks: bool = True
     selector_track_limit: int = 0  # 0 = print all
@@ -173,4 +194,4 @@ class Config:
     pass2_cache_max_mb: int = 768
     progress_every: int = 200
     info_timing: bool = False
-
+    tracking_json: Optional[str] = None

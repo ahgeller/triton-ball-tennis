@@ -37,7 +37,7 @@ except ImportError:
     ByteTrack = None
 
 from .config import Config
-from .utils import find_ffmpeg
+from .utils import find_ffmpeg, ffmpeg_has_encoder
 
 
 class _PinnedFrameUploader:
@@ -93,7 +93,7 @@ class VideoWriter:
         self._path = str(path)
         ffmpeg = find_ffmpeg()
 
-        if cfg.use_nvenc and ffmpeg:
+        if cfg.use_nvenc and ffmpeg and ffmpeg_has_encoder(ffmpeg, "h264_nvenc"):
             try:
                 cmd = [ffmpeg, "-y", "-loglevel", "error",
                        "-f", "rawvideo", "-pix_fmt", "bgr24",
@@ -101,8 +101,6 @@ class VideoWriter:
                        "-c:v", "h264_nvenc", "-preset", cfg.nvenc_preset,
                        "-b:v", cfg.nvenc_bitrate, "-pix_fmt", "yuv420p", path]
                 self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-                self._proc.stdin.write(np.zeros((h, w, 3), dtype=np.uint8).tobytes())
-                self._proc.stdin.flush()
                 if self._proc.poll() is None:
                     self._encoder = "nvenc"
                 else:
@@ -111,8 +109,15 @@ class VideoWriter:
                     self._kill_proc()
             except Exception:
                 self._kill_proc()
+        elif cfg.use_nvenc and ffmpeg:
+            print("[writer] NVENC unavailable in this FFmpeg; falling back")
 
-        if self._proc is None and ffmpeg and (getattr(cfg, '_use_libx264', False) or cfg.use_nvenc):
+        if (
+            self._proc is None and
+            ffmpeg and
+            ffmpeg_has_encoder(ffmpeg, "libx264") and
+            (getattr(cfg, '_use_libx264', False) or cfg.use_nvenc)
+        ):
             try:
                 cmd = [ffmpeg, "-y", "-loglevel", "error",
                        "-f", "rawvideo", "-pix_fmt", "bgr24",

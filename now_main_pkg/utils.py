@@ -38,6 +38,35 @@ except ImportError:
 
 from .config import Config
 
+_FFMPEG_ENCODER_CACHE: Dict[Tuple[str, str], bool] = {}
+
+
+def ffmpeg_has_encoder(ffmpeg: Optional[str], encoder: str) -> bool:
+    """Return whether the discovered FFmpeg build exposes a specific encoder."""
+    if not ffmpeg:
+        return False
+    key = (str(ffmpeg), str(encoder))
+    cached = _FFMPEG_ENCODER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        ok = proc.returncode == 0 and any(
+            len(line.split()) >= 2 and line.split()[1] == str(encoder)
+            for line in output.splitlines()
+        )
+    except Exception:
+        ok = False
+    _FFMPEG_ENCODER_CACHE[key] = bool(ok)
+    return bool(ok)
+
 
 def _detect_device(requested: str) -> Tuple[str, str]:
     HAS_CUDA = HAS_TORCH and torch.cuda.is_available()
@@ -72,8 +101,14 @@ def _check_capabilities(cfg: Config, device_str: str) -> Config:
             print("[info] Hardware encoding disabled (ffmpeg not found)")
         elif not is_cuda:
             cfg.use_nvenc = False
-            cfg._use_libx264 = True
-            print("[info] NVENC disabled (requires NVIDIA GPU), using libx264")
+            cfg._use_libx264 = ffmpeg_has_encoder(ffmpeg, "libx264")
+            msg = "using libx264" if cfg._use_libx264 else "using OpenCV"
+            print(f"[info] NVENC disabled (requires NVIDIA GPU), {msg}")
+        elif not ffmpeg_has_encoder(ffmpeg, "h264_nvenc"):
+            cfg.use_nvenc = False
+            cfg._use_libx264 = ffmpeg_has_encoder(ffmpeg, "libx264")
+            msg = "using libx264" if cfg._use_libx264 else "using OpenCV"
+            print(f"[info] NVENC disabled (ffmpeg lacks h264_nvenc), {msg}")
     if not hasattr(cfg, "_use_libx264"):
         cfg._use_libx264 = False
     if cfg.tensorrt_half and not is_cuda:
@@ -94,10 +129,26 @@ def _check_capabilities(cfg: Config, device_str: str) -> Config:
     print(f"[platform] Accelerations: {', '.join(accel)}")
     return cfg
 
-def find_ffmpeg() -> Optional[str]:
-    path = shutil.which("ffmpeg")
-    if path:
-        return path
+def _ffmpeg_candidates() -> List[str]:
+    candidates: List[str] = []
+
+    def add(path: Optional[str]) -> None:
+        if not path:
+            return
+        try:
+            resolved = str(Path(path).resolve())
+        except Exception:
+            resolved = str(path)
+        if os.path.exists(resolved) and resolved not in candidates:
+            candidates.append(resolved)
+
+    add(os.environ.get("TRITON_FFMPEG"))
+    add(os.environ.get("FFMPEG_BINARY"))
+    add(shutil.which("ffmpeg"))
+
+    conda_ffmpeg = Path(sys.prefix) / "Library" / "bin" / "ffmpeg.exe"
+    add(str(conda_ffmpeg))
+
     local = os.environ.get("LOCALAPPDATA", "")
     if local:
         for pat in [
@@ -107,8 +158,17 @@ def find_ffmpeg() -> Optional[str]:
         ]:
             matches = glob.glob(pat)
             if matches:
-                return matches[0]
-    return None
+                for match in sorted(matches, reverse=True):
+                    add(match)
+    return candidates
+
+def find_ffmpeg(prefer_encoder: Optional[str] = "h264_nvenc") -> Optional[str]:
+    candidates = _ffmpeg_candidates()
+    if prefer_encoder:
+        for path in candidates:
+            if ffmpeg_has_encoder(path, prefer_encoder):
+                return path
+    return candidates[0] if candidates else None
 
 def _normalize_class_name(name: Optional[str]) -> str:
     if name is None:

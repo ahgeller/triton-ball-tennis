@@ -39,10 +39,412 @@ except ImportError:
 from .config import Config
 from .utils import _detect_device, _check_capabilities, _resolve_engine_path_for_ball, find_ball_class_id_from_names, _read_engine_names
 from .detectors import BallDetectorBackend, CourtDetector, PlayerDetector, TensorRTRuntimeBallDetector
-from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, suppress_flicker_components, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
+from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, suppress_flicker_components, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
 from .tracking import ROIMotionTracker
 from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _court_axis_spans, _build_court_polygon, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_smooth_alpha, _build_ground_projection_model, _drop_unattached_soft_runs, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GAP, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS, GAP_END_TRIM_PX
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
+
+
+def _json_safe(value):
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return str(value)
+
+
+def _frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict[str, Any]:
+    row: Dict[str, Any] = {"frame": int(frame_idx), "present": False}
+    if result is None or bool(getattr(result, "debug_only", False)):
+        if result is not None and bool(getattr(result, "debug_only", False)):
+            row["debug_only"] = True
+        return row
+
+    row.update({
+        "present": result.cx is not None and result.cy is not None,
+        "x": None if result.cx is None else float(result.cx),
+        "y": None if result.cy is None else float(result.cy),
+        "conf": float(getattr(result, "conf", 0.0)),
+        "source": str(getattr(result, "source", "")),
+        "interpolated": bool(getattr(result, "interpolated", False)),
+        "bbox": _json_safe(getattr(result, "bbox", None)),
+        "search": {
+            "x": float(getattr(result, "search_cx", 0.0)),
+            "y": float(getattr(result, "search_cy", 0.0)),
+            "radius": float(getattr(result, "search_radius", 0.0)),
+        },
+        "guide_search": {
+            "x": float(getattr(result, "guide_search_cx", 0.0)),
+            "y": float(getattr(result, "guide_search_cy", 0.0)),
+            "radius": float(getattr(result, "guide_search_radius", 0.0)),
+            "exact": bool(getattr(result, "guide_search_exact", False)),
+            "frozen": bool(getattr(result, "guide_search_frozen", False)),
+            "hold": bool(getattr(result, "guide_search_hold", False)),
+        },
+    })
+    return row
+
+
+def _track_to_json(track) -> Optional[Dict[str, Any]]:
+    if track is None:
+        return None
+    observations = []
+    for obs in getattr(track, "observations", []) or []:
+        observations.append({
+            "frame": int(getattr(obs, "frame", 0)),
+            "x": float(getattr(obs, "cx", 0.0)),
+            "y": float(getattr(obs, "cy", 0.0)),
+            "bbox": [
+                float(getattr(obs, "x1", 0.0)),
+                float(getattr(obs, "y1", 0.0)),
+                float(getattr(obs, "x2", 0.0)),
+                float(getattr(obs, "y2", 0.0)),
+            ],
+            "conf": float(getattr(obs, "conf", 0.0)),
+            "area": float(getattr(obs, "area", 0.0)),
+            "on_motion": bool(getattr(obs, "on_motion", False)),
+        })
+
+    return {
+        "track_id": int(getattr(track, "track_id", -1)),
+        "score": float(getattr(track, "score", 0.0)),
+        "num_obs": int(getattr(track, "num_obs", 0)),
+        "span": int(getattr(track, "span", 0)),
+        "first_frame": int(getattr(track, "first_frame", 0)),
+        "last_obs_frame": int(getattr(track, "last_obs_frame", 0)),
+        "score_breakdown": _json_safe(getattr(track, "score_breakdown", {}) or {}),
+        "observations": observations,
+    }
+
+
+def _count_reason(reason_counts: Dict[str, int], reason: str) -> None:
+    reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+
+
+def _mask_has_pixels(mask_obj) -> bool:
+    mask = _unpack_mask_u8(mask_obj)
+    return bool(mask is not None and cv2.countNonZero(mask) > 0)
+
+
+def _extract_motion_candidates(
+    mask_obj,
+    mask_source: str,
+    frame_idx: int,
+    search_x: Optional[float],
+    search_y: Optional[float],
+    selected_x: Optional[float],
+    selected_y: Optional[float],
+    max_candidates: int = 5,
+) -> List[Dict[str, Any]]:
+    mask = _unpack_mask_u8(mask_obj)
+    if mask is None or cv2.countNonZero(mask) <= 0:
+        return []
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: List[Dict[str, Any]] = []
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area <= 0.0:
+            continue
+        x, y, w_box, h_box = cv2.boundingRect(contour)
+        if w_box <= 0 or h_box <= 0:
+            continue
+        moments = cv2.moments(contour)
+        if abs(float(moments.get("m00", 0.0))) <= 1e-9:
+            continue
+        cx = float(moments["m10"] / moments["m00"])
+        cy = float(moments["m01"] / moments["m00"])
+        perimeter = float(cv2.arcLength(contour, True))
+        compactness = (
+            float(4.0 * math.pi * area / max(perimeter * perimeter, 1e-9))
+            if perimeter > 0.0 else 0.0
+        )
+        aspect_ratio = float(max(w_box, h_box) / max(min(w_box, h_box), 1))
+        fill_ratio = float(area / max(float(w_box * h_box), 1.0))
+
+        dist_to_search = None
+        if search_x is not None and search_y is not None:
+            dist_to_search = float(math.hypot(cx - float(search_x), cy - float(search_y)))
+        dist_to_selected = None
+        if selected_x is not None and selected_y is not None:
+            dist_to_selected = float(math.hypot(cx - float(selected_x), cy - float(selected_y)))
+
+        # Debug-only ranking: favor compact, filled components near the active search point.
+        score = 0.0
+        score += 50.0 * max(0.0, min(1.0, compactness))
+        score += 25.0 * max(0.0, min(1.0, fill_ratio))
+        score += 15.0 * min(area, 600.0) / 600.0
+        if dist_to_search is not None:
+            score -= min(dist_to_search, 300.0) / 6.0
+        if aspect_ratio > 1.0:
+            score -= max(0.0, aspect_ratio - 1.0) * 4.0
+
+        candidates.append({
+            "frame": int(frame_idx),
+            "mask": str(mask_source),
+            "x": cx,
+            "y": cy,
+            "bbox": [int(x), int(y), int(x + w_box), int(y + h_box)],
+            "area": area,
+            "compactness": compactness,
+            "aspect_ratio": aspect_ratio,
+            "fill_ratio": fill_ratio,
+            "distance_to_search": dist_to_search,
+            "distance_to_selected": dist_to_selected,
+            "score": float(score),
+        })
+
+    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+    return candidates[:max(1, int(max_candidates))]
+
+
+def _choose_motion_mask(boost_mask, raw_motion) -> Tuple[Optional[Any], str, bool, bool]:
+    has_boost = _mask_has_pixels(boost_mask)
+    has_raw = _mask_has_pixels(raw_motion)
+    if has_boost:
+        return boost_mask, "boost", has_boost, has_raw
+    if has_raw:
+        return raw_motion, "raw", has_boost, has_raw
+    return None, "none", has_boost, has_raw
+
+
+def _result_position(result: Optional[FrameResult]) -> Tuple[Optional[float], Optional[float]]:
+    if result is None or bool(getattr(result, "debug_only", False)):
+        return None, None
+    if result.cx is None or result.cy is None:
+        return None, None
+    return float(result.cx), float(result.cy)
+
+
+def _result_search(
+    result: Optional[FrameResult],
+    prev_pos: Optional[Tuple[float, float]],
+    diag: float,
+) -> Tuple[Optional[float], Optional[float], float, str]:
+    if result is not None and not bool(getattr(result, "debug_only", False)):
+        sx = float(getattr(result, "search_cx", 0.0))
+        sy = float(getattr(result, "search_cy", 0.0))
+        sr = float(getattr(result, "search_radius", 0.0))
+        if sr > 0.0 and (sx != 0.0 or sy != 0.0):
+            return sx, sy, sr, "result_search"
+        rx, ry = _result_position(result)
+        if rx is not None and ry is not None:
+            return rx, ry, max(24.0, 0.035 * diag), "result_position"
+    if prev_pos is not None:
+        return float(prev_pos[0]), float(prev_pos[1]), max(28.0, 0.045 * diag), "previous_position"
+    return None, None, 0.0, "none"
+
+
+def _motion_diagnostic_reason(
+    selected_source: Optional[str],
+    has_yolo: bool,
+    mask_source: str,
+    candidates: List[Dict[str, Any]],
+    search_x: Optional[float],
+    search_y: Optional[float],
+    search_radius: float,
+) -> str:
+    if selected_source == "motion":
+        return "accepted_motion"
+    if has_yolo:
+        return "yolo_detection_available"
+    if mask_source == "none":
+        return "no_motion_mask"
+    if not candidates:
+        return "no_blob"
+    if search_x is None or search_y is None:
+        return "no_search_anchor"
+
+    best_dist = candidates[0].get("distance_to_search")
+    if best_dist is not None:
+        gate = max(18.0, float(search_radius) if search_radius > 0.0 else 0.0)
+        if float(best_dist) > gate:
+            return "blob_too_far_from_search"
+
+    if selected_source in ("carry", "guide", "interp"):
+        return f"{selected_source}_selected_over_motion_candidate"
+    if selected_source:
+        return "non_motion_selected_over_motion_candidate"
+    return "lost_despite_motion_candidate"
+
+
+def _build_motion_diagnostics(
+    per_frame: List[Optional[FrameResult]],
+    detections_by_frame: List[List[Tuple[list, float]]],
+    boost_masks: List[Any],
+    raw_motions: List[Any],
+    width: int,
+    height: int,
+    max_candidates_per_frame: int = 5,
+) -> Dict[str, Any]:
+    diag = math.sqrt(float(width) ** 2 + float(height) ** 2)
+    total_frames = max(len(per_frame), len(detections_by_frame), len(boost_masks), len(raw_motions))
+    reason_counts: Dict[str, int] = {}
+    mask_counts: Dict[str, int] = {}
+    selected_source_counts: Dict[str, int] = {}
+    diagnostic_frames: List[Dict[str, Any]] = []
+    prev_pos: Optional[Tuple[float, float]] = None
+    yolo_gap_frames = 0
+    candidate_gap_frames = 0
+
+    for frame_idx in range(total_frames):
+        result = per_frame[frame_idx] if frame_idx < len(per_frame) else None
+        selected_x, selected_y = _result_position(result)
+        selected_source = None
+        if result is not None and not bool(getattr(result, "debug_only", False)):
+            selected_source = str(getattr(result, "source", "") or "")
+            if selected_source:
+                selected_source_counts[selected_source] = int(selected_source_counts.get(selected_source, 0)) + 1
+
+        dets = detections_by_frame[frame_idx] if frame_idx < len(detections_by_frame) else []
+        has_yolo = bool(dets)
+        if not has_yolo:
+            yolo_gap_frames += 1
+
+        boost = boost_masks[frame_idx] if frame_idx < len(boost_masks) else None
+        raw = raw_motions[frame_idx] if frame_idx < len(raw_motions) else None
+        chosen_mask, mask_source, has_boost, has_raw = _choose_motion_mask(boost, raw)
+        mask_counts[mask_source] = int(mask_counts.get(mask_source, 0)) + 1
+
+        search_x, search_y, search_radius, search_source = _result_search(result, prev_pos, diag)
+        candidates = _extract_motion_candidates(
+            chosen_mask,
+            mask_source,
+            frame_idx,
+            search_x,
+            search_y,
+            selected_x,
+            selected_y,
+            max_candidates=max_candidates_per_frame,
+        )
+        if candidates and not has_yolo and selected_source != "motion":
+            candidate_gap_frames += 1
+
+        reason = _motion_diagnostic_reason(
+            selected_source,
+            has_yolo,
+            mask_source,
+            candidates,
+            search_x,
+            search_y,
+            search_radius,
+        )
+        _count_reason(reason_counts, reason)
+
+        should_export_frame = (
+            selected_source == "motion" or
+            (not has_yolo and selected_source != "motion") or
+            bool(candidates and not has_yolo)
+        )
+        if should_export_frame:
+            diagnostic_frames.append({
+                "frame": int(frame_idx),
+                "selected_source": selected_source,
+                "reason": reason,
+                "has_yolo_detections": bool(has_yolo),
+                "mask_source": mask_source,
+                "has_boost_mask": bool(has_boost),
+                "has_raw_motion": bool(has_raw),
+                "search": {
+                    "x": search_x,
+                    "y": search_y,
+                    "radius": float(search_radius),
+                    "source": search_source,
+                },
+                "selected_position": {
+                    "x": selected_x,
+                    "y": selected_y,
+                },
+                "candidate_count_exported": int(len(candidates)),
+                "candidates": candidates,
+            })
+
+        if selected_x is not None and selected_y is not None:
+            prev_pos = (selected_x, selected_y)
+
+    return {
+        "schema_version": 1,
+        "summary": {
+            "frames_analyzed": int(total_frames),
+            "yolo_gap_frames": int(yolo_gap_frames),
+            "yolo_gap_frames_with_motion_candidate": int(candidate_gap_frames),
+            "reason_counts": dict(sorted(reason_counts.items())),
+            "mask_source_counts": dict(sorted(mask_counts.items())),
+            "selected_source_counts": dict(sorted(selected_source_counts.items())),
+            "max_candidates_per_frame": int(max_candidates_per_frame),
+        },
+        "frames": diagnostic_frames,
+    }
+
+
+def _write_tracking_json(
+    path: str,
+    cfg: Config,
+    fps: float,
+    width: int,
+    height: int,
+    total_frames: int,
+    elapsed_sec: float,
+    filled_frames: int,
+    per_frame: List[Optional[FrameResult]],
+    chosen_track,
+    all_tracks,
+    detections_by_frame: Optional[List[List[Tuple[list, float]]]] = None,
+    boost_masks: Optional[List[Any]] = None,
+    raw_motions: Optional[List[Any]] = None,
+    timing: Optional[Dict[str, float]] = None,
+    pass2_frames_rendered: int = 0,
+) -> None:
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "video": {
+            "input": str(cfg.input_video),
+            "output": str(cfg.output_video),
+            "fps": float(fps),
+            "width": int(width),
+            "height": int(height),
+            "total_frames": int(total_frames),
+        },
+        "summary": {
+            "filled_frames": int(filled_frames),
+            "filled_percent": float(100.0 * filled_frames / max(1, total_frames)),
+            "elapsed_sec": float(elapsed_sec),
+            "effective_fps": float(total_frames / max(elapsed_sec, 1e-9)),
+            "pass2_frames_rendered": int(pass2_frames_rendered),
+            "chosen_track_id": (
+                None if chosen_track is None else int(getattr(chosen_track, "track_id", -1))
+            ),
+            "track_count": int(len(all_tracks or [])),
+        },
+        "config": _json_safe(getattr(cfg, "__dict__", {})),
+        "timing": _json_safe(timing or {}),
+        "chosen_track": _track_to_json(chosen_track),
+        "tracks": [_track_to_json(t) for t in (all_tracks or [])],
+        "motion_diagnostics": _build_motion_diagnostics(
+            per_frame,
+            detections_by_frame or [],
+            boost_masks or [],
+            raw_motions or [],
+            int(width),
+            int(height),
+        ),
+        "frames": [
+            _frame_result_to_json(i, per_frame[i] if i < len(per_frame) else None)
+            for i in range(int(total_frames))
+        ],
+    }
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
 
 def run(cfg):
@@ -104,7 +506,7 @@ def run(cfg):
 
     # Writers (main output writer is created at pass 2 start to avoid long idle FFmpeg/NVENC process)
     writer = None
-    dbg_writer = yolo_dbg_writer = guide_writer = None
+    dbg_writer = yolo_dbg_writer = guide_writer = motion_tracks_writer = None
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
         dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg)
@@ -113,6 +515,9 @@ def run(cfg):
     if cfg.save_guide_video:
         os.makedirs(os.path.dirname(cfg.output_guide_path) or ".", exist_ok=True)
         guide_writer = VideoWriter(cfg.output_guide_path, fps, w, h, cfg)
+    if getattr(cfg, "save_motion_tracks_video", False):
+        os.makedirs(os.path.dirname(cfg.output_motion_tracks_debug_path) or ".", exist_ok=True)
+        motion_tracks_writer = VideoWriter(cfg.output_motion_tracks_debug_path, fps, w, h, cfg)
 
     # Preprocessing mode
     use_cuda = cfg.enable_preprocess and is_cuda and HAS_CUDA
@@ -132,7 +537,8 @@ def run(cfg):
         return
 
     prev_v = prev_s = curr_v_t = curr_s_t = next_v_t = next_s_t = None
-    curr_frame_gpu_t = next_frame_gpu_t = None
+    prev_frame_v_t = prev_frame_s_t = None
+    curr_frame_gpu_t = next_frame_gpu_t = prev_frame_gpu_t = None
     frame_uploader = None
     if use_cuda:
         try:
@@ -145,6 +551,7 @@ def run(cfg):
             next_frame_gpu_t = _cuda_frame_to_chw_f32(frame_next, cuda_device, uploader=frame_uploader)
             next_v_t, next_s_t = _cuda_vs_tensors(None, cuda_device, gpu_tensor=next_frame_gpu_t)
 
+    frame_prev_cpu = None
     hsv_prev = hsv_curr = hsv_next = None
     master_bg_v = master_bg_s = master_var_v = master_var_s = master_hsv = None
     if not use_cuda and cfg.enable_preprocess:
@@ -412,6 +819,12 @@ def run(cfg):
                                           frame_gpu_t=curr_frame_gpu_t,
                                           curr_v_cached=curr_v_t,
                                           curr_s_cached=curr_s_t,
+                                          prev_frame_gpu_t=prev_frame_gpu_t,
+                                          prev_frame_v_cached=prev_frame_v_t,
+                                          prev_frame_s_cached=prev_frame_s_t,
+                                          next_frame_gpu_t=next_frame_gpu_t,
+                                          next_v_cached=next_v_t,
+                                          next_s_cached=next_s_t,
                                           protect_mask_cuda_cached=protect_mask_cuda,
                                           perf=pre_cuda_perf)
             else:
@@ -431,39 +844,64 @@ def run(cfg):
                     master_hsv_u8 = master_hsv.astype(np.uint8)
                     if rois:
                         rm_full = np.zeros((frame_curr.shape[0], frame_curr.shape[1]), dtype=np.uint8)
+                        rm_ungated_full = np.zeros_like(rm_full)
                         for r in rois:
                             rx1, ry1, rx2, ry2 = r
-                            rm_roi = compute_motion_sv_from_hsv(
+                            rm_roi_ungated = compute_motion_sv_from_hsv(
                                 master_hsv_u8[ry1:ry2, rx1:rx2], hsv_curr[ry1:ry2, rx1:rx2], cfg.motion_thresh)
+                            rm_roi = refine_raw_motion_temporal_cpu(
+                                rm_roi_ungated,
+                                frame_prev_cpu[ry1:ry2, rx1:rx2] if frame_prev_cpu is not None else None,
+                                frame_curr[ry1:ry2, rx1:rx2],
+                                frame_next[ry1:ry2, rx1:rx2] if frame_next is not None else None,
+                                cfg,
+                            )
                             np.maximum(rm_full[ry1:ry2, rx1:rx2], rm_roi, out=rm_full[ry1:ry2, rx1:rx2])
+                            np.maximum(rm_ungated_full[ry1:ry2, rx1:rx2], rm_roi_ungated, out=rm_ungated_full[ry1:ry2, rx1:rx2])
                         rm = rm_full
+                        rm_ungated = rm_ungated_full
                     else:
-                        rm = compute_motion_sv_from_hsv(master_hsv_u8, hsv_curr, cfg.motion_thresh)
+                        rm_ungated = compute_motion_sv_from_hsv(master_hsv_u8, hsv_curr, cfg.motion_thresh)
+                        rm = refine_raw_motion_temporal_cpu(rm_ungated, frame_prev_cpu, frame_curr, frame_next, cfg)
                 else:
                     rm = None
+                    rm_ungated = None
 
+                # Two boost masks:
+                #   boost_mask_u8 — narrow, gated source → returned to selector
+                #     (preserves selector precision; frame-870-class FPs stay suppressed).
+                #   boost_yolo_u8 — wide, ungated source → drives the HSV brightening
+                #     the YOLO input sees (recall-positive: rescues YOLO misses on frames
+                #     where the temporal/color gate would have suppressed a real ball blob).
                 raw_motion_u8 = rm
-                if rm is not None:
+                def _build_boost(src):
+                    if src is None:
+                        return None
                     if rois:
-                        boost_mask_u8 = np.zeros_like(rm)
+                        out = np.zeros_like(src)
                         for r in rois:
                             rx1, ry1, rx2, ry2 = r
-                            roi_slice = rm[ry1:ry2, rx1:rx2]
+                            roi_slice = src[ry1:ry2, rx1:rx2]
                             if roi_slice.max() > 0:
                                 filtered_roi = filter_boost_mask(
                                     roi_slice, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
                                     player_bboxes=player_boxes)
-                                np.maximum(boost_mask_u8[ry1:ry2, rx1:rx2], filtered_roi, out=boost_mask_u8[ry1:ry2, rx1:rx2])
-                        if boost_mask_u8.max() == 0:
-                            boost_mask_u8 = None
-                    else:
-                        boost_mask_u8 = filter_boost_mask(
-                            rm, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
-                            player_bboxes=player_boxes)
-                else:
-                    boost_mask_u8 = None
+                                np.maximum(out[ry1:ry2, rx1:rx2], filtered_roi, out=out[ry1:ry2, rx1:rx2])
+                        return out if out.max() > 0 else None
+                    result = filter_boost_mask(
+                        src, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
+                        player_bboxes=player_boxes)
+                    if result is None or result.max() == 0:
+                        return None
+                    return result
 
-                pre_frame = preprocess_frame(frame_curr, raw_motion_u8, boost_mask_u8, cfg,
+                boost_mask_u8 = _build_boost(rm)
+                if rm_ungated is not None and rm_ungated is not rm:
+                    boost_yolo_u8 = _build_boost(rm_ungated)
+                else:
+                    boost_yolo_u8 = boost_mask_u8
+
+                pre_frame = preprocess_frame(frame_curr, raw_motion_u8, boost_yolo_u8, cfg,
                                               player_bboxes=player_boxes,
                                               court_keypoints=court_kps,
                                               hsv_cached=hsv_curr,
@@ -593,9 +1031,12 @@ def run(cfg):
         # Slide window
         if info_timing:
             slide_t0 = time.perf_counter()
+        frame_prev_for_slide = frame_curr
         frame_curr = frame_next
         frame_next = reader.read()
         if use_cuda:
+            prev_frame_gpu_t = curr_frame_gpu_t
+            prev_frame_v_t, prev_frame_s_t = curr_v_t, curr_s_t
             curr_v_t, curr_s_t = next_v_t, next_s_t
             curr_frame_gpu_t = next_frame_gpu_t
             if frame_next is not None:
@@ -605,6 +1046,8 @@ def run(cfg):
                 next_v_t = next_s_t = None
                 next_frame_gpu_t = None
         elif cfg.enable_preprocess:
+            frame_prev_cpu = frame_prev_for_slide
+            hsv_prev = hsv_curr
             hsv_curr = hsv_next
             hsv_next = cv2.cvtColor(frame_next, cv2.COLOR_BGR2HSV) if frame_next is not None else None
         if info_timing:
@@ -710,7 +1153,7 @@ def run(cfg):
 
     print("[selector] Running ball-in-play selection...")
     selector_select_t0 = time.perf_counter() if info_timing else 0.0
-    per_frame, chosen_track, all_tracks = select_ball_in_play(
+    per_frame, chosen_track, all_tracks, motion_tracks_dbg = select_ball_in_play(
         all_frame_dets, fps, w, h,
         court_polygon=court_poly,
         boost_masks=all_boost_masks,
@@ -1391,7 +1834,7 @@ def run(cfg):
 
             # ── Draw motion detection ROI boxes onto vis ──
             # Green = survived   Red = ghost-pruned (didn't reattach)
-            if fi < len(all_rois) and all_rois[fi] is not None:
+            if (not getattr(cfg, "debug_probe_motion_style", True)) and fi < len(all_rois) and all_rois[fi] is not None:
                 for rx1, ry1, rx2, ry2 in all_rois[fi]:
                     cv2.rectangle(vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 1)
 
@@ -1457,7 +1900,7 @@ def run(cfg):
             # Using actual contour centroids instead of ROI center/bottom gives the
             # correct ball position when motion is asymmetrically distributed in the ROI.
             current_blobs = []
-            if fi < len(all_rois) and all_rois[fi] is not None:
+            if (not getattr(cfg, "debug_probe_motion_style", True)) and fi < len(all_rois) and all_rois[fi] is not None:
                 for rx1, ry1, rx2, ry2 in all_rois[fi]:
                     irx1, iry1 = int(rx1), int(ry1)
                     irx2, iry2 = int(rx2), int(ry2)
@@ -1600,6 +2043,32 @@ def run(cfg):
             if info_timing:
                 timing["pass2_write_debug"] = timing.get("pass2_write_debug", 0.0) + (time.perf_counter() - dbg_write_t0)
 
+        # ── Motion-tracks debug video: ONLY motion polylines + ROI box ──
+        if motion_tracks_writer is not None:
+            mt_vis = frame.copy()
+            WIN_PAST = 90  # frames of past trail drawn per track
+            for trk in motion_tracks_dbg:
+                if not trk.points:
+                    continue
+                # Quick reject: track hasn't started yet, or ended too long ago.
+                if trk.points[0][0] > fi or trk.points[-1][0] < fi - WIN_PAST:
+                    continue
+                past_pts = [(int(p[1]), int(p[2])) for p in trk.points
+                            if (fi - WIN_PAST) <= p[0] <= fi]
+                if len(past_pts) < 2:
+                    continue
+                color = _get_track_color(int(trk.track_id))
+                arr = np.asarray(past_pts, dtype=np.int32).reshape(-1, 1, 2)
+                cv2.polylines(mt_vis, [arr], False, color, 2, cv2.LINE_AA)
+
+            # ROI box(es) for this frame — cyan rectangles
+            if fi < len(all_rois) and all_rois[fi] is not None:
+                for rx1, ry1, rx2, ry2 in all_rois[fi]:
+                    cv2.rectangle(mt_vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)),
+                                  (0, 255, 255), 2, cv2.LINE_AA)
+
+            motion_tracks_writer.write(mt_vis)
+
         pass2_frames_rendered += 1
         if cfg.progress_every and (fi + 1) % cfg.progress_every == 0:
             elapsed = time.time() - t0
@@ -1615,11 +2084,33 @@ def run(cfg):
         yolo_dbg_writer.close()
     if guide_writer:
         guide_writer.close()
+    if motion_tracks_writer:
+        motion_tracks_writer.close()
     if info_timing:
         timing["pass2_total"] = time.perf_counter() - pass2_perf_t0
 
     elapsed = time.time() - t0
     filled = sum(1 for r in per_frame if r is not None and not bool(getattr(r, "debug_only", False)))
+    if getattr(cfg, "tracking_json", None):
+        _write_tracking_json(
+            cfg.tracking_json,
+            cfg,
+            fps,
+            w,
+            h,
+            N,
+            elapsed,
+            filled,
+            per_frame,
+            chosen_track,
+            all_tracks,
+            detections_by_frame=all_frame_dets,
+            boost_masks=all_boost_masks,
+            raw_motions=all_raw_motions,
+            timing=timing,
+            pass2_frames_rendered=pass2_frames_rendered,
+        )
+        print(f"[done] Tracking JSON: {cfg.tracking_json}")
     print(f"\n[done] {filled}/{N} frames filled ({100*filled/max(1,N):.1f}%)")
     print(f"[done] {elapsed:.1f}s total")
     print(f"[done] Output: {cfg.output_video}")
@@ -1628,6 +2119,8 @@ def run(cfg):
         print(f"[done] YOLO Input Debug:  {cfg.output_yolo_input_debug_path}")
     if cfg.save_guide_video:
         print(f"[done] Guide Debug:  {cfg.output_guide_path}")
+    if getattr(cfg, "save_motion_tracks_video", False):
+        print(f"[done] Motion Tracks Debug:  {cfg.output_motion_tracks_debug_path}")
     if info_timing:
         _print_timing_summary(timing, elapsed, N, pass2_frames_rendered)
 
@@ -1641,6 +2134,8 @@ def main():
     g.add_argument("-o", "--output", default="output_videos/prof_test.mp4", help="Output video (default: output_videos/prof_test.mp4)")
     g.add_argument("--model", default="models/ball.engine",
                    help="Ball model path (.engine)")
+    g.add_argument("--tracking-json", default=None,
+                   help="Optional path for per-frame tracking/benchmark JSON")
 
     g = p.add_argument_group("Detection")
     g.add_argument("--conf", type=float, default=0.26, help="Confidence threshold 0.01-1.0 (default: 0.25)")
@@ -1663,9 +2158,9 @@ def main():
     g.add_argument("--hue-shift", type=float, default=0.18, help="Hue shift toward yellow/green 0-1 (default: 0.18)")
     g.add_argument("--dim-static", type=float, default=0.88, help="Static region dimming 0-1 (default: 0.88)")
     g.add_argument("--static-sat-scale", type=float, default=0.75, help="Static region desat 0-1 (default: 0.75)")
-    g.add_argument("--motion-thresh", type=float, default=22, help="Motion sensitivity 1-50 (default: 22)")
-    g.add_argument("--motion-v-min", type=float, default=60.0,
-                   help="Min V (brightness) to keep motion pixel (default: 60)")
+    g.add_argument("--motion-thresh", type=float, default=11.0, help="Motion sensitivity 1-50 (default: 11)")
+    g.add_argument("--motion-v-min", type=float, default=40.0,
+                   help="Min V (brightness) to keep motion pixel (default: 40)")
     g.add_argument("--motion-temporal-soft", dest="motion_temporal_soft",
                    action="store_true", default=False,
                    help="Use soft 3-frame temporal gate (default: off)")
@@ -1690,8 +2185,32 @@ def main():
                    help="History support dilation kernel for flicker suppression (default: 9)")
     g.add_argument("--motion-flicker-keep-radius", type=float, default=0.11,
                    help="Keep-zone radius as frame-diagonal fraction around predicted ball (default: 0.11)")
-    g.add_argument("--boost-max-blob", type=int, default=800, help="Max blob area for ball candidate (default: 800)")
-    g.add_argument("--boost-min-blob", type=int, default=10, help="Min blob area (default: 0)")
+    g.add_argument("--motion-raw-temporal-gate", dest="motion_raw_temporal_gate",
+                   action="store_true", default=True,
+                   help="Use C++ probe-style frame-to-frame movement gate for raw motion (default)")
+    g.add_argument("--no-motion-raw-temporal-gate", dest="motion_raw_temporal_gate",
+                   action="store_false",
+                   help="Disable raw temporal motion gate")
+    g.add_argument("--motion-raw-temporal-hi", type=float, default=18.0,
+                   help="High raw temporal threshold (default: 18)")
+    g.add_argument("--motion-raw-temporal-lo", type=float, default=8.0,
+                   help="Low next-frame support threshold (default: 8)")
+    g.add_argument("--motion-raw-temporal-very-hi", type=float, default=36.0,
+                   help="Very strong previous-frame threshold that can pass alone (default: 36)")
+    g.add_argument("--motion-raw-close-size", type=int, default=2,
+                   help="Raw motion close kernel size before boost rendering (default: 2)")
+    g.add_argument("--motion-raw-component-filter", dest="motion_raw_component_filter",
+                   action="store_true", default=False,
+                   help="Enable C++ probe compact-component cap in the main tracker (experimental)")
+    g.add_argument("--no-motion-raw-component-filter", dest="motion_raw_component_filter",
+                   action="store_false",
+                   help="Disable raw compact-component cap (default)")
+    g.add_argument("--motion-raw-max-area", type=int, default=260,
+                   help="Max raw component area if component filter is enabled (default: 260)")
+    g.add_argument("--motion-raw-max-dim", type=int, default=38,
+                   help="Max raw component width/height if component filter is enabled (default: 38)")
+    g.add_argument("--boost-max-blob", type=int, default=600, help="Max blob area for ball candidate (default: 600)")
+    g.add_argument("--boost-min-blob", type=int, default=0, help="Min blob area (default: 0)")
 
     g = p.add_argument_group("Blob Filtering")
     g.add_argument("--no-shape-filter", action="store_true", help="Disable erosion + aspect filtering")
@@ -1742,10 +2261,20 @@ def main():
                    help="Show noisy raw motion layer in debug video (default: off)")
     g.add_argument("--debug-hide-raw-motion", dest="debug_show_raw_motion", action="store_false",
                    help="Hide raw motion layer and show filtered boost only")
+    g.add_argument("--debug-probe-motion-style", dest="debug_probe_motion_style",
+                   action="store_true", default=True,
+                   help="Use C++ probe-style raw motion/component overlay in debug video (default)")
+    g.add_argument("--debug-legacy-motion-trails", dest="debug_probe_motion_style",
+                   action="store_false",
+                   help="Use the old smoothed raw-motion trail debug drawing")
     g.add_argument("--guide-video", dest="guide_video", action="store_true", default=False, help="Save guide progression video (default: off)")
     g.add_argument("--no-guide-video", dest="guide_video", action="store_false", help="Disable guide progression video")
     g.add_argument("--guide-path", default="output_videos/prof_test_guide_debug.mp4", help="Guide progression video path")
     g.add_argument("--guide-interp-gap", type=int, default=12, help="Max gap (frames) to interpolate guide path for debug video")
+    g.add_argument("--motion-tracks-video", dest="motion_tracks_video", action="store_true", default=False,
+                   help="Save motion-tracks debug video showing all build_motion_tracks polylines + per-frame ROI box")
+    g.add_argument("--motion-tracks-path", default="output_videos/prof_test_motion_tracks_debug.mp4",
+                   help="Motion-tracks debug video path")
     g.add_argument("--print-selector-tracks", dest="print_selector_tracks", action="store_true",
                    help="Print selector track table and chosen track")
     g.add_argument("--no-print-selector-tracks", dest="print_selector_tracks", action="store_false",
@@ -1820,6 +2349,7 @@ def main():
         input_video=args.input,
         output_video=args.output,
         model_path=args.model,
+        tracking_json=args.tracking_json,
         conf=args.conf,
         ball_backend=args.ball_backend,
         device=args.device,
@@ -1843,6 +2373,14 @@ def main():
         motion_flicker_max_area=args.motion_flicker_max_area,
         motion_flicker_prev_dilate=args.motion_flicker_prev_dilate,
         motion_flicker_keep_radius_frac=args.motion_flicker_keep_radius,
+        motion_raw_temporal_gate=args.motion_raw_temporal_gate,
+        motion_raw_temporal_hi=args.motion_raw_temporal_hi,
+        motion_raw_temporal_lo=args.motion_raw_temporal_lo,
+        motion_raw_temporal_very_hi=args.motion_raw_temporal_very_hi,
+        motion_raw_close_size=max(0, int(args.motion_raw_close_size)),
+        motion_raw_component_filter=args.motion_raw_component_filter,
+        motion_raw_component_max_area=max(1, int(args.motion_raw_max_area)),
+        motion_raw_component_max_dim=max(1, int(args.motion_raw_max_dim)),
         boost_max_blob_area=args.boost_max_blob,
         boost_min_blob_area=args.boost_min_blob,
         blob_shape_filter=not args.no_shape_filter,
@@ -1884,9 +2422,12 @@ def main():
         output_debug_path=args.debug_path,
         output_yolo_input_debug_path=args.yolo_debug_path,
         debug_show_raw_motion=args.debug_show_raw_motion,
+        debug_probe_motion_style=args.debug_probe_motion_style,
         save_guide_video=args.guide_video,
         output_guide_path=args.guide_path,
         guide_interp_max_gap=max(1, int(args.guide_interp_gap)),
+        save_motion_tracks_video=args.motion_tracks_video,
+        output_motion_tracks_debug_path=args.motion_tracks_path,
         print_selector_tracks=args.print_selector_tracks,
         selector_track_limit=max(0, int(args.selector_track_limit)),
         trail_hard_switch_x_frac=args.trail_hard_switch_x_frac,

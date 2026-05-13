@@ -44,24 +44,40 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
     
     Returns (cx, cy, area, is_latched) or None
     """
-    # ── FAST PATH: Latch onto pre-smoothed continuous motion tracks ──
-    # If the user-approved motion tracks overlap our search region, trust the track.
+    # ── FAST PATH: Latch onto a continuous motion track ──
+    # Track membership is strong evidence, but require the boost_mask to still
+    # support the latched point (small motion blob within ~6 px). Without this
+    # check, drifting tracks or stale points get accepted even when no motion
+    # actually exists at that pixel on this frame.
     if active_motion_tracks is not None and frame_idx >= 0:
         best_track_dist = float('inf')
         best_track_pt = None
         for track in active_motion_tracks:
             pt = track.get_position_at(frame_idx)
-            if pt is not None:
-                # Check distance to predicted position
-                dist = math.hypot(pt[0] - search_cx, pt[1] - search_cy)
-                if dist <= search_radius:
-                    if dist < best_track_dist:
-                        best_track_dist = dist
-                        best_track_pt = pt
+            if pt is None:
+                continue
+            dist = math.hypot(pt[0] - search_cx, pt[1] - search_cy)
+            if dist <= search_radius and dist < best_track_dist:
+                best_track_dist = dist
+                best_track_pt = pt
         if best_track_pt is not None:
-            # Return the smoothed point and a mock area (since tracks don't store area)
-            mock_area = float(ref_ball_area) if ref_ball_area else 100.0
-            return (best_track_pt[0], best_track_pt[1], mock_area, True)
+            supported = False
+            if boost_mask is not None:
+                bh_, bw_ = boost_mask.shape[:2]
+                tx = int(round(best_track_pt[0]))
+                ty = int(round(best_track_pt[1]))
+                support_r = 6
+                sx1 = max(0, tx - support_r)
+                sy1 = max(0, ty - support_r)
+                sx2 = min(bw_, tx + support_r + 1)
+                sy2 = min(bh_, ty + support_r + 1)
+                if sx2 > sx1 and sy2 > sy1:
+                    supported = bool(boost_mask[sy1:sy2, sx1:sx2].max() > 0)
+            if supported:
+                mock_area = float(ref_ball_area) if ref_ball_area else 100.0
+                return (best_track_pt[0], best_track_pt[1], mock_area, True)
+            # Fall through to regular contour-based search if the latched point
+            # has no underlying motion on this frame.
 
     if boost_mask is None:
         return None
@@ -458,7 +474,7 @@ def select_ball_in_play(
     court_keypoints=None,
     emit_guide_debug_meta: bool = False,
     debug: bool = False
-) -> Tuple[List[Optional[FrameResult]], Optional[Track], List[Track]]:
+) -> Tuple[List[Optional[FrameResult]], Optional[Track], List[Track], List['MotionTrack']]:
     """
     Main entry: select the in-play ball from per-frame YOLO detections.
 
@@ -472,7 +488,7 @@ def select_ball_in_play(
         debug: if True, print score breakdowns
 
     Returns:
-        (per_frame_results, chosen_track, all_tracks)
+        (per_frame_results, chosen_track, all_tracks, motion_tracks)
     """
     cfg = SelectorConfig(fps=fps, width=width, height=height).auto_scale()
     total_frames = len(detections_by_frame)
@@ -1373,7 +1389,7 @@ def select_ball_in_play(
                 rr_dbg.guide_search_hold = bool(ghold_dbg)
                 rr_dbg.guide_search_radius = float(gsr)
 
-        return result, chosen, tracks
+        return result, chosen, tracks, motion_tracks
 
     # Step 4: per-frame selection with motion-blob gap bridging
     diag = _cfg_diag(cfg)
@@ -2887,9 +2903,28 @@ def select_ball_in_play(
             frame_audit["frames_since_det_out"] = int(frames_since_det)
             audit_rows.append(frame_audit)
     
-    # Minimal interpolation: only fill 1-3 frame micro-gaps between YOLO detections
-    obs_indices = [i for i in range(total_frames) if result[i] is not None 
+    # Interpolation: fill 1-3 frame micro-gaps between YOLO detections.
+    # Use a quadratic Lagrange fit through 3 surrounding det points (prev_prev,
+    # prev, curr) or (prev, curr, next_next) so the gap traces the arc of the
+    # ball's flight instead of a chord. Fall back to linear when only 2 anchors
+    # exist or when the quadratic overshoots the chord by an implausible margin.
+    obs_indices = [i for i in range(total_frames) if result[i] is not None
                    and result[i].source == 'det']
+
+    def _lagrange3_eval(t_val: float, t1: float, y1: float,
+                        t2: float, y2: float, t3: float, y3: float) -> float:
+        d12 = (t1 - t2)
+        d13 = (t1 - t3)
+        d23 = (t2 - t3)
+        denom = d12 * d13 * (-d23)
+        if abs(denom) < 1e-9:
+            # Degenerate spacing — fall back to linear endpoints.
+            return y1 + (y3 - y1) * ((t_val - t1) / max(t3 - t1, 1e-9))
+        L1 = ((t_val - t2) * (t_val - t3)) / (d12 * d13)
+        L2 = ((t_val - t1) * (t_val - t3)) / ((-d12) * d23)
+        L3 = ((t_val - t1) * (t_val - t2)) / ((-d13) * (-d23))
+        return L1 * y1 + L2 * y2 + L3 * y3
+
     for k in range(1, len(obs_indices)):
         prev_i = obs_indices[k - 1]
         curr_i = obs_indices[k]
@@ -2898,11 +2933,48 @@ def select_ball_in_play(
             continue
         prev_r = result[prev_i]
         curr_r = result[curr_i]
+
+        # Pick a third anchor: prefer prev_prev (earlier context) if close enough,
+        # otherwise next_next. None => linear fallback.
+        anchor_idx = None
+        if k - 2 >= 0:
+            cand = obs_indices[k - 2]
+            if prev_i - cand <= 6:
+                anchor_idx = cand
+        if anchor_idx is None and k + 1 < len(obs_indices):
+            cand = obs_indices[k + 1]
+            if cand - curr_i <= 6:
+                anchor_idx = cand
+        anchor_r = result[anchor_idx] if anchor_idx is not None else None
+
         for f in range(prev_i + 1, curr_i):
             if result[f] is None:
                 t_frac = (f - prev_i) / gap
-                cx_interp = prev_r.cx + (curr_r.cx - prev_r.cx) * t_frac
-                cy_interp = prev_r.cy + (curr_r.cy - prev_r.cy) * t_frac
+                # Linear baseline
+                lin_x = prev_r.cx + (curr_r.cx - prev_r.cx) * t_frac
+                lin_y = prev_r.cy + (curr_r.cy - prev_r.cy) * t_frac
+                cx_interp, cy_interp = lin_x, lin_y
+                if anchor_r is not None:
+                    qx = _lagrange3_eval(
+                        float(f),
+                        float(anchor_idx), float(anchor_r.cx),
+                        float(prev_i), float(prev_r.cx),
+                        float(curr_i), float(curr_r.cx),
+                    )
+                    qy = _lagrange3_eval(
+                        float(f),
+                        float(anchor_idx), float(anchor_r.cy),
+                        float(prev_i), float(prev_r.cy),
+                        float(curr_i), float(curr_r.cy),
+                    )
+                    # Sanity bound: keep the quadratic correction within
+                    # ~max(0.6 * chord, 30 px) of the linear point. Beyond that
+                    # the parabola is being driven by a far-off anchor and is
+                    # less reliable than the chord.
+                    chord = math.hypot(curr_r.cx - prev_r.cx, curr_r.cy - prev_r.cy)
+                    bound = max(30.0, 0.6 * chord)
+                    if math.hypot(qx - lin_x, qy - lin_y) <= bound:
+                        cx_interp, cy_interp = qx, qy
                 r_interp = float(getattr(prev_r, "search_radius", 0.0))
                 r_end = float(getattr(curr_r, "search_radius", 0.0))
                 r_interp = r_interp + (r_end - r_interp) * t_frac
@@ -2982,4 +3054,4 @@ def select_ball_in_play(
             rr_dbg.guide_search_hold = bool(ghold_dbg)
             rr_dbg.guide_search_radius = float(gsr)
 
-    return result, chosen, tracks
+    return result, chosen, tracks, motion_tracks

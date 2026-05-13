@@ -125,12 +125,117 @@ def _motion_combined_from_hsv(hsv_prev: np.ndarray, hsv_curr: np.ndarray) -> np.
         (h_diff * 1.2).clip(0, 255).astype(np.uint8)))
     return cv2.GaussianBlur(combined, (3, 3), 0)
 
+def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) -> np.ndarray:
+    """C++ probe-style frame delta: max(gray, V, scaled-S), blurred 3x3."""
+    prev_hsv = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2HSV)
+    curr_hsv = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2HSV)
+    prev_gray = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
+    v_diff = cv2.absdiff(curr_hsv[:, :, 2], prev_hsv[:, :, 2])
+    s_diff = cv2.absdiff(curr_hsv[:, :, 1], prev_hsv[:, :, 1])
+    gray_diff = cv2.absdiff(curr_gray, prev_gray)
+    s_scaled = np.minimum(s_diff.astype(np.float32) * 1.25, 255.0).astype(np.uint8)
+    combined = np.maximum(gray_diff, np.maximum(v_diff, s_scaled))
+    return cv2.GaussianBlur(combined, (3, 3), 0)
+
+def _ball_color_support_from_bgr(frame_bgr: np.ndarray, cfg: Config) -> np.ndarray:
+    """Loose tennis-ball color support, dilated so blurred ball edges survive."""
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    h_min = float(getattr(cfg, "motion_raw_color_h_min", 18.0))
+    h_max = float(getattr(cfg, "motion_raw_color_h_max", 75.0))
+    s_min = float(getattr(cfg, "motion_raw_color_s_min", 0.12)) * 255.0
+    v_min = float(getattr(cfg, "motion_raw_color_v_min", 0.18)) * 255.0
+    h = hsv[:, :, 0].astype(np.float32)
+    support = (
+        (h >= h_min) & (h <= h_max) &
+        (hsv[:, :, 1].astype(np.float32) >= s_min) &
+        (hsv[:, :, 2].astype(np.float32) >= v_min)
+    ).astype(np.uint8) * 255
+    k = int(getattr(cfg, "motion_raw_color_dilate", 5) or 0)
+    if k > 1:
+        support = cv2.dilate(support, _get_kernel(k), iterations=1)
+    return support
+
 def compute_motion_sv_from_hsv(
     hsv_prev: np.ndarray, hsv_curr: np.ndarray, thresh: float
 ) -> np.ndarray:
     combined = _motion_combined_from_hsv(hsv_prev, hsv_curr)
     _, mask = cv2.threshold(combined, int(thresh), 255, cv2.THRESH_BINARY)
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL_3x3)
+
+def _filter_raw_motion_components(mask_u8: Optional[np.ndarray], cfg: Config) -> Optional[np.ndarray]:
+    """Optional raw-mask component filter from the C++ probe; default is off for tracking."""
+    if mask_u8 is None or mask_u8.size == 0:
+        return mask_u8
+    if cv2.countNonZero(mask_u8) == 0:
+        return mask_u8
+
+    out = mask_u8
+    close_size = int(getattr(cfg, "motion_raw_close_size", 0) or 0)
+    open_size = int(getattr(cfg, "motion_raw_open_size", 0) or 0)
+    if close_size > 1:
+        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _get_kernel(close_size))
+    if open_size > 1:
+        out = cv2.morphologyEx(out, cv2.MORPH_OPEN, _get_kernel(open_size))
+
+    if not bool(getattr(cfg, "motion_raw_component_filter", False)):
+        return out
+    if cv2.countNonZero(out) == 0:
+        return out
+
+    min_area = max(1, int(getattr(cfg, "motion_raw_component_min_area", 2) or 2))
+    max_area = max(min_area, int(getattr(cfg, "motion_raw_component_max_area", 260) or 260))
+    max_dim = max(1, int(getattr(cfg, "motion_raw_component_max_dim", 38) or 38))
+    max_aspect = max(1.0, float(getattr(cfg, "motion_raw_component_max_aspect", 5.5) or 5.5))
+    min_fill = max(0.0, min(1.0, float(getattr(cfg, "motion_raw_component_min_fill", 0.14) or 0.14)))
+
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(out, connectivity=8)
+    if num <= 1:
+        return np.zeros_like(out)
+
+    keep = np.zeros(num, dtype=np.uint8)
+    for i in range(1, num):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if area < min_area or area > max_area or bw > max_dim or bh > max_dim:
+            continue
+        aspect = max(bw, bh) / max(min(bw, bh), 1)
+        fill = area / max(bw * bh, 1)
+        if aspect > max_aspect or fill < min_fill:
+            continue
+        keep[i] = 255
+    return keep[labels]
+
+def refine_raw_motion_temporal_cpu(
+    raw_motion_u8: Optional[np.ndarray],
+    prev_bgr: Optional[np.ndarray],
+    curr_bgr: Optional[np.ndarray],
+    next_bgr: Optional[np.ndarray],
+    cfg: Config,
+) -> Optional[np.ndarray]:
+    """Clean raw foreground with the C++ probe's temporal movement test."""
+    if raw_motion_u8 is None:
+        return None
+    refined = raw_motion_u8
+    if bool(getattr(cfg, "motion_raw_temporal_gate", True)) and prev_bgr is not None and curr_bgr is not None:
+        hi = float(getattr(cfg, "motion_raw_temporal_hi", 18.0))
+        lo = float(getattr(cfg, "motion_raw_temporal_lo", 8.0))
+        very_hi = float(getattr(cfg, "motion_raw_temporal_very_hi", 36.0))
+        d_prev = _motion_probe_delta_from_frames(prev_bgr, curr_bgr)
+        if next_bgr is not None:
+            d_next = _motion_probe_delta_from_frames(curr_bgr, next_bgr)
+            temporal = (
+                ((d_prev >= hi) & (d_next >= lo)) |
+                ((d_next >= hi) & (d_prev >= lo)) |
+                (d_prev >= very_hi)
+            )
+        else:
+            temporal = d_prev >= hi
+        refined = cv2.bitwise_and(refined, temporal.astype(np.uint8) * 255)
+    if bool(getattr(cfg, "motion_raw_ball_color_gate", True)) and curr_bgr is not None:
+        refined = cv2.bitwise_and(refined, _ball_color_support_from_bgr(curr_bgr, cfg))
+    return _filter_raw_motion_components(refined, cfg)
 
 def compute_motion_sv_3frame_hsv(
     hsv_prev,
@@ -554,6 +659,69 @@ def _unpack_mask_u8(mask_obj):
         return (flat.reshape(int(h), int(w)).astype(np.uint8) * 255)
     return mask_obj
 
+def _probe_component_boxes(mask_u8: Optional[np.ndarray], cfg: Config, limit: int = 100) -> List[Tuple[int, int, int, int]]:
+    if mask_u8 is None or mask_u8.size == 0 or cv2.countNonZero(mask_u8) == 0:
+        return []
+    min_area = max(1, int(getattr(cfg, "motion_raw_component_min_area", 2) or 2))
+    max_area = max(min_area, int(getattr(cfg, "motion_raw_component_max_area", 260) or 260))
+    max_dim = max(1, int(getattr(cfg, "motion_raw_component_max_dim", 38) or 38))
+    max_aspect = max(1.0, float(getattr(cfg, "motion_raw_component_max_aspect", 5.5) or 5.5))
+    min_fill = max(0.0, min(1.0, float(getattr(cfg, "motion_raw_component_min_fill", 0.14) or 0.14)))
+    num, _, stats, _ = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
+    boxes: List[Tuple[int, int, int, int]] = []
+    for i in range(1, num):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if area < min_area or area > max_area or bw > max_dim or bh > max_dim:
+            continue
+        aspect = max(bw, bh) / max(min(bw, bh), 1)
+        fill = area / max(bw * bh, 1)
+        if aspect > max_aspect or fill < min_fill:
+            continue
+        boxes.append((x, y, bw, bh))
+        if len(boxes) >= int(limit):
+            break
+    return boxes
+
+def _draw_probe_motion_overlay(
+    frame: np.ndarray,
+    raw_motion: Optional[np.ndarray],
+    boost_mask: Optional[np.ndarray],
+    cfg: Config,
+    protect_mask: Optional[np.ndarray] = None,
+    rois_dbg: Optional[List[Tuple[int, int, int, int]]] = None,
+) -> np.ndarray:
+    """Probe-style debug view: direct raw/boost pixels plus compact component boxes."""
+    out = frame.copy()
+    raw_mask = raw_motion > 0 if raw_motion is not None else np.zeros(out.shape[:2], dtype=bool)
+    boost_vis = boost_mask > 0 if boost_mask is not None else np.zeros(out.shape[:2], dtype=bool)
+    if protect_mask is not None:
+        raw_mask = raw_mask & (~protect_mask)
+        boost_vis = boost_vis & (~protect_mask)
+
+    raw_only = raw_mask & (~boost_vis)
+    both = raw_mask & boost_vis
+    out[raw_only] = (0, 180, 0)
+    out[both] = (0, 255, 255)
+    out[boost_vis & (~raw_mask)] = (255, 220, 0)
+
+    for x, y, bw, bh in _probe_component_boxes(raw_motion, cfg):
+        cv2.rectangle(out, (x, y), (x + bw, y + bh), (255, 255, 0), 1, cv2.LINE_AA)
+
+    if rois_dbg:
+        for rx1, ry1, rx2, ry2 in rois_dbg:
+            cv2.rectangle(out, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 1, cv2.LINE_AA)
+
+    cv2.rectangle(out, (0, 0), (min(out.shape[1], 900), 58), (0, 0, 0), cv2.FILLED)
+    cv2.putText(out, "Raw motion probe view: green=refined raw, yellow=raw+boost, cyan boxes=compact raw components",
+                (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1, cv2.LINE_AA)
+    cv2.putText(out, "Debug drawing only; tracker/ROI/selector still use the existing pipeline masks",
+                (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (210, 210, 210), 1, cv2.LINE_AA)
+    return out
+
 def preprocess_frame(frame, raw_motion, boost_mask, cfg,
                      player_bboxes=None, court_keypoints=None,
                      visualize=False, hsv_cached=None,
@@ -575,6 +743,12 @@ def preprocess_frame(frame, raw_motion, boost_mask, cfg,
                 player_bboxes=player_bboxes,
                 court_keypoints=court_keypoints,
                 player_pad=cfg.player_bbox_pad)
+        if bool(getattr(cfg, "debug_probe_motion_style", True)):
+            return _draw_probe_motion_overlay(
+                frame, raw_motion, boost_mask, cfg,
+                protect_mask=protect_mask,
+                rois_dbg=rois_dbg,
+            )
         if protect_mask is not None:
             motion_vis = motion_vis & (~protect_mask)
             boost_vis = boost_vis & (~protect_mask)
@@ -657,6 +831,41 @@ def _dilate_motion_cuda(raw_motion, dilate_k):
         return mm.squeeze() > 0.5
     return raw_motion
 
+def _motion_probe_delta_cuda(prev_frame_t, curr_frame_t, prev_v_t, prev_s_t, curr_v_t, curr_s_t):
+    """C++ probe-style frame delta in 0-255 units on CUDA."""
+    prev_gray = prev_frame_t[0] * 0.114 + prev_frame_t[1] * 0.587 + prev_frame_t[2] * 0.299
+    curr_gray = curr_frame_t[0] * 0.114 + curr_frame_t[1] * 0.587 + curr_frame_t[2] * 0.299
+    gray_diff = torch.abs(curr_gray - prev_gray) * 255.0
+    v_diff = torch.abs(curr_v_t - prev_v_t) * 255.0
+    s_diff = torch.abs(curr_s_t - prev_s_t) * (255.0 * 1.25)
+    delta = torch.maximum(gray_diff, torch.maximum(v_diff, s_diff))
+    return F.avg_pool2d(delta.unsqueeze(0).unsqueeze(0), 3, stride=1, padding=1).squeeze(0).squeeze(0)
+
+def _ball_color_support_cuda(frame_t, curr_v, curr_s, cfg):
+    """Loose tennis-ball color support on CUDA, returned as a bool mask."""
+    b, g, r = frame_t[0], frame_t[1], frame_t[2]
+    minc = torch.min(frame_t, dim=0).values
+    delta = curr_v - minc
+    h = torch.zeros_like(curr_v)
+    valid = delta > 1e-6
+    h_r = ((g - b) / (delta + 1e-6)) % 6.0
+    h_g = ((b - r) / (delta + 1e-6)) + 2.0
+    h_b = ((r - g) / (delta + 1e-6)) + 4.0
+    h = torch.where((curr_v == r) & valid, h_r, h)
+    h = torch.where((curr_v == g) & valid, h_g, h)
+    h = torch.where((curr_v == b) & valid, h_b, h)
+    hue_cv = (h / 6.0) * 180.0
+    support = (
+        (hue_cv >= float(getattr(cfg, "motion_raw_color_h_min", 18.0))) &
+        (hue_cv <= float(getattr(cfg, "motion_raw_color_h_max", 75.0))) &
+        (curr_s >= float(getattr(cfg, "motion_raw_color_s_min", 0.12))) &
+        (curr_v >= float(getattr(cfg, "motion_raw_color_v_min", 0.18)))
+    )
+    k = int(getattr(cfg, "motion_raw_color_dilate", 5) or 0)
+    if k > 1:
+        support = _dilate_motion_cuda(support, k)
+    return support
+
 
 @torch.no_grad()
 def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg,
@@ -668,6 +877,12 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                           frame_gpu_t=None,
                           curr_v_cached=None,
                           curr_s_cached=None,
+                          prev_frame_gpu_t=None,
+                          prev_frame_v_cached=None,
+                          prev_frame_s_cached=None,
+                          next_frame_gpu_t=None,
+                          next_v_cached=None,
+                          next_s_cached=None,
                           protect_mask_cuda_cached=None,
                           perf: Optional[Dict[str, float]] = None):
     """CUDA preprocessing with S+V motion detection.
@@ -727,6 +942,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
             protect_t = torch.from_numpy(protect_np).to(device)
 
     raw_motion = None
+    raw_motion_ungated = None
     if prev_v is not None and prev_s is not None and master_var_v is not None and master_var_s is not None:
         thr = float(cfg.motion_thresh) / 255.0
         thr_sq = thr ** 2
@@ -764,14 +980,76 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
 
             raw_motion = ((v_diff_sq > v_thresh_sq) | (s_diff_sq > s_thresh_sq)) & (curr_v > v_min)
 
+        if (
+            raw_motion is not None and
+            bool(getattr(cfg, "motion_raw_temporal_gate", True)) and
+            prev_frame_gpu_t is not None and
+            prev_frame_v_cached is not None and
+            prev_frame_s_cached is not None
+        ):
+            hi = float(getattr(cfg, "motion_raw_temporal_hi", 18.0))
+            lo = float(getattr(cfg, "motion_raw_temporal_lo", 8.0))
+            very_hi = float(getattr(cfg, "motion_raw_temporal_very_hi", 36.0))
+            has_next = next_frame_gpu_t is not None and next_v_cached is not None and next_s_cached is not None
+
+            def _temporal_roi(y1, y2, x1, x2):
+                d_prev = _motion_probe_delta_cuda(
+                    prev_frame_gpu_t[:, y1:y2, x1:x2],
+                    t[:, y1:y2, x1:x2],
+                    prev_frame_v_cached[y1:y2, x1:x2],
+                    prev_frame_s_cached[y1:y2, x1:x2],
+                    curr_v[y1:y2, x1:x2],
+                    curr_s[y1:y2, x1:x2],
+                )
+                if has_next:
+                    d_next = _motion_probe_delta_cuda(
+                        t[:, y1:y2, x1:x2],
+                        next_frame_gpu_t[:, y1:y2, x1:x2],
+                        curr_v[y1:y2, x1:x2],
+                        curr_s[y1:y2, x1:x2],
+                        next_v_cached[y1:y2, x1:x2],
+                        next_s_cached[y1:y2, x1:x2],
+                    )
+                    return (
+                        ((d_prev >= hi) & (d_next >= lo)) |
+                        ((d_next >= hi) & (d_prev >= lo)) |
+                        (d_prev >= very_hi)
+                    )
+                return d_prev >= hi
+
+            if rois is not None:
+                temporal_motion = torch.zeros_like(raw_motion)
+                for rx1, ry1, rx2, ry2 in rois:
+                    temporal_motion[ry1:ry2, rx1:rx2] = (
+                        temporal_motion[ry1:ry2, rx1:rx2] |
+                        _temporal_roi(ry1, ry2, rx1, rx2)
+                    )
+            else:
+                temporal_motion = _temporal_roi(0, int(curr_v.shape[0]), 0, int(curr_v.shape[1]))
+            # Ungated motion drives the boost mask (recall: helps YOLO recover misses).
+            # Gated motion drives downstream selector + dim_static (precision: rejects FPs).
+            raw_motion_ungated = raw_motion
+            raw_motion = raw_motion & temporal_motion
+
+    # Two boost masks with different roles:
+    #   boost_mask_u8 (returned) — narrow, gated source → selector's motion-blob picker.
+    #     Keeps selector precision (frame-870 player-edge blob class of FP stays suppressed).
+    #   boost_yolo_u8 (internal)  — wide, ungated source → drives the HSV brightening that
+    #     YOLO sees. Recall-positive: when the temporal gate would suppress a real ball
+    #     blob, the wider mask still highlights it so YOLO has a chance to detect it.
     raw_motion_u8 = boost_mask_u8 = None
+    boost_yolo_u8 = None
     boost_has_blobs = False
     if raw_motion is not None:
+        boost_source = raw_motion_ungated if raw_motion_ungated is not None else raw_motion
+        wide_distinct = boost_source is not raw_motion
         if rois is not None:
             h_u8 = int(curr_v.shape[0])
             w_u8 = int(curr_v.shape[1])
             raw_motion_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
             boost_mask_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
+            if wide_distinct:
+                boost_yolo_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
 
             for roi in rois:
                 rx1, ry1, rx2, ry2 = roi
@@ -779,37 +1057,67 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                 raw_motion_roi_u8 = (
                     raw_motion[ry1:ry2, rx1:rx2].contiguous().byte().cpu().numpy() * 255
                 )
+                wide_roi_u8 = None
+                if wide_distinct:
+                    wide_roi_u8 = (
+                        boost_source[ry1:ry2, rx1:rx2].contiguous().byte().cpu().numpy() * 255
+                    )
                 if perf is not None:
                     perf_d2h += (time.perf_counter() - t_d2h)
-                
-                # Apply mask piece where ROIs might overlap
+                raw_motion_roi_u8 = _filter_raw_motion_components(raw_motion_roi_u8, cfg)
                 np.maximum(raw_motion_u8[ry1:ry2, rx1:rx2], raw_motion_roi_u8, out=raw_motion_u8[ry1:ry2, rx1:rx2])
-                
+
+                # Narrow selector-grade boost from gated raw motion
                 if raw_motion_roi_u8.max() > 0:
                     t_cc = time.perf_counter() if perf is not None else 0.0
-                    filtered_roi = filter_boost_mask(
+                    narrow_roi = filter_boost_mask(
                         raw_motion_roi_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
                         player_bboxes=player_bboxes)
                     if perf is not None:
                         perf_cc += (time.perf_counter() - t_cc)
-                    
-                    np.maximum(boost_mask_u8[ry1:ry2, rx1:rx2], filtered_roi, out=boost_mask_u8[ry1:ry2, rx1:rx2])
+                    np.maximum(boost_mask_u8[ry1:ry2, rx1:rx2], narrow_roi, out=boost_mask_u8[ry1:ry2, rx1:rx2])
 
-            boost_has_blobs = bool(boost_mask_u8.max() > 0)
-            if not boost_has_blobs:
+                # Wide YOLO-grade boost from ungated raw motion
+                if wide_distinct and wide_roi_u8 is not None and wide_roi_u8.max() > 0:
+                    wide_roi = filter_boost_mask(
+                        wide_roi_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
+                        player_bboxes=player_bboxes)
+                    np.maximum(boost_yolo_u8[ry1:ry2, rx1:rx2], wide_roi, out=boost_yolo_u8[ry1:ry2, rx1:rx2])
+
+            if boost_mask_u8.max() == 0:
                 boost_mask_u8 = None
+            if not wide_distinct:
+                boost_yolo_u8 = boost_mask_u8
+            elif boost_yolo_u8 is not None and boost_yolo_u8.max() == 0:
+                boost_yolo_u8 = None
+            boost_has_blobs = bool(boost_yolo_u8 is not None) or bool(boost_mask_u8 is not None)
         else:
             t_d2h = time.perf_counter() if perf is not None else 0.0
             raw_motion_u8 = (raw_motion.byte().cpu().numpy() * 255)
+            wide_u8 = None
+            if wide_distinct:
+                wide_u8 = (boost_source.byte().cpu().numpy() * 255)
             if perf is not None:
                 perf_d2h += (time.perf_counter() - t_d2h)
+            raw_motion_u8 = _filter_raw_motion_components(raw_motion_u8, cfg)
             t_cc = time.perf_counter() if perf is not None else 0.0
             boost_mask_u8 = filter_boost_mask(
                 raw_motion_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
                 player_bboxes=player_bboxes)
             if perf is not None:
                 perf_cc += (time.perf_counter() - t_cc)
-            boost_has_blobs = bool(boost_mask_u8 is not None and boost_mask_u8.max() > 0)
+            if wide_distinct and wide_u8 is not None:
+                boost_yolo_u8 = filter_boost_mask(
+                    wide_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
+                    player_bboxes=player_bboxes)
+                if boost_yolo_u8 is not None and boost_yolo_u8.max() == 0:
+                    boost_yolo_u8 = None
+            else:
+                boost_yolo_u8 = boost_mask_u8
+            boost_has_blobs = bool(
+                (boost_mask_u8 is not None and boost_mask_u8.max() > 0) or
+                (boost_yolo_u8 is not None and boost_yolo_u8.max() > 0)
+            )
 
     # Early exit: no ball-sized blobs → just dim static regions
     if not boost_has_blobs:
@@ -852,9 +1160,12 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     s_t = curr_s.clone()
     v_t = curr_v.clone()
 
+    # YOLO input boost uses the WIDE mask so it can rescue YOLO misses on frames
+    # where the temporal/color gate would have suppressed a real ball blob.
     bm = None
-    if boost_mask_u8 is not None:
-        bm = torch.from_numpy(boost_mask_u8 > 0).to(device)
+    bm_source = boost_yolo_u8 if boost_yolo_u8 is not None else boost_mask_u8
+    if bm_source is not None:
+        bm = torch.from_numpy(bm_source > 0).to(device)
         if protect_t is not None:
             bm = bm & (~protect_t)
         s_t = torch.where(bm, torch.clamp(s_t * cfg.pre_sat_boost, 0, 1), s_t)

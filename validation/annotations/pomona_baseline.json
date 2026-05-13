@@ -1,0 +1,490 @@
+{
+  "video": "input_videos/PomonaPitzer Women vs. UCSD-cut-merged-1773082079341.mp4",
+  "ball": [
+    {
+      "frame": 218,
+      "x": 967.5,
+      "y": 144.0,
+      "visible": true
+    },
+    {
+      "frame": 226,
+      "x": 1029.0,
+      "y": 196.5,
+      "visible": true
+    },
+    {
+      "frame": 235,
+      "x": 1126.5,
+      "y": 298.5,
+      "visible": true
+    },
+    {
+      "frame": 245,
+      "x": 1266.0,
+      "y": 406.5,
+      "visible": true
+    },
+    {
+      "frame": 253,
+      "x": 1393.5,
+      "y": 419.55,
+      "visible": true
+    },
+    {
+      "frame": 264,
+      "x": 1635.91,
+      "y": 512.63,
+      "visible": true
+    },
+    {
+      "frame": 271,
+      "x": 1409.62,
+      "y": 368.51,
+      "visible": true
+    },
+    {
+      "frame": 280,
+      "x": 1210.5,
+      "y": 279.0,
+      "visible": true
+    },
+    {
+      "frame": 286,
+      "x": 1127.25,
+      "y": 251.75,
+      "visible": true
+    },
+    {
+      "frame": 296,
+      "x": 1032.48,
+      "y": 240.51,
+      "visible": true
+    },
+    {
+      "frame": 307,
+      "x": 989.25,
+      "y": 260.19,
+      "visible": true
+    },
+    {
+      "frame": 317,
+      "x": 975.0,
+      "y": 297.74,
+      "visible": true
+    },
+    {
+      "frame": 330,
+      "x": 971.61,
+      "y": 288.04,
+      "visible": true
+    },
+    {
+      "frame": 344,
+      "x": 968.62,
+      "y": 310.61,
+      "visible": true
+    },
+    {
+      "frame": 543,
+      "x": 954.0,
+      "y": 237.0,
+      "visible": true
+    },
+    {
+      "frame": 549,
+      "x": 949.88,
+      "y": 315.14,
+      "visible": true
+    },
+    {
+      "frame": 555,
+      "x": 942.0,
+      "y": 421.5,
+      "visible": true
+    },
+    {
+      "frame": 574,
+      "x": 891.38,
+      "y": 571.43,
+      "visible": true
+    },
+    {
+      "frame": 580,
+      "x": 855.0,
+      "y": 730.5,
+      "visible": true
+    },
+    {
+      "frame": 806,
+      "x": 900.89,
+      "y": 147.39,
+      "visible": true
+    },
+    {
+      "frame": 814,
+      "x": 853.5,
+      "y": 190.5,
+      "visible": true
+    },
+    {
+      "frame": 820,
+      "x": 809.62,
+      "y": 236.25,
+      "visible": true
+    },
+    {
+      "frame": 826,
+      "x": 756.0,
+      "y": 301.5,
+      "visible": true
+    },
+    {
+      "frame": 832,
+      "x": 699.0,
+      "y": 374.1,
+      "visible": true
+    },
+    {
+      "frame": 839,
+      "x": 640.5,
+      "y": 358.5,
+      "visible": true
+    },
+    {
+      "frame": 848,
+      "x": 563.66,
+      "y": 349.77,
+      "visible": true
+    },
+    {
+      "frame": 870,
+      "visible": false,
+      "note": "real motion-FP bug at this frame; pipeline grabs blob on player while ball is mid-court near (~340, 450). Visible=False kept because hand-clicked position not done yet."
+    },
+    {
+      "frame": 876,
+      "x": 382.88,
+      "y": 424.3,
+      "visible": true
+    },
+    {
+      "frame": 882,
+      "x": 556.5,
+      "y": 313.5,
+      "visible": true
+    },
+    {
+      "frame": 890,
+      "x": 710.83,
+      "y": 240.79,
+      "visible": true
+    },
+    {
+      "frame": 899,
+      "x": 823.5,
+      "y": 207.0,
+      "visible": true
+    },
+    {
+      "frame": 908,
+      "x": 897.0,
+      "y": 202.5,
+      "visible": true
+    },
+    {
+      "frame": 914,
+      "x": 935.62,
+      "y": 207.77,
+      "visible": true
+    },
+    {
+      "frame": 926,
+      "x": 990.38,
+      "y": 232.14,
+      "visible": true
+    },
+    {
+      "frame": 932,
+      "x": 1005.61,
+      "y": 205.77,
+      "visible": true
+    },
+    {
+      "frame": 938,
+      "visible": true,
+      "x": 1019.76,
+      "y": 183.6,
+      "source_of_label": "adopted_from_pipeline_2026-05-12"
+    },
+    {
+      "frame": 948,
+      "x": 1035.0,
+      "y": 163.5,
+      "visible": true
+    },
+    {
+      "frame": 955,
+      "x": 1048.94,
+      "y": 160.91,
+      "visible": true
+    },
+    {
+      "frame": 981,
+      "x": 1104.0,
+      "y": 144.0,
+      "visible": true
+    },
+    {
+      "frame": 993,
+      "x": 1152.0,
+      "y": 189.84,
+      "visible": true
+    },
+    {
+      "frame": 999,
+      "x": 1185.0,
+      "y": 237.0,
+      "visible": true
+    },
+    {
+      "frame": 1005,
+      "x": 1226.62,
+      "y": 305.33,
+      "visible": true
+    },
+    {
+      "frame": 1012,
+      "x": 1287.0,
+      "y": 424.5,
+      "visible": true
+    },
+    {
+      "frame": 1022,
+      "x": 1393.5,
+      "y": 565.5,
+      "visible": true
+    },
+    {
+      "frame": 1034,
+      "x": 1569.0,
+      "y": 594.0,
+      "visible": true
+    },
+    {
+      "frame": 1040,
+      "x": 1695.0,
+      "y": 652.22,
+      "visible": true
+    },
+    {
+      "frame": 1046,
+      "x": 1852.5,
+      "y": 762.0,
+      "visible": true
+    },
+    {
+      "frame": 1181,
+      "visible": true,
+      "x": 1273.89,
+      "y": 241.76,
+      "source_of_label": "adopted_from_pipeline_2026-05-12"
+    },
+    {
+      "frame": 1187,
+      "x": 1244.25,
+      "y": 312.08,
+      "visible": true
+    },
+    {
+      "frame": 1195,
+      "x": 1240.75,
+      "y": 298.67,
+      "visible": true
+    },
+    {
+      "frame": 1202,
+      "visible": true,
+      "x": 1242.7,
+      "y": 231.96,
+      "source_of_label": "adopted_from_pipeline_2026-05-12"
+    },
+    {
+      "frame": 1208,
+      "x": 1243.8,
+      "y": 186.96,
+      "visible": true
+    },
+    {
+      "frame": 1215,
+      "x": 1244.0,
+      "y": 144.3,
+      "visible": true
+    },
+    {
+      "frame": 1221,
+      "x": 1242.58,
+      "y": 114.83,
+      "visible": true
+    },
+    {
+      "frame": 1231,
+      "x": 1243.81,
+      "y": 88.5,
+      "visible": true
+    },
+    {
+      "frame": 1271,
+      "x": 1234.5,
+      "y": 184.5,
+      "visible": true
+    },
+    {
+      "frame": 1281,
+      "visible": true,
+      "x": 1230.97,
+      "y": 248.3,
+      "source_of_label": "adopted_from_pipeline_2026-05-12"
+    },
+    {
+      "frame": 1300,
+      "x": 1230.0,
+      "y": 222.0,
+      "visible": true
+    },
+    {
+      "frame": 1309,
+      "x": 1232.16,
+      "y": 190.67,
+      "visible": true
+    },
+    {
+      "frame": 1317,
+      "x": 1231.5,
+      "y": 177.0,
+      "visible": true
+    },
+    {
+      "frame": 1861,
+      "x": 963.0,
+      "y": 147.0,
+      "visible": true
+    },
+    {
+      "frame": 1869,
+      "x": 1024.5,
+      "y": 205.5,
+      "visible": true
+    },
+    {
+      "frame": 1877,
+      "x": 1110.0,
+      "y": 301.5,
+      "visible": true
+    },
+    {
+      "frame": 1884,
+      "x": 1215.75,
+      "y": 437.91,
+      "visible": true
+    },
+    {
+      "frame": 1890,
+      "x": 1316.25,
+      "y": 456.89,
+      "visible": true
+    },
+    {
+      "frame": 1898,
+      "x": 1501.5,
+      "y": 530.09,
+      "visible": true
+    },
+    {
+      "frame": 1910,
+      "x": 1474.12,
+      "y": 414.39,
+      "visible": true
+    },
+    {
+      "frame": 1918,
+      "x": 1300.5,
+      "y": 274.5,
+      "visible": true
+    },
+    {
+      "frame": 1926,
+      "x": 1198.5,
+      "y": 210.0,
+      "visible": true
+    },
+    {
+      "frame": 1938,
+      "x": 1113.0,
+      "y": 181.5,
+      "visible": true
+    },
+    {
+      "frame": 1944,
+      "x": 1084.5,
+      "y": 181.5,
+      "visible": true
+    },
+    {
+      "frame": 1959,
+      "x": 1039.5,
+      "y": 204.0,
+      "visible": true
+    },
+    {
+      "frame": 1968,
+      "x": 1022.62,
+      "y": 224.23,
+      "visible": true
+    },
+    {
+      "frame": 1974,
+      "x": 1016.23,
+      "y": 199.87,
+      "visible": true
+    },
+    {
+      "frame": 1981,
+      "x": 1011.26,
+      "y": 179.43,
+      "visible": true
+    },
+    {
+      "frame": 1987,
+      "x": 1006.5,
+      "y": 168.0,
+      "visible": true
+    },
+    {
+      "frame": 1994,
+      "x": 1002.0,
+      "y": 163.5,
+      "visible": true
+    },
+    {
+      "frame": 2008,
+      "x": 996.0,
+      "y": 169.5,
+      "visible": true
+    },
+    {
+      "frame": 2015,
+      "x": 993.0,
+      "y": 180.0,
+      "visible": true
+    },
+    {
+      "frame": 2021,
+      "x": 991.5,
+      "y": 184.5,
+      "visible": true
+    }
+  ],
+  "events": [],
+  "ignore_ranges": []
+}
