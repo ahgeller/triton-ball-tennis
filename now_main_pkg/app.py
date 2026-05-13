@@ -1603,11 +1603,6 @@ def run(cfg):
                             trail.append(None)
                             prev = None
                         elif prev_src in ("carry", "interp") and src == "det" and dist > 6.0:
-                            # carry/interp→det reacquisition: the reconnection line should be
-                            # black, not green, so the green trail only shows actual
-                            # detection-to-detection paths and doesn't appear to "jump"
-                            # from the carry position to wherever the ball was reacquired.
-                            trail.append((trail_cx, trail_cy, trail_cx, trail_cy, 'gap', 0.0))
                             trail.append(None)
                             prev = None
                         else:
@@ -1672,6 +1667,8 @@ def run(cfg):
                 is_gap = (src == 'gap')
                 if is_gap != draw_gap:
                     continue
+                if is_gap:
+                    continue
                 p0 = (trail[i-1][2], trail[i-1][3])
                 p1 = (trail[i][2], trail[i][3])
 
@@ -1687,17 +1684,6 @@ def run(cfg):
                 # Transfer selected state trails to main output.
                 # Keep: green det, orange motion, blue carry, yellow interp, white guide.
                 if (not is_gap) and src not in ("det", "motion", "carry", "guide", "interp"):
-                    continue
-
-                if is_gap:
-                    # Keep connector subtle and stop short of reacquire marker.
-                    dx = float(p1[0] - p0[0])
-                    dy = float(p1[1] - p0[1])
-                    mag = float(np.hypot(dx, dy))
-                    if mag > GAP_END_TRIM_PX + 1.0:
-                        s = (mag - GAP_END_TRIM_PX) / mag
-                        p1 = (int(round(p0[0] + dx * s)), int(round(p0[1] + dy * s)))
-                    cv2.line(frame_out, p0, p1, COLOR_GAP, 2, cv2.LINE_AA)
                     continue
 
                 alpha = 0.55 + 0.45 * (i / len(trail))

@@ -244,6 +244,8 @@ class ROIMotionTracker:
             
             # Predict box location in real-time frame
             pred_cx, pred_cy = t.predict_roi(pipeline_dt, self.phys_cfg)
+            if not (math.isfinite(float(pred_cx)) and math.isfinite(float(pred_cy))):
+                continue
             
             if t.frames_since_det == 0:
                 base = min(self.cfg.roi_visible_radius_frac * self.diag, t.last_diag_box * 1.5) if t.last_diag_box > 0 else self.cfg.roi_visible_radius_frac * self.diag
@@ -261,6 +263,8 @@ class ROIMotionTracker:
                 radius_visual = min(base + growth, self.cfg.roi_max_radius_frac * self.diag)
 
             radius_motion = radius_visual + self.cfg.roi_motion_bleed_frac * self.diag
+            if not (math.isfinite(float(radius_visual)) and math.isfinite(float(radius_motion))):
+                continue
 
             rx1_v = max(0, int(pred_cx - radius_visual))
             ry1_v = max(0, int(pred_cy - radius_visual))

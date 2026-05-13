@@ -1451,7 +1451,8 @@ def select_ball_in_play(
         'rej_context': 0, 'rej_blocked_radius': 0, 'rej_hard_step': 0,
         'rej_other_track': 0,
         'owner_soft_pen': 0,
-        'rej_motion_area': 0, 'rej_motion_physics': 0, 'rej_static_snap': 0,
+        'rej_motion_area': 0, 'rej_motion_physics': 0, 'rej_motion_jump': 0,
+        'rej_motion_player': 0, 'rej_static_snap': 0,
         'rej_static_lock_cluster': 0,
         'motion_guided_clamped': 0, 'bounce': 0
     }
@@ -1587,6 +1588,226 @@ def select_ball_in_play(
             if best_d2 is None:
                 return None
             return math.sqrt(best_d2)
+
+        def _motion_player_probation_ok(
+            raw_cx: float,
+            raw_cy: float,
+            guided_cx: float,
+            guided_cy: float,
+            blob_area: float,
+            ref_cx: float,
+            ref_cy: float,
+            search_radius: float,
+            ref_area: Optional[float],
+            is_latched: bool,
+            from_guide_circle: bool,
+            anchor_pos: Tuple[float, float],
+            pred_vel_local: Tuple[float, float],
+            anchor_dt_local: int,
+        ) -> bool:
+            """Make in-player motion prove it is the ball instead of player-body clutter."""
+            pd_raw_0 = _closest_player_distance_local(raw_cx, raw_cy, frame_player_boxes_0)
+            pd_guided_0 = _closest_player_distance_local(guided_cx, guided_cy, frame_player_boxes_0)
+            pd_raw_20 = _closest_player_distance_local(raw_cx, raw_cy, frame_player_boxes_20)
+            in_player = (
+                (pd_raw_0 is not None and pd_raw_0 <= 0.0) or
+                (pd_guided_0 is not None and pd_guided_0 <= 0.0)
+            )
+            near_player = in_player or (pd_raw_20 is not None and pd_raw_20 <= 0.0)
+            if not near_player:
+                return True
+
+            raw_ref_dist = _xy_dist(raw_cx, raw_cy, ref_cx, ref_cy)
+            guided_ref_dist = _xy_dist(guided_cx, guided_cy, ref_cx, ref_cy)
+            search_radius = max(float(search_radius), 1.0)
+
+            # Player boxes contain a lot of leg/racket/body-edge motion. Keep only
+            # blobs tightly centered on the predicted/guide point.
+            core_r = max(9.0, min(0.018 * diag, 0.34 * search_radius))
+            if from_guide_circle:
+                core_r = max(9.0, min(0.016 * diag, 0.28 * search_radius))
+            if not in_player:
+                core_r *= 1.25
+
+            if raw_ref_dist > core_r:
+                return False
+            if guided_ref_dist > max(core_r * 1.35, 0.024 * diag):
+                return False
+
+            if ref_area is not None and ref_area > 0.0:
+                area_ratio = float(blob_area) / max(float(ref_area), 1.0)
+                min_ratio = 0.18 if from_guide_circle else 0.24
+                max_ratio = 4.00 if from_guide_circle else 3.25
+                if area_ratio < min_ratio or area_ratio > max_ratio:
+                    return False
+
+            dt_local = max(int(anchor_dt_local), 1)
+            expected_step = math.sqrt(
+                float(pred_vel_local[0]) ** 2 + float(pred_vel_local[1]) ** 2
+            ) * dt_local
+            max_step = max(14.0, min(0.060 * diag, 2.35 * expected_step + 12.0))
+            raw_step = _xy_dist(raw_cx, raw_cy, anchor_pos[0], anchor_pos[1])
+            if raw_step > max_step and raw_ref_dist > 0.65 * core_r:
+                return False
+
+            if last_motion_pos is not None and not is_latched:
+                prev_step = _xy_dist(raw_cx, raw_cy, last_motion_pos[0], last_motion_pos[1])
+                cont_gate = max(12.0, min(0.042 * diag, 2.20 * expected_step + 14.0))
+                if prev_step > cont_gate and raw_ref_dist > 0.70 * core_r:
+                    return False
+
+            return True
+
+        def _motion_jump_probation_ok(
+            raw_cx: float,
+            raw_cy: float,
+            guided_cx: float,
+            guided_cy: float,
+            ref_cx: float,
+            ref_cy: float,
+            search_radius: float,
+            is_latched: bool,
+            from_guide_circle: bool,
+            anchor_pos: Tuple[float, float],
+            pred_vel_local: Tuple[float, float],
+            anchor_dt_local: int,
+        ) -> bool:
+            """Reject sudden motion handoffs that are not close to the predicted/guide path."""
+            if is_latched:
+                return True
+
+            raw_ref_dist = _xy_dist(raw_cx, raw_cy, ref_cx, ref_cy)
+            guided_ref_dist = _xy_dist(guided_cx, guided_cy, ref_cx, ref_cy)
+            search_radius = max(float(search_radius), 1.0)
+            dt_local = max(int(anchor_dt_local), 1)
+            expected_step = math.sqrt(
+                float(pred_vel_local[0]) ** 2 + float(pred_vel_local[1]) ** 2
+            ) * dt_local
+
+            core_r = max(10.0, min(0.030 * diag, 0.42 * search_radius))
+            if from_guide_circle:
+                core_r = max(9.0, min(0.024 * diag, 0.32 * search_radius))
+
+            if raw_ref_dist <= core_r and guided_ref_dist <= max(core_r * 1.70, 0.034 * diag):
+                return True
+
+            step_gate = max(16.0, min(0.070 * diag, 2.45 * expected_step + 18.0))
+            if prev_src not in ("motion", "guide", "carry"):
+                step_gate = min(step_gate, max(14.0, 1.80 * expected_step + 14.0))
+
+            raw_anchor_step = _xy_dist(raw_cx, raw_cy, anchor_pos[0], anchor_pos[1])
+            guided_anchor_step = _xy_dist(guided_cx, guided_cy, anchor_pos[0], anchor_pos[1])
+            if max(raw_anchor_step, guided_anchor_step) > step_gate:
+                return False
+
+            if last_pos is not None:
+                raw_last_step = _xy_dist(raw_cx, raw_cy, last_pos[0], last_pos[1])
+                guided_last_step = _xy_dist(guided_cx, guided_cy, last_pos[0], last_pos[1])
+                last_gate = max(16.0, min(0.068 * diag, 2.35 * expected_step + 16.0))
+                if max(raw_last_step, guided_last_step) > last_gate and raw_ref_dist > 0.75 * core_r:
+                    return False
+
+            if last_motion_pos is not None:
+                prev_step = _xy_dist(raw_cx, raw_cy, last_motion_pos[0], last_motion_pos[1])
+                cont_gate = max(12.0, min(0.045 * diag, 2.20 * expected_step + 14.0))
+                if prev_step > cont_gate and raw_ref_dist > 0.75 * core_r:
+                    return False
+
+            if from_guide_circle and raw_ref_dist > max(core_r * 1.85, 0.040 * diag):
+                return False
+
+            return True
+
+        def _stabilize_probation_motion(
+            raw_cx: float,
+            raw_cy: float,
+            guided_cx: float,
+            guided_cy: float,
+            ref_cx: float,
+            ref_cy: float,
+            search_radius: float,
+            from_guide_circle: bool,
+            pred_vel_local: Tuple[float, float],
+            anchor_dt_local: int,
+        ) -> Tuple[float, float]:
+            """Near players, use motion as support but cap how far it can pull the ball."""
+            pd_raw_0 = _closest_player_distance_local(raw_cx, raw_cy, frame_player_boxes_0)
+            pd_guided_0 = _closest_player_distance_local(guided_cx, guided_cy, frame_player_boxes_0)
+            pd_raw_20 = _closest_player_distance_local(raw_cx, raw_cy, frame_player_boxes_20)
+            in_player = (
+                (pd_raw_0 is not None and pd_raw_0 <= 0.0) or
+                (pd_guided_0 is not None and pd_guided_0 <= 0.0)
+            )
+            near_player = in_player or (pd_raw_20 is not None and pd_raw_20 <= 0.0)
+
+            search_radius = max(float(search_radius), 1.0)
+            if not near_player:
+                return guided_cx, guided_cy
+
+            raw_ref_dist = _xy_dist(raw_cx, raw_cy, ref_cx, ref_cy)
+            guided_ref_dist = _xy_dist(guided_cx, guided_cy, ref_cx, ref_cy)
+            dt_local = max(int(anchor_dt_local), 1)
+            expected_step = math.sqrt(
+                float(pred_vel_local[0]) ** 2 + float(pred_vel_local[1]) ** 2
+            ) * dt_local
+
+            # Player/racket motion may be real evidence, but the centroid is noisy.
+            weight = 0.22 if in_player else 0.34
+            max_pull = max(4.0, min(13.0, 0.0065 * diag, 0.18 * search_radius))
+
+            if from_guide_circle:
+                weight *= 0.80
+                max_pull *= 0.85
+
+            target_x = ref_cx + (raw_cx - ref_cx) * weight
+            target_y = ref_cy + (raw_cy - ref_cy) * weight
+
+            # If the generic guided point is already closer to the reference, prefer it.
+            if guided_ref_dist < _xy_dist(target_x, target_y, ref_cx, ref_cy):
+                target_x, target_y = guided_cx, guided_cy
+
+            dx = target_x - ref_cx
+            dy = target_y - ref_cy
+            pull = math.sqrt(dx * dx + dy * dy)
+            if pull > max_pull and pull > 1e-6:
+                s = max_pull / pull
+                target_x = ref_cx + dx * s
+                target_y = ref_cy + dy * s
+
+            if last_pos is not None:
+                last_gate = max(7.0, min(16.0, 1.25 * expected_step + 6.0))
+                sx = target_x - last_pos[0]
+                sy = target_y - last_pos[1]
+                step = math.sqrt(sx * sx + sy * sy)
+                if step > last_gate and step > 1e-6:
+                    scale = last_gate / step
+                    target_x = last_pos[0] + sx * scale
+                    target_y = last_pos[1] + sy * scale
+
+            return target_x, target_y
+
+        def _carry_after_failed_motion_ok(pred_x: float, pred_y: float, search_radius: float) -> bool:
+            """After near-player orange motion, don't let blue carry drift without support."""
+            if prev_src != "motion":
+                return True
+            pd_pred = _closest_player_distance_local(pred_x, pred_y, frame_player_boxes_20)
+            if pd_pred is None or pd_pred > 0.0:
+                return True
+
+            probe_r = int(round(max(5.0, min(14.0, 0.006 * diag, 0.12 * max(float(search_radius), 1.0)))))
+            has_local_motion = (
+                _mask_has_motion_near(boost_mask, pred_x, pred_y, probe_r) or
+                _mask_has_motion_near(raw_motion, pred_x, pred_y, probe_r)
+            )
+            exact_guide_support = (
+                guide is not None and guide_exact and
+                _xy_dist(pred_x, pred_y, gx, gy) <= max(10.0, 0.012 * diag)
+            )
+            if not has_local_motion and not exact_guide_support:
+                return False
+
+            # Even with support, only bridge one frame in this clutter zone.
+            return soft_carry_count < 1
 
         def _mask_has_motion_in_box(
             mask: Optional[np.ndarray],
@@ -2609,6 +2830,7 @@ def select_ball_in_play(
 
             if blob is not None:
                 blob_cx, blob_cy, blob_area, is_latched = blob
+                raw_blob_cx, raw_blob_cy = blob_cx, blob_cy
                 motion_physics_ok = is_latched or _motion_blob_physics_ok(
                         blob_cx, blob_cy, blob_ref_cx, blob_ref_cy,
                         carry_anchor_pos, pred_vel, anchor_dt,
@@ -2633,27 +2855,68 @@ def select_ball_in_play(
                             last_pos, pred_vel, anchor_dt, cfg, diag)
                         if was_clamped:
                             stats['motion_guided_clamped'] += 1
-                    blob = (guided_cx, guided_cy, blob_area, is_latched)
-                    # Velocity Smoothing: When applying motion tracking velocity, blend it
-                    # with the previous stable state so a single erratic frame doesn't ruin the arc.
-                    motion_dt = max(int(anchor_dt), 1)
-                    raw_mot_vx = (guided_cx - carry_anchor_pos[0]) / motion_dt
-                    raw_mot_vy = (guided_cy - carry_anchor_pos[1]) / motion_dt
-                    
-                    if last_motion_vel is not None:
-                        # Blend with previous motion velocity
-                        alpha = 0.35  # Trust new motion blob 35%, history 65%
-                        last_motion_vel = (
-                            alpha * raw_mot_vx + (1.0 - alpha) * last_motion_vel[0],
-                            alpha * raw_mot_vy + (1.0 - alpha) * last_motion_vel[1]
-                        )
+                    motion_jump_ok = _motion_jump_probation_ok(
+                        raw_blob_cx, raw_blob_cy,
+                        guided_cx, guided_cy,
+                        blob_ref_cx, blob_ref_cy,
+                        blob_search_r,
+                        is_latched,
+                        blob_from_guide_circle,
+                        carry_anchor_pos,
+                        pred_vel,
+                        anchor_dt,
+                    )
+                    near_player_ok = motion_jump_ok and _motion_player_probation_ok(
+                        raw_blob_cx, raw_blob_cy,
+                        guided_cx, guided_cy,
+                        blob_area,
+                        blob_ref_cx, blob_ref_cy,
+                        blob_search_r,
+                        ref_area,
+                        is_latched,
+                        blob_from_guide_circle,
+                        carry_anchor_pos,
+                        pred_vel,
+                        anchor_dt,
+                    )
+                    if not motion_jump_ok or not near_player_ok:
+                        if not motion_jump_ok:
+                            stats['rej_motion_jump'] += 1
+                        else:
+                            stats['rej_motion_player'] += 1
+                        blob = None
+                        last_motion_vel = None
                     else:
-                        # First motion frame after a gap: blend with the main physics velocity
-                        alpha = 0.50
-                        last_motion_vel = (
-                            alpha * raw_mot_vx + (1.0 - alpha) * last_vel[0],
-                            alpha * raw_mot_vy + (1.0 - alpha) * last_vel[1]
+                        guided_cx, guided_cy = _stabilize_probation_motion(
+                            raw_blob_cx, raw_blob_cy,
+                            guided_cx, guided_cy,
+                            blob_ref_cx, blob_ref_cy,
+                            blob_search_r,
+                            blob_from_guide_circle,
+                            pred_vel,
+                            anchor_dt,
                         )
+                        blob = (guided_cx, guided_cy, blob_area, is_latched)
+                        # Velocity Smoothing: When applying motion tracking velocity, blend it
+                        # with the previous stable state so a single erratic frame doesn't ruin the arc.
+                        motion_dt = max(int(anchor_dt), 1)
+                        raw_mot_vx = (guided_cx - carry_anchor_pos[0]) / motion_dt
+                        raw_mot_vy = (guided_cy - carry_anchor_pos[1]) / motion_dt
+
+                        if last_motion_vel is not None:
+                            # Blend with previous motion velocity
+                            alpha = 0.35  # Trust new motion blob 35%, history 65%
+                            last_motion_vel = (
+                                alpha * raw_mot_vx + (1.0 - alpha) * last_motion_vel[0],
+                                alpha * raw_mot_vy + (1.0 - alpha) * last_motion_vel[1]
+                            )
+                        else:
+                            # First motion frame after a gap: blend with the main physics velocity
+                            alpha = 0.50
+                            last_motion_vel = (
+                                alpha * raw_mot_vx + (1.0 - alpha) * last_vel[0],
+                                alpha * raw_mot_vy + (1.0 - alpha) * last_vel[1]
+                            )
             else:
                 last_motion_vel = None
 
@@ -2696,7 +2959,8 @@ def select_ball_in_play(
                                 soft_carry_count < cfg.carry_interp_frames
                             )
                             can_short_carry = (
-                                frames_since_det <= carry_limit or soft_window_ok
+                                (frames_since_det <= carry_limit or soft_window_ok) and
+                                _carry_after_failed_motion_ok(pred_cx, pred_cy, search_r)
                             )
                             if can_short_carry:
                                 result[t] = FrameResult(
@@ -2751,7 +3015,8 @@ def select_ball_in_play(
                     soft_carry_count < cfg.carry_interp_frames
                 )
                 can_short_carry = (
-                    frames_since_det <= carry_limit or soft_window_ok
+                    (frames_since_det <= carry_limit or soft_window_ok) and
+                    _carry_after_failed_motion_ok(pred_cx, pred_cy, search_r)
                 )
                 if can_short_carry:
                     # Fix 4: Prefer guide over carry when guide_exact is true.
@@ -2810,6 +3075,20 @@ def select_ball_in_play(
                     1,
                     cfg
                 )
+                pred_search_r = (
+                    float(getattr(result[t - 1], "search_radius", motion_search_base))
+                    if t > 0 and result[t - 1] is not None else motion_search_base
+                )
+                if not _carry_after_failed_motion_ok(pred_cx, pred_cy, pred_search_r):
+                    stats['lost'] += 1
+                    lost_counted = True
+                    soft_carry_count = 0
+                    last_motion_vel = None
+                    if static_lock_streak > 0:
+                        static_lock_streak = max(0, static_lock_streak - 1)
+                        if static_lock_streak == 0:
+                            static_lock_center = None
+                    continue
                 # Fix 4: Prefer guide over carry when guide_exact is true.
                 guide_vel_c2 = last_motion_vel if last_motion_vel is not None else last_vel
                 if (guide is not None and guide_exact and
@@ -3008,9 +3287,11 @@ def select_ball_in_play(
             print(f"[selector] Cross-track rejects: {stats['rej_other_track']}")
         if stats['owner_soft_pen']:
             print(f"[selector] Cross-track soft penalties: {stats['owner_soft_pen']}")
-        if stats['rej_motion_area'] or stats['rej_motion_physics']:
+        if stats['rej_motion_area'] or stats['rej_motion_physics'] or stats['rej_motion_jump'] or stats['rej_motion_player']:
             print(f"[selector] Motion rejects: area={stats['rej_motion_area']} "
-                  f"physics={stats['rej_motion_physics']}")
+                  f"physics={stats['rej_motion_physics']} "
+                  f"jump={stats['rej_motion_jump']} "
+                  f"player={stats['rej_motion_player']}")
         if stats['rej_static_snap']:
             print(f"[selector] Static snap rejects: {stats['rej_static_snap']}")
         if stats['motion_guided_clamped']:
