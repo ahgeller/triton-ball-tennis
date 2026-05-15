@@ -1,4 +1,5 @@
 accelerate==0.28.0
+json5==0.9.25
 numpy==1.26.4
 opencv-python==4.9.0.80
 pandas==1.5.3
@@ -9,4 +10,3 @@ torch==2.2.1
 torchaudio==2.2.1
 torchvision==0.17.1
 transformers==4.38.2
-

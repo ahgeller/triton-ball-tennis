@@ -48,22 +48,6 @@ class SelectorConfig:
     trail_stitch_pred_resid_frac: float = 0.08
     trail_jump_break_frac: float = 0.06
     trail_jump_break_growth_frac: float = 0.020
-    # Ultralytics tracker-based trail creation (matches now_main_copy path)
-    track_builder_backend: str = "ultra"  # "ultra" or "greedy"
-    ultra_tracker_name: str = "bytetrack"
-    ultra_tracker_no_img: bool = True
-    ultra_track_buffer: int = 240
-    ultra_match_thresh: float = 0.75
-    ultra_track_thresh: float = 0.12
-    ultra_new_track_thresh: float = 0.15
-    ultra_track_low_thresh: float = 0.02
-    ultra_proximity_thresh: float = 0.25
-    ultra_appearance_thresh: float = 0.25
-    ultra_gmc_method: str = "none"
-    ultra_enable_reid: bool = False
-    ultra_tracker_input_expand: float = 5.0
-    ultra_tracker_input_min_side_px: float = 14.0
-
     # â”€â”€ Scoring weights â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     w_len: float = 1.0          # reward per observation (linear)
     w_gaps: float = 0.5         # penalty per gap segment

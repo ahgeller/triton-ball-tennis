@@ -17,7 +17,7 @@ from .config import SelectorConfig
 from .models import Detection, MotionTrack, Track, FrameResult
 from .utils import _cfg_diag, _fps_norm_pxpf, _clamp01, _ensure_mask_u8, _mask_has_motion_near, build_court_homography, court_px_per_meter
 from .physics import _kinematic_motion_frac, _xy_dist, _predict_projectile, _predict_projectile_vel, BallKalmanFilter
-from .tracking import build_detections, build_motion_tracks, build_tracks_ultra, build_tracks, merge_tracks, _build_track_guide, _guide_static_speed_thresh, _det_hard_continuity_ok, _filter_guide_observations, _trim_leading_static_guide_obs, _prune_static_guide_runs, _merge_high_movement_tracks
+from .tracking import build_detections, build_motion_tracks, build_tracks, merge_tracks, _build_track_guide, _guide_static_speed_thresh, _det_hard_continuity_ok, _filter_guide_observations, _trim_leading_static_guide_obs, _prune_static_guide_runs, _merge_high_movement_tracks
 from .scoring import score_tracks, select_best_track, _track_movement_score, _is_stationary_track, _annotate_track_periods, _stitch_track_chain, _select_timeline_chain
 
 
@@ -562,16 +562,7 @@ def select_ball_in_play(
     motion_tracks = build_motion_tracks(boost_masks, cfg)
 
     # Step 1: build track hypotheses
-    track_backend = str(getattr(cfg, "track_builder_backend", "ultra")).lower()
-    if track_backend == "ultra":
-        try:
-            tracks = build_tracks_ultra(all_dets, cfg)
-        except Exception as e:
-            if debug:
-                print(f"[selector] Ultralytics track builder failed ({e}); falling back to greedy builder")
-            tracks = build_tracks(all_dets, cfg)
-    else:
-        tracks = build_tracks(all_dets, cfg)
+    tracks = build_tracks(all_dets, cfg)
 
     if debug:
         total_dets = sum(len(fd) for fd in all_dets)

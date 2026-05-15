@@ -125,6 +125,15 @@ def _track_to_json(track) -> Optional[Dict[str, Any]]:
     }
 
 
+def _last_valid_court_keypoints(all_court_kps: Optional[List[Any]]) -> Optional[Any]:
+    if not all_court_kps:
+        return None
+    for kps in reversed(all_court_kps):
+        if kps and len(kps) >= 16:
+            return kps
+    return None
+
+
 def _count_reason(reason_counts: Dict[str, int], reason: str) -> None:
     reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
 
@@ -400,11 +409,22 @@ def _write_tracking_json(
     detections_by_frame: Optional[List[List[Tuple[list, float]]]] = None,
     boost_masks: Optional[List[Any]] = None,
     raw_motions: Optional[List[Any]] = None,
+    court_keypoints_by_frame: Optional[List[Any]] = None,
+    player_boxes_by_frame: Optional[List[Any]] = None,
     timing: Optional[Dict[str, float]] = None,
     pass2_frames_rendered: int = 0,
 ) -> None:
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    frame_rows = []
+    for i in range(int(total_frames)):
+        row = _frame_result_to_json(i, per_frame[i] if i < len(per_frame) else None)
+        if court_keypoints_by_frame is not None and i < len(court_keypoints_by_frame):
+            row["court_keypoints"] = _json_safe(court_keypoints_by_frame[i])
+        if player_boxes_by_frame is not None and i < len(player_boxes_by_frame):
+            row["player_boxes"] = _json_safe(player_boxes_by_frame[i])
+        frame_rows.append(row)
+
     payload = {
         "schema_version": 1,
         "video": {
@@ -428,6 +448,7 @@ def _write_tracking_json(
         },
         "config": _json_safe(getattr(cfg, "__dict__", {})),
         "timing": _json_safe(timing or {}),
+        "last_valid_court_keypoints": _json_safe(_last_valid_court_keypoints(court_keypoints_by_frame)),
         "chosen_track": _track_to_json(chosen_track),
         "tracks": [_track_to_json(t) for t in (all_tracks or [])],
         "motion_diagnostics": _build_motion_diagnostics(
@@ -438,10 +459,7 @@ def _write_tracking_json(
             int(width),
             int(height),
         ),
-        "frames": [
-            _frame_result_to_json(i, per_frame[i] if i < len(per_frame) else None)
-            for i in range(int(total_frames))
-        ],
+        "frames": frame_rows,
     }
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -2110,6 +2128,8 @@ def run(cfg):
             detections_by_frame=all_frame_dets,
             boost_masks=all_boost_masks,
             raw_motions=all_raw_motions,
+            court_keypoints_by_frame=all_court_kps,
+            player_boxes_by_frame=all_player_boxes,
             timing=timing,
             pass2_frames_rendered=pass2_frames_rendered,
         )
