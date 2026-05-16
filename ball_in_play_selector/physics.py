@@ -1,20 +1,13 @@
-# Imports
 import math
-import json
-import os
 import numpy as np
-import cv2
-from types import SimpleNamespace
-from typing import Optional, List, Tuple, Dict, Any
-from dataclasses import dataclass, field
+from typing import Optional, Tuple
 try:
     from filterpy.kalman import KalmanFilter
 except ImportError:
     KalmanFilter = None
-    from filterpy.kalman import KalmanFilter
 
 from .config import SelectorConfig
-from .utils import _cfg_diag, _fps_norm_pxpf, _clamp01, _ensure_mask_u8, _mask_has_motion_near, build_court_homography, court_px_per_meter
+from .utils import _fps_norm_pxpf, _clamp01, court_px_per_meter
 
 
 def _kinematic_motion_frac(
@@ -51,8 +44,8 @@ def _predict_projectile(
 ) -> Tuple[float, float]:
     """Predict ball position using projectile physics (gravity + drag).
 
-    pos: (x, y) — last known position (pixel coords, y increases downward)
-    vel: (vx, vy) — velocity in px/frame
+    pos: (x, y) - last known position (pixel coords, y increases downward)
+    vel: (vx, vy) - velocity in px/frame
     dt: frames ahead to predict
     Returns (pred_x, pred_y).
     """
@@ -89,6 +82,8 @@ def _predict_projectile_vel(
 
 class BallKalmanFilter:
     def __init__(self, x0: float, y0: float, cfg: SelectorConfig):
+        if KalmanFilter is None:
+            raise RuntimeError("filterpy is required for BallKalmanFilter. Install filterpy==1.4.5.")
         self.cfg = cfg
         self.kf = KalmanFilter(dim_x=4, dim_z=2)
         
@@ -272,4 +267,3 @@ class BallKalmanFilter:
     def get_velocity(self) -> Tuple[float, float]:
         x = self._x()
         return float(x[2]), float(x[3])
-

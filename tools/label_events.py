@@ -11,7 +11,7 @@ Workflow:
       --output      validation/labels/<clip>_events.json
 
 A cv2 window opens; navigate frames with the keyboard. On a frame where
-something happened, press the appropriate key — the event is recorded
+something happened, press the appropriate key - the event is recorded
 immediately and you keep moving. To attach a court position to a hit or
 bounce, click on the mini-court overlay in the top-right; the click is
 auto-attached to the most recent event of that frame.
@@ -53,8 +53,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
@@ -70,8 +68,6 @@ from tools.mini_court import (
     compute_layout,
     draw_mini_court,
     draw_point,
-    COURT_WIDTH_M,
-    COURT_LENGTH_M,
 )
 
 
@@ -243,7 +239,7 @@ def render_frame(
         cv2.circle(img, (int(round(ball_now[0])), int(round(ball_now[1]))),
                    10, COLOR_BALL_DETECT, 2, cv2.LINE_AA)
 
-    # 2) Player bboxes — useful for context (player IDs labeled).
+    # 2) Player bboxes - useful for context (player IDs labeled).
     for pid, bbox in tracking.player_boxes(frame_idx).items():
         x1, y1, x2, y2 = (int(round(v)) for v in bbox)
         cv2.rectangle(img, (x1, y1), (x2, y2), (255, 180, 0), 1, cv2.LINE_AA)
@@ -344,7 +340,7 @@ def main() -> int:
     parser.add_argument(
         "--tracking", default=None,
         help="Optional tracking.json (used to overlay ball detection + player boxes "
-             "during labeling — strongly recommended).",
+             "during labeling - strongly recommended).",
     )
     parser.add_argument("--output", required=True, help="Output labels JSON path")
     parser.add_argument(
@@ -448,7 +444,7 @@ def main() -> int:
                 dirty_since_save = True
 
         if key < 0:
-            # Window closed by the user?
+            # Window closed by the user-
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
                 break
             continue
@@ -507,9 +503,9 @@ def main() -> int:
         # Auto-advance after a labeling action (so the user can paddle quickly).
         # Skip auto-advance if the event opened a pending court click; let the
         # user click first.
-        # (We don't auto-advance — the user controls navigation explicitly.
+        # (We don't auto-advance - the user controls navigation explicitly.
         # The above is a placeholder if we want to enable later.)
-        _ = moved  # noqa: keep linter quiet
+        _ = moved  # noqa: F841
 
     # Always save on exit.
     save_labels(out_path, state, video_path, fps, total)

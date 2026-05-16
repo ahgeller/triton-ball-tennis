@@ -1,40 +1,5 @@
-# Imports
-import argparse
-import copy
-import glob
-import json
-import math
-import os
-import queue
-import shutil
-import subprocess
-import sys
-import threading
-import time
-from collections import OrderedDict, namedtuple
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import cv2
-import numpy as np
-import scipy.interpolate
-from ball_in_play_selector import select_ball_in_play, FrameResult, _predict_projectile, SelectorConfig
-HAS_NMS = False
-_nms = None
-try:
-    import torch
-    import torch.nn.functional as F
-    HAS_TORCH = True
-except Exception:
-    torch = None
-    F = None
-    HAS_TORCH = False
-
-try:
-    from boxmot import ByteTrack
-except ImportError:
-    print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-    ByteTrack = None
+from typing import Optional
 
 
 
@@ -55,7 +20,7 @@ class Config:
     use_tensorrt: bool = True
     tensorrt_half: bool = True
     trt_async_execute: bool = True
-    trt_async_slots: int = 2
+    trt_async_slots: int = 3
 
     # Court perspective
     court_depth: Optional[str] = None
@@ -67,9 +32,9 @@ class Config:
     player_model_path: Optional[str] = "models/player.engine"
     court_model_path: Optional[str] = "models/courtdetection.engine"
     player_detect_interval: int = 1
-    player_detect_interval_stable: int = 60  # interval when players haven't moved much
+    player_detect_interval_stable: int = 15  # interval when players haven't moved much
     player_stable_thresh_frac: float = 0.02  # movement < this * diag = "stable"
-    court_detect_interval: int = 500
+    court_detect_interval: int = 400
     court_conf: float = 0.10
     print_court_raw: bool = False
     court_remap_semantic_14: bool = False
@@ -89,9 +54,9 @@ class Config:
 
     # preprocessing
     enable_preprocess: bool = True
-    pre_sat_boost: float = 1.35
-    pre_val_boost: float = 1.10
-    pre_hue_shift: float = 0.4
+    pre_sat_boost: float = 1.55
+    pre_val_boost: float = 1.04
+    pre_hue_shift: float = 0.18
     dim_static: float = 0.88
     static_sat_scale: float = 0.75
     motion_dilate: int = 5
@@ -103,13 +68,13 @@ class Config:
     motion_k_std: float = 3.0             # Std-dev multiplier; balanced with additive floor so variance can suppress static-ball halos
     motion_v_min: float = 40.0           # Lowered to catch dimmer ball motion in shadows
     motion_temporal_soft: bool = False   # Disabled: this was causing the "lingering" yellow artifacts you noticed
-    motion_temporal_lo_frac: float = 0.45
-    motion_temporal_hi_mult: float = 1.25
+    motion_temporal_lo_frac: float = 0.55
+    motion_temporal_hi_mult: float = 1.35
     motion_flicker_suppress: bool = False # Disabled to prevent motion ghosts from lingering
-    motion_flicker_min_area: int = 2
-    motion_flicker_max_area: int = 350
-    motion_flicker_prev_dilate: int = 12
-    motion_flicker_keep_radius_frac: float = 0.14
+    motion_flicker_min_area: int = 3
+    motion_flicker_max_area: int = 220
+    motion_flicker_prev_dilate: int = 9
+    motion_flicker_keep_radius_frac: float = 0.11
     motion_raw_temporal_gate: bool = True  # C++ probe-style frame-to-frame proof before raw foreground becomes motion evidence
     motion_raw_temporal_hi: float = 18.0
     motion_raw_temporal_lo: float = 8.0
@@ -128,7 +93,7 @@ class Config:
     motion_raw_color_dilate: int = 5
     motion_raw_color_s_min: float = 0.12
     motion_raw_color_v_min: float = 0.18
-    boost_max_blob_area: int = 600   # Reduced from 1200: large blobs (sqrt(1200/pi)≈19px radius) overshoot the ball
+    boost_max_blob_area: int = 600   # Reduced from 1200: large blobs (sqrt(1200/pi) 19px radius) overshoot the ball
     boost_min_blob_area: int = 0
     
     # Ball persistence hysteresis settings
@@ -145,10 +110,10 @@ class Config:
     aux_force_interval: int = 6
     frame_reader_prefetch: int = 8
 
-    # ROI-based motion — only compute motion/CC near ball
+    # ROI-based motion - only compute motion/CC near ball
     roi_motion_enabled: bool = True
-    roi_visible_radius_frac: float = 0.012   # ROI radius as frame diag frac when ball is visible
-    roi_lost_radius_frac: float = 0.020      # ROI radius when ball is lost (wider than visible so YOLO has room to re-find)
+    roi_visible_radius_frac: float = 0.1
+    roi_lost_radius_frac: float = 0.2
     roi_lost_expand_per_frame: float = 0.0022 # grow lost ROI by this * diag per lost frame
     roi_max_radius_frac: float = 0.085       # cap ROI radius
     roi_motion_bleed_frac: float = 0.0       # extend the underlying cropping boundary for motion processing to capture long blurred streaks without affecting the tight visual box
@@ -156,13 +121,15 @@ class Config:
 
     # blob shape filtering - IMPROVED for small tennis balls
     blob_shape_filter: bool = True
-    blob_erode_size: int = 4              # LOWERED from 3 to preserve small ball blobs
-    blob_max_aspect: float = 5.0          # INCREASED from 4.0 for elongated motion blur
+    blob_erode_size: int = 3
+    blob_max_aspect: float = 4.0
     blob_preserve_tiny: bool = True       # NEW: preserve very small ball-sized blobs
     blob_tiny_max_area: int = 120         # NEW: max area for "tiny" ball blobs to preserve
 
-    # debug
+    # outputs / debug
+    save_tracking_video: bool = True
     save_motion_debug: bool = False
+    save_yolo_input_debug: bool = False
     output_debug_path: str = "output_videos/prof_test_motion_debug.mp4"
     output_yolo_input_debug_path: str = "output_videos/prof_test_yolo_input_debug.mp4"
     debug_show_raw_motion: bool = False

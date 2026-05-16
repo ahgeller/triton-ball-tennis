@@ -1,26 +1,11 @@
-# Imports
-import argparse
-import copy
-import glob
+from __future__ import annotations
+
 import json
-import math
-import os
-import queue
-import shutil
-import subprocess
-import sys
-import threading
-import time
 from collections import OrderedDict, namedtuple
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
-import scipy.interpolate
-from ball_in_play_selector import select_ball_in_play, FrameResult, _predict_projectile, SelectorConfig
-HAS_NMS = False
-_nms = None
 try:
     import torch
     import torch.nn.functional as F
@@ -37,7 +22,7 @@ except ImportError:
     ByteTrack = None
 
 from .config import Config
-from .utils import _resolve_engine_path_for_ball, _resolve_engine_path, _read_engine_names, _detect_device, _check_capabilities
+from .utils import _resolve_engine_path
 from .motion import _xywh_to_xyxy_np, _nms_xyxy_np
 
 
@@ -920,4 +905,3 @@ class CourtDetector:
                 if (ax > 0 or ay > 0) and (bx > 0 or by > 0):
                     cv2.line(frame, (ax, ay), (bx, by), (0, 255, 0), 2)
         return frame
-

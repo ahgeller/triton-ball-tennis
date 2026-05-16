@@ -2,11 +2,11 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 from ultralytics import YOLO
 
-#python Trt_/trt_engine_builder.py --ball-pt models/ball.pt --player-pt models/player.pt --court-pt models/courtdetection.pt --half --require-fp16 --force-onnx --force-engine --device 0 --workspace-mb 4096 --include-court
+# python tools/build_trt_engines.py --ball-pt models/ball.pt --player-pt models/player.pt --court-pt models/courtdetection.pt --half --require-fp16 --force-onnx --force-engine --device 0 --workspace-mb 4096 --include-court
 
 @dataclass
 class ExportTarget:

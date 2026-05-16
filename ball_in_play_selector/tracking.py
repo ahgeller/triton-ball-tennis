@@ -1,22 +1,17 @@
-# Imports
 import math
-import json
-import os
 import numpy as np
 import cv2
 from typing import Optional, List, Tuple, Dict, Any
-from dataclasses import dataclass, field
 try:
     from filterpy.kalman import KalmanFilter
 except ImportError:
     KalmanFilter = None
-    from filterpy.kalman import KalmanFilter
 
 from .config import SelectorConfig
-from .models import Detection, MotionTrack, Track, FrameResult
-from .utils import _cfg_diag, _fps_norm_pxpf, _clamp01, _ensure_mask_u8, _mask_has_motion_near, build_court_homography, court_px_per_meter
-from .physics import _kinematic_motion_frac, _xy_dist, _predict_projectile, _predict_projectile_vel, BallKalmanFilter
-from .scoring import score_tracks, select_best_track, _track_speed_stats, _track_movement_score, _track_extent, _is_near_player
+from .models import Detection, MotionTrack, Track
+from .utils import _cfg_diag, _fps_norm_pxpf, _ensure_mask_u8
+from .physics import _xy_dist, BallKalmanFilter
+from .scoring import _track_speed_stats, _track_movement_score, _track_extent, _is_near_player
 
 
 def _guide_static_speed_thresh(cfg: SelectorConfig, diag: float) -> float:
@@ -172,7 +167,7 @@ def _filter_guide_observations(
                 ys = [o.cy for o in cluster_obs]
                 cluster_extent = math.sqrt((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2)
                 cluster_motion = sum(1 for o in cluster_obs if bool(getattr(o, "on_motion", False)))
-                # Small cluster with no motion = static ball — but only if the ball
+                # Small cluster with no motion = static ball - but only if the ball
                 # doesn't escape quickly afterwards (which would indicate a real bounce).
                 if cluster_extent < max_step * 0.5 and cluster_motion == 0:
                     # Check if the point AFTER the cluster moves away fast (real bounce)
@@ -345,7 +340,7 @@ def _prune_static_guide_runs(
         if motion_frac > max_cluster_motion_frac:
             print(f"[prune_static]   Cluster skipped: motion_frac={motion_frac:.2f} > {max_cluster_motion_frac}")
             continue
-        # Static cluster — mark non-motion obs for removal.
+        # Static cluster - mark non-motion obs for removal.
         cx_avg = sum(xs) / len(xs)
         cy_avg = sum(ys) / len(ys)
         print(f"[prune_static]   DROPPING cluster: {len(unique_indices)} obs at ({cx_avg:.0f},{cy_avg:.0f}), extent={extent:.1f}, motion={motion_frac:.2f}")
@@ -415,7 +410,7 @@ def build_motion_tracks(
     Association uses velocity-predicted matching with a radius that scales with
     track speed and gap, so fast balls don't break the track. Per-track median
     area gives a shape-consistency check so tracks don't drift onto unrelated
-    blobs (rackets, edges). Output centroids are raw — no EMA — so the trail
+    blobs (rackets, edges). Output centroids are raw - no EMA - so the trail
     doesn't lag behind the actual ball.
     """
     import cv2
@@ -845,7 +840,7 @@ def merge_tracks(
                 if near_player_a or near_player_b:
                     max_dist = merge_player_dist
 
-                # Both moving on court? Extra generous
+                # Both moving on court- Extra generous
                 if (not trk_a._is_static and not trk_b._is_static and
                         court_poly is not None):
                     da = cv2.pointPolygonTest(court_poly,
@@ -1003,7 +998,7 @@ def _build_track_guide(
     linear interpolation, producing parabolic arcs during carry frames.
     
     apply_filters: full filter suite (legacy mode).
-    filter_static_jumps: lighter filter — only removes static-ball snaps and
+    filter_static_jumps: lighter filter - only removes static-ball snaps and
         position spikes, without trimming the leading edge. Used in trail_only
         mode to prevent guide from jumping to parked balls without losing
         early-rally coverage.
@@ -1026,7 +1021,7 @@ def _build_track_guide(
         dropped += dropped_static_runs
     elif filter_static_jumps:
         # Lightweight: only remove spikes and static-ball snaps.
-        # Do NOT trim the leading edge — that would lose early rally coverage.
+        # Do NOT trim the leading edge - that would lose early rally coverage.
         obs, dropped = _filter_guide_observations(obs, cfg, diag)
         # Still prune tight spatial clusters with no motion (parked balls that
         # got merged into the stitched track via gap-fill observations).
@@ -1058,7 +1053,7 @@ def _build_track_guide(
         if 0 <= o.frame < total_frames:
             guide[o.frame] = (o.cx, o.cy, True)
 
-    # ── Physics-based gap fill using BallKalmanFilter ──
+    # -- Physics-based gap fill using BallKalmanFilter --
     # For each gap between consecutive observations, build a temporary KF
     # seeded from the pre-gap observations, then predict forward with gravity
     # and drag to produce parabolic arcs instead of straight lines.
@@ -1113,10 +1108,10 @@ def _build_track_guide(
 
     if kf_gaps_filled > 0 or linear_gaps_filled > 0:
         print(f"[guide] Gap fill: {kf_gaps_filled} physics (KF), {linear_gaps_filled} linear"
-              f" | has_kf={has_kf}, gravity={cfg.gravity_px_per_frame2:.3f} px/f²"
+              f" | has_kf={has_kf}, gravity={cfg.gravity_px_per_frame2:.3f} px/f "
               f" | gravity_enabled={cfg.gravity_enabled}")
 
-    # ── Snap interpolated (non-exact) gap frames to real detections ──
+    # -- Snap interpolated (non-exact) gap frames to real detections --
     # KF gap-fill produces smooth arcs, but if the ball was actually detected
     # in those frames (e.g. right after a hit, before the next chain segment's
     # first observation), snap the guide to the real detection instead of the
@@ -1140,7 +1135,7 @@ def _build_track_guide(
             best_dist = snap_radius
             for d in frame_dets:
                 if not bool(getattr(d, "on_motion", False)):
-                    continue  # only snap to moving detections — avoids static balls
+                    continue  # only snap to moving detections - avoids static balls
                 dd = _xy_dist(float(d.cx), float(d.cy), gx, gy)
                 if dd < best_dist:
                     best_dist = dd
@@ -1151,7 +1146,7 @@ def _build_track_guide(
         if snapped > 0:
             print(f"[guide] Snapped {snapped} gap-fill frames to real on-motion detections")
 
-    # ── Physics-based tail extension ──
+    # -- Physics-based tail extension --
     # Use KF prediction instead of constant-velocity extrapolation.
     if apply_filters and len(obs) >= 2:
         last = obs[-1]

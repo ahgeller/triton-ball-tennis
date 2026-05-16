@@ -17,12 +17,12 @@ Research anchors for the design:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 import json
 import math
 from pathlib import Path
 import re
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -221,8 +221,8 @@ def _parse_losslesscut_json5_subset(text: str) -> Dict[str, Any]:
     booleans/null, and trailing commas.  The proper parser is still json5 when
     installed, but this keeps the sidecar runnable in older project envs.
     """
-    s = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
-    s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
+    s = re.sub(r"//.*-$", "", text, flags=re.MULTILINE)
+    s = re.sub(r"/\*.*-\*/", "", s, flags=re.DOTALL)
     s = re.sub(r"([{\[,]\s*)([A-Za-z_$][A-Za-z0-9_$]*)\s*:", r'\1"\2":', s)
     s = re.sub(r",\s*([}\]])", r"\1", s)
 
@@ -231,7 +231,7 @@ def _parse_losslesscut_json5_subset(text: str) -> Dict[str, Any]:
         inner = inner.replace("\\'", "'")
         return json.dumps(inner)
 
-    s = re.sub(r"'((?:\\.|[^'\\])*)'", _single_to_double, s)
+    s = re.sub(r"'((-:\\.|[^'\\])*)'", _single_to_double, s)
     try:
         doc = json.loads(s)
     except json.JSONDecodeError as exc:
@@ -1186,7 +1186,7 @@ def _draw_mini_court_overlay(
     p_br = world_to_panel(court_w, court_l)
     cv2.rectangle(frame, p_tl, p_br, (255, 255, 255), 1)
 
-    # Singles sidelines (doubles court is 10.97m wide, singles is 8.23m → 1.37m inset each side)
+    # Singles sidelines (doubles court is 10.97m wide, singles is 8.23m -> 1.37m inset each side)
     if court_w > 8.23 + 0.1:
         inset = (court_w - 8.23) / 2.0
         s_tl = world_to_panel(inset, 0.0)
@@ -1234,7 +1234,7 @@ def _draw_mini_court_overlay(
         ty = bar_y2 - int(round(bar_h * (zt / z_max)))
         cv2.line(frame, (bar_x1 - 3, ty), (bar_x1, ty), (180, 180, 180), 1)
         cv2.putText(frame, str(zt), (bar_x1 - 14, ty + 4), cv2.FONT_HERSHEY_PLAIN, 0.7, (180, 180, 180), 1)
-    # Net height reference (0.914m at center) — dashed-ish
+    # Net height reference (0.914m at center) - dashed-ish
     net_z_y = bar_y2 - int(round(bar_h * (0.914 / z_max)))
     cv2.line(frame, (bar_x1, net_z_y), (bar_x2, net_z_y), (0, 200, 255), 1)
 

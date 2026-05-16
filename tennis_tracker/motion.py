@@ -1,43 +1,23 @@
-# Imports
-import argparse
-import copy
-import glob
-import json
+from __future__ import annotations
+
 import math
-import os
-import queue
-import shutil
-import subprocess
-import sys
-import threading
 import time
-from collections import OrderedDict, namedtuple
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
-import scipy.interpolate
-from ball_in_play_selector import select_ball_in_play, FrameResult, _predict_projectile, SelectorConfig
-HAS_NMS = False
-_nms = None
 try:
     import torch
     import torch.nn.functional as F
-    HAS_TORCH = True
 except Exception:
     torch = None
     F = None
-    HAS_TORCH = False
-
-try:
-    from boxmot import ByteTrack
-except ImportError:
-    print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-    ByteTrack = None
 
 from .config import Config
 from .rendering import _build_court_side_guides, draw_court_side_guides
+
+
+def _torch_no_grad():
+    return torch.no_grad() if torch is not None else (lambda fn: fn)
 
 
 _MOTION_BUFFERS = {}
@@ -372,7 +352,7 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
         if survived:
             # Draw a solid circle representing this blob's position.
             # Cap radius to ~12px so the boost mask doesn't balloon far beyond the
-            # actual ball — large blobs (motion blur, shadows) would otherwise create
+            # actual ball - large blobs (motion blur, shadows) would otherwise create
             # huge yellow regions in the debug view and over-expand the YOLO input.
             cx = int(centroids[i][0] + 0.5)
             cy = int(centroids[i][1] + 0.5)
@@ -867,7 +847,7 @@ def _ball_color_support_cuda(frame_t, curr_v, curr_s, cfg):
     return support
 
 
-@torch.no_grad()
+@_torch_no_grad()
 def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg,
                           player_bboxes=None, court_keypoints=None,
                           protect_mask_cached=None, rois=None,
@@ -887,7 +867,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                           perf: Optional[Dict[str, float]] = None):
     """CUDA preprocessing with S+V motion detection.
     
-    roi: optional (x1, y1, x2, y2) — if provided, only compute motion/CC
+    roi: optional (x1, y1, x2, y2) - if provided, only compute motion/CC
          inside this region. Outside the ROI, pixels are treated as static.
     """
     if torch is None or F is None:
@@ -1032,9 +1012,9 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
             raw_motion = raw_motion & temporal_motion
 
     # Two boost masks with different roles:
-    #   boost_mask_u8 (returned) — narrow, gated source → selector's motion-blob picker.
+    #   boost_mask_u8 (returned) - narrow, gated source -> selector's motion-blob picker.
     #     Keeps selector precision (frame-870 player-edge blob class of FP stays suppressed).
-    #   boost_yolo_u8 (internal)  — wide, ungated source → drives the HSV brightening that
+    #   boost_yolo_u8 (internal)  - wide, ungated source -> drives the HSV brightening that
     #     YOLO sees. Recall-positive: when the temporal gate would suppress a real ball
     #     blob, the wider mask still highlights it so YOLO has a chance to detect it.
     raw_motion_u8 = boost_mask_u8 = None
@@ -1119,7 +1099,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                 (boost_yolo_u8 is not None and boost_yolo_u8.max() > 0)
             )
 
-    # Early exit: no ball-sized blobs → just dim static regions
+    # Early exit: no ball-sized blobs -> just dim static regions
     if not boost_has_blobs:
         if raw_motion is not None and not skip_dim:
             motion_keep = _dilate_motion_cuda(raw_motion, cfg.motion_dilate)
@@ -1190,4 +1170,3 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     out = _emit(bgr, raw_motion_u8, boost_mask_u8, curr_v, curr_s)
     _finalize_perf()
     return out
-

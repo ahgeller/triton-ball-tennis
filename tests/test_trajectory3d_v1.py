@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import now_main_pkg.trajectory3d_v1 as trajectory3d_v1
-from now_main_pkg.trajectory3d_v1 import (
+import tools.trajectory3d_v1 as trajectory3d_v1
+from tools.trajectory3d_v1 import (
     LLCutSegment,
     Observation,
     SegmentWindow,

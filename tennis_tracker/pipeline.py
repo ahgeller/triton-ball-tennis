@@ -1,47 +1,25 @@
-# Imports
-import argparse
-import copy
-import glob
 import json
 import math
 import os
-import queue
-import shutil
-import subprocess
-import sys
-import threading
 import time
-from collections import OrderedDict, namedtuple
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
-import scipy.interpolate
-from ball_in_play_selector import select_ball_in_play, FrameResult, _predict_projectile, SelectorConfig
-HAS_NMS = False
-_nms = None
+from ball_in_play_selector import select_ball_in_play, FrameResult
 try:
     import torch
-    import torch.nn.functional as F
     HAS_TORCH = True
 except Exception:
     torch = None
-    F = None
     HAS_TORCH = False
-
-try:
-    from boxmot import ByteTrack
-except ImportError:
-    print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-    ByteTrack = None
 
 from .config import Config
 from .utils import _detect_device, _check_capabilities, _resolve_engine_path_for_ball, find_ball_class_id_from_names, _read_engine_names
 from .detectors import BallDetectorBackend, CourtDetector, PlayerDetector, TensorRTRuntimeBallDetector
 from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, suppress_flicker_components, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
 from .tracking import ROIMotionTracker
-from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _court_axis_spans, _build_court_polygon, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_smooth_alpha, _build_ground_projection_model, _drop_unattached_soft_runs, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GAP, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS, GAP_END_TRIM_PX
+from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _court_axis_spans, _build_court_polygon, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_smooth_alpha, _build_ground_projection_model, _drop_unattached_soft_runs, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
 
 
@@ -525,9 +503,16 @@ def run(cfg):
     # Writers (main output writer is created at pass 2 start to avoid long idle FFmpeg/NVENC process)
     writer = None
     dbg_writer = yolo_dbg_writer = guide_writer = motion_tracks_writer = None
+    needs_pass2_outputs = bool(
+        getattr(cfg, "save_tracking_video", True)
+        or cfg.save_motion_debug
+        or cfg.save_guide_video
+        or getattr(cfg, "save_motion_tracks_video", False)
+    )
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
         dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg)
+    if getattr(cfg, "save_yolo_input_debug", False):
         os.makedirs(os.path.dirname(cfg.output_yolo_input_debug_path) or ".", exist_ok=True)
         yolo_dbg_writer = VideoWriter(cfg.output_yolo_input_debug_path, fps, w, h, cfg)
     if cfg.save_guide_video:
@@ -545,7 +530,7 @@ def run(cfg):
     else:
         print("[preprocess] CPU S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
 
-    # Threaded frame reader — overlaps decode with GPU inference
+    # Threaded frame reader - overlaps decode with GPU inference
     reader = ThreadedFrameReader(cap, prefetch=max(2, int(cfg.frame_reader_prefetch)))
     frame_curr = reader.read()
     frame_next = reader.read() if frame_curr is not None else None
@@ -580,9 +565,9 @@ def run(cfg):
         timing["init_total"] = time.perf_counter() - init_perf_t0
     pass1_perf_t0 = time.perf_counter() if info_timing else 0.0
 
-    # ══════════════════════════════════════════════════════════════
-    # PASS 1 — Collect detections, preprocess frames, store metadata
-    # ══════════════════════════════════════════════════════════════
+    # ==============================================================
+    # PASS 1 - Collect detections, preprocess frames, store metadata
+    # ==============================================================
     print("[pass 1] Collecting detections...")
     all_frame_dets = []       # per-frame list of (bbox, conf)
     all_boost_masks = []      # per-frame boost mask (or None)
@@ -594,7 +579,7 @@ def run(cfg):
     all_court_kps = []        # per-frame court keypoints
     frame_idx = 0
 
-    # ROI motion tracker — limits motion/CC to region near ball
+    # ROI motion tracker - limits motion/CC to region near ball
     roi_tracker = ROIMotionTracker(cfg, w, h, fps)
     roi_used_count = 0
     fullframe_count = 0
@@ -603,7 +588,7 @@ def run(cfg):
     protect_mask_cuda_cache = None
     protect_mask_cuda_cache_key = None
     prev_boost_for_flicker = None
-    prev_raw_motion_cuda = None  # CUDA boolean mask from previous frame — avoids CPU→GPU re-upload in WTA
+    prev_raw_motion_cuda = None  # CUDA boolean mask from previous frame - avoids CPU -> GPU re-upload in WTA
     prev_raw_motion_u8 = None    # CPU uint8 mask from previous frame for HSV WTA background
     collect_motion_stats = bool(cfg.save_motion_debug)
     motion_raw_px_before_exclude = 0
@@ -625,7 +610,7 @@ def run(cfg):
     if use_cuda_pre_frame:
         print("[pass 1] CUDA zero-copy preprocess->YOLO path enabled")
     cache_pass2_frames = None
-    if cfg.cache_input_frames_pass2 and total > 0:
+    if needs_pass2_outputs and cfg.cache_input_frames_pass2 and total > 0:
         est_mb = (float(total) * float(w) * float(h) * 3.0) / (1024.0 * 1024.0)
         if est_mb <= float(max(1, int(cfg.pass2_cache_max_mb))):
             cache_pass2_frames = []
@@ -747,7 +732,7 @@ def run(cfg):
                 else:
                     cv2.accumulateWeighted(hsv_curr, master_hsv, cfg.wta_alpha)
 
-        # Detect ball — skip-frame YOLO for speed
+        # Detect ball - skip-frame YOLO for speed
         # When skip_n > 1: run YOLO every Nth frame, selector interpolates short gaps.
         _do_yolo = True
         if skip_n > 1 and frame_idx % skip_n != 0:
@@ -828,7 +813,7 @@ def run(cfg):
                 else:
                     roi_for_pack = None
                     fullframe_count += 1
-                # Skip cosmetic dim_static when ball is visible — saves a GPU round-trip
+                # Skip cosmetic dim_static when ball is visible - saves a GPU round-trip
                 _skip_dim = (skip_preprocess_dim and
                              len(roi_tracker.tracks) > 0 and
                              roi_tracker.ball_visible)
@@ -895,9 +880,9 @@ def run(cfg):
                     rm_ungated = None
 
                 # Two boost masks:
-                #   boost_mask_u8 — narrow, gated source → returned to selector
+                #   boost_mask_u8 - narrow, gated source -> returned to selector
                 #     (preserves selector precision; frame-870-class FPs stay suppressed).
-                #   boost_yolo_u8 — wide, ungated source → drives the HSV brightening
+                #   boost_yolo_u8 - wide, ungated source -> drives the HSV brightening
                 #     the YOLO input sees (recall-positive: rescues YOLO misses on frames
                 #     where the temporal/color gate would have suppressed a real ball blob).
                 raw_motion_u8 = rm
@@ -941,7 +926,7 @@ def run(cfg):
                 det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
                 det_pending = detector.detect_async_start(det_input)
 
-            # Don't exclude any court regions from motion detection — let the selector
+            # Don't exclude any court regions from motion detection - let the selector
             # decide what to do with sideline/alley motion (previously protect_mask
             # was blanking the outer left/right zone, blocking detection there).
             side_mask = None
@@ -980,7 +965,7 @@ def run(cfg):
             if collect_motion_stats and boost_mask_u8 is not None:
                 motion_boost_px_after_exclude += int(cv2.countNonZero(boost_mask_u8))
             # Keep a CUDA copy of the current motion mask for next frame's WTA freeze.
-            # This avoids re-uploading raw_motion_u8 (CPU→CUDA) in the next iteration.
+            # This avoids re-uploading raw_motion_u8 (CPU -> CUDA) in the next iteration.
             if use_cuda:
                 if raw_motion_u8 is not None:
                     prev_raw_motion_cuda = torch.from_numpy(raw_motion_u8).to(cuda_device, non_blocking=True) > 0
@@ -1011,7 +996,7 @@ def run(cfg):
                 timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
             _commit_frame(prev_pending["record"], dets_prev)
 
-        # Detect ball — skip-frame YOLO for speed.
+        # Detect ball - skip-frame YOLO for speed.
         # Cross-frame overlap: launch current frame now, finish it next iteration.
         if _do_yolo:
             if det_pending is None:
@@ -1177,9 +1162,9 @@ def run(cfg):
 
     print(f"[pass 1] Batched ghost deletion cleaned {erased_frames} frames in {time.perf_counter() - batch_t0:.2f}s")
     
-    # ══════════════════════════════════════════════════════════════
-    # SELECTOR — pick the in-play ball track
-    # ══════════════════════════════════════════════════════════════
+    # ==============================================================
+    # SELECTOR - pick the in-play ball track
+    # ==============================================================
     selector_perf_t0 = time.perf_counter() if info_timing else 0.0
     selector_poly_t0 = time.perf_counter() if info_timing else 0.0
     court_poly, last_kps = _build_court_polygon(all_court_kps, w, h)
@@ -1260,23 +1245,32 @@ def run(cfg):
         timing["selector_post"] = timing.get("selector_post", 0.0) + (time.perf_counter() - selector_post_t0)
         timing["selector_total"] = time.perf_counter() - selector_perf_t0
 
-    # ══════════════════════════════════════════════════════════════
-    # PASS 2 — Render output video with debug visualization
-    # ══════════════════════════════════════════════════════════════
-    print("[pass 2] Rendering output video...")
+    # ==============================================================
+    # PASS 2 - Render output video with debug visualization
+    # ==============================================================
+    video_outputs_enabled = needs_pass2_outputs
+    if video_outputs_enabled:
+        print("[pass 2] Rendering selected video output(s)...")
+    else:
+        print("[pass 2] Skipped (no video outputs selected)")
     pass2_perf_t0 = time.perf_counter() if info_timing else 0.0
     pass2_frames_rendered = 0
-    os.makedirs(os.path.dirname(cfg.output_video) or ".", exist_ok=True)
-    writer = VideoWriter(cfg.output_video, fps, w, h, cfg)
-    print(f"[writer] Encoder: {writer._encoder}")
-    use_cached_frames = bool(cache_pass2_frames is not None and len(cache_pass2_frames) == N)
+    if getattr(cfg, "save_tracking_video", True):
+        os.makedirs(os.path.dirname(cfg.output_video) or ".", exist_ok=True)
+        writer = VideoWriter(cfg.output_video, fps, w, h, cfg)
+        print(f"[writer] Tracking encoder: {writer._encoder}")
+    else:
+        writer = None
+    use_cached_frames = bool(video_outputs_enabled and cache_pass2_frames is not None and len(cache_pass2_frames) == N)
     if use_cached_frames:
         cap2 = None
         print(f"[pass 2] Using RAM frame cache ({len(cache_pass2_frames)} frames)")
-    else:
+    elif video_outputs_enabled:
         cap2 = cv2.VideoCapture(cfg.input_video)
         if cache_pass2_frames is not None:
             print("[pass 2] RAM frame cache incomplete; falling back to video decode")
+    else:
+        cap2 = None
     # list of (raw_x, raw_y, smooth_x, smooth_y, source, conf) or None for gaps
     trail = []
     trail_max = 50
@@ -1306,7 +1300,7 @@ def run(cfg):
     _dbg_protect_cache = None
     _dbg_protect_cache_key = None
 
-    for fi in range(N):
+    for fi in range(N if video_outputs_enabled else 0):
         if info_timing:
             read_t0 = time.perf_counter()
         if use_cached_frames:
@@ -1449,7 +1443,7 @@ def run(cfg):
                     cv2.putText(guide_frame, label, (cx + 6, cy + 6),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, tcolor, 1)
 
-        # Draw chosen result — color-coded by source
+        # Draw chosen result - color-coded by source
         if display_result is not None:
             rcx, rcy = int(display_result.cx), int(display_result.cy)
             trail_cx, trail_cy = rcx, rcy
@@ -1460,7 +1454,7 @@ def run(cfg):
                     round(float(display_result.cy) + cached_anchor_radius), 0, h - 1))
 
             if display_result.source == 'det':
-                # GREEN — YOLO detection
+                # GREEN - YOLO detection
                 marker_radius = 6
                 if display_result.bbox:
                     bx1f, by1f, bx2f, by2f = map(float, display_result.bbox)
@@ -1502,7 +1496,7 @@ def run(cfg):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_DET, 1)
 
             elif display_result.source == 'motion':
-                # ORANGE — motion blob + search region
+                # ORANGE - motion blob + search region
                 m_rad = int(np.clip(round(cached_anchor_radius), 4, 12))
                 cv2.circle(frame_out, (rcx, rcy), m_rad, COLOR_MOTION, -1)
                 cv2.putText(frame_out, "MOT", (rcx + 10, rcy - 5),
@@ -1546,7 +1540,7 @@ def run(cfg):
             elif display_result.source == 'interp':
                 last_motion_search_dbg = None
                 last_motion_search_dbg_frame = -1
-                # YELLOW — prolonged guessed/stuck
+                # YELLOW - prolonged guessed/stuck
                 i_rad = int(np.clip(round(cached_anchor_radius), 4, 12))
                 cv2.circle(frame_out, (rcx, rcy), i_rad, COLOR_INTERP, -1)
                 if guide_frame is not None:
@@ -1554,7 +1548,7 @@ def run(cfg):
             elif display_result.source == 'carry':
                 last_motion_search_dbg = None
                 last_motion_search_dbg_frame = -1
-                # BLUE — short predicted carry when temporarily lost
+                # BLUE - short predicted carry when temporarily lost
                 c_rad = int(np.clip(round(cached_anchor_radius), 4, 12))
                 cv2.circle(frame_out, (rcx, rcy), c_rad, COLOR_CARRY, -1)
                 cv2.putText(frame_out, "CAR", (rcx + 10, rcy - 5),
@@ -1594,7 +1588,7 @@ def run(cfg):
             if prev is not None:
                 prev_src = prev[4]
                 # Source transition: det resuming after carry/motion/interp.
-                # Don't force-break — instead check if the positions are reasonably close.
+                # Don't force-break - instead check if the positions are reasonably close.
                 # A break only happens if the distance exceeds the jump threshold below.
 
             if prev is not None:
@@ -1646,7 +1640,7 @@ def run(cfg):
                     # Reacquire and carry frames stay exact.
                     smooth_x, smooth_y = trail_cx, trail_cy
                 elif src == "det":
-                    # Green trail always uses exact detection positions — no smoothing.
+                    # Green trail always uses exact detection positions - no smoothing.
                     # Smoothing would pull the green line toward adjacent carry/interp
                     # positions and misrepresent the actual YOLO detection location.
                     smooth_x, smooth_y = trail_cx, trail_cy
@@ -1676,7 +1670,7 @@ def run(cfg):
         while len(trail) > trail_max:
             trail.pop(0)
 
-        # Draw trail — render black gap bridges first, then normal colored trail.
+        # Draw trail - render black gap bridges first, then normal colored trail.
         for draw_gap in (True, False):
             for i in range(1, len(trail)):
                 if trail[i] is None or trail[i-1] is None:
@@ -1826,8 +1820,9 @@ def run(cfg):
             render_dt = time.perf_counter() - render_t0 - guide_write_elapsed
             timing["pass2_render"] = timing.get("pass2_render", 0.0) + max(0.0, render_dt)
             main_write_t0 = time.perf_counter()
-        writer.write(frame_out)
-        if info_timing:
+        if writer is not None:
+            writer.write(frame_out)
+        if info_timing and writer is not None:
             timing["pass2_write_main"] = timing.get("pass2_write_main", 0.0) + (time.perf_counter() - main_write_t0)
 
         # Debug videos
@@ -1838,7 +1833,7 @@ def run(cfg):
             boost_m = _unpack_mask_u8(all_boost_masks[fi])
             pboxes = all_player_boxes_preproc[fi] if fi < len(all_player_boxes_preproc) else []
             # Cache the protect mask to avoid recomputing build_court_side_protect_mask
-            # every frame — court keypoints rarely change.
+            # every frame - court keypoints rarely change.
             _dbg_protect_key = tuple(int(round(float(v)*4.0)) for v in (court_kps or [])) if court_kps else None
             if fi == 0 or _dbg_protect_key != _dbg_protect_cache_key:
                 _dbg_protect_cache = build_protect_mask(
@@ -1853,7 +1848,7 @@ def run(cfg):
                                     protect_mask_cached=_dbg_protect_cache,
                                     rois_dbg=all_rois[fi] if fi < len(all_rois) else None)
 
-            # ── Draw motion detection ROI boxes onto vis ──
+            # -- Draw motion detection ROI boxes onto vis --
             # Green = survived   Red = ghost-pruned (didn't reattach)
             if (not getattr(cfg, "debug_probe_motion_style", True)) and fi < len(all_rois) and all_rois[fi] is not None:
                 for rx1, ry1, rx2, ry2 in all_rois[fi]:
@@ -1881,14 +1876,14 @@ def run(cfg):
                     cy_i = int(round(vis_fy))
 
                     if vis_bbox is not None and len(vis_bbox) == 4:
-                        # ── YOLO detection bounding box ──
+                        # -- YOLO detection bounding box --
                         bx1, by1, bx2, by2 = (int(round(v)) for v in vis_bbox)
                         cv2.rectangle(vis, (bx1, by1), (bx2, by2), ball_col, 2)
                         cv2.putText(vis, vis_src[:3].upper(),
                                     (bx1, max(by1 - 4, 12)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, ball_col, 1)
                     else:
-                        # ── Estimated ball box from cached radius (carry/motion/guide) ──
+                        # -- Estimated ball box from cached radius (carry/motion/guide) --
                         br = max(int(round(cached_anchor_radius)), 6)
                         cv2.rectangle(vis, (cx_i - br, cy_i - br), (cx_i + br, cy_i + br),
                                       ball_col, 1)
@@ -1896,10 +1891,10 @@ def run(cfg):
                                     (cx_i - br, max(cy_i - br - 3, 12)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, ball_col, 1)
 
-                    # ── Ball center dot ──
+                    # -- Ball center dot --
                     cv2.circle(vis, (cx_i, cy_i), 4, ball_col, -1)
 
-                    # ── Physics / KF search radius circle ──
+                    # -- Physics / KF search radius circle --
                     # Show for ALL non-det frames. If search_radius is populated (carry/motion),
                     # use it; otherwise fall back to a reasonable estimate.
                     if vis_src != 'det':
@@ -1950,7 +1945,7 @@ def run(cfg):
                         current_blobs.append((float(blob_cx), float(blob_cy), float(blob_r)))
 
             if True:
-                # Reduced from max(120, w*0.08) — the old value (~153px for 1920px video)
+                # Reduced from max(120, w*0.08) - the old value (~153px for 1920px video)
                 # allowed unrelated motion regions to be merged into the same track.
                 MAX_DIST = max(40.0, w * 0.025)
                 unmatched = current_blobs.copy()
@@ -2064,7 +2059,7 @@ def run(cfg):
             if info_timing:
                 timing["pass2_write_debug"] = timing.get("pass2_write_debug", 0.0) + (time.perf_counter() - dbg_write_t0)
 
-        # ── Motion-tracks debug video: ONLY motion polylines + ROI box ──
+        # -- Motion-tracks debug video: ONLY motion polylines + ROI box --
         if motion_tracks_writer is not None:
             mt_vis = frame.copy()
             WIN_PAST = 90  # frames of past trail drawn per track
@@ -2082,7 +2077,7 @@ def run(cfg):
                 arr = np.asarray(past_pts, dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(mt_vis, [arr], False, color, 2, cv2.LINE_AA)
 
-            # ROI box(es) for this frame — cyan rectangles
+            # ROI box(es) for this frame - cyan rectangles
             if fi < len(all_rois) and all_rois[fi] is not None:
                 for rx1, ry1, rx2, ry2 in all_rois[fi]:
                     cv2.rectangle(mt_vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)),
@@ -2136,327 +2131,15 @@ def run(cfg):
         print(f"[done] Tracking JSON: {cfg.tracking_json}")
     print(f"\n[done] {filled}/{N} frames filled ({100*filled/max(1,N):.1f}%)")
     print(f"[done] {elapsed:.1f}s total")
-    print(f"[done] Output: {cfg.output_video}")
+    if getattr(cfg, "save_tracking_video", True):
+        print(f"[done] Tracking video: {cfg.output_video}")
     if cfg.save_motion_debug:
-        print(f"[done] Debug:  {cfg.output_debug_path}")
-        print(f"[done] YOLO Input Debug:  {cfg.output_yolo_input_debug_path}")
+        print(f"[done] Motion debug:  {cfg.output_debug_path}")
+    if getattr(cfg, "save_yolo_input_debug", False):
+        print(f"[done] Pre-YOLO debug:  {cfg.output_yolo_input_debug_path}")
     if cfg.save_guide_video:
         print(f"[done] Guide Debug:  {cfg.output_guide_path}")
     if getattr(cfg, "save_motion_tracks_video", False):
         print(f"[done] Motion Tracks Debug:  {cfg.output_motion_tracks_debug_path}")
     if info_timing:
         _print_timing_summary(timing, elapsed, N, pass2_frames_rendered)
-
-def main():
-    p = argparse.ArgumentParser(
-        description="Tennis Ball Detection & Tracking Pipeline",
-        formatter_class=argparse.RawTextHelpFormatter)
-
-    g = p.add_argument_group("Paths")
-    g.add_argument("-i", "--input", default="input_videos/TMP.mp4", help="Input video (default: input_videos/TMP.mp4)")
-    g.add_argument("-o", "--output", default="output_videos/prof_test.mp4", help="Output video (default: output_videos/prof_test.mp4)")
-    g.add_argument("--model", default="models/ball.engine",
-                   help="Ball model path (.engine)")
-    g.add_argument("--tracking-json", default=None,
-                   help="Optional path for per-frame tracking/benchmark JSON")
-
-    g = p.add_argument_group("Detection")
-    g.add_argument("--conf", type=float, default=0.26, help="Confidence threshold 0.01-1.0 (default: 0.25)")
-    g.add_argument("--ball-backend", default="trt", choices=["trt"],
-                   help="Ball backend path (TensorRT only).")
-    g.add_argument("--device", default="auto", help="Device: auto, cpu, mps, 0, 1 (default: auto)")
-
-    g = p.add_argument_group("Court Perspective")
-    g.add_argument("--court-depth", default="none", choices=["top_far", "bot_far", "none"],
-                   help="Far end of court: top_far, bot_far, none (default: none)")
-    g.add_argument("--court-side", default="none", choices=["center_near", "left_far", "right_far", "none"],
-                   help="Horizontal perspective: center_near, left_far, right_far, none (default: none)")
-    g.add_argument("--y-scale", type=float, default=0.35, help="Depth scale strength 0-1 (default: 0.35)")
-    g.add_argument("--x-scale", type=float, default=0.15, help="Side scale strength 0-1 (default: 0.15)")
-
-    g = p.add_argument_group("Preprocessing")
-    g.add_argument("--no-preprocess", action="store_true", help="Disable motion preprocessing")
-    g.add_argument("--sat-boost", type=float, default=1.55, help="Saturation boost for motion blobs (default: 1.55)")
-    g.add_argument("--val-boost", type=float, default=1.04, help="Brightness boost for motion blobs (default: 1.04)")
-    g.add_argument("--hue-shift", type=float, default=0.18, help="Hue shift toward yellow/green 0-1 (default: 0.18)")
-    g.add_argument("--dim-static", type=float, default=0.88, help="Static region dimming 0-1 (default: 0.88)")
-    g.add_argument("--static-sat-scale", type=float, default=0.75, help="Static region desat 0-1 (default: 0.75)")
-    g.add_argument("--motion-thresh", type=float, default=11.0, help="Motion sensitivity 1-50 (default: 11)")
-    g.add_argument("--motion-v-min", type=float, default=40.0,
-                   help="Min V (brightness) to keep motion pixel (default: 40)")
-    g.add_argument("--motion-temporal-soft", dest="motion_temporal_soft",
-                   action="store_true", default=False,
-                   help="Use soft 3-frame temporal gate (default: off)")
-    g.add_argument("--motion-temporal-strict", dest="motion_temporal_soft",
-                   action="store_false",
-                   help="Use strict 3-frame AND gate")
-    g.add_argument("--motion-temporal-lo-frac", type=float, default=0.55,
-                   help="Soft temporal low threshold as fraction of motion-thresh (default: 0.55)")
-    g.add_argument("--motion-temporal-hi-mult", type=float, default=1.35,
-                   help="Soft temporal strong-threshold multiplier (default: 1.35)")
-    g.add_argument("--motion-flicker-suppress", dest="motion_flicker_suppress",
-                   action="store_true", default=False,
-                   help="Suppress one-frame flicker blobs in boost mask (default: off)")
-    g.add_argument("--no-motion-flicker-suppress", dest="motion_flicker_suppress",
-                   action="store_false",
-                   help="Disable flicker suppression")
-    g.add_argument("--motion-flicker-min-area", type=int, default=3,
-                   help="Always drop boost components smaller than this area (default: 3)")
-    g.add_argument("--motion-flicker-max-area", type=int, default=220,
-                   help="Suppress unsupported components up to this area (default: 220)")
-    g.add_argument("--motion-flicker-prev-dilate", type=int, default=9,
-                   help="History support dilation kernel for flicker suppression (default: 9)")
-    g.add_argument("--motion-flicker-keep-radius", type=float, default=0.11,
-                   help="Keep-zone radius as frame-diagonal fraction around predicted ball (default: 0.11)")
-    g.add_argument("--motion-raw-temporal-gate", dest="motion_raw_temporal_gate",
-                   action="store_true", default=True,
-                   help="Use C++ probe-style frame-to-frame movement gate for raw motion (default)")
-    g.add_argument("--no-motion-raw-temporal-gate", dest="motion_raw_temporal_gate",
-                   action="store_false",
-                   help="Disable raw temporal motion gate")
-    g.add_argument("--motion-raw-temporal-hi", type=float, default=18.0,
-                   help="High raw temporal threshold (default: 18)")
-    g.add_argument("--motion-raw-temporal-lo", type=float, default=8.0,
-                   help="Low next-frame support threshold (default: 8)")
-    g.add_argument("--motion-raw-temporal-very-hi", type=float, default=36.0,
-                   help="Very strong previous-frame threshold that can pass alone (default: 36)")
-    g.add_argument("--motion-raw-close-size", type=int, default=2,
-                   help="Raw motion close kernel size before boost rendering (default: 2)")
-    g.add_argument("--motion-raw-component-filter", dest="motion_raw_component_filter",
-                   action="store_true", default=False,
-                   help="Enable C++ probe compact-component cap in the main tracker (experimental)")
-    g.add_argument("--no-motion-raw-component-filter", dest="motion_raw_component_filter",
-                   action="store_false",
-                   help="Disable raw compact-component cap (default)")
-    g.add_argument("--motion-raw-max-area", type=int, default=260,
-                   help="Max raw component area if component filter is enabled (default: 260)")
-    g.add_argument("--motion-raw-max-dim", type=int, default=38,
-                   help="Max raw component width/height if component filter is enabled (default: 38)")
-    g.add_argument("--boost-max-blob", type=int, default=600, help="Max blob area for ball candidate (default: 600)")
-    g.add_argument("--boost-min-blob", type=int, default=0, help="Min blob area (default: 0)")
-
-    g = p.add_argument_group("Blob Filtering")
-    g.add_argument("--no-shape-filter", action="store_true", help="Disable erosion + aspect filtering")
-    g.add_argument("--blob-erode", type=int, default=3, help="Erosion kernel size (default: 3)")
-    g.add_argument("--blob-max-aspect", type=float, default=4.0, help="Max blob aspect ratio (default: 4.0)")
-
-    g = p.add_argument_group("Player & Court Detection")
-    g.add_argument("--player-model", default="models/player.engine",
-                   help="Player model path (.engine)")
-    g.add_argument("--court-model", default="models/courtdetection.engine",
-                   help="Court model path (.engine)")
-    g.add_argument("--player-interval", type=int, default=1, help="Player detect every N frames (default: 1)")
-    g.add_argument("--player-interval-stable", type=int, default=15,
-                   help="Player detect interval when stable (default: 10)")
-    g.add_argument("--num-players", type=int, default=4, help="Max players to track (default: 4)")
-    g.add_argument("--court-interval", type=int, default=400, help="Court detect every N frames (default: 400)")
-    g.add_argument("--court-conf", type=float, default=0.10, help="Court detection confidence (default: 0.10)")
-    g.add_argument("--print-court-raw", dest="print_court_raw", action="store_true")
-    g.add_argument("--no-print-court-raw", dest="print_court_raw", action="store_false")
-    g.add_argument("--court-remap-semantic-14", action="store_true", help="Remap 14-pt keypoints to semantic order")
-    g.add_argument("--court-points-only", action="store_true", help="Draw only keypoints, no lines")
-    g.add_argument("--court-indices", action="store_true", help="Show keypoint index labels")
-    g.add_argument("--player-conf", type=float, default=0.21, help="Player confidence (default: 0.21)")
-    g.add_argument("--player-iou", type=float, default=0.10, help="Player IoU threshold (default: 0.10)")
-    g.add_argument("--no-draw-players", action="store_true", help="Don't draw player boxes")
-    g.add_argument("--no-draw-court", action="store_true", help="Don't draw court lines")
-
-    g = p.add_argument_group("Acceleration")
-    g.add_argument("--no-tensorrt", action="store_true", help="Disable TensorRT")
-    g.add_argument("--no-nvenc", action="store_true", help="Disable NVENC encoding")
-    g.add_argument("--trt-async", dest="trt_async_execute", action="store_true",
-                   help="Use TensorRT async execution on CUDA streams")
-    g.add_argument("--no-trt-async", dest="trt_async_execute", action="store_false",
-                   help="Use synchronous TensorRT execute_v2 path")
-    g.add_argument("--trt-async-slots", type=int, default=3,
-                   help="Number of async output slots for ball TRT (default: 3)")
-    g.add_argument("--info", dest="info_timing", action="store_true",
-                   help="Print per-stage timing breakdown")
-    g.add_argument("--no-info", dest="info_timing", action="store_false",
-                   help="Disable per-stage timing breakdown (default)")
-
-    g = p.add_argument_group("Debug")
-    g.add_argument("--debug-video", dest="debug_video", action="store_true", default=False, help="Save debug video (default: off)")
-    g.add_argument("--no-debug-video", dest="debug_video", action="store_false", help="Disable debug video")
-    g.add_argument("--debug-path", default="output_videos/prof_test_motion_debug.mp4", help="Debug video path")
-    g.add_argument("--yolo-debug-path", default="output_videos/prof_test_yolo_input_debug.mp4", help="YOLO input debug path")
-    g.add_argument("--debug-show-raw-motion", dest="debug_show_raw_motion", action="store_true", default=False,
-                   help="Show noisy raw motion layer in debug video (default: off)")
-    g.add_argument("--debug-hide-raw-motion", dest="debug_show_raw_motion", action="store_false",
-                   help="Hide raw motion layer and show filtered boost only")
-    g.add_argument("--debug-probe-motion-style", dest="debug_probe_motion_style",
-                   action="store_true", default=True,
-                   help="Use C++ probe-style raw motion/component overlay in debug video (default)")
-    g.add_argument("--debug-legacy-motion-trails", dest="debug_probe_motion_style",
-                   action="store_false",
-                   help="Use the old smoothed raw-motion trail debug drawing")
-    g.add_argument("--guide-video", dest="guide_video", action="store_true", default=False, help="Save guide progression video (default: off)")
-    g.add_argument("--no-guide-video", dest="guide_video", action="store_false", help="Disable guide progression video")
-    g.add_argument("--guide-path", default="output_videos/prof_test_guide_debug.mp4", help="Guide progression video path")
-    g.add_argument("--guide-interp-gap", type=int, default=12, help="Max gap (frames) to interpolate guide path for debug video")
-    g.add_argument("--motion-tracks-video", dest="motion_tracks_video", action="store_true", default=False,
-                   help="Save motion-tracks debug video showing all build_motion_tracks polylines + per-frame ROI box")
-    g.add_argument("--motion-tracks-path", default="output_videos/prof_test_motion_tracks_debug.mp4",
-                   help="Motion-tracks debug video path")
-    g.add_argument("--print-selector-tracks", dest="print_selector_tracks", action="store_true",
-                   help="Print selector track table and chosen track")
-    g.add_argument("--no-print-selector-tracks", dest="print_selector_tracks", action="store_false",
-                   help="Disable selector track table printing")
-    g.add_argument("--selector-track-limit", type=int, default=0,
-                   help="How many selector tracks to print (0=all, default: 0)")
-
-    g = p.add_argument_group("Speed")
-    g.add_argument("--skip-frame-yolo", type=int, default=1,
-                   help="Run ball YOLO every Nth frame (1=every, 2=skip half, default: 1)")
-    g.add_argument("--skip-frame-require-roi", dest="skip_frame_require_roi",
-                   action="store_true", help="Only skip YOLO when ROI tracker has ball (default)")
-    g.add_argument("--no-skip-frame-require-roi", dest="skip_frame_require_roi",
-                   action="store_false", help="Skip YOLO unconditionally every Nth frame")
-    g.add_argument("--skip-preprocess-dim", dest="skip_preprocess_dim",
-                   action="store_true", help="Skip cosmetic dim_static when ball visible (default)")
-    g.add_argument("--no-skip-preprocess-dim", dest="skip_preprocess_dim",
-                   action="store_false", help="Always apply dim_static in preprocess")
-    g.add_argument("--aux-on-yolo-frames", dest="aux_detect_on_yolo_frames",
-                   action="store_true", help="Run player/court detection mainly on YOLO frames (default)")
-    g.add_argument("--no-aux-on-yolo-frames", dest="aux_detect_on_yolo_frames",
-                   action="store_false", help="Run player/court detection every frame call")
-    g.add_argument("--aux-force-interval", type=int, default=6,
-                   help="Force player/court detection at least every N frames (default: 6)")
-    g.add_argument("--reader-prefetch", type=int, default=8,
-                   help="Threaded frame-reader queue depth (default: 8)")
-    g.add_argument("--cache-pass2-frames", dest="cache_input_frames_pass2",
-                   action="store_true", help="Cache decoded input frames in RAM to avoid pass2 decode (default)")
-    g.add_argument("--no-cache-pass2-frames", dest="cache_input_frames_pass2",
-                   action="store_false", help="Disable RAM frame cache and always decode in pass2")
-    g.add_argument("--pass2-cache-max-mb", type=int, default=768,
-                   help="Disable RAM frame cache if estimated usage exceeds this MB (default: 768)")
-    g.set_defaults(
-        skip_frame_require_roi=True,
-        skip_preprocess_dim=True,
-        aux_detect_on_yolo_frames=True,
-        cache_input_frames_pass2=True,
-    )
-
-    g = p.add_argument_group("ROI Motion")
-    g.add_argument("--roi-motion", dest="roi_motion_enabled", action="store_true",
-                   help="Enable ROI-based motion detection")
-    g.add_argument("--no-roi-motion", dest="roi_motion_enabled", action="store_false",
-                   help="Disable ROI-based motion detection (use full-frame)")
-    g.add_argument("--roi-visible-radius", type=float, default=0.1,
-                   help="ROI radius when ball visible (frame diag frac, default: 0.06)")
-    g.add_argument("--roi-lost-radius", type=float, default=0.2,
-                   help="ROI radius when ball lost (frame diag frac, default: 0.14)")
-    g.add_argument("--roi-fullframe-interval", type=int, default=0,
-                   help="Full-frame CC every N frames (0=never, default: 0)")
-    g.set_defaults(roi_motion_enabled=True)
-
-    g = p.add_argument_group("Trail")
-    g.add_argument("--trail-hard-switch-x-frac", type=float, default=0.30,
-                   help="Break trail segment if per-frame x jump exceeds this * court x span (4->7)")
-    g.add_argument("--trail-hard-switch-y-frac", type=float, default=0.30,
-                   help="Break trail segment if per-frame y jump exceeds this * court y span (0->4)")
-    g.add_argument("--ball-marker-scale", type=float, default=0.22,
-                   help="Marker radius scale from ball bbox size (default: 0.22)")
-    g.add_argument("--ball-marker-min-r", type=int, default=3,
-                   help="Minimum marker radius (default: 3)")
-    g.add_argument("--ball-marker-max-r", type=int, default=12,
-                   help="Maximum marker radius (default: 12)")
-
-    p.set_defaults(print_court_raw=False)
-    p.set_defaults(print_selector_tracks=True)
-    p.set_defaults(trt_async_execute=True)
-    p.set_defaults(info_timing=False)
-    args = p.parse_args()
-
-    cfg = Config(
-        input_video=args.input,
-        output_video=args.output,
-        model_path=args.model,
-        tracking_json=args.tracking_json,
-        conf=args.conf,
-        ball_backend=args.ball_backend,
-        device=args.device,
-        court_depth=None if args.court_depth == "none" else args.court_depth,
-        court_side=None if args.court_side == "none" else args.court_side,
-        y_scale_strength=args.y_scale,
-        x_scale_strength=args.x_scale,
-        enable_preprocess=not args.no_preprocess,
-        pre_sat_boost=args.sat_boost,
-        pre_val_boost=args.val_boost,
-        pre_hue_shift=args.hue_shift,
-        dim_static=args.dim_static,
-        static_sat_scale=args.static_sat_scale,
-        motion_thresh=args.motion_thresh,
-        motion_v_min=args.motion_v_min,
-        motion_temporal_soft=args.motion_temporal_soft,
-        motion_temporal_lo_frac=args.motion_temporal_lo_frac,
-        motion_temporal_hi_mult=args.motion_temporal_hi_mult,
-        motion_flicker_suppress=args.motion_flicker_suppress,
-        motion_flicker_min_area=args.motion_flicker_min_area,
-        motion_flicker_max_area=args.motion_flicker_max_area,
-        motion_flicker_prev_dilate=args.motion_flicker_prev_dilate,
-        motion_flicker_keep_radius_frac=args.motion_flicker_keep_radius,
-        motion_raw_temporal_gate=args.motion_raw_temporal_gate,
-        motion_raw_temporal_hi=args.motion_raw_temporal_hi,
-        motion_raw_temporal_lo=args.motion_raw_temporal_lo,
-        motion_raw_temporal_very_hi=args.motion_raw_temporal_very_hi,
-        motion_raw_close_size=max(0, int(args.motion_raw_close_size)),
-        motion_raw_component_filter=args.motion_raw_component_filter,
-        motion_raw_component_max_area=max(1, int(args.motion_raw_max_area)),
-        motion_raw_component_max_dim=max(1, int(args.motion_raw_max_dim)),
-        boost_max_blob_area=args.boost_max_blob,
-        boost_min_blob_area=args.boost_min_blob,
-        blob_shape_filter=not args.no_shape_filter,
-        blob_erode_size=args.blob_erode,
-        blob_max_aspect=args.blob_max_aspect,
-        player_model_path=args.player_model,
-        court_model_path=args.court_model,
-        player_detect_interval=args.player_interval,
-        player_detect_interval_stable=args.player_interval_stable,
-        num_players=max(1, int(args.num_players)),
-        court_detect_interval=args.court_interval,
-        court_conf=args.court_conf,
-        print_court_raw=args.print_court_raw,
-        court_remap_semantic_14=args.court_remap_semantic_14,
-        court_points_only=args.court_points_only,
-        court_draw_indices=args.court_indices,
-        player_conf=args.player_conf,
-        player_iou=args.player_iou,
-        draw_players=not args.no_draw_players,
-        draw_court=not args.no_draw_court,
-        use_tensorrt=not args.no_tensorrt,
-        use_nvenc=not args.no_nvenc,
-        trt_async_execute=args.trt_async_execute,
-        trt_async_slots=max(1, int(args.trt_async_slots)),
-        info_timing=args.info_timing,
-        skip_frame_yolo=max(1, int(args.skip_frame_yolo)),
-        skip_frame_require_roi=args.skip_frame_require_roi,
-        skip_preprocess_dim=args.skip_preprocess_dim,
-        aux_detect_on_yolo_frames=args.aux_detect_on_yolo_frames,
-        aux_force_interval=max(1, int(args.aux_force_interval)),
-        frame_reader_prefetch=max(2, int(args.reader_prefetch)),
-        roi_motion_enabled=args.roi_motion_enabled,
-        roi_visible_radius_frac=args.roi_visible_radius,
-        roi_lost_radius_frac=args.roi_lost_radius,
-        roi_fullframe_interval=args.roi_fullframe_interval,
-        cache_input_frames_pass2=args.cache_input_frames_pass2,
-        pass2_cache_max_mb=max(64, int(args.pass2_cache_max_mb)),
-        save_motion_debug=args.debug_video,
-        output_debug_path=args.debug_path,
-        output_yolo_input_debug_path=args.yolo_debug_path,
-        debug_show_raw_motion=args.debug_show_raw_motion,
-        debug_probe_motion_style=args.debug_probe_motion_style,
-        save_guide_video=args.guide_video,
-        output_guide_path=args.guide_path,
-        guide_interp_max_gap=max(1, int(args.guide_interp_gap)),
-        save_motion_tracks_video=args.motion_tracks_video,
-        output_motion_tracks_debug_path=args.motion_tracks_path,
-        print_selector_tracks=args.print_selector_tracks,
-        selector_track_limit=max(0, int(args.selector_track_limit)),
-        trail_hard_switch_x_frac=args.trail_hard_switch_x_frac,
-        trail_hard_switch_y_frac=args.trail_hard_switch_y_frac,
-        ball_marker_box_scale=args.ball_marker_scale,
-        ball_marker_min_radius=args.ball_marker_min_r,
-        ball_marker_max_radius=args.ball_marker_max_r,
-    )
-    run(cfg)

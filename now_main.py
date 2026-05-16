@@ -1,4 +1,4 @@
-from now_main_pkg.app import main
+from tennis_tracker.cli import main
 
 if __name__ == "__main__":
     main()

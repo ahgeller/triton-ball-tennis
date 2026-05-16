@@ -1,24 +1,16 @@
-# Imports
 import math
 import json
 import os
 import numpy as np
 import cv2
-from types import SimpleNamespace
 from typing import Optional, List, Tuple, Dict, Any
-from dataclasses import dataclass, field
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
-    from filterpy.kalman import KalmanFilter
 
 from .config import SelectorConfig
 from .models import Detection, MotionTrack, Track, FrameResult
-from .utils import _cfg_diag, _fps_norm_pxpf, _clamp01, _ensure_mask_u8, _mask_has_motion_near, build_court_homography, court_px_per_meter
-from .physics import _kinematic_motion_frac, _xy_dist, _predict_projectile, _predict_projectile_vel, BallKalmanFilter
-from .tracking import build_detections, build_motion_tracks, build_tracks, merge_tracks, _build_track_guide, _guide_static_speed_thresh, _det_hard_continuity_ok, _filter_guide_observations, _trim_leading_static_guide_obs, _prune_static_guide_runs, _merge_high_movement_tracks
-from .scoring import score_tracks, select_best_track, _track_movement_score, _is_stationary_track, _annotate_track_periods, _stitch_track_chain, _select_timeline_chain
+from .utils import _cfg_diag, _fps_norm_pxpf, _ensure_mask_u8, _mask_has_motion_near, build_court_homography
+from .physics import _xy_dist, _predict_projectile, _predict_projectile_vel
+from .tracking import build_detections, build_motion_tracks, build_tracks, _build_track_guide, _guide_static_speed_thresh, _merge_high_movement_tracks
+from .scoring import score_tracks, select_best_track, _is_stationary_track, _annotate_track_periods, _stitch_track_chain, _select_timeline_chain
 
 
 def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
@@ -40,11 +32,11 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
         min/max_blob_area: reject blobs outside this range
         ref_ball_area: last known ball area to keep search local around ball-size motion
         player_boxes: optional exact player bboxes for anti-leg/blob penalties
-        prev_motion_pos: (cx, cy) of the PREVIOUS motion blob — for trajectory continuity
+        prev_motion_pos: (cx, cy) of the PREVIOUS motion blob - for trajectory continuity
     
     Returns (cx, cy, area, is_latched) or None
     """
-    # ── FAST PATH: Latch onto a continuous motion track ──
+    # -- FAST PATH: Latch onto a continuous motion track --
     # Track membership is strong evidence, but require the boost_mask to still
     # support the latched point (small motion blob within ~6 px). Without this
     # check, drifting tracks or stale points get accepted even when no motion
@@ -157,19 +149,19 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
         blob_cx = M["m10"] / M["m00"] + x1
         blob_cy = M["m01"] / M["m00"] + y1
         
-        # ── Shape filter: tennis ball should be roughly circular ──
+        # -- Shape filter: tennis ball should be roughly circular --
         # Bounding rect aspect ratio
         bx, by, bw, bh = cv2.boundingRect(c)
         if bw > 0 and bh > 0:
             aspect = max(bw, bh) / max(min(bw, bh), 1)
             if aspect > 3.0:
-                continue  # Too elongated — probably a shadow or edge
+                continue  # Too elongated - probably a shadow or edge
             # Circularity: area / bounding_rect_area
             fill_ratio = area / max(bw * bh, 1)
             if fill_ratio < 0.25:
-                continue  # Too hollow / irregular — not a ball
+                continue  # Too hollow / irregular - not a ball
                 
-        # ── Anchor to bottom ──
+        # -- Anchor to bottom --
         # To align with YOLO bounding boxes (which anchor the physics trail
         # at the bottom-center of the box), push the raw motion blob's Y
         # coordinate to the bottom of its bounding box.
@@ -199,11 +191,11 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
                 elif cos_sim < 0.3:
                     vel_penalty = 50.0
             elif blob_mag <= 2.0 and vel_mag > 5.0:
-                # Ball is moving fast but blob hasn't moved from last det —
+                # Ball is moving fast but blob has not moved from last det;
                 # this is static noise, not the ball
                 continue
-        
-        # ── Static blob rejection ──
+
+        # -- Static blob rejection --
         # If the ball is supposed to be moving (carry/predict), reject blobs
         # that are suspiciously close to a FIXED position (didn't move between
         # the last detection and the predicted position).
@@ -216,7 +208,7 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
                 # Blob should be roughly in the direction of travel, not stuck at origin
                 blob_progress = dist_from_det / max(pred_travel, 1.0)
                 if blob_progress < 0.15:
-                    # Blob hasn't moved at all relative to the predicted travel — static
+                    # Blob hasn't moved at all relative to the predicted travel - static
                     continue
         
         # Size constraint: hard reject blobs that are drastically different from the known ball size
@@ -246,7 +238,7 @@ def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
             if pd_player < near_player_band:
                 player_penalty += (near_player_band - max(0.0, pd_player)) * 5.0
 
-        # ── Continuity preference from previous motion blob ──
+        # -- Continuity preference from previous motion blob --
         # If we had a motion blob last frame, prefer blobs near it (penalty, not reject).
         # Don't hard-reject because there can be multiple valid ball trajectories.
         continuity_penalty = 0.0
@@ -493,7 +485,7 @@ def select_ball_in_play(
     cfg = SelectorConfig(fps=fps, width=width, height=height).auto_scale()
     total_frames = len(detections_by_frame)
 
-    # ── Compute court reference length from sidelines ──
+    # -- Compute court reference length from sidelines --
     court_ref_length = None
     if court_keypoints is not None and len(court_keypoints) >= 16:
         def _kp_xy(kps, idx):
@@ -1407,7 +1399,7 @@ def select_ball_in_play(
         18,
     )
 
-    # ── Frozen guide state for when guide is lost ──
+    # -- Frozen guide state for when guide is lost --
     frozen_guide_pos: Optional[Tuple[float, float]] = None
     frozen_guide_vel: Optional[Tuple[float, float]] = None
     frozen_guide_frame: int = -1
@@ -1415,12 +1407,12 @@ def select_ball_in_play(
     hold_guide_start_frame: int = -1
     
     # Tracking state
-    last_pos = None          # (cx, cy) â€” last known position (det or motion)
-    last_det_pos = None      # (cx, cy) â€” last YOLO detection position specifically
+    last_pos = None          # (cx, cy)    - last known position (det or motion)
+    last_det_pos = None      # (cx, cy)    - last YOLO detection position specifically
     last_det_area = None     # last YOLO detection bbox area
     last_vel = (0.0, 0.0)   # estimated velocity from YOLO detections
     last_motion_vel = None   # velocity estimate while using motion fallback
-    last_motion_pos = None   # (cx, cy) — last motion blob position for continuity
+    last_motion_pos = None   # (cx, cy) - last motion blob position for continuity
     frames_since_det = 0     # frames since last YOLO detection
     base_gravity = float(cfg.gravity_px_per_frame2)
     adaptive_gravity = float(cfg.gravity_px_per_frame2)
@@ -1484,7 +1476,7 @@ def select_ball_in_play(
             prev_guide_pos_for_freeze = frozen_guide_pos
             prev_guide_frame_for_freeze = frozen_guide_frame
             gx, gy, guide_exact = guide
-            # Guide is valid — update frozen state for future loss recovery
+            # Guide is valid - update frozen state for future loss recovery
             frozen_guide_pos = (gx, gy)
             frozen_guide_frame = t
             frozen_guide_active = False
@@ -1507,7 +1499,7 @@ def select_ball_in_play(
             guide_lock_radius = guide_base_radius
             hold_guide_start_frame = -1
         elif frozen_guide_pos is not None:
-            # Guide is lost — freeze at the last guide endpoint.
+            # Guide is lost - freeze at the last guide endpoint.
             # Keep the center fixed; only expand the radius over time.
             frozen_guide_active = True
             dt_frozen = t - frozen_guide_frame
@@ -2106,7 +2098,7 @@ def select_ball_in_play(
             rej = frame_audit["rej"]
             rej[reason] = int(rej.get(reason, 0)) + 1
         
-        # â”€â”€ Try YOLO detection first â”€â”€
+        # Try YOLO detection first.
         best_det = None
         best_det_stage = None
         best_score = float('inf')
@@ -2251,13 +2243,13 @@ def select_ball_in_play(
                     continue
                 d = math.sqrt((det.cx - gx) ** 2 + (det.cy - gy) ** 2)
                 motion_local_snap = _det_has_local_motion(det)
-                # Static lock cluster — 6+ non-motion repeats at same spot.
+                # Static lock cluster - 6+ non-motion repeats at same spot.
                 if _reject_static_lock_cluster(
                         det, None, motion_local_snap, False, False):
                     stats['rej_static_lock_cluster'] += 1
                     _audit_rej("static_lock_cluster")
                     continue
-                # Anti-static: no motion + far from prediction → parked ball.
+                # Anti-static: no motion + far from prediction -> parked ball.
                 # Exempt detections near players: balls change direction at hits.
                 near_player_dist_snap = _closest_player_distance_local(det.cx, det.cy, frame_player_boxes_20)
                 near_player_ok_snap = near_player_dist_snap is not None and near_player_dist_snap < 0.06 * diag
@@ -2387,7 +2379,7 @@ def select_ball_in_play(
                 best_score = -1.5
         
         if best_det is None:
-            # Fast-accept: high-confidence detection on guide path — skip anti-static
+            # Fast-accept: high-confidence detection on guide path - skip anti-static
             # and continuity checks. This catches fast balls off rackets where velocity
             # prediction is stale but YOLO is confident and guide is correct.
             if guide is not None and frame_dets:
@@ -2438,13 +2430,13 @@ def select_ball_in_play(
                     continue
                 gdist_local = _xy_dist(det.cx, det.cy, gx, gy) if guide is not None else None
                 motion_local = _det_has_local_motion(det)
-                # Static lock cluster — 6+ non-motion repeats at same spot.
+                # Static lock cluster - 6+ non-motion repeats at same spot.
                 if _reject_static_lock_cluster(
                         det, None, motion_local, False, False):
                     stats['rej_static_lock_cluster'] += 1
                     _audit_rej("static_lock_cluster")
                     continue
-                # Anti-static: no motion + far from prediction → parked ball.
+                # Anti-static: no motion + far from prediction -> parked ball.
                 # Exempt detections near players: balls change direction at hits.
                 near_player_dist = _closest_player_distance_local(det.cx, det.cy, frame_player_boxes_20)
                 near_player_ok = near_player_dist is not None and near_player_dist < 0.06 * diag
@@ -2476,7 +2468,7 @@ def select_ball_in_play(
                         stats['rej_static_snap'] += 1
                         _audit_rej("anti_static_far")
                         continue
-                # Guide gate — simple distance check.
+                # Guide gate - simple distance check.
                 if guide is not None and gdist_local is not None:
                     gate = min(
                         cfg.guide_gate_soft_frac * diag,
@@ -2487,7 +2479,7 @@ def select_ball_in_play(
                     if gdist_local > gate:
                         _audit_rej("guide_gate")
                         continue
-                # Court context — outside court + far from players.
+                # Court context - outside court + far from players.
                 if court_polygon is not None:
                     court_dist_v = -cv2.pointPolygonTest(
                         court_polygon, (float(det.cx), float(det.cy)), True)
@@ -2615,7 +2607,7 @@ def select_ball_in_play(
             motion_soft_window_ok or
             (guide is not None and _guide_circle_radius() > 0.0)
         ):
-            # â”€â”€ No YOLO det â€” try motion blob tracking â”€â”€
+            # No YOLO detection; try motion blob tracking.
             frames_since_det += 1
             
             # Predict from the latest active state (det/motion/carry) to avoid stale carry drift.
@@ -3137,7 +3129,7 @@ def select_ball_in_play(
                     stats['lost'] = max(0, stats['lost'] - 1)
                 last_pos = (gx, gy)
                 last_motion_vel = None
-                # Guide is NOT a real detection — count it toward the soft carry budget
+                # Guide is NOT a real detection - count it toward the soft carry budget
                 soft_carry_count += 1
                 if static_lock_streak > 0:
                     static_lock_streak = max(0, static_lock_streak - 1)
@@ -3189,7 +3181,7 @@ def select_ball_in_play(
         d23 = (t2 - t3)
         denom = d12 * d13 * (-d23)
         if abs(denom) < 1e-9:
-            # Degenerate spacing — fall back to linear endpoints.
+            # Degenerate spacing - fall back to linear endpoints.
             return y1 + (y3 - y1) * ((t_val - t1) / max(t3 - t1, 1e-9))
         L1 = ((t_val - t2) * (t_val - t3)) / (d12 * d13)
         L2 = ((t_val - t1) * (t_val - t3)) / ((-d12) * d23)
@@ -3264,7 +3256,7 @@ def select_ball_in_play(
               f"guide={stats['guide']} carry={stats['carry']} "
               f"lost={stats['lost']} | "
               f"{filled}/{total_frames} filled")
-        print(f"[selector] Physics: gravity(base={base_gravity:.3f}, adapt={adaptive_gravity:.3f}) px/f², "
+        print(f"[selector] Physics: gravity(base={base_gravity:.3f}, adapt={adaptive_gravity:.3f}) px/f , "
               f"drag={cfg.gravity_drag_factor}, enabled={cfg.gravity_enabled}, "
               f"bounces={stats['bounce']}")
         if stats['rej_reacquire_dist'] or stats['rej_reacquire_size']:

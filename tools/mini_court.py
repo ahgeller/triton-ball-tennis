@@ -1,6 +1,6 @@
 """Reusable top-right mini-court overlay used by ball-tracking tools.
 
-Standalone — no dependency on the archived 3D mapping pipeline. Renders the
+Standalone - no dependency on the archived 3D mapping pipeline. Renders the
 doubles court outline + singles tramlines + net + service boxes inside a
 fixed panel in the upper-right corner of a frame, and provides a helper for
 mapping court meters <-> panel pixels (so a labeling tool can convert mouse
@@ -10,7 +10,6 @@ clicks on the mini-court back to court (X, Y) in meters).
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import List, Optional, Tuple
 
 

@@ -7,8 +7,8 @@ velocity changed sharply (likely hit/bounce). Falls back to evenly-spaced
 samples if not enough valuable frames exist.
 
 Output:
-  <out_dir>/frame_NNNNNN.png    — extracted frames (overlay-free, original video)
-  <out_dir>/<clip>_starter.json — annotation JSON pre-filled with pipeline (x,y).
+  <out_dir>/frame_NNNNNN.png    - extracted frames (overlay-free, original video)
+  <out_dir>/<clip>_starter.json - annotation JSON pre-filled with pipeline (x,y).
                                   User opens each PNG, checks the (x,y), and
                                   edits if wrong or marks visible=false.
 
@@ -65,7 +65,7 @@ def _score_frame(frame: Dict[str, Any], prev: Optional[Dict[str, Any]],
                 score += 6.0
                 break
 
-    # Sharp local velocity change → likely hit/bounce
+    # Sharp local velocity change -> likely hit/bounce
     if prev and next_ and _is_present(prev) and _is_present(next_):
         vx_in = float(frame["x"]) - float(prev["x"])
         vy_in = float(frame["y"]) - float(prev["y"])

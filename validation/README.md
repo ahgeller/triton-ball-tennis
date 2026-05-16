@@ -4,7 +4,7 @@ This folder holds hand-labeled clips and reports for measuring tracking quality 
 
 ## 0. One-shot loop (recommended)
 
-After labels exist for a clip, run the full pipeline → validate → report in a single command:
+After labels exist for a clip, run the full pipeline -> validate -> report in a single command:
 
 ```powershell
 python tools/run_validation.py --clip pomona_baseline
@@ -34,7 +34,7 @@ Returns a table of recall, error stats, fill ratio, large jumps, FP count, accur
 
 Two paths:
 
-**A. Smart pre-fill (recommended).** Run the pipeline once to produce a `tracking.json`, then use `extract_label_frames.py` to pick 50–100 high-value frames (non-det sources, source transitions, sharp velocity changes) and pre-fill the annotation JSON with the pipeline's (x, y) so you only correct them:
+**A. Smart pre-fill (recommended).** Run the pipeline once to produce a `tracking.json`, then use `extract_label_frames.py` to pick 50-100 high-value frames (non-det sources, source transitions, sharp velocity changes) and pre-fill the annotation JSON with the pipeline's (x, y) so you only correct them:
 
 ```powershell
 python tools/extract_label_frames.py `
@@ -56,11 +56,11 @@ python tools/label_assist.py `
   --out validation/annotations/pomona_baseline.json
 ```
 
-Keys: left-click = set ball center, `v` = toggle visible, `c` = confirm pre-fill as-is, `u` = undo, `n`/`SPACE` = next, `p` = prev, `s` = save, `q`/`ESC` = save + quit. The yellow crosshair is the pipeline's pre-fill; the red crosshair is your label. Should take ~10–15 minutes for 80 frames.
+Keys: left-click = set ball center, `v` = toggle visible, `c` = confirm pre-fill as-is, `u` = undo, `n`/`SPACE` = next, `p` = prev, `s` = save, `q`/`ESC` = save + quit. The yellow crosshair is the pipeline's pre-fill; the red crosshair is your label. Should take ~10-15 minutes for 80 frames.
 
 When you exit, `validation/annotations/pomona_baseline.json` is written in the canonical schema (no review fields). After that, `tools/run_validation.py --clip pomona_baseline --skip-pipeline` produces your first real report.
 
-**B. From scratch.** Copy `validation/annotations/pomona_baseline.template.json` to `validation/annotations/<clip>.json` and fill in the `ball` array (50–100 frames concentrated around failure moments — see §2 below for what to target).
+**B. From scratch.** Copy `validation/annotations/pomona_baseline.template.json` to `validation/annotations/<clip>.json` and fill in the `ball` array (50-100 frames concentrated around failure moments - see  2 below for what to target).
 
 The manual steps below are kept as reference for one-off invocations.
 

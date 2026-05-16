@@ -1,41 +1,7 @@
-# Imports
-import argparse
-import copy
-import glob
-import json
-import math
-import os
-import queue
-import shutil
-import subprocess
-import sys
-import threading
-import time
-from collections import OrderedDict, namedtuple
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
-import scipy.interpolate
-from ball_in_play_selector import select_ball_in_play, FrameResult, _predict_projectile, SelectorConfig
-HAS_NMS = False
-_nms = None
-try:
-    import torch
-    import torch.nn.functional as F
-    HAS_TORCH = True
-except Exception:
-    torch = None
-    F = None
-    HAS_TORCH = False
-
-try:
-    from boxmot import ByteTrack
-except ImportError:
-    print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-    ByteTrack = None
-
+from ball_in_play_selector import FrameResult
 from .config import Config
 
 # Trail rendering constants

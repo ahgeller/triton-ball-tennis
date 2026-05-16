@@ -1,43 +1,8 @@
-# Imports
-import argparse
-import copy
-import glob
-import json
 import math
-import os
-import queue
-import shutil
-import subprocess
-import sys
-import threading
-import time
-from collections import OrderedDict, namedtuple
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import cv2
+from typing import List, Tuple
 import numpy as np
-import scipy.interpolate
-from ball_in_play_selector import select_ball_in_play, FrameResult, _predict_projectile, SelectorConfig
-HAS_NMS = False
-_nms = None
-try:
-    import torch
-    import torch.nn.functional as F
-    HAS_TORCH = True
-except Exception:
-    torch = None
-    F = None
-    HAS_TORCH = False
-
-try:
-    from boxmot import ByteTrack
-except ImportError:
-    print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-    ByteTrack = None
-
+from ball_in_play_selector import _predict_projectile, SelectorConfig
 from .config import Config
-from .motion import _court_kpt_xy
 
 
 class ROITrack:
@@ -252,7 +217,7 @@ class ROIMotionTracker:
                 # Expand slightly if confidence is low, but not massively
                 radius_visual = base * (1.0 + ((1.0 - t.last_conf) * 0.25))
             else:
-                # When lost, prefer the diag-frac base — the ball's own bbox is tiny and
+                # When lost, prefer the diag-frac base - the ball's own bbox is tiny and
                 # would pin the search region to the ball's size, defeating the purpose of
                 # widening on loss. Take the larger of (config base) and (last_diag_box * 4)
                 # so the lost search region is genuinely wider than the ball.

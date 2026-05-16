@@ -1,43 +1,21 @@
-# Imports
-import argparse
-import copy
-import glob
-import json
-import math
-import os
+from __future__ import annotations
+
 import queue
-import shutil
 import subprocess
-import sys
 import threading
-import time
-from collections import OrderedDict, namedtuple
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional
 import cv2
 import numpy as np
-import scipy.interpolate
-from ball_in_play_selector import select_ball_in_play, FrameResult, _predict_projectile, SelectorConfig
-HAS_NMS = False
-_nms = None
 try:
     import torch
-    import torch.nn.functional as F
-    HAS_TORCH = True
 except Exception:
     torch = None
-    F = None
-    HAS_TORCH = False
 
-try:
-    from boxmot import ByteTrack
-except ImportError:
-    print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-    ByteTrack = None
-
-from .config import Config
 from .utils import find_ffmpeg, ffmpeg_has_encoder
+
+
+def _torch_no_grad():
+    return torch.no_grad() if torch is not None else (lambda fn: fn)
 
 
 class _PinnedFrameUploader:
@@ -50,7 +28,7 @@ class _PinnedFrameUploader:
         self._pinned_u8 = torch.empty((self.h, self.w, 3), dtype=torch.uint8, pin_memory=True)
         self._pinned_np = self._pinned_u8.numpy()
 
-    @torch.no_grad()
+    @_torch_no_grad()
     def upload_chw_f32(self, frame_bgr: np.ndarray):
         if frame_bgr.shape[0] != self.h or frame_bgr.shape[1] != self.w or frame_bgr.shape[2] != 3:
             return torch.from_numpy(frame_bgr).to(
@@ -60,7 +38,7 @@ class _PinnedFrameUploader:
         t = self._pinned_u8.to(device=self.device, dtype=torch.float32, non_blocking=True)
         return t.permute(2, 0, 1).contiguous() / 255.0
 
-@torch.no_grad()
+@_torch_no_grad()
 def _cuda_frame_to_chw_f32(frame_bgr: np.ndarray, device, uploader: Optional[_PinnedFrameUploader] = None):
     """Upload one BGR frame once as CHW float32 in [0,1] on CUDA."""
     if uploader is not None:
@@ -69,7 +47,7 @@ def _cuda_frame_to_chw_f32(frame_bgr: np.ndarray, device, uploader: Optional[_Pi
         device=device, dtype=torch.float32
     ).permute(2, 0, 1).contiguous() / 255.0
 
-@torch.no_grad()
+@_torch_no_grad()
 def _cuda_vs_tensors(frame_bgr: Optional[np.ndarray], device, gpu_tensor=None):
     """Extract V and S channels as CUDA tensors (no grad tracking).
     If gpu_tensor is provided, reuse it instead of uploading frame again."""
@@ -258,4 +236,3 @@ class ThreadedFrameReader:
     def release(self):
         self._done = True
         self._cap.release()
-

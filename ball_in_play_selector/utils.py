@@ -1,17 +1,7 @@
-# Imports
 import math
-import json
-import os
 import numpy as np
 import cv2
-from types import SimpleNamespace
-from typing import Optional, List, Tuple, Dict, Any
-from dataclasses import dataclass, field
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
-    from filterpy.kalman import KalmanFilter
+from typing import Optional, Tuple
 
 from .config import SelectorConfig
 

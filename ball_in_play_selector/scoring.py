@@ -1,22 +1,11 @@
-# Imports
 import math
-import json
-import os
-import numpy as np
 import cv2
-from types import SimpleNamespace
-from typing import Optional, List, Tuple, Dict, Any
-from dataclasses import dataclass, field
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
-    from filterpy.kalman import KalmanFilter
+from typing import Optional, List, Tuple, Dict
 
 from .config import SelectorConfig
-from .models import Detection, MotionTrack, Track, FrameResult
-from .utils import _cfg_diag, _fps_norm_pxpf, _clamp01, _ensure_mask_u8, _mask_has_motion_near, build_court_homography, court_px_per_meter
-from .physics import _kinematic_motion_frac, _xy_dist, _predict_projectile, _predict_projectile_vel, BallKalmanFilter
+from .models import Detection, Track
+from .utils import _cfg_diag, _fps_norm_pxpf
+from .physics import _kinematic_motion_frac, _xy_dist
 
 
 def _track_kinematics(trk: Track) -> Tuple[List[Tuple[float, float]], List[float], float, float]:
@@ -302,7 +291,7 @@ def _select_timeline_chain(
             if piid != pjid:
                 trans -= float(cfg.timeline_period_switch_penalty)
 
-            # ── Velocity-continuity penalty ──
+            # -- Velocity-continuity penalty --
             # If the outgoing velocity of track i and incoming velocity of track j
             # are directionally inconsistent, penalize the transition. This catches
             # cases where the DP picks a path through an unrelated static or
@@ -322,7 +311,7 @@ def _select_timeline_chain(
                 if speed_ratio > 3.5 or speed_ratio < 0.15:
                     trans -= float(cfg.timeline_jump_penalty) * 0.5
 
-            # ── Tiny-bridge penalty ──
+            # -- Tiny-bridge penalty --
             # A track with very few observations spanning a tiny window that creates
             # a large dead zone after it (the next viable track is far away) is likely
             # noise. Apply a small penalty proportional to how tiny the bridge is
@@ -457,7 +446,7 @@ def _motion_consistency(track: Track) -> float:
     if not angle_changes:
         return 0.5
 
-    # Penalize frequent sharp direction changes (>90Â°)
+    # Penalize frequent sharp direction changes (>90 deg)
     # Tennis ball has smooth arcs with direction changes at bounces/hits
     # But random jitter has constant tiny direction changes
     sharp = sum(1 for a in angle_changes if a > math.pi * 0.6)
@@ -608,8 +597,10 @@ def score_tracks(
     return tracks
 
 def _passes_sanity(trk: Track, cfg: SelectorConfig) -> bool:
-    """Reject tracks that are clearly junk. Very permissive â€” 
-    the scoring should do the heavy lifting."""
+    """Reject tracks that are clearly junk.
+
+    The scoring should do the heavy lifting.
+    """
     if trk.num_obs < 3:
         return False
     sb = trk.score_breakdown if trk.score_breakdown else {}

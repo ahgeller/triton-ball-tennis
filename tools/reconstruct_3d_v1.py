@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from now_main_pkg.trajectory3d_v1 import reconstruct_from_files, render_debug_video
+from tools.trajectory3d_v1 import reconstruct_from_files, render_debug_video
 
 
 def main() -> int:

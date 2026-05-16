@@ -1,17 +1,6 @@
-# Imports
 import math
-import json
-import os
-import numpy as np
-import cv2
-from types import SimpleNamespace
-from typing import Optional, List, Tuple, Dict, Any
-from dataclasses import dataclass, field
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
-    from filterpy.kalman import KalmanFilter
+from typing import Optional
+from dataclasses import dataclass
 
 
 
@@ -24,7 +13,7 @@ class SelectorConfig:
     height: int = 1080
     diag: float = 0.0
 
-    # â”€â”€ Association â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Association
     max_gap_frames: int = 0          # auto-set
     base_gate_px: float = 0.0       # auto-set
     gate_growth_px: float = 0.0     # auto-set
@@ -48,7 +37,7 @@ class SelectorConfig:
     trail_stitch_pred_resid_frac: float = 0.08
     trail_jump_break_frac: float = 0.06
     trail_jump_break_growth_frac: float = 0.020
-    # â”€â”€ Scoring weights â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Scoring weights
     w_len: float = 1.0          # reward per observation (linear)
     w_gaps: float = 0.5         # penalty per gap segment
     w_miss: float = 0.1         # penalty per missing frame within span
@@ -97,7 +86,7 @@ class SelectorConfig:
     min_track_obs_frac: float = 0.04
     min_track_obs_abs: int = 20
 
-    # â”€â”€ Hard stationary-track exclusion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Hard stationary-track exclusion
     stationary_exclude_min_obs: int = 8 #changed from 8
     stationary_exclude_max_avg_speed: float = 1.6   # px/frame
     stationary_exclude_max_peak_speed: float = 3.6  # px/frame
@@ -105,22 +94,22 @@ class SelectorConfig:
     stationary_exclude_max_motion_frac: float = 0.18
     blocked_det_radius_px: float = 18.0
 
-    # â”€â”€ Context gating (camera-angle robust) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Context gating (camera-angle robust)
     far_player_reject_frac: float = 0.28      # dist to nearest player as frame diag frac
     toss_player_allow_frac: float = 0.16      # outside-court allowed only if near player
     outside_reject_expand_mult: float = 1.15  # stricter court-distance cutoff
 
-    # â”€â”€ Court margin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Court margin
     court_expand_px: float = 0.0     # auto-set: soft margin around court polygon
     side_margin_frac: float = 0.12   # extreme side zone fraction
 
-    # â”€â”€ Interpolation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Interpolation
     interp_max_gap: int = 0          # auto-set
 
-    # â”€â”€ Motion trail bonus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Motion trail bonus
     boost_mask_bonus: float = 1.5    # extra score when detection overlaps motion mask
 
-    # â”€â”€ Per-frame locking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Per-frame locking
     frame_selection_mode: str = "legacy"  # "trail_only" | "legacy"
     guide_lock_frac: float = 0.022   # lock to exact-guide det within this * frame diag
     carry_interp_frames: int = 5     # keep predicted position this many no-det frames
@@ -135,7 +124,7 @@ class SelectorConfig:
     det_hard_step_frac: float = 0.065  # hard reject per-frame det jumps this large (diag frac/frame)
     det_hard_step_growth_per_frame: float = 0.12  # grow hard det-jump budget with multi-frame gaps
 
-    # ── Motion fallback physics gate ──────────────────────────────
+    # -- Motion fallback physics gate ------------------------------
     motion_use_min_det_speed: float = 1.5   # min speed (px/frame) to trust motion direction
     motion_pred_residual_frac: float = 0.082 # allow more drift from prediction for far falling/reacquired balls
     motion_speed_ratio_min: float = 0.25    # min ratio (motion_speed / track_speed)
@@ -213,4 +202,3 @@ class SelectorConfig:
             self.gravity_base_ppf2_30fps * res_scale * (fps_scale ** 2)
         )
         return self
-

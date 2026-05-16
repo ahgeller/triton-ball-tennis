@@ -11,6 +11,7 @@ venv/
 .claude/settings.local.json
 
 # Generated video outputs
+output_videos/
 output_videos/*.mp4
 output_videos/*.avi
 output_videos/*.mov
@@ -26,3 +27,9 @@ input_videos/*.mov
 
 # Python cache folders in subdirs
 **/__pycache__/
+
+# Native/tool build artifacts
+tools/*.exe
+tools/*.obj
+tools/*_build.log
+*.obj

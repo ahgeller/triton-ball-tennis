@@ -15,7 +15,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 
 # (key, label, "higher" or "lower" is better, format spec)
@@ -44,7 +44,7 @@ def _load(path: Path) -> Dict[str, Any]:
 def _summary(report: Dict[str, Any]) -> Dict[str, Any]:
     s = report.get("summary")
     if not isinstance(s, dict):
-        raise ValueError("report has no 'summary' object — is this a validation report?")
+        raise ValueError("report has no 'summary' object - is this a validation report?")
     return s
 
 
@@ -77,7 +77,7 @@ def _delta_marker(before: Any, after: Any, direction: str) -> Tuple[str, str]:
 
 def _print_metric_table(b: Dict[str, Any], a: Dict[str, Any]) -> int:
     name_w = max(len(label) for _, label, _, _ in METRIC_ROWS)
-    print(f"{'metric'.ljust(name_w)}   {'before':>14}   {'after':>14}   {'delta':>12}  dir  better?")
+    print(f"{'metric'.ljust(name_w)}   {'before':>14}   {'after':>14}   {'delta':>12}  dir  better-")
     print("-" * (name_w + 60))
     regressions = 0
     for key, label, direction, spec in METRIC_ROWS:

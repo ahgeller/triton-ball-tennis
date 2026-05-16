@@ -4,17 +4,17 @@ single, consistent keypoint numbering.
 The canonical convention matches the user's reference diagram (top-down view
 of the court, FAR baseline at the top of the image):
 
-    0   4 . . . . . 6   1     row 0 — FAR baseline (4 pts, doubles-L,
+    0   4 . . . . . 6   1     row 0 - FAR baseline (4 pts, doubles-L,
                                        singles-L, singles-R, doubles-R)
     |   |           |   |
-    |   8 . 12 . . 9    |     row 1 — FAR service line (3 pts, singles-L,
+    |   8 . 12 . . 9    |     row 1 - FAR service line (3 pts, singles-L,
     |   |           |   |             center-T, singles-R)
-    |   10. 13 . 11     |     row 2 — NEAR service line (3 pts)
+    |   10. 13 . 11     |     row 2 - NEAR service line (3 pts)
     |   |           |   |
-    2   5 . . . . . 7   3     row 3 — NEAR baseline (4 pts)
+    2   5 . . . . . 7   3     row 3 - NEAR baseline (4 pts)
 
 Per-annotation procedure:
-  - drop keypoints whose visibility is 0 (treat as unlabeled — output v=0,
+  - drop keypoints whose visibility is 0 (treat as unlabeled - output v=0,
     coords (0, 0)).
   - sort the remaining keypoints by image-y ascending.
   - bucket into 4 rows by row-size pattern: 4, 3, 3, 4 (top to bottom).
@@ -24,7 +24,7 @@ Per-annotation procedure:
   - within each row, sort by image-x ascending.
   - emit the 14 keypoints in the canonical order described above.
 
-Nothing about the positions changes — we only re-shuffle the indices so the
+Nothing about the positions changes - we only re-shuffle the indices so the
 "bottom-right doubles corner" carries index 3 in every annotation, etc.
 
 Usage:
@@ -130,12 +130,12 @@ def remap_one(
     """Re-shuffle a single keypoint list into canonical order.
 
     Returns (new_flat_list, status). status in:
-       'ok'                — 14 visible, clean 4/3/3/4 row split
-       'partial'           — fewer than 14 visible, used K-means fallback
-       'unmapped'          — couldn't assign every canonical slot; the
+       'ok'                - 14 visible, clean 4/3/3/4 row split
+       'partial'           - fewer than 14 visible, used K-means fallback
+       'unmapped'          - couldn't assign every canonical slot; the
                              remaining slots stay (0, 0, 0). Some kps may
                              have been dropped if a row had too many.
-       'malformed'         — input wasn't exactly 14 keypoints (left alone)
+       'malformed'         - input wasn't exactly 14 keypoints (left alone)
     """
     if len(kps_flat) != NUM_KP * 3:
         return list(kps_flat), "malformed"

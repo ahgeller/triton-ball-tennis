@@ -1,17 +1,5 @@
-# Imports
-import math
-import json
-import os
-import numpy as np
-import cv2
-from types import SimpleNamespace
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass, field
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
-    from filterpy.kalman import KalmanFilter
 
 from .config import SelectorConfig
 from .physics import BallKalmanFilter
@@ -186,4 +174,3 @@ class FrameResult:
     guide_search_exact: bool = False
     guide_search_frozen: bool = False
     guide_search_hold: bool = False
-
