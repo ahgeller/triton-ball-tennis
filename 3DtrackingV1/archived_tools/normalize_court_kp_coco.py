@@ -28,7 +28,7 @@ Nothing about the positions changes - we only re-shuffle the indices so the
 "bottom-right doubles corner" carries index 3 in every annotation, etc.
 
 Usage:
-    python tools/normalize_court_kp_coco.py \
+    python 3DtrackingV1/archived_tools/normalize_court_kp_coco.py \
         --in   <path-to>/_annotations.coco.json \
         --out  <path-to>/_annotations.normalized.coco.json \
         [--audit <audit.json>]

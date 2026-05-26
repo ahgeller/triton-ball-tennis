@@ -2,7 +2,7 @@
 """Diff two validation reports side by side.
 
 Usage:
-  python tools/compare_reports.py --before <a>.json --after <b>.json
+  python 3DtrackingV1/archived_tools/compare_reports.py --before <a>.json --after <b>.json
 
 Prints recall, error stats, fill ratio, large jumps, FP count, accuracy buckets,
 and source-mix deltas. Arrows show whether the change moved each metric in the

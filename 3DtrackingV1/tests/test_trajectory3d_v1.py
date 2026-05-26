@@ -1,11 +1,16 @@
 import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import tools.trajectory3d_v1 as trajectory3d_v1
-from tools.trajectory3d_v1 import (
+TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+import trajectory3d_v1 as trajectory3d_v1
+from trajectory3d_v1 import (
     LLCutSegment,
     Observation,
     SegmentWindow,

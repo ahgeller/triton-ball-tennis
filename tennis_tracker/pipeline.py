@@ -67,6 +67,12 @@ def _frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict
             "frozen": bool(getattr(result, "guide_search_frozen", False)),
             "hold": bool(getattr(result, "guide_search_hold", False)),
         },
+        "selection": _json_safe(getattr(result, "source_policy", {}) or {
+            "source": str(getattr(result, "source", "")),
+            "reason": str(getattr(result, "source_reason", "")),
+            "reasons": list(getattr(result, "source_reasons", []) or []),
+            "rejects": dict(getattr(result, "source_rejects", {}) or {}),
+        }),
     })
     return row
 
@@ -350,6 +356,7 @@ def _build_motion_diagnostics(
                     "x": selected_x,
                     "y": selected_y,
                 },
+                "selection": _json_safe(getattr(result, "source_policy", {}) if result is not None else {}),
                 "candidate_count_exported": int(len(candidates)),
                 "candidates": candidates,
             })
@@ -1281,6 +1288,8 @@ def run(cfg):
     # This does not affect selector logic; it only stabilizes the debug overlay.
     last_motion_search_dbg = None  # (x, y)
     last_motion_search_dbg_frame = -1
+    draw_main_search_regions = bool(getattr(cfg, "draw_search_regions", False))
+    draw_main_ball_trail = bool(getattr(cfg, "draw_ball_trail", True))
 
     # Per-track short history for visualization: tid -> list of (x, y)
     vis_track_trails = {int(t.track_id): [] for t in vis_track_list}
@@ -1521,12 +1530,13 @@ def run(cfg):
                             scy = int(round(pscy + dy * s))
                     last_motion_search_dbg = (scx, scy)
                     last_motion_search_dbg_frame = fi
-                    cv2.circle(frame_out, (scx, scy),
-                               int(display_result.search_radius), COLOR_SEARCH, 1)
-                    cv2.line(frame_out, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
-                    # Small cross at predicted position
-                    cv2.drawMarker(frame_out, (scx, scy), COLOR_SEARCH,
-                                   cv2.MARKER_CROSS, 12, 1)
+                    if draw_main_search_regions:
+                        cv2.circle(frame_out, (scx, scy),
+                                   int(display_result.search_radius), COLOR_SEARCH, 1)
+                        cv2.line(frame_out, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
+                        # Small cross at predicted position
+                        cv2.drawMarker(frame_out, (scx, scy), COLOR_SEARCH,
+                                       cv2.MARKER_CROSS, 12, 1)
                     if guide_frame is not None:
                         cv2.circle(guide_frame, (scx, scy),
                                    int(display_result.search_radius), COLOR_SEARCH, 1)
@@ -1572,8 +1582,9 @@ def run(cfg):
                     scol = COLOR_CARRY
                 else:
                     scol = COLOR_INTERP
-                cv2.circle(frame_out, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
-                cv2.circle(frame_out, (scx, scy), sr, scol, 1, cv2.LINE_AA)
+                if draw_main_search_regions:
+                    cv2.circle(frame_out, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
+                    cv2.circle(frame_out, (scx, scy), sr, scol, 1, cv2.LINE_AA)
                 if guide_frame is not None:
                     cv2.circle(guide_frame, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
                     cv2.circle(guide_frame, (scx, scy), sr, scol, 1, cv2.LINE_AA)
@@ -1698,14 +1709,15 @@ def run(cfg):
                 if (not is_gap) and src not in ("det", "motion", "carry", "guide", "interp"):
                     continue
 
-                alpha = 0.55 + 0.45 * (i / len(trail))
-                base = _trail_base_color(src)
-                color = (int(base[0] * alpha), int(base[1] * alpha), int(base[2] * alpha))
-                line_th = max(2, int(3 * alpha))
-                outline_th = line_th + 1
-                # Dark outline first so the trail stays readable against court/player textures.
-                cv2.line(frame_out, p0, p1, (15, 15, 15), outline_th, cv2.LINE_AA)
-                cv2.line(frame_out, p0, p1, color, line_th, cv2.LINE_AA)
+                if draw_main_ball_trail:
+                    alpha = 0.55 + 0.45 * (i / len(trail))
+                    base = _trail_base_color(src)
+                    color = (int(base[0] * alpha), int(base[1] * alpha), int(base[2] * alpha))
+                    line_th = max(2, int(3 * alpha))
+                    outline_th = line_th + 1
+                    # Dark outline first so the trail stays readable against court/player textures.
+                    cv2.line(frame_out, p0, p1, (15, 15, 15), outline_th, cv2.LINE_AA)
+                    cv2.line(frame_out, p0, p1, color, line_th, cv2.LINE_AA)
 
         # HUD
         cv2.putText(frame_out, f"F{fi}", (10, 25),

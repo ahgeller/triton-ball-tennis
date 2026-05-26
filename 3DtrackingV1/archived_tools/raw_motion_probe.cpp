@@ -5,9 +5,9 @@
 // toward small fast components, then writes an overlay video plus JSON stats.
 //
 // Build idea on Windows from a VS Developer PowerShell:
-//   cl /std:c++17 /O2 /EHsc /I %CONDA_PREFIX%\Library\include tools\raw_motion_probe.cpp ^
+//   cl /std:c++17 /O2 /EHsc /I %CONDA_PREFIX%\Library\include 3DtrackingV1\archived_tools\raw_motion_probe.cpp ^
 //      /link /LIBPATH:%CONDA_PREFIX%\Library\lib opencv_core490.lib opencv_imgproc490.lib ^
-//      opencv_videoio490.lib opencv_imgcodecs490.lib /OUT:tools\raw_motion_probe.exe
+//      opencv_videoio490.lib opencv_imgcodecs490.lib /OUT:3DtrackingV1\archived_tools\raw_motion_probe.exe
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>

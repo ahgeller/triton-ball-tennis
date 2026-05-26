@@ -5,7 +5,7 @@ per-frame ground-truth labels of HIT / BOUNCE / OFF-FRAME, plus an optional
 court (X, Y) for the on-court events.
 
 Workflow:
-  python tools/label_events.py \
+  python 3DtrackingV1/archived_tools/label_events.py \
       --video       input_videos/<clip>.mp4 \
       --tracking    output_videos/<clip>_tracking.json \
       --output      validation/labels/<clip>_events.json
@@ -63,7 +63,7 @@ import numpy as np
 
 # Make the package importable when the script is run as a file from anywhere.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tools.mini_court import (
+from mini_court import (
     MiniCourtLayout,
     compute_layout,
     draw_mini_court,

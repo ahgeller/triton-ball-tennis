@@ -13,6 +13,41 @@ from .tracking import build_detections, build_motion_tracks, build_tracks, _buil
 from .scoring import score_tracks, select_best_track, _is_stationary_track, _annotate_track_periods, _stitch_track_chain, _select_timeline_chain
 
 
+def _attach_source_policy(
+    result: FrameResult,
+    *,
+    reason: str,
+    reasons: Optional[List[str]] = None,
+    rejects: Optional[Dict[str, int]] = None,
+    stage: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> FrameResult:
+    clean_reasons = [str(r) for r in (reasons or []) if r]
+    if reason and reason not in clean_reasons:
+        clean_reasons.insert(0, str(reason))
+    clean_rejects = {
+        str(k): int(v)
+        for k, v in (rejects or {}).items()
+        if int(v) > 0
+    }
+    policy: Dict[str, Any] = {
+        "source": str(getattr(result, "source", "")),
+        "reason": str(reason or ""),
+        "reasons": clean_reasons,
+        "rejects": clean_rejects,
+    }
+    if stage:
+        policy["stage"] = str(stage)
+    if context:
+        policy["context"] = context
+
+    result.source_reason = str(reason or "")
+    result.source_reasons = clean_reasons
+    result.source_rejects = clean_rejects
+    result.source_policy = policy
+    return result
+
+
 def _find_motion_blob(boost_mask, search_cx, search_cy, search_radius,
                       last_det_cx, last_det_cy, last_vel,
                       min_blob_area=20, max_blob_area=600,
@@ -994,16 +1029,42 @@ def select_ball_in_play(
                     # Stay as interp, but we don't snap to a stationary object.
                     pass
 
-            result[t] = FrameResult(
-                cx=float(gx),
-                cy=float(gy),
-                conf=conf,
-                interpolated=not has_obs,
-                bbox=bbox,
-                source=src,
-                search_cx=float(guide_cx),
-                search_cy=float(guide_cy),
-                search_radius=float(state_r),
+            if src == "det":
+                policy_reason = "chosen_track_exact_detection"
+                policy_reasons = ["green exact observation from chosen track"]
+            elif has_obs:
+                policy_reason = "state_circle_detection_snap"
+                policy_reasons = [
+                    f"{src} state circle found a nearby detection",
+                    "candidate passed source-specific snap gate",
+                ]
+            elif src == "carry":
+                policy_reason = "short_guide_gap_prediction"
+                policy_reasons = ["blue carry inside short chosen-guide gap"]
+            else:
+                policy_reason = "long_guide_gap_prediction"
+                policy_reasons = ["yellow interp kept as prediction because no motion snap was accepted"]
+
+            result[t] = _attach_source_policy(
+                FrameResult(
+                    cx=float(gx),
+                    cy=float(gy),
+                    conf=conf,
+                    interpolated=not has_obs,
+                    bbox=bbox,
+                    source=src,
+                    search_cx=float(guide_cx),
+                    search_cy=float(guide_cy),
+                    search_radius=float(state_r),
+                ),
+                reason=policy_reason,
+                reasons=policy_reasons,
+                stage="trail_only",
+                context={
+                    "guide_exact": bool(guide_exact),
+                    "has_observation": bool(has_obs),
+                    "state_radius": float(state_r),
+                },
             )
 
             if emit_guide_debug_meta and guide_debug_meta is not None:
@@ -1275,16 +1336,35 @@ def select_ball_in_play(
                             cbbox = None
                             cinterp = True
 
-                        result[f] = FrameResult(
-                            cx=float(cgx),
-                            cy=float(cgy),
-                            conf=cconf,
-                            interpolated=cinterp,
-                            bbox=cbbox,
-                            source=csrc,
-                            search_cx=float(state_cx),
-                            search_cy=float(state_cy),
-                            search_radius=float(state_r_local),
+                        if csrc == "det":
+                            policy_reason = "gap_fill_exact_detection"
+                            policy_reasons = ["extra gap-fill track supplied exact detection"]
+                        elif csrc == "carry":
+                            policy_reason = "gap_fill_short_carry"
+                            policy_reasons = ["extra track filled uncovered short gap with carry"]
+                        else:
+                            policy_reason = "gap_fill_interp"
+                            policy_reasons = ["extra track filled uncovered longer gap with interp"]
+                        result[f] = _attach_source_policy(
+                            FrameResult(
+                                cx=float(cgx),
+                                cy=float(cgy),
+                                conf=cconf,
+                                interpolated=cinterp,
+                                bbox=cbbox,
+                                source=csrc,
+                                search_cx=float(state_cx),
+                                search_cy=float(state_cy),
+                                search_radius=float(state_r_local),
+                            ),
+                            reason=policy_reason,
+                            reasons=policy_reasons,
+                            stage="trail_only_gap_fill",
+                            context={
+                                "track_id": int(cand.track_id),
+                                "state_radius": float(state_r_local),
+                                "exact": bool(csrc == "det"),
+                            },
                         )
                         if emit_guide_debug_meta and guide_debug_meta is not None:
                             guide_debug_meta[f] = (
@@ -2074,6 +2154,7 @@ def select_ball_in_play(
         blocked_owner_penalty = max(65.0, 0.045 * diag)
         blocked_owner_guide_gate = max(14.0, 0.060 * diag)
         frames_since_det_in = int(frames_since_det)
+        frame_reject_counts: Dict[str, int] = {}
         frame_audit: Optional[Dict[str, Any]] = None
         if audit_enabled and audit_start <= t <= audit_end:
             frame_audit = {
@@ -2093,6 +2174,7 @@ def select_ball_in_play(
             }
 
         def _audit_rej(reason: str) -> None:
+            frame_reject_counts[reason] = int(frame_reject_counts.get(reason, 0)) + 1
             if frame_audit is None:
                 return
             rej = frame_audit["rej"]
@@ -2571,11 +2653,25 @@ def select_ball_in_play(
             motion_vel_history.clear()
             last_motion_vel = None
             last_motion_pos = None
-            result[t] = FrameResult(
-                cx=best_det.cx, cy=best_det.cy,
-                conf=best_det.conf, interpolated=False,
-                bbox=(best_det.x1, best_det.y1, best_det.x2, best_det.y2),
-                source='det')
+            result[t] = _attach_source_policy(
+                FrameResult(
+                    cx=best_det.cx, cy=best_det.cy,
+                    conf=best_det.conf, interpolated=False,
+                    bbox=(best_det.x1, best_det.y1, best_det.x2, best_det.y2),
+                    source='det'),
+                reason="yolo_detection_selected",
+                reasons=[
+                    "green detection won per-frame candidate scoring",
+                    "passed guide/context/static/continuity gates",
+                ],
+                rejects=frame_reject_counts,
+                stage=best_det_stage or "det",
+                context={
+                    "on_motion": bool(best_det_motion_local),
+                    "score": float(best_score),
+                    "frames_since_det_in": int(frames_since_det_in),
+                },
+            )
             stats['det'] += 1
             soft_carry_count = 0
             if best_det_motion_local:
@@ -2946,10 +3042,25 @@ def select_ball_in_play(
                                 _carry_after_failed_motion_ok(pred_cx, pred_cy, search_r)
                             )
                             if can_short_carry:
-                                result[t] = FrameResult(
-                                    cx=pred_cx, cy=pred_cy,
-                                    conf=0.16, interpolated=True, bbox=None, source='carry',
-                                    search_cx=pred_cx, search_cy=pred_cy, search_radius=search_r)
+                                result[t] = _attach_source_policy(
+                                    FrameResult(
+                                        cx=pred_cx, cy=pred_cy,
+                                        conf=0.16, interpolated=True, bbox=None, source='carry',
+                                        search_cx=pred_cx, search_cy=pred_cy, search_radius=search_r),
+                                    reason="motion_rejected_erratic_then_carry",
+                                    reasons=[
+                                        "motion blob velocity was erratic",
+                                        "blue carry stayed inside short carry window",
+                                        "carry-after-failed-motion gate passed",
+                                    ],
+                                    rejects=frame_reject_counts,
+                                    stage="legacy_soft_source",
+                                    context={
+                                        "frames_since_det": int(frames_since_det),
+                                        "soft_carry_count": int(soft_carry_count),
+                                        "search_radius": float(search_r),
+                                    },
+                                )
                                 stats['carry'] += 1
                                 soft_carry_count += 1
                             else:
@@ -2958,12 +3069,25 @@ def select_ball_in_play(
                                 # Only exact guide observations are allowed to become output positions.
                                 if guide is not None and guide_exact and _guide_path_consistent(
                                         gx, gy, last_pos, guide_vel, frames_since_det, cfg, diag, guide_exact=guide_exact):
-                                    result[t] = FrameResult(
-                                        cx=gx,
-                                        cy=gy,
-                                        conf=0.18,
-                                        interpolated=False, bbox=None, source='guide',
-                                        search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
+                                    result[t] = _attach_source_policy(
+                                        FrameResult(
+                                            cx=gx,
+                                            cy=gy,
+                                            conf=0.18,
+                                            interpolated=False, bbox=None, source='guide',
+                                            search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact"))),
+                                        reason="motion_rejected_exact_guide",
+                                        reasons=[
+                                            "motion blob velocity was erratic",
+                                            "exact chosen-guide point remained trajectory-consistent",
+                                        ],
+                                        rejects=frame_reject_counts,
+                                        stage="legacy_soft_source",
+                                        context={
+                                            "frames_since_det": int(frames_since_det),
+                                            "guide_exact": bool(guide_exact),
+                                        },
+                                    )
                                     stats['guide'] += 1
                                     last_pos = (gx, gy)
                                     soft_carry_count = min(
@@ -2978,12 +3102,28 @@ def select_ball_in_play(
                 last_pos = (blob_cx, blob_cy)
                 last_motion_pos = (blob_cx, blob_cy)
                 
-                result[t] = FrameResult(
-                    cx=blob_cx, cy=blob_cy,
-                    conf=0.3, interpolated=False, bbox=None,
-                    source='motion',
-                    search_cx=blob_search_cx, search_cy=blob_search_cy,
-                    search_radius=blob_search_r)
+                result[t] = _attach_source_policy(
+                    FrameResult(
+                        cx=blob_cx, cy=blob_cy,
+                        conf=0.3, interpolated=False, bbox=None,
+                        source='motion',
+                        search_cx=blob_search_cx, search_cy=blob_search_cy,
+                        search_radius=blob_search_r),
+                    reason="motion_blob_selected",
+                    reasons=[
+                        "orange motion blob found inside active search region",
+                        "motion blob survived physics/player/erratic guards",
+                    ],
+                    rejects=frame_reject_counts,
+                    stage="legacy_soft_source",
+                    context={
+                        "latched_motion_track": bool(is_latched),
+                        "guide_circle_search": bool(blob_from_guide_circle),
+                        "frames_since_det": int(frames_since_det),
+                        "search_radius": float(blob_search_r),
+                        "blob_area": float(blob_area),
+                    },
+                )
                 stats['motion'] += 1
                 soft_carry_count = 0
                 last_motion_area = max(float(blob_area), 1.0)
@@ -3006,18 +3146,48 @@ def select_ball_in_play(
                     guide_vel_c = last_motion_vel if last_motion_vel is not None else last_vel
                     if (guide is not None and guide_exact and
                             _guide_path_consistent(gx, gy, last_pos, guide_vel_c, frames_since_det, cfg, diag, guide_exact=guide_exact)):
-                        result[t] = FrameResult(
-                            cx=gx, cy=gy,
-                            conf=0.18, interpolated=False, bbox=None, source='guide',
-                            search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
+                        result[t] = _attach_source_policy(
+                            FrameResult(
+                                cx=gx, cy=gy,
+                                conf=0.18, interpolated=False, bbox=None, source='guide',
+                                search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact"))),
+                            reason="exact_guide_preferred_over_carry",
+                            reasons=[
+                                "no acceptable motion blob was found",
+                                "exact chosen-guide point was trajectory-consistent",
+                            ],
+                            rejects=frame_reject_counts,
+                            stage="legacy_soft_source",
+                            context={
+                                "frames_since_det": int(frames_since_det),
+                                "carry_limit": int(carry_limit),
+                                "guide_exact": bool(guide_exact),
+                            },
+                        )
                         stats['guide'] += 1
                         last_pos = (gx, gy)
                         last_motion_vel = None
                     else:
-                        result[t] = FrameResult(
-                            cx=pred_cx, cy=pred_cy,
-                            conf=0.16, interpolated=True, bbox=None, source='carry',
-                            search_cx=pred_cx, search_cy=pred_cy, search_radius=search_r)
+                        result[t] = _attach_source_policy(
+                            FrameResult(
+                                cx=pred_cx, cy=pred_cy,
+                                conf=0.16, interpolated=True, bbox=None, source='carry',
+                                search_cx=pred_cx, search_cy=pred_cy, search_radius=search_r),
+                            reason="motion_missing_short_carry",
+                            reasons=[
+                                "no acceptable motion blob was found",
+                                "blue carry stayed inside short carry window",
+                                "carry-after-failed-motion gate passed",
+                            ],
+                            rejects=frame_reject_counts,
+                            stage="legacy_soft_source",
+                            context={
+                                "frames_since_det": int(frames_since_det),
+                                "carry_limit": int(carry_limit),
+                                "soft_window_ok": bool(soft_window_ok),
+                                "search_radius": float(search_r),
+                            },
+                        )
                         stats['carry'] += 1
                     soft_carry_count += 1
                     last_motion_vel = pred_vel if result[t].source == 'carry' else last_motion_vel
@@ -3076,18 +3246,46 @@ def select_ball_in_play(
                 guide_vel_c2 = last_motion_vel if last_motion_vel is not None else last_vel
                 if (guide is not None and guide_exact and
                         _guide_path_consistent(gx, gy, last_pos, guide_vel_c2, frames_since_det, cfg, diag, guide_exact=guide_exact)):
-                    result[t] = FrameResult(
-                        cx=gx, cy=gy,
-                        conf=0.18, interpolated=False, bbox=None, source='guide',
-                        search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
+                    result[t] = _attach_source_policy(
+                        FrameResult(
+                            cx=gx, cy=gy,
+                            conf=0.18, interpolated=False, bbox=None, source='guide',
+                            search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact"))),
+                        reason="exact_guide_preferred_over_carry",
+                        reasons=[
+                            "tracker was outside motion search branch",
+                            "exact chosen-guide point was trajectory-consistent",
+                        ],
+                        rejects=frame_reject_counts,
+                        stage="legacy_soft_source",
+                        context={
+                            "frames_since_det": int(frames_since_det),
+                            "carry_limit": int(carry_limit),
+                            "guide_exact": bool(guide_exact),
+                        },
+                    )
                     stats['guide'] += 1
                     last_pos = (gx, gy)
                     last_motion_vel = None
                 else:
                     last_pos = (pred_cx, pred_cy)
-                    result[t] = FrameResult(
-                        cx=pred_cx, cy=pred_cy,
-                        conf=0.15, interpolated=True, bbox=None, source='carry')
+                    result[t] = _attach_source_policy(
+                        FrameResult(
+                            cx=pred_cx, cy=pred_cy,
+                            conf=0.15, interpolated=True, bbox=None, source='carry'),
+                        reason="short_carry_no_motion_window",
+                        reasons=[
+                            "no detection/motion source was accepted",
+                            "blue carry stayed inside carry window",
+                        ],
+                        rejects=frame_reject_counts,
+                        stage="legacy_soft_source",
+                        context={
+                            "frames_since_det": int(frames_since_det),
+                            "carry_limit": int(carry_limit),
+                            "soft_window_ok": bool(soft_window_ok),
+                        },
+                    )
                     stats['carry'] += 1
                     last_motion_vel = pred_vel
                 soft_carry_count += 1
@@ -3116,14 +3314,27 @@ def select_ball_in_play(
                 continue
             guide_vel = last_motion_vel if last_motion_vel is not None else last_vel
             if _guide_path_consistent(gx, gy, last_pos, guide_vel, frames_since_det, cfg, diag, guide_exact=guide_exact):
-                result[t] = FrameResult(
-                    cx=gx,
-                    cy=gy,
-                    conf=0.18,
-                    interpolated=False,
-                    bbox=None,
-                    source='guide',
-                    search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact")))
+                result[t] = _attach_source_policy(
+                    FrameResult(
+                        cx=gx,
+                        cy=gy,
+                        conf=0.18,
+                        interpolated=False,
+                        bbox=None,
+                        source='guide',
+                        search_cx=float(gx), search_cy=float(gy), search_radius=float(_guide_circle_radius("exact"))),
+                    reason="strict_exact_guide_fallback",
+                    reasons=[
+                        "det/motion/carry failed",
+                        "exact chosen-guide point was trajectory-consistent",
+                    ],
+                    rejects=frame_reject_counts,
+                    stage="legacy_soft_source",
+                    context={
+                        "frames_since_det": int(frames_since_det),
+                        "guide_exact": bool(guide_exact),
+                    },
+                )
                 stats['guide'] += 1
                 if lost_counted:
                     stats['lost'] = max(0, stats['lost'] - 1)
@@ -3161,6 +3372,7 @@ def select_ball_in_play(
             if rr is not None:
                 frame_audit["result_source"] = str(rr.source)
                 frame_audit["result_xy"] = [float(rr.cx), float(rr.cy)]
+                frame_audit["selection"] = dict(getattr(rr, "source_policy", {}) or {})
             else:
                 frame_audit["result_source"] = "none"
             frame_audit["frames_since_det_out"] = int(frames_since_det)
@@ -3241,12 +3453,22 @@ def select_ball_in_play(
                 r_interp = float(getattr(prev_r, "search_radius", 0.0))
                 r_end = float(getattr(curr_r, "search_radius", 0.0))
                 r_interp = r_interp + (r_end - r_interp) * t_frac
-                result[f] = FrameResult(
-                    cx=cx_interp,
-                    cy=cy_interp,
-                    conf=min(prev_r.conf, curr_r.conf) * 0.7,
-                    interpolated=True, bbox=None, source='interp',
-                    search_cx=cx_interp, search_cy=cy_interp, search_radius=r_interp)
+                result[f] = _attach_source_policy(
+                    FrameResult(
+                        cx=cx_interp,
+                        cy=cy_interp,
+                        conf=min(prev_r.conf, curr_r.conf) * 0.7,
+                        interpolated=True, bbox=None, source='interp',
+                        search_cx=cx_interp, search_cy=cy_interp, search_radius=r_interp),
+                    reason="post_fill_interpolation",
+                    reasons=["yellow interp filled a short gap between accepted outputs"],
+                    stage="legacy_post_fill",
+                    context={
+                        "prev_frame": int(prev_i),
+                        "next_frame": int(curr_i),
+                        "search_radius": float(r_interp),
+                    },
+                )
                 if emit_guide_debug_meta and guide_debug_meta is not None and f < len(guide_debug_meta):
                     guide_debug_meta[f] = (float(cx_interp), float(cy_interp), False, False, False, float(r_interp))
 

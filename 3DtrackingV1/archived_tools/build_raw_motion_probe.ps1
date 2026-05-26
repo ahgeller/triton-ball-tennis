@@ -1,6 +1,6 @@
 param(
     [string]$CondaPrefix = "",
-    [string]$Out = "tools\raw_motion_probe.exe"
+    [string]$Out = "3DtrackingV1\archived_tools\raw_motion_probe.exe"
 )
 
 if (-not $CondaPrefix) {
@@ -109,15 +109,15 @@ if ($outParent -and -not (Test-Path $outParent)) {
     New-Item -ItemType Directory -Force -Path $outParent | Out-Null
 }
 
-$buildLog = "tools\raw_motion_probe_build.log"
+$buildLog = "3DtrackingV1\archived_tools\raw_motion_probe_build.log"
 $clArgs = @(
     "/nologo",
     "/std:c++17",
     "/O2",
     "/EHsc",
     "/I", "$include",
-    "tools\raw_motion_probe.cpp",
-    "/Fo:tools\raw_motion_probe.obj",
+    "3DtrackingV1\archived_tools\raw_motion_probe.cpp",
+    "/Fo:3DtrackingV1\archived_tools\raw_motion_probe.obj",
     "/Fe:$Out",
     "/link",
     "/LIBPATH:$lib"

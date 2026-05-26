@@ -1,0 +1,22 @@
+{
+  "schema_version": "camera_intrinsics_guess_v1",
+  "camera_model": "opencv_pinhole_radtan",
+  "source": "Provisional iPhone/iPad wide-camera guess for 1920x1080 video. Replace with checkerboard calibration for metric 3D.",
+  "assumed_horizontal_fov_deg": 70.0,
+  "image_size": {
+    "width": 1920,
+    "height": 1080
+  },
+  "K": [
+    [1371.022086, 0.0, 960.0],
+    [0.0, 1371.022086, 540.0],
+    [0.0, 0.0, 1.0]
+  ],
+  "dist": [0.0, 0.0, 0.0, 0.0, 0.0],
+  "quality": "guess",
+  "warnings": [
+    "This is not a measured calibration.",
+    "Use it only for focal-length sensitivity tests and provisional trajectory diagnostics.",
+    "Recalibrate if the video used digital zoom, lens switching, stabilization crop, or a different resolution."
+  ]
+}

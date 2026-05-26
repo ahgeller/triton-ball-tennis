@@ -141,6 +141,8 @@ class Config:
     guide_interp_max_gap: int = 12
     print_selector_tracks: bool = True
     selector_track_limit: int = 0  # 0 = print all
+    draw_search_regions: bool = False
+    draw_ball_trail: bool = True
 
     # trail rendering / switch guards
     trail_hard_switch_x_frac: float = 0.30

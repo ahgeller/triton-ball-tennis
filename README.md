@@ -11,12 +11,10 @@ and final tracking/video export.
 ```text
 tennis_tracker/          Runtime pipeline, detectors, motion preprocessing, rendering, video I/O
 ball_in_play_selector/   Track building, physics guide, scoring, and final ball selection
-tools/                   Validation, labeling, 3D reconstruction, TensorRT model utilities
-tests/                   Lightweight tests for import-safe sidecar logic
-validation/              Hand labels, fixtures, and validation docs
 models/                  Local model weights and TensorRT engines
 input_videos/            Local video inputs
 output_videos/           Generated outputs
+3DtrackingV1/            Archived 3D experiments and old one-off helper scripts
 ```
 
 `now_main.py` is the stable entrypoint. It delegates to `tennis_tracker.cli`.
@@ -93,29 +91,34 @@ Path flags: `-o/--output`, `--yolo-debug-path`, `--debug-path`, `--guide-path`,
 `--motion-tracks-path`. Encoder: NVENC by default; pass `--no-nvenc` to fall
 back to a CPU encoder.
 
-## Validation
+## Archived Helpers
 
-Run the labeled Pomona baseline:
+The normal tracker does not import any scripts from the old `tools/` folder.
+Those one-off validation, labeling, model-conversion, and motion-probe scripts
+are archived under `3DtrackingV1/archived_tools/`.
+
+Run the archived labeled Pomona baseline helper, if the validation labels are
+present in your working tree:
 
 ```powershell
-python tools/run_validation.py --clip pomona_baseline
+python 3DtrackingV1/archived_tools/run_validation.py --clip pomona_baseline
 ```
 
 Compare reports after a change:
 
 ```powershell
-python tools/compare_reports.py `
+python 3DtrackingV1/archived_tools/compare_reports.py `
   --before validation/reports/before.json `
   --after validation/reports/after.json `
   --fail-on-regression
 ```
 
 Use `--info` on `now_main.py` or `--extra-now-args "--info"` through
-`tools/run_validation.py` to print per-stage timing.
+the archived validation runner to print per-stage timing.
 
 ## Notes For Future Changes
 
 - Keep tuned thresholds stable unless validation proves an improvement.
-- Add new model experiments under `tools/`, not the runtime package.
+- Keep experimental 3D sidecars outside the runtime/tooling path; archived work lives under `3DtrackingV1/`.
 - Keep generated videos, reports, label frames, and scratch outputs out of git.
 - Prefer `--tracking-json` plus validation reports for behavior comparisons.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Click-based hand labeler for ball annotation.
 
-Reads a starter JSON produced by tools/extract_label_frames.py, opens each
+Reads a starter JSON produced by archived extract_label_frames.py, opens each
 frame in a cv2 window with the pipeline's pre-filled (x, y) shown as a yellow
 crosshair. You click on the ball to set a new position (red crosshair). When
 done, the corrected positions are written to the output JSON in the canonical
@@ -18,7 +18,7 @@ Controls:
   q / ESC             Save and quit
 
 Run:
-  python tools/label_assist.py `
+  python 3DtrackingV1/archived_tools/label_assist.py `
     --starter validation/labels/pomona_baseline/pomona_baseline_starter.json `
     --frames-dir validation/labels/pomona_baseline `
     --out validation/annotations/pomona_baseline.json
@@ -112,7 +112,7 @@ def _draw_markers(img, prefill: Tuple[Optional[float], Optional[float]],
 def main() -> int:
     parser = argparse.ArgumentParser(description="Click-based ball labeler.")
     parser.add_argument("--starter", required=True,
-                        help="Starter JSON from tools/extract_label_frames.py")
+                        help="Starter JSON from archived extract_label_frames.py")
     parser.add_argument("--frames-dir", required=True,
                         help="Directory holding frame_NNNNNN.png files")
     parser.add_argument("--out", required=True,

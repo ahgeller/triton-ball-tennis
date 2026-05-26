@@ -174,3 +174,8 @@ class FrameResult:
     guide_search_exact: bool = False
     guide_search_frozen: bool = False
     guide_search_hold: bool = False
+    # Debug: normalized selector explanation for this frame.
+    source_reason: str = ""
+    source_reasons: List[str] = field(default_factory=list)
+    source_rejects: Dict[str, int] = field(default_factory=dict)
+    source_policy: Dict[str, Any] = field(default_factory=dict)

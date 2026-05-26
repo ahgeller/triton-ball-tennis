@@ -8,7 +8,7 @@ Resolves paths by convention from --clip <name>:
   tracking:    output_videos/<clip>__<git_sha>_tracking.json
   report:      validation/reports/<clip>__<git_sha>.json
 
-Re-uses tools/validate_tracking.py via subprocess; no duplicate metric logic.
+Re-uses the archived validate_tracking.py via subprocess; no duplicate metric logic.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import List
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _git_short_sha() -> str:
@@ -116,7 +116,7 @@ def main() -> int:
             return 2
 
     val_cmd: List[str] = [
-        sys.executable, "tools/validate_tracking.py",
+        sys.executable, "3DtrackingV1/archived_tools/validate_tracking.py",
         "--predictions", str(out_json),
         "--annotations", str(ann_path),
         "--report-json", str(out_report),

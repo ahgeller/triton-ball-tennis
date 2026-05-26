@@ -6,7 +6,7 @@ from typing import Dict, Tuple
 
 from ultralytics import YOLO
 
-# python tools/build_trt_engines.py --ball-pt models/ball.pt --player-pt models/player.pt --court-pt models/courtdetection.pt --half --require-fp16 --force-onnx --force-engine --device 0 --workspace-mb 4096 --include-court
+# python 3DtrackingV1/archived_tools/build_trt_engines.py --ball-pt models/ball.pt --player-pt models/player.pt --court-pt models/courtdetection.pt --half --require-fp16 --force-onnx --force-engine --device 0 --workspace-mb 4096 --include-court
 
 @dataclass
 class ExportTarget:

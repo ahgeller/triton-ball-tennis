@@ -199,6 +199,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-print-selector-tracks", dest="print_selector_tracks",
                    action="store_false")
     g.add_argument("--selector-track-limit", type=int, default=d.selector_track_limit)
+    g.add_argument("--draw-search-regions", dest="draw_search_regions",
+                   action="store_true", default=d.draw_search_regions,
+                   help="Draw selected-source search circles on the main tracking video")
+    g.add_argument("--hide-search-regions", dest="draw_search_regions",
+                   action="store_false",
+                   help="Hide selected-source search circles on the main tracking video")
+    g.add_argument("--draw-ball-trail", dest="draw_ball_trail",
+                   action="store_true", default=d.draw_ball_trail,
+                   help="Draw the selected ball trail on the main tracking video")
+    g.add_argument("--no-ball-trail", dest="draw_ball_trail",
+                   action="store_false",
+                   help="Hide the selected ball trail on the main tracking video")
 
     g = p.add_argument_group("Speed")
     g.add_argument("--skip-frame-yolo", type=int, default=d.skip_frame_yolo,
@@ -358,6 +370,8 @@ def config_from_args(args: argparse.Namespace) -> Config:
         output_motion_tracks_debug_path=args.motion_tracks_path,
         print_selector_tracks=args.print_selector_tracks,
         selector_track_limit=max(0, int(args.selector_track_limit)),
+        draw_search_regions=args.draw_search_regions,
+        draw_ball_trail=args.draw_ball_trail,
         trail_hard_switch_x_frac=args.trail_hard_switch_x_frac,
         trail_hard_switch_y_frac=args.trail_hard_switch_y_frac,
         ball_marker_box_scale=args.ball_marker_scale,
