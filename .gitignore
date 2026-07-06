@@ -33,3 +33,7 @@ tools/*.exe
 tools/*.obj
 tools/*_build.log
 *.obj
+
+# Private research notes
+MOTION_DETECTION_RESEARCH_LOG.md
+PIPELINE_STUDY_MAP.md
