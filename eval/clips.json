@@ -1,0 +1,15 @@
+{
+  "comment": "Registry of benchmark clips. Each entry needs validation/annotations/<name>.json to exist. Add a clip by labeling ~80 frames with 3DtrackingV1/archived_tools/label_assist.py, then registering it here. Thresholds are per-clip pass/fail gates; omit a threshold to skip that gate.",
+  "clips": [
+    {
+      "name": "pomona_baseline",
+      "enabled": true,
+      "extra_now_args": "--info",
+      "thresholds": {
+        "min_recall": 0.55,
+        "max_mean_error": 14.0,
+        "max_p90_error": 30.0
+      }
+    }
+  ]
+}

@@ -22,6 +22,8 @@ models/                  Local model weights and TensorRT engines
 input_videos/            Local video inputs, ignored by git
 output_videos/           Generated videos/JSON, ignored by git
 validation/              Label fixtures and regression-validation helpers
+eval/                    Multi-clip benchmark harness (see eval/README.md)
+analytics/               Bounce/hit event detection + court mapping sidecar
 3DtrackingV1/            Archived helpers plus optional 3D trajectory sidecar work
 PIPELINE_STUDY_MAP.md    Study guide for the math, libraries, and pipeline concepts
 ```

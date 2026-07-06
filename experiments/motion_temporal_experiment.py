@@ -1,0 +1,1470 @@
+import argparse
+import json
+import sys
+import time
+from collections import deque
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Deque, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+try:
+    import torch
+    import torch.nn.functional as F
+    HAS_TORCH = True
+except Exception:
+    torch = None
+    F = None
+    HAS_TORCH = False
+
+try:
+    from .video_io import ThreadedFrameReader, VideoWriter, _PinnedFrameUploader, _cuda_frame_to_chw_f32
+except ImportError:
+    from video_io import ThreadedFrameReader, VideoWriter, _PinnedFrameUploader, _cuda_frame_to_chw_f32
+
+
+_GAUSS_KERNEL_CACHE: Dict[Tuple[object, object, int, float, int], object] = {}
+
+# Departure disambiguation: a motion blob whose mean temporal signed diff
+# (curr_v - prev_v, averaged over the window) is below this fraction of
+# (motion_thresh / 255) is classified as a trailing lobe (where the ball
+# *was*) and suppressed.  Positive = arrived, negative = departed.
+# 0.5 means the net darkening must be at least half the motion threshold
+# before we call a blob a departure.  Raise to be more aggressive; lower
+# to be more conservative.
+_DEPARTURE_SIGN_THR_SCALE: float = 0.5
+
+# Pre-allocated 3×3 morphology kernel — avoids np.ones((3,3)) every frame.
+_DILATE_KERNEL_3x3: np.ndarray = np.ones((3, 3), np.uint8)
+_DISPLAY_DILATE_KERNEL_7x7: np.ndarray = np.ones((7, 7), np.uint8)
+
+# score_u8 = clip(raw_score * _SCORE_U8_SCALE, 0, 255).
+# raw_score is a dimensionless ratio >= 0.  At the motion-threshold boundary,
+# raw_score ~= 1.0; at burst-threshold, raw_score ~= 1/burst_mult.  We scale
+# so that a blob at exactly 3x the threshold maps to ~255.
+_SCORE_U8_SCALE: float = 85.0
+
+try:
+    sys.stdout.reconfigure(line_buffering=True, write_through=True)
+except Exception:
+    pass
+
+
+@dataclass
+class ExperimentConfig:
+    input_video: str
+    output_dir: str = "output_videos"
+    output_prefix: str = ""
+    start_frame: int = 0
+    max_frames: int = 0
+    resize_max_side: int = 0
+    device: str = "auto"
+    stabilize_global_motion: bool = True
+    stabilize_downscale_max_side: int = 640
+    stabilize_blur_kernel: int = 5
+    stabilize_response_min: float = 0.15
+    stabilize_max_shift_px: float = 4.0
+
+    # Signal extraction.
+    gaussian_kernel: int = 5
+    gaussian_sigma: float = 1.2
+    motion_thresh: float = 13.0
+    motion_v_min: float = 40.0
+    sat_weight: float = 1.5
+
+    # Temporal aggregation.
+    temporal_window: int = 5
+    temporal_percentile: float = 85.0
+    temporal_min_support: int = 3
+    temporal_support_lo_frac: float = 0.70
+    temporal_burst_mult: float = 2.00
+    temporal_burst_support: int = 1
+    temporal_accept_score_u8: int = 40
+    temporal_keep_top_k: int = 4
+    reject_temporal_departures: bool = False
+
+    # Ball-colour hue prior (OpenCV HSV: H in 0–179).
+    ball_hue_lo: int = 25
+    ball_hue_hi: int = 65
+    ball_hue_min_frac: float = 0.0
+    ball_sat_min: int = 40
+
+    # Compactness gate (circularity = 4π·area / perimeter²).
+    compactness_hard_floor: float = 0.18
+    compactness_soft_ref: float = 0.55
+
+
+    # Morphology / blob filtering.
+    soft_open_sum_thresh: float = 2.5
+    post_dilate: int = 1
+    boost_min_blob_area: int = 0
+    boost_max_blob_area: int = 600
+    border_exclude_px: int = 8
+
+    # Writer settings compatible with now_main_pkg.video_io.VideoWriter.
+    use_nvenc: bool = True
+    nvenc_preset: str = "p1"
+    nvenc_bitrate: str = "8M"
+    use_async_writer: bool = True
+    async_queue: int = 64
+    _use_libx264: bool = False
+
+    # Optional output toggles.
+    write_debug_video: bool = True
+    write_mask_videos: bool = False
+
+    # Compatibility fields expected by filter_boost_mask.
+    court_depth: Optional[str] = None
+    court_side: Optional[str] = None
+    y_scale_strength: float = 0.35
+    x_scale_strength: float = 0.15
+
+
+@dataclass
+class FrameMotionResult:
+    baseline_raw: np.ndarray
+    baseline_boost: np.ndarray
+    temporal_raw: np.ndarray
+    temporal_boost: np.ndarray
+    temporal_rejected: np.ndarray
+    temporal_score_u8: np.ndarray
+    baseline_raw_px: int
+    baseline_boost_px: int
+    baseline_components: int
+    temporal_raw_px: int
+    temporal_boost_px: int
+    temporal_components: int
+    temporal_score_mean: float
+    temporal_score_max: int
+    stabilization_applied: bool = False
+    stabilization_shift_x: float = 0.0
+    stabilization_shift_y: float = 0.0
+    stabilization_response: float = 0.0
+    temporal_accept_score_u8: int = 150
+
+
+@dataclass
+class CandidateMaskResult:
+    mask: np.ndarray
+    pixel_count: int
+    component_count: int
+
+
+@dataclass
+class StabilizationResult:
+    frame_bgr: np.ndarray
+    applied: bool
+    shift_x: float
+    shift_y: float
+    response: float
+
+
+@dataclass
+class CandidateComponent:
+    area: int
+    score_mean: float
+    score_max: int
+    label: int = 0
+    cx: float = 0.0
+    cy: float = 0.0
+    # Mean of (curr_v - prev_v) averaged over the temporal window, within
+    # this component.  Positive = net brightening (arrival); negative = net
+    # darkening (departure / trailing lobe).
+    signed_mean: float = 0.0
+    hue_overlap: float = 0.0
+    circularity: float = 0.0
+
+
+def _count_connected_components(mask_u8: Optional[np.ndarray]) -> int:
+    if mask_u8 is None or mask_u8.max() == 0:
+        return 0
+    num, _, _, _ = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
+    return max(int(num) - 1, 0)
+
+
+def _apply_border_exclusion(mask_u8: np.ndarray, border_px: int) -> np.ndarray:
+    if mask_u8 is None:
+        return None
+    b = max(int(border_px), 0)
+    if b <= 0:
+        return mask_u8
+    h, w = mask_u8.shape[:2]
+    if h <= 2 * b or w <= 2 * b:
+        return np.zeros_like(mask_u8)
+    out = mask_u8.copy()
+    out[:b, :] = 0
+    out[-b:, :] = 0
+    out[:, :b] = 0
+    out[:, -b:] = 0
+    return out
+
+
+
+def _analyze_candidate_components(
+    mask_u8: np.ndarray,
+    cfg: ExperimentConfig,
+    score_u8: Optional[np.ndarray] = None,
+    signed_map: Optional[np.ndarray] = None,
+    frame_bgr: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, List[CandidateComponent]]:
+    """Run connected-components once and compute per-blob stats.
+
+    IMPORTANT: mask_u8 must be the *postprocessed* (dilated) mask.
+
+    Args:
+        mask_u8:    Binary candidate mask (0/255), already postprocessed.
+        cfg:        Experiment config (used for area gate).
+        score_u8:   Optional per-pixel temporal score (0-255 uint8).
+        signed_map: Optional per-pixel signed diff map (float32).
+        frame_bgr:  Optional current frame in BGR.  When provided,
+                    per-blob hue-overlap and circularity are computed
+                    using bounding-box crops (NOT full-frame HSV).
+    """
+    if mask_u8 is None or mask_u8.max() == 0:
+        empty = np.zeros_like(mask_u8) if mask_u8 is not None else None
+        return empty, []
+
+    num, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
+    if num <= 1:
+        return np.zeros_like(mask_u8), []
+
+    min_area = max(int(cfg.boost_min_blob_area), 0)
+    max_area = max(int(cfg.boost_max_blob_area), min_area)
+    need_hue = frame_bgr is not None and float(getattr(cfg, "ball_hue_min_frac", 0.0)) > 0.0
+    hue_lo = int(getattr(cfg, "ball_hue_lo", 25))
+    hue_hi = int(getattr(cfg, "ball_hue_hi", 65))
+    sat_min = int(getattr(cfg, "ball_sat_min", 40))
+
+    comps: List[CandidateComponent] = []
+    for i in range(1, num):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area < min_area or area > max_area:
+            continue
+
+        # Bounding-box crop — avoids full-frame boolean masks entirely.
+        bx = int(stats[i, cv2.CC_STAT_LEFT])
+        by = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        roi_labels = labels[by:by + bh, bx:bx + bw]
+        roi_mask = roi_labels == i  # small crop, not full frame
+
+        # --- Score stats (ROI sliced) ---
+        if score_u8 is not None:
+            roi_scores = score_u8[by:by + bh, bx:bx + bw][roi_mask]
+            score_mean = float(roi_scores.mean()) if roi_scores.size else 0.0
+            score_max = int(roi_scores.max()) if roi_scores.size else 0
+        else:
+            score_mean = 0.0
+            score_max = 0
+
+        # --- Signed diff (ROI sliced) ---
+        signed_mean = 0.0
+        if signed_map is not None:
+            vals = signed_map[by:by + bh, bx:bx + bw][roi_mask]
+            signed_mean = float(vals.mean()) if vals.size else 0.0
+
+        # --- Hue overlap (lazy HSV on tiny ROI only) ---
+        hue_overlap = 0.0
+        if need_hue and area > 0:
+            roi_bgr = frame_bgr[by:by + bh, bx:bx + bw]
+            roi_hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+            h_ch = roi_hsv[:, :, 0]
+            s_ch = roi_hsv[:, :, 1]
+            ball_px = ((h_ch >= hue_lo) & (h_ch <= hue_hi) & (s_ch >= sat_min))[roi_mask]
+            hue_overlap = float(np.count_nonzero(ball_px)) / float(area)
+
+        # --- Circularity (ROI contour — tiny crop, not full image) ---
+        circularity = 0.0
+        if area >= 3:
+            roi_u8 = roi_mask.view(np.uint8) * 255
+            contours, _ = cv2.findContours(roi_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if contours:
+                perimeter = cv2.arcLength(contours[0], closed=True)
+                if perimeter > 0.0:
+                    circularity = float(4.0 * np.pi * area / (perimeter * perimeter))
+
+        comps.append(
+            CandidateComponent(
+                area=area,
+                score_mean=score_mean,
+                score_max=score_max,
+                label=int(i),
+                cx=float(centroids[i, 0]),
+                cy=float(centroids[i, 1]),
+                signed_mean=signed_mean,
+                hue_overlap=hue_overlap,
+                circularity=circularity,
+            )
+        )
+    return labels, comps
+
+
+def _mask_result_from_components(
+    labels: np.ndarray,
+    components: List[CandidateComponent],
+    keep_fn,
+) -> CandidateMaskResult:
+    if labels is None:
+        return CandidateMaskResult(mask=None, pixel_count=0, component_count=0)
+    kept = [comp for comp in components if keep_fn(comp)]
+    if not kept:
+        return CandidateMaskResult(
+            mask=np.zeros(labels.shape, dtype=np.uint8),
+            pixel_count=0, component_count=0,
+        )
+    # Single np.isin pass over labels instead of N separate (labels == i) scans.
+    keep_labels = np.array([comp.label for comp in kept], dtype=labels.dtype)
+    out = np.where(np.isin(labels, keep_labels), np.uint8(255), np.uint8(0))
+    kept_pixels = sum(int(comp.area) for comp in kept)
+    return CandidateMaskResult(mask=out, pixel_count=kept_pixels, component_count=len(kept))
+
+
+def _filter_candidate_mask_preserve_shape(mask_u8: np.ndarray, cfg: ExperimentConfig) -> CandidateMaskResult:
+    labels, components = _analyze_candidate_components(mask_u8, cfg, score_u8=None)
+    return _mask_result_from_components(labels, components, lambda comp: True)
+
+
+def _select_temporal_components(
+    components: List[CandidateComponent],
+    cfg: ExperimentConfig,
+) -> Tuple[set, set]:
+    """Accept / reject temporal motion blobs.
+
+    Gates applied in order:
+      1. Score gate — blob must clear temporal_accept_score_u8.
+      2. Departure gate — optionally reject net-darkening blobs.
+      3. Compactness hard floor — reject blobs below compactness_hard_floor.
+      4. Hue prior — reject blobs whose ball-hue overlap is below
+         ball_hue_min_frac (only when > 0).
+      5. Top-K ranking — excess accepted blobs are ranked by a composite
+         key that folds in compactness as a soft weight, and the bottom
+         ones are demoted to rejected.
+    """
+    accepted_labels: set = set()
+    rejected_labels: set = set()
+    accept_score = int(getattr(cfg, "temporal_accept_score_u8", 150))
+    keep_top_k = max(int(getattr(cfg, "temporal_keep_top_k", 0)), 0)
+    reject_departures = bool(getattr(cfg, "reject_temporal_departures", False))
+    departure_thr = float(cfg.motion_thresh) / 255.0 * _DEPARTURE_SIGN_THR_SCALE
+    compactness_floor = float(getattr(cfg, "compactness_hard_floor", 0.0))
+    compactness_ref = max(float(getattr(cfg, "compactness_soft_ref", 0.55)), 1e-6)
+    hue_min_frac = float(getattr(cfg, "ball_hue_min_frac", 0.0))
+    accepted_components: List[CandidateComponent] = []
+
+    for comp in components:
+        passes_score = comp.score_mean >= accept_score or comp.score_max >= accept_score
+        is_departure = reject_departures and comp.signed_mean < -departure_thr
+        fails_compactness = compactness_floor > 0.0 and comp.circularity < compactness_floor
+        fails_hue = hue_min_frac > 0.0 and comp.hue_overlap < hue_min_frac
+
+        if passes_score and not is_departure and not fails_compactness and not fails_hue:
+            accepted_components.append(comp)
+        else:
+            rejected_labels.add(comp.label)
+
+    if keep_top_k > 0 and len(accepted_components) > keep_top_k:
+        # Soft compactness weight: blobs at compactness_soft_ref get 1.0,
+        # lower circularity is penalised, higher is mildly rewarded.
+        def _sort_key(c: CandidateComponent):
+            circ_w = min(c.circularity / compactness_ref, 1.5) ** 0.5
+            raw_score = max(c.score_mean, float(c.score_max)) / max(float(c.area) ** 0.5, 1.0)
+            return (raw_score * circ_w, c.score_max, c.score_mean)
+
+        accepted_components.sort(key=_sort_key, reverse=True)
+        for comp in accepted_components[keep_top_k:]:
+            rejected_labels.add(comp.label)
+        accepted_components = accepted_components[:keep_top_k]
+
+    accepted_labels.update(comp.label for comp in accepted_components)
+    return accepted_labels, rejected_labels
+
+
+def _gaussian_blur_torch(t: "torch.Tensor", kernel_size: int, sigma: float) -> "torch.Tensor":
+    """Gaussian blur with reflect padding to better match OpenCV behavior."""
+    if kernel_size <= 1:
+        return t
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    c = int(t.shape[1])
+    cache_key = (t.dtype, t.device, kernel_size, float(sigma), c)
+    kernel = _GAUSS_KERNEL_CACHE.get(cache_key)
+    if kernel is None:
+        x = torch.arange(kernel_size, dtype=t.dtype, device=t.device) - kernel_size // 2
+        kernel_1d = torch.exp(-1.0 * (x ** 2) / (2.0 * float(sigma) ** 2))
+        kernel_1d = kernel_1d / kernel_1d.sum()
+        kernel_2d = (kernel_1d[:, None] * kernel_1d[None, :]).expand(c, 1, kernel_size, kernel_size).contiguous()
+        _GAUSS_KERNEL_CACHE[cache_key] = kernel_2d
+        kernel = kernel_2d
+    pad = kernel_size // 2
+    t_pad = F.pad(t, (pad, pad, pad, pad), mode="reflect")
+    return F.conv2d(t_pad, kernel, padding=0, groups=c)
+
+
+class TemporalMotionDetector:
+    """Compare simple pairwise motion against windowed temporal aggregation.
+
+    The key addition over a plain unsigned frame-differencer is *signed diff
+    tracking*: alongside the squared energy history we maintain a history of
+    (curr_v - prev_v) diffs.  Their temporal mean gives each motion blob a
+    net brightness direction.  Blobs that are net-darkening can be classified
+    as trailing/departure lobes and suppressed (opt-in via reject_temporal_departures).
+
+    CRITICAL INVARIANT: connected-component analysis must always run on the
+    *postprocessed* (soft-opened + dilated) mask, not the raw per-pixel candidate.
+    After dilation, each blob covers the full ball footprint and its neighboring
+    pixels, giving score_max a fair chance to reach the accept threshold.
+    Running CC on the raw candidate produces tight blobs whose score_max is
+    artificially low, causing the score gate to reject everything.
+    """
+
+    def __init__(self, cfg: ExperimentConfig):
+        self.cfg = cfg
+        self.use_cuda = bool(
+            HAS_TORCH and torch.cuda.is_available() and str(getattr(cfg, "device", "auto")).lower() != "cpu"
+        )
+        window_len = max(int(cfg.temporal_window) - 1, 1)
+        self.prev_v: Optional[np.ndarray] = None
+        self.prev_s: Optional[np.ndarray] = None
+        self.diff_history: Deque[np.ndarray] = deque(maxlen=window_len)
+        self.signed_diff_history: Deque[np.ndarray] = deque(maxlen=window_len)
+
+        self.device = torch.device("cuda") if self.use_cuda else None
+        self.prev_v_t: Optional["torch.Tensor"] = None
+        self.prev_s_t: Optional["torch.Tensor"] = None
+        # Pre-allocated ring buffers — avoids torch.stack(list(deque)) per frame.
+        self._window_len: int = window_len
+        self._diff_ring_t: Optional["torch.Tensor"] = None     # (window_len, H, W)
+        self._signed_ring_t: Optional["torch.Tensor"] = None   # (window_len, H, W)
+        self._ring_write_idx: int = 0
+        self._ring_count: int = 0
+
+        self.frame_uploader: Optional["_PinnedFrameUploader"] = None
+        self._uploader_shape: Optional[Tuple[int, int]] = None
+        self.prev_stab_ref: Optional[np.ndarray] = None
+        self._stabilize_ref_shape: Optional[Tuple[int, int]] = None
+        self._stabilize_hann: Optional[np.ndarray] = None
+
+        post_dilate = max(int(cfg.post_dilate), 1)
+        self._post_dilate_kernel: Optional[np.ndarray] = (
+            np.ones((post_dilate, post_dilate), np.uint8) if post_dilate > 1 else None
+        )
+
+
+    # ------------------------------------------------------------------
+    # CUDA ring buffer (avoids torch.stack(list(deque)) allocation per frame)
+    # ------------------------------------------------------------------
+
+    def _ring_append_cuda(self, diff_energy: "torch.Tensor", signed_v: "torch.Tensor") -> None:
+        """Write into pre-allocated ring buffers (lazy-inited on first call)."""
+        if self._diff_ring_t is None:
+            h, w = diff_energy.shape
+            self._diff_ring_t = torch.zeros(
+                (self._window_len, h, w), dtype=diff_energy.dtype, device=self.device
+            )
+            self._signed_ring_t = torch.zeros(
+                (self._window_len, h, w), dtype=signed_v.dtype, device=self.device
+            )
+        idx = self._ring_write_idx % self._window_len
+        self._diff_ring_t[idx].copy_(diff_energy)
+        self._signed_ring_t[idx].copy_(signed_v)
+        self._ring_write_idx += 1
+        self._ring_count = min(self._ring_count + 1, self._window_len)
+
+    def _ring_get_stack(self) -> Tuple["torch.Tensor", "torch.Tensor"]:
+        """Return (diff_stack, signed_stack) as contiguous views, no allocation."""
+        n = self._ring_count
+        if n == self._window_len:
+            # Full buffer — return ordered view (oldest first).
+            start = self._ring_write_idx % self._window_len
+            if start == 0:
+                return self._diff_ring_t, self._signed_ring_t
+            idx = torch.arange(n, device=self.device)
+            idx = (idx + start) % self._window_len
+            return self._diff_ring_t[idx], self._signed_ring_t[idx]
+        else:
+            # Partially filled — first n slots are valid.
+            return self._diff_ring_t[:n], self._signed_ring_t[:n]
+
+    def process(self, frame_bgr: np.ndarray) -> Optional[FrameMotionResult]:
+        stab = self._stabilize_frame(frame_bgr)
+        frame_bgr = stab.frame_bgr
+        if self.use_cuda:
+            result = self._process_cuda(frame_bgr)
+        else:
+            result = self._process_cpu(frame_bgr)
+
+        if result is not None:
+            result.stabilization_applied = bool(stab.applied)
+            result.stabilization_shift_x = float(stab.shift_x)
+            result.stabilization_shift_y = float(stab.shift_y)
+            result.stabilization_response = float(stab.response)
+        return result
+
+
+
+    # ------------------------------------------------------------------
+    # CPU path
+    # ------------------------------------------------------------------
+
+    def _process_cpu(self, frame_bgr: np.ndarray) -> Optional[FrameMotionResult]:
+        curr_v, curr_s = self._extract_vs(frame_bgr)
+        if self.prev_v is None or self.prev_s is None:
+            self.prev_v = curr_v
+            self.prev_s = curr_s
+            return None
+
+        diff_energy, signed_v = self._motion_energy_and_sign(curr_v, curr_s, self.prev_v, self.prev_s)
+        self.diff_history.append(diff_energy)
+        self.signed_diff_history.append(signed_v)
+        self.prev_v = curr_v
+        self.prev_s = curr_s
+
+        baseline_raw = self._pairwise_mask(diff_energy, curr_v)
+        # temporal_raw is already postprocessed — CC must run on this.
+        # See class docstring for why running on the raw candidate breaks scoring.
+        temporal_raw, temporal_score_u8, signed_agg = self._temporal_mask(curr_v)
+
+        border = int(getattr(self.cfg, "border_exclude_px", 0))
+        baseline_raw = _apply_border_exclusion(baseline_raw, border)
+        temporal_raw = _apply_border_exclusion(temporal_raw, border)
+
+        # Temporal says "real motion here" (but smeared backward).
+        # Pairwise says "motion at current position" (but noisy).
+        # Intersection = current-frame position, noise-filtered.
+        combined_raw = cv2.bitwise_and(baseline_raw, temporal_raw)
+
+        baseline_labels, baseline_components = _analyze_candidate_components(baseline_raw, self.cfg)
+        baseline_boost_result = _mask_result_from_components(
+            baseline_labels, baseline_components, lambda comp: True
+        )
+
+        combined_labels, combined_components = _analyze_candidate_components(
+            combined_raw, self.cfg, score_u8=temporal_score_u8, signed_map=signed_agg,
+            frame_bgr=frame_bgr,
+        )
+        accepted_labels, rejected_labels = _select_temporal_components(combined_components, self.cfg)
+        temporal_boost_result = _mask_result_from_components(
+            combined_labels, combined_components, lambda comp: comp.label in accepted_labels
+        )
+        temporal_rejected_result = _mask_result_from_components(
+            combined_labels, combined_components, lambda comp: comp.label in rejected_labels
+        )
+        temporal_boost_mask = temporal_boost_result.mask
+        temporal_boost_px = temporal_boost_result.pixel_count
+
+        return FrameMotionResult(
+            baseline_raw=baseline_raw,
+            baseline_boost=baseline_boost_result.mask,
+            temporal_raw=combined_raw,
+            temporal_boost=temporal_boost_mask,
+            temporal_rejected=temporal_rejected_result.mask,
+            temporal_score_u8=temporal_score_u8,
+            baseline_raw_px=int(np.count_nonzero(baseline_raw)),
+            baseline_boost_px=baseline_boost_result.pixel_count,
+            baseline_components=baseline_boost_result.component_count,
+            temporal_raw_px=int(np.count_nonzero(combined_raw)),
+            temporal_boost_px=temporal_boost_px,
+            temporal_components=temporal_boost_result.component_count,
+            temporal_score_mean=float(temporal_score_u8.mean()),
+            temporal_score_max=int(temporal_score_u8.max()),
+            temporal_accept_score_u8=int(getattr(self.cfg, "temporal_accept_score_u8", 150)),
+        )
+
+    # ------------------------------------------------------------------
+    # CUDA path
+    # ------------------------------------------------------------------
+
+    def _process_cuda(self, frame_bgr: np.ndarray) -> Optional[FrameMotionResult]:
+        curr_v_t, curr_s_t = self._extract_vs_cuda(frame_bgr)
+        if self.prev_v_t is None or self.prev_s_t is None:
+            self.prev_v_t = curr_v_t
+            self.prev_s_t = curr_s_t
+            return None
+
+        diff_energy_t, signed_v_t = self._motion_energy_and_sign_cuda(
+            curr_v_t, curr_s_t, self.prev_v_t, self.prev_s_t
+        )
+        # Ring-buffer write (zero-copy into pre-allocated tensor).
+        self._ring_append_cuda(diff_energy_t, signed_v_t)
+        self.prev_v_t = curr_v_t
+        self.prev_s_t = curr_s_t
+
+        baseline_raw_t = self._pairwise_mask_cuda(diff_energy_t, curr_v_t)
+        temporal_raw_t, temporal_score_t, signed_agg_t = self._temporal_mask_cuda(curr_v_t)
+
+        # Single GPU→CPU transfer instead of 4 separate syncs.
+        if signed_agg_t is not None:
+            packed = torch.stack([
+                baseline_raw_t.to(dtype=torch.float32) * 255.0,
+                temporal_raw_t.to(dtype=torch.float32) * 255.0,
+                temporal_score_t,
+                signed_agg_t,
+            ], dim=0).cpu().numpy()
+            baseline_raw = packed[0].astype(np.uint8)
+            temporal_raw = packed[1].astype(np.uint8)
+            temporal_score_u8 = packed[2].astype(np.uint8)
+            signed_agg = packed[3].astype(np.float32)
+        else:
+            packed = torch.stack([
+                baseline_raw_t.to(dtype=torch.float32) * 255.0,
+                temporal_raw_t.to(dtype=torch.float32) * 255.0,
+                temporal_score_t,
+            ], dim=0).cpu().numpy()
+            baseline_raw = packed[0].astype(np.uint8)
+            temporal_raw = packed[1].astype(np.uint8)
+            temporal_score_u8 = packed[2].astype(np.uint8)
+            signed_agg = None
+
+        border = int(getattr(self.cfg, "border_exclude_px", 0))
+        baseline_raw = _apply_border_exclusion(baseline_raw, border)
+        temporal_raw = _apply_border_exclusion(temporal_raw, border)
+
+        # Temporal = noise-filtered (but smeared). Pairwise = current position (but noisy).
+        # Intersection = current position, noise-filtered.
+        combined_raw = cv2.bitwise_and(baseline_raw, temporal_raw)
+
+        baseline_labels, baseline_components = _analyze_candidate_components(baseline_raw, self.cfg)
+        baseline_boost_result = _mask_result_from_components(
+            baseline_labels, baseline_components, lambda comp: True
+        )
+
+        combined_labels, combined_components = _analyze_candidate_components(
+            combined_raw, self.cfg, score_u8=temporal_score_u8, signed_map=signed_agg,
+            frame_bgr=frame_bgr,
+        )
+        accepted_labels, rejected_labels = _select_temporal_components(combined_components, self.cfg)
+        temporal_boost_result = _mask_result_from_components(
+            combined_labels, combined_components, lambda comp: comp.label in accepted_labels
+        )
+        temporal_rejected_result = _mask_result_from_components(
+            combined_labels, combined_components, lambda comp: comp.label in rejected_labels
+        )
+        temporal_boost_mask = temporal_boost_result.mask
+        temporal_boost_px = temporal_boost_result.pixel_count
+
+        return FrameMotionResult(
+            baseline_raw=baseline_raw,
+            baseline_boost=baseline_boost_result.mask,
+            temporal_raw=combined_raw,
+            temporal_boost=temporal_boost_mask,
+            temporal_rejected=temporal_rejected_result.mask,
+            temporal_score_u8=temporal_score_u8,
+            baseline_raw_px=int(np.count_nonzero(baseline_raw)),
+            baseline_boost_px=baseline_boost_result.pixel_count,
+            baseline_components=baseline_boost_result.component_count,
+            temporal_raw_px=int(np.count_nonzero(combined_raw)),
+            temporal_boost_px=temporal_boost_px,
+            temporal_components=temporal_boost_result.component_count,
+            temporal_score_mean=float(temporal_score_u8.mean()),
+            temporal_score_max=int(temporal_score_u8.max()),
+            temporal_accept_score_u8=int(getattr(self.cfg, "temporal_accept_score_u8", 150)),
+        )
+
+    # ------------------------------------------------------------------
+    # Stabilization
+    # ------------------------------------------------------------------
+
+    def _stabilize_frame(self, frame_bgr: np.ndarray) -> StabilizationResult:
+        if not bool(getattr(self.cfg, "stabilize_global_motion", True)):
+            return StabilizationResult(frame_bgr=frame_bgr, applied=False, shift_x=0.0, shift_y=0.0, response=0.0)
+
+        curr_ref = self._build_stabilization_ref(frame_bgr)
+        if self.prev_stab_ref is None:
+            self.prev_stab_ref = curr_ref
+            self._stabilize_ref_shape = curr_ref.shape[:2]
+            self._stabilize_hann = cv2.createHanningWindow((curr_ref.shape[1], curr_ref.shape[0]), cv2.CV_32F)
+            return StabilizationResult(frame_bgr=frame_bgr, applied=False, shift_x=0.0, shift_y=0.0, response=0.0)
+
+        if self._stabilize_ref_shape != curr_ref.shape[:2] or self._stabilize_hann is None:
+            self._stabilize_ref_shape = curr_ref.shape[:2]
+            self._stabilize_hann = cv2.createHanningWindow((curr_ref.shape[1], curr_ref.shape[0]), cv2.CV_32F)
+
+        prev_ref = self.prev_stab_ref
+        self.prev_stab_ref = curr_ref
+
+        try:
+            (shift_x_small, shift_y_small), response = cv2.phaseCorrelate(prev_ref, curr_ref, self._stabilize_hann)
+        except cv2.error:
+            return StabilizationResult(frame_bgr=frame_bgr, applied=False, shift_x=0.0, shift_y=0.0, response=0.0)
+
+        scale_x = float(frame_bgr.shape[1]) / float(curr_ref.shape[1])
+        scale_y = float(frame_bgr.shape[0]) / float(curr_ref.shape[0])
+        # phaseCorrelate() reports how curr moved relative to prev.
+        # Apply the inverse shift to align curr back to prev's coordinate system.
+        shift_x = -float(shift_x_small) * scale_x
+        shift_y = -float(shift_y_small) * scale_y
+        shift_mag = float(np.hypot(shift_x, shift_y))
+        max_shift = max(float(getattr(self.cfg, "stabilize_max_shift_px", 4.0)), 0.0)
+        min_response = float(getattr(self.cfg, "stabilize_response_min", 0.15))
+
+        if response < min_response or shift_mag <= 0.05 or shift_mag > max_shift:
+            return StabilizationResult(frame_bgr=frame_bgr, applied=False, shift_x=shift_x, shift_y=shift_y, response=float(response))
+
+        M = np.array([[1.0, 0.0, shift_x], [0.0, 1.0, shift_y]], dtype=np.float32)
+        stabilized = cv2.warpAffine(
+            frame_bgr, M, (frame_bgr.shape[1], frame_bgr.shape[0]),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101,
+        )
+        return StabilizationResult(
+            frame_bgr=stabilized, applied=True,
+            shift_x=shift_x, shift_y=shift_y, response=float(response),
+        )
+
+    def _build_stabilization_ref(self, frame_bgr: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+
+        # Downscale FIRST — blur the small image, not the full-res one.
+        max_side = max(int(getattr(self.cfg, "stabilize_downscale_max_side", 640)), 0)
+        if max_side > 0:
+            h, w = gray.shape[:2]
+            scale = float(max_side) / max(float(h), float(w))
+            if scale < 0.999:
+                out_w = max(32, int(round(w * scale)))
+                out_h = max(32, int(round(h * scale)))
+                gray = cv2.resize(gray, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
+        gray = gray.astype(np.float32) * (1.0 / 255.0)
+        blur_k = max(int(getattr(self.cfg, "stabilize_blur_kernel", 5)), 1)
+        if blur_k % 2 == 0:
+            blur_k += 1
+        if blur_k > 1:
+            gray = cv2.GaussianBlur(gray, (blur_k, blur_k), 0.0)
+        return gray
+
+    # ------------------------------------------------------------------
+    # Feature extraction
+    # ------------------------------------------------------------------
+
+    def _extract_vs(self, frame_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        # Single C++ call instead of 3 numpy passes (astype + max + min).
+        hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        v = hsv[:, :, 2].astype(np.float32) * (1.0 / 255.0)
+        s = hsv[:, :, 1].astype(np.float32) * (1.0 / 255.0)
+
+        k = max(int(self.cfg.gaussian_kernel), 1)
+        if k % 2 == 0:
+            k += 1
+        if k > 1:
+            sigma = max(float(self.cfg.gaussian_sigma), 1e-3)
+            v = cv2.GaussianBlur(v, (k, k), sigma)
+            s = cv2.GaussianBlur(s, (k, k), sigma)
+        return v, s
+
+    def _extract_vs_cuda(self, frame_bgr: np.ndarray) -> Tuple["torch.Tensor", "torch.Tensor"]:
+        h, w = frame_bgr.shape[:2]
+        if self.frame_uploader is None or self._uploader_shape != (h, w):
+            self.frame_uploader = _PinnedFrameUploader(h, w, self.device)
+            self._uploader_shape = (h, w)
+
+        t = _cuda_frame_to_chw_f32(frame_bgr, self.device, uploader=self.frame_uploader)
+        maxc = torch.max(t, dim=0).values
+        minc = torch.min(t, dim=0).values
+        delta = maxc - minc
+        s = torch.where(maxc > 1e-6, delta / (maxc + 1e-6), torch.zeros_like(maxc))
+        v = maxc
+
+        k = max(int(self.cfg.gaussian_kernel), 1)
+        if k % 2 == 0:
+            k += 1
+        if k > 1:
+            sigma = max(float(self.cfg.gaussian_sigma), 1e-3)
+            vs = torch.stack([v, s], dim=0).unsqueeze(0)
+            vs = _gaussian_blur_torch(vs, kernel_size=k, sigma=sigma).squeeze(0)
+            v = vs[0]
+            s = vs[1]
+        return v, s
+
+    # ------------------------------------------------------------------
+    # Motion energy (returns signed diff alongside unsigned energy so
+    # callers avoid computing curr - prev twice)
+    # ------------------------------------------------------------------
+
+    def _motion_energy_and_sign(
+        self,
+        curr_v: np.ndarray,
+        curr_s: np.ndarray,
+        prev_v: np.ndarray,
+        prev_s: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (unsigned_energy, signed_v_diff).
+
+        unsigned_energy = max(v_diff^2, s_diff^2 * sat_weight) -- for detection.
+        signed_v_diff   = curr_v - prev_v                      -- for departure
+                          disambiguation (positive=arrived, negative=left).
+        """
+        v_diff = curr_v - prev_v
+        s_diff = curr_s - prev_s
+        energy = np.maximum(
+            np.square(v_diff).astype(np.float32),
+            np.square(s_diff).astype(np.float32) * float(self.cfg.sat_weight),
+        )
+        return energy, v_diff.astype(np.float32)
+
+    def _motion_energy_and_sign_cuda(
+        self,
+        curr_v: "torch.Tensor",
+        curr_s: "torch.Tensor",
+        prev_v: "torch.Tensor",
+        prev_s: "torch.Tensor",
+    ) -> Tuple["torch.Tensor", "torch.Tensor"]:
+        v_diff = curr_v - prev_v
+        s_diff = curr_s - prev_s
+        energy = torch.maximum(v_diff ** 2, s_diff ** 2 * float(self.cfg.sat_weight))
+        return energy, v_diff
+
+    # ------------------------------------------------------------------
+    # Mask building
+    # ------------------------------------------------------------------
+
+    def _pairwise_mask(self, diff_energy: np.ndarray, curr_v: np.ndarray) -> np.ndarray:
+        thr_sq = self._thr_sq()
+        v_min = float(self.cfg.motion_v_min) / 255.0
+        mask = ((diff_energy > thr_sq) & (curr_v > v_min)).astype(np.uint8) * 255
+        return self._postprocess_mask(mask)
+
+    def _pairwise_mask_cuda(self, diff_energy: "torch.Tensor", curr_v: "torch.Tensor") -> "torch.Tensor":
+        thr_sq = self._thr_sq()
+        v_min = float(self.cfg.motion_v_min) / 255.0
+        mask = (diff_energy > thr_sq) & (curr_v > v_min)
+        return self._postprocess_mask_cuda(mask)
+
+    def _temporal_mask(
+        self, curr_v: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """Return (postprocessed_mask_u8, score_u8, signed_agg_or_None).
+
+        The returned mask is already soft-opened and dilated.
+        Callers must run CC on this mask, not on any earlier intermediate.
+        """
+        stack = np.stack(self.diff_history, axis=0)
+        thr_sq = self._thr_sq()
+        lo_thr_sq = thr_sq * max(float(self.cfg.temporal_support_lo_frac), 0.05)
+        burst_thr_sq = thr_sq * max(float(self.cfg.temporal_burst_mult), 1.0)
+        v_min = float(self.cfg.motion_v_min) / 255.0
+
+        if stack.shape[0] == 1:
+            agg = stack[0]
+        else:
+            agg = np.percentile(stack, float(self.cfg.temporal_percentile), axis=0).astype(np.float32)
+
+        support = np.count_nonzero(stack > lo_thr_sq, axis=0)
+        support_req = min(max(int(self.cfg.temporal_min_support), 1), stack.shape[0])
+        burst_req = min(max(int(self.cfg.temporal_burst_support), 1), stack.shape[0])
+        recent = stack[-1]
+
+        # Temporal window answers: "is this real motion?" (confidence)
+        temporally_confirmed = (agg > thr_sq) & (support >= support_req)
+        burst_confirmed = support >= burst_req
+
+        # Latest frame diff gives position. Both arrival and departure blobs
+        # survive — the momentum tracker picks the forward one.
+        current_motion = recent > thr_sq
+        current_burst = recent > burst_thr_sq
+
+        signed_agg: Optional[np.ndarray] = None
+        if self.signed_diff_history:
+            signed_agg = np.stack(self.signed_diff_history, axis=0).mean(axis=0).astype(np.float32)
+
+        # Output = current-frame position, gated by temporal confidence.
+        sustained = current_motion & temporally_confirmed
+        burst = current_burst & burst_confirmed
+        raw_candidate = (sustained | burst) & (curr_v > v_min)
+
+        # Pixel-level trailing suppression removes tiny "ghost ball" tails.
+        if bool(getattr(self.cfg, "reject_temporal_departures", False)) and signed_agg is not None:
+            departure_thr = float(self.cfg.motion_thresh) / 255.0 * _DEPARTURE_SIGN_THR_SCALE
+            raw_candidate &= (signed_agg >= -departure_thr)
+
+        raw_candidate = raw_candidate.astype(np.uint8) * 255
+        mask = self._postprocess_mask(raw_candidate)
+
+        # Score = speed. sqrt compresses the range for visible gradient.
+        # Faster motion → brighter. Mask gates it to zero outside detections.
+        score = np.sqrt(recent / max(thr_sq, 1e-8))
+        score_u8 = np.clip(score * _SCORE_U8_SCALE, 0.0, 255.0).astype(np.uint8)
+        score_u8[mask == 0] = 0
+
+        return mask, score_u8, signed_agg
+
+    def _temporal_mask_cuda(
+        self, curr_v: "torch.Tensor"
+    ) -> Tuple["torch.Tensor", "torch.Tensor", Optional["torch.Tensor"]]:
+        stack, signed_stack = self._ring_get_stack()
+        thr_sq = self._thr_sq()
+        lo_thr_sq = thr_sq * max(float(self.cfg.temporal_support_lo_frac), 0.05)
+        burst_thr_sq = thr_sq * max(float(self.cfg.temporal_burst_mult), 1.0)
+        v_min = float(self.cfg.motion_v_min) / 255.0
+        n = int(stack.shape[0])
+
+        if n == 1:
+            agg = stack[0]
+        else:
+            # kthvalue is faster than sort for small N (Gemini #4).
+            q = float(self.cfg.temporal_percentile) / 100.0
+            k = min(int(q * (n - 1) + 0.5), n - 1) + 1  # kthvalue is 1-indexed
+            agg = torch.kthvalue(stack, k, dim=0).values
+
+        support = (stack > lo_thr_sq).to(dtype=torch.int32).sum(dim=0)
+        support_req = min(max(int(self.cfg.temporal_min_support), 1), n)
+        burst_req = min(max(int(self.cfg.temporal_burst_support), 1), n)
+        recent = stack[-1]
+
+        # Temporal window answers: "is this real motion?" (confidence)
+        temporally_confirmed = (agg > thr_sq) & (support >= support_req)
+        burst_confirmed = support >= burst_req
+
+        # Latest frame diff gives position.
+        current_motion = recent > thr_sq
+        current_burst = recent > burst_thr_sq
+
+        signed_agg_t: Optional["torch.Tensor"] = None
+        if self._ring_count > 0:
+            signed_agg_t = signed_stack.mean(dim=0)
+
+        # Output = current-frame position, gated by temporal confidence.
+        sustained = current_motion & temporally_confirmed
+        burst = current_burst & burst_confirmed
+        raw_candidate = (sustained | burst) & (curr_v > v_min)
+        if bool(getattr(self.cfg, "reject_temporal_departures", False)) and signed_agg_t is not None:
+            departure_thr = float(self.cfg.motion_thresh) / 255.0 * _DEPARTURE_SIGN_THR_SCALE
+            raw_candidate = raw_candidate & (signed_agg_t >= -departure_thr)
+        mask = self._postprocess_mask_cuda(raw_candidate)
+
+        score = torch.sqrt(recent / max(thr_sq, 1e-8))
+        score_u8 = torch.clamp(score * _SCORE_U8_SCALE, 0.0, 255.0)
+        score_u8 = score_u8 * mask.to(dtype=score_u8.dtype)
+
+        return mask, score_u8, signed_agg_t
+
+    # ------------------------------------------------------------------
+    # Post-processing
+    # ------------------------------------------------------------------
+
+    def _postprocess_mask(self, mask_u8: np.ndarray) -> np.ndarray:
+        if mask_u8.max() == 0:
+            return mask_u8
+
+        sum_thresh = float(self.cfg.soft_open_sum_thresh)
+        if sum_thresh > 0.0:
+            neighborhood_sum = cv2.blur((mask_u8 > 0).astype(np.float32), (3, 3)) * 9.0
+            mask_u8 = (neighborhood_sum >= sum_thresh).astype(np.uint8) * 255
+
+        mask_u8 = cv2.dilate(mask_u8, _DILATE_KERNEL_3x3, iterations=1)
+
+        if self._post_dilate_kernel is not None:
+            mask_u8 = cv2.dilate(mask_u8, self._post_dilate_kernel, iterations=1)
+        return mask_u8
+
+    def _postprocess_mask_cuda(self, mask_t: "torch.Tensor") -> "torch.Tensor":
+        # No early-exit check — torch.any() would force a GPU→CPU sync that
+        # costs more than unconditionally running these trivial pool ops.
+        sum_thresh = float(self.cfg.soft_open_sum_thresh)
+        if sum_thresh > 0.0:
+            mf = mask_t.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+            mf = F.pad(mf, (1, 1, 1, 1), mode="reflect")
+            neighborhood_sum = F.avg_pool2d(mf, 3, stride=1, padding=0) * 9.0
+            mask_t = neighborhood_sum.squeeze(0).squeeze(0) >= sum_thresh
+
+        mf = mask_t.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        mf = F.max_pool2d(mf, 3, stride=1, padding=1)
+        mask_t = mf.squeeze(0).squeeze(0) > 0.5
+
+        if self._post_dilate_kernel is not None:
+            pd = self._post_dilate_kernel.shape[0]
+            mf = mask_t.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+            mf = F.max_pool2d(mf, pd, stride=1, padding=pd // 2)
+            mask_t = mf.squeeze(0).squeeze(0) > 0.5
+        return mask_t
+
+    def _thr_sq(self) -> float:
+        thr = float(self.cfg.motion_thresh) / 255.0
+        return thr * thr
+
+# ---------------------------------------------------------------------------
+# Rendering helpers
+# ---------------------------------------------------------------------------
+
+def _resize_frame(frame: np.ndarray, max_side: int) -> np.ndarray:
+    max_side = int(max_side)
+    if max_side <= 0:
+        return frame
+    h, w = frame.shape[:2]
+    scale = float(max_side) / max(float(h), float(w))
+    if scale >= 0.999:
+        return frame
+    out_w = max(1, int(round(w * scale)))
+    out_h = max(1, int(round(h * scale)))
+    return cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
+
+def _mask_to_bgr(mask_u8: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(mask_u8, cv2.COLOR_GRAY2BGR)
+
+
+def _score_to_heatmap(score_u8: np.ndarray) -> np.ndarray:
+    return cv2.applyColorMap(score_u8, cv2.COLORMAP_TURBO)
+
+
+def _expand_mask_for_display(mask_u8: np.ndarray, kernel: np.ndarray = _DISPLAY_DILATE_KERNEL_7x7) -> np.ndarray:
+    if mask_u8 is None or mask_u8.max() == 0:
+        return mask_u8
+    return cv2.dilate(mask_u8, kernel, iterations=1)
+
+
+def _overlay_motion_into(
+    dest: np.ndarray,
+    frame_bgr: np.ndarray,
+    raw_mask_u8: np.ndarray,
+    boost_mask_u8: np.ndarray,
+    rejected_mask_u8: Optional[np.ndarray],
+    title: str,
+    stats_line: str,
+    score_u8: Optional[np.ndarray] = None,
+) -> None:
+    """Write motion overlay directly into dest (pre-allocated view)."""
+    dest[:] = frame_bgr
+    boost_display = _expand_mask_for_display(boost_mask_u8)
+    boost = boost_display > 0
+    raw = raw_mask_u8 > 0
+    if rejected_mask_u8 is not None:
+        rejected = rejected_mask_u8 > 0
+        rejected_only = rejected & (~boost)
+        dest[rejected_only] = (255, 64, 64)
+    raw_only = raw & (~boost)
+    if rejected_mask_u8 is not None:
+        raw_only &= ~rejected
+    dest[raw_only] = (32, 32, 96)
+    # Per-pixel energy heatmap on accepted blobs.
+    if score_u8 is not None and np.any(boost):
+        heatmap = cv2.applyColorMap(score_u8, cv2.COLORMAP_TURBO)
+        dest[boost] = heatmap[boost]
+    else:
+        dest[boost] = (255, 0, 0)
+    _draw_label(dest, title, stats_line)
+
+
+def _overlay_motion(
+    frame_bgr: np.ndarray,
+    raw_mask_u8: np.ndarray,
+    boost_mask_u8: np.ndarray,
+    rejected_mask_u8: Optional[np.ndarray],
+    title: str,
+    stats_line: str,
+) -> np.ndarray:
+    out = frame_bgr.copy()
+    raw = raw_mask_u8 > 0
+    boost_display = _expand_mask_for_display(boost_mask_u8)
+    boost = boost_display > 0
+    rejected = (rejected_mask_u8 > 0) if rejected_mask_u8 is not None else np.zeros_like(raw)
+    raw_only = raw & (~boost) & (~rejected)
+    rejected_only = rejected & (~boost)
+    out[raw_only] = (32, 32, 96)
+    out[rejected_only] = (255, 64, 64)
+    out[boost] = (0, 255, 255)
+    _draw_label(out, title, stats_line)
+    return out
+
+
+def _render_panel(image_bgr: np.ndarray, title: str, stats_line: str = "") -> np.ndarray:
+    out = image_bgr.copy()
+    _draw_label(out, title, stats_line)
+    return out
+
+
+def _draw_label(image_bgr: np.ndarray, title: str, stats_line: str = "") -> None:
+    cv2.rectangle(image_bgr, (0, 0), (image_bgr.shape[1], 46), (0, 0, 0), -1)
+    cv2.putText(image_bgr, title, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+    if stats_line:
+        cv2.putText(image_bgr, stats_line, (10, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 255, 200), 1, cv2.LINE_AA)
+
+
+def _build_comparison_frame(frame_bgr: np.ndarray, result: FrameMotionResult) -> np.ndarray:
+    h, w = frame_bgr.shape[:2]
+    out = np.empty((h * 2, w * 2, 3), dtype=np.uint8)
+
+    stab_stats = (
+        f"stab={'on' if result.stabilization_applied else 'off'} "
+        f"dx={result.stabilization_shift_x:+.2f} "
+        f"dy={result.stabilization_shift_y:+.2f} "
+        f"resp={result.stabilization_response:.3f}"
+    )
+    base_stats = (
+        f"raw_px={result.baseline_raw_px} "
+        f"boost_px={result.baseline_boost_px} "
+        f"cc={result.baseline_components}"
+    )
+    temp_stats = (
+        f"raw_px={result.temporal_raw_px} "
+        f"boost_px={result.temporal_boost_px} "
+        f"cc={result.temporal_components} "
+        f"rej_px={int(np.count_nonzero(result.temporal_rejected))}"
+    )
+    score_stats = (
+        f"mean={result.temporal_score_mean:.1f} "
+        f"max={result.temporal_score_max} "
+        f"keep>={result.temporal_accept_score_u8}"
+    )
+
+    # Top-left: original
+    tl = out[:h, :w]
+    tl[:] = frame_bgr
+    _draw_label(tl, "Original", stab_stats)
+
+    # Top-right: baseline overlay
+    _overlay_motion_into(out[:h, w:], frame_bgr, result.baseline_raw, result.baseline_boost, None,
+                         "Baseline Pairwise", base_stats)
+
+    # Bottom-left: score heatmap
+    bl = out[h:, :w]
+    np.copyto(bl, cv2.applyColorMap(result.temporal_score_u8, cv2.COLORMAP_TURBO))
+    _draw_label(bl, "Temporal Score", score_stats)
+
+    # Bottom-right: temporal overlay
+    br = out[h:, w:]
+    _overlay_motion_into(br, frame_bgr, result.temporal_raw, result.temporal_boost,
+                         result.temporal_rejected, "Temporal Aggregated", temp_stats,
+                         score_u8=result.temporal_score_u8)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Summary helpers
+# ---------------------------------------------------------------------------
+
+def _summary_template(cfg: ExperimentConfig, fps: float, size: Tuple[int, int]) -> Dict[str, object]:
+    return {
+        "config": asdict(cfg),
+        "video": {"fps": float(fps), "width": int(size[0]), "height": int(size[1])},
+        "frames_processed": 0,
+        "baseline": {
+            "raw_pixels_total": 0, "boost_pixels_total": 0,
+            "boost_components_total": 0, "frames_with_boost": 0,
+        },
+        "temporal": {
+            "raw_pixels_total": 0, "boost_pixels_total": 0,
+            "boost_components_total": 0, "frames_with_boost": 0,
+            "score_mean_total": 0.0, "score_max_seen": 0,
+        },
+        "timing": {"elapsed_sec": 0.0, "fps_effective": 0.0},
+        "outputs": {},
+    }
+
+
+def _update_summary(summary: Dict[str, object], result: FrameMotionResult) -> None:
+    summary["frames_processed"] = int(summary["frames_processed"]) + 1
+    baseline = summary["baseline"]
+    temporal = summary["temporal"]
+    baseline["raw_pixels_total"] += result.baseline_raw_px
+    baseline["boost_pixels_total"] += result.baseline_boost_px
+    baseline["boost_components_total"] += result.baseline_components
+    baseline["frames_with_boost"] += int(result.baseline_boost_px > 0)
+    temporal["raw_pixels_total"] += result.temporal_raw_px
+    temporal["boost_pixels_total"] += result.temporal_boost_px
+    temporal["boost_components_total"] += result.temporal_components
+    temporal["frames_with_boost"] += int(result.temporal_boost_px > 0)
+    temporal["score_mean_total"] += result.temporal_score_mean
+    temporal["score_max_seen"] = max(int(temporal["score_max_seen"]), result.temporal_score_max)
+
+
+def _finalize_summary(summary: Dict[str, object], elapsed_sec: float) -> None:
+    frames = max(int(summary["frames_processed"]), 1)
+    summary["timing"]["elapsed_sec"] = float(elapsed_sec)
+    summary["timing"]["fps_effective"] = float(frames / max(elapsed_sec, 1e-6))
+    baseline = summary["baseline"]
+    temporal = summary["temporal"]
+    baseline["raw_pixels_avg"] = float(baseline["raw_pixels_total"]) / frames
+    baseline["boost_pixels_avg"] = float(baseline["boost_pixels_total"]) / frames
+    baseline["boost_components_avg"] = float(baseline["boost_components_total"]) / frames
+    temporal["raw_pixels_avg"] = float(temporal["raw_pixels_total"]) / frames
+    temporal["boost_pixels_avg"] = float(temporal["boost_pixels_total"]) / frames
+    temporal["boost_components_avg"] = float(temporal["boost_components_total"]) / frames
+    temporal["score_mean_avg"] = float(temporal["score_mean_total"]) / frames
+
+
+def _format_seconds(seconds: Optional[float]) -> str:
+    if seconds is None or not np.isfinite(seconds) or seconds < 0:
+        return "--:--"
+    total = int(round(float(seconds)))
+    mins, secs = divmod(total, 60)
+    hours, mins = divmod(mins, 60)
+    if hours > 0:
+        return f"{hours:d}:{mins:02d}:{secs:02d}"
+    return f"{mins:02d}:{secs:02d}"
+
+
+def _print_progress(
+    processed: int,
+    total: Optional[int],
+    start_time: float,
+    recent_fps: Optional[float] = None,
+) -> None:
+    elapsed = max(time.perf_counter() - start_time, 1e-6)
+    avg_fps = processed / elapsed
+    fps_now = float(recent_fps) if recent_fps is not None and recent_fps > 0 else avg_fps
+    interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    if total is not None and total > 0:
+        frac = min(max(processed / float(total), 0.0), 1.0)
+        filled = int(round(frac * 24))
+        bar = "#" * filled + "-" * max(24 - filled, 0)
+        remaining = max(total - processed, 0)
+        eta = remaining / fps_now if fps_now > 1e-6 else None
+        msg = (
+            f"[temporal-exp] [{bar}] {frac * 100:5.1f}% "
+            f"{processed}/{total} frames | {fps_now:5.1f} fps now | "
+            f"{avg_fps:5.1f} avg | "
+            f"elapsed {_format_seconds(elapsed)} | eta {_format_seconds(eta)}"
+        )
+    else:
+        spinner = "|/-\\"[processed % 4]
+        msg = (
+            f"[temporal-exp] {spinner} {processed} frames | "
+            f"{fps_now:5.1f} fps now | {avg_fps:5.1f} avg | elapsed {_format_seconds(elapsed)}"
+        )
+    if interactive:
+        print("\r" + msg, end="", flush=True)
+    else:
+        print(msg, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Main experiment runner
+# ---------------------------------------------------------------------------
+
+def run_experiment(cfg: ExperimentConfig) -> Dict[str, object]:
+    input_path = Path(cfg.input_video)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input video not found: {input_path}")
+
+    output_dir = Path(cfg.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = cfg.output_prefix.strip() or input_path.stem
+
+    comparison_path = output_dir / f"{prefix}_temporal_compare.mp4"
+    baseline_mask_path = output_dir / f"{prefix}_baseline_mask.mp4"
+    temporal_mask_path = output_dir / f"{prefix}_temporal_mask.mp4"
+    summary_path = output_dir / f"{prefix}_temporal_summary.json"
+
+    cap = cv2.VideoCapture(str(input_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {input_path}")
+
+    if int(cfg.start_frame) > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(cfg.start_frame))
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+    total_frames_in_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if int(cfg.max_frames) > 0:
+        expected_total = int(cfg.max_frames)
+    elif total_frames_in_video > 0:
+        expected_total = max(total_frames_in_video - int(cfg.start_frame), 0)
+    else:
+        expected_total = 0
+
+    reader = ThreadedFrameReader(cap, prefetch=4)
+    detector = TemporalMotionDetector(cfg)
+    if detector.use_cuda:
+        print("[temporal-exp] dense motion path: CUDA")
+    else:
+        if str(cfg.device).lower() == "cuda":
+            print("[temporal-exp] dense motion path: CPU (CUDA requested but unavailable)")
+        else:
+            print("[temporal-exp] dense motion path: CPU")
+
+    comparison_writer = None
+    baseline_mask_writer = None
+    temporal_mask_writer = None
+    summary: Optional[Dict[str, object]] = None
+    t0 = time.perf_counter()
+    processed = 0
+    recent_progress_times: Deque[float] = deque(maxlen=50)
+
+    try:
+        while True:
+            if int(cfg.max_frames) > 0 and processed >= int(cfg.max_frames):
+                break
+
+            frame = reader.read()
+            if frame is None:
+                break
+
+            frame = _resize_frame(frame, int(cfg.resize_max_side))
+            result = detector.process(frame)
+            if result is None:
+                continue
+
+            if summary is None:
+                h, w = frame.shape[:2]
+                summary = _summary_template(cfg, fps, (w, h))
+                if cfg.write_debug_video:
+                    comparison_writer = VideoWriter(str(comparison_path), fps, w * 2, h * 2, cfg)
+                if cfg.write_mask_videos:
+                    baseline_mask_writer = VideoWriter(str(baseline_mask_path), fps, w, h, cfg)
+                    temporal_mask_writer = VideoWriter(str(temporal_mask_path), fps, w, h, cfg)
+
+            _update_summary(summary, result)
+            processed += 1
+            now_t = time.perf_counter()
+            recent_progress_times.append(now_t)
+
+            if comparison_writer is not None:
+                comparison_writer.write(_build_comparison_frame(frame, result))
+            if baseline_mask_writer is not None:
+                baseline_mask_writer.write(_mask_to_bgr(result.baseline_boost))
+            if temporal_mask_writer is not None:
+                temporal_mask_writer.write(_mask_to_bgr(result.temporal_boost))
+
+            if processed == 1 or processed % 10 == 0:
+                recent_fps = None
+                if len(recent_progress_times) >= 2:
+                    dt_recent = recent_progress_times[-1] - recent_progress_times[0]
+                    if dt_recent > 1e-6:
+                        recent_fps = (len(recent_progress_times) - 1) / dt_recent
+                _print_progress(
+                    processed,
+                    expected_total if expected_total > 0 else None,
+                    t0,
+                    recent_fps=recent_fps,
+                )
+    finally:
+        if processed > 0:
+            recent_fps = None
+            if len(recent_progress_times) >= 2:
+                dt_recent = recent_progress_times[-1] - recent_progress_times[0]
+                if dt_recent > 1e-6:
+                    recent_fps = (len(recent_progress_times) - 1) / dt_recent
+            _print_progress(
+                processed,
+                expected_total if expected_total > 0 else None,
+                t0,
+                recent_fps=recent_fps,
+            )
+            print()
+        reader.release()
+        if comparison_writer is not None:
+            comparison_writer.close()
+        if baseline_mask_writer is not None:
+            baseline_mask_writer.close()
+        if temporal_mask_writer is not None:
+            temporal_mask_writer.close()
+
+    if summary is None:
+        raise RuntimeError("Video did not yield enough frames to compute motion.")
+
+    elapsed = time.perf_counter() - t0
+    _finalize_summary(summary, elapsed)
+    summary["outputs"]["comparison_video"] = str(comparison_path) if cfg.write_debug_video else None
+    summary["outputs"]["baseline_mask_video"] = str(baseline_mask_path) if cfg.write_mask_videos else None
+    summary["outputs"]["temporal_mask_video"] = str(temporal_mask_path) if cfg.write_mask_videos else None
+    summary["outputs"]["summary_json"] = str(summary_path)
+
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def parse_args() -> ExperimentConfig:
+    parser = argparse.ArgumentParser(
+        description="Compare pairwise motion vs multi-frame temporal aggregation for tennis ball motion."
+    )
+    parser.add_argument("--input-video", required=True)
+    parser.add_argument("--output-dir", default="output_videos")
+    parser.add_argument("--output-prefix", default="")
+    parser.add_argument("--start-frame", type=int, default=0)
+    parser.add_argument("--max-frames", type=int, default=0)
+    parser.add_argument("--resize-max-side", type=int, default=0)
+    parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--no-stabilize-global-motion", action="store_true")
+    parser.add_argument("--stabilize-downscale-max-side", type=int, default=640)
+    parser.add_argument("--stabilize-blur-kernel", type=int, default=5)
+    parser.add_argument("--stabilize-response-min", type=float, default=0.15)
+    parser.add_argument("--stabilize-max-shift-px", type=float, default=4.0)
+    parser.add_argument("--gaussian-kernel", type=int, default=5)
+    parser.add_argument("--gaussian-sigma", type=float, default=1.2)
+    parser.add_argument("--motion-thresh", type=float, default=13.0)
+    parser.add_argument("--motion-v-min", type=float, default=40.0)
+    parser.add_argument("--sat-weight", type=float, default=1.5)
+    parser.add_argument("--temporal-window", type=int, default=5)
+    parser.add_argument("--temporal-percentile", type=float, default=85.0)
+    parser.add_argument("--temporal-min-support", type=int, default=3)
+    parser.add_argument("--temporal-support-lo-frac", type=float, default=0.70)
+    parser.add_argument("--temporal-burst-mult", type=float, default=2.00)
+    parser.add_argument("--temporal-burst-support", type=int, default=1)
+    parser.add_argument("--temporal-accept-score-u8", type=int, default=150)
+    parser.add_argument("--temporal-keep-top-k", type=int, default=4)
+    parser.add_argument("--reject-temporal-departures", action="store_true")
+    parser.add_argument("--ball-hue-lo", type=int, default=25)
+    parser.add_argument("--ball-hue-hi", type=int, default=65)
+    parser.add_argument("--ball-hue-min-frac", type=float, default=0.15)
+    parser.add_argument("--ball-sat-min", type=int, default=40)
+    parser.add_argument("--compactness-hard-floor", type=float, default=0.18)
+    parser.add_argument("--compactness-soft-ref", type=float, default=0.55)
+    parser.add_argument("--soft-open-sum-thresh", type=float, default=2.5)
+    parser.add_argument("--post-dilate", type=int, default=1)
+    parser.add_argument("--boost-min-blob-area", type=int, default=0)
+    parser.add_argument("--boost-max-blob-area", type=int, default=600)
+    parser.add_argument("--border-exclude-px", type=int, default=8)
+    parser.add_argument("--write-mask-videos", action="store_true")
+    parser.add_argument("--cpu-writer", action="store_true")
+
+    args = parser.parse_args()
+    return ExperimentConfig(
+        input_video=args.input_video,
+        output_dir=args.output_dir,
+        output_prefix=args.output_prefix,
+        start_frame=args.start_frame,
+        max_frames=args.max_frames,
+        resize_max_side=args.resize_max_side,
+        device=args.device,
+        stabilize_global_motion=not bool(args.no_stabilize_global_motion),
+        stabilize_downscale_max_side=args.stabilize_downscale_max_side,
+        stabilize_blur_kernel=args.stabilize_blur_kernel,
+        stabilize_response_min=args.stabilize_response_min,
+        stabilize_max_shift_px=args.stabilize_max_shift_px,
+        gaussian_kernel=args.gaussian_kernel,
+        gaussian_sigma=args.gaussian_sigma,
+        motion_thresh=args.motion_thresh,
+        motion_v_min=args.motion_v_min,
+        sat_weight=args.sat_weight,
+        temporal_window=max(args.temporal_window, 2),
+        temporal_percentile=args.temporal_percentile,
+        temporal_min_support=args.temporal_min_support,
+        temporal_support_lo_frac=args.temporal_support_lo_frac,
+        temporal_burst_mult=args.temporal_burst_mult,
+        temporal_burst_support=args.temporal_burst_support,
+        temporal_accept_score_u8=max(0, min(255, int(args.temporal_accept_score_u8))),
+        temporal_keep_top_k=max(0, int(args.temporal_keep_top_k)),
+        reject_temporal_departures=bool(args.reject_temporal_departures),
+        ball_hue_lo=max(0, min(179, int(args.ball_hue_lo))),
+        ball_hue_hi=max(0, min(179, int(args.ball_hue_hi))),
+        ball_hue_min_frac=max(0.0, float(args.ball_hue_min_frac)),
+        ball_sat_min=max(0, min(255, int(args.ball_sat_min))),
+        compactness_hard_floor=max(0.0, float(args.compactness_hard_floor)),
+        compactness_soft_ref=max(0.01, float(args.compactness_soft_ref)),
+        soft_open_sum_thresh=args.soft_open_sum_thresh,
+        post_dilate=args.post_dilate,
+        boost_min_blob_area=args.boost_min_blob_area,
+        boost_max_blob_area=args.boost_max_blob_area,
+        border_exclude_px=max(0, int(args.border_exclude_px)),
+        write_mask_videos=bool(args.write_mask_videos),
+        use_nvenc=not bool(args.cpu_writer),
+        _use_libx264=bool(args.cpu_writer),
+    )
+
+
+def main() -> int:
+    cfg = parse_args()
+    summary = run_experiment(cfg)
+    print(json.dumps(summary["outputs"], indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

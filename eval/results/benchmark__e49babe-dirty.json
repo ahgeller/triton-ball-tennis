@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "git_sha": "e49babe-dirty",
+  "generated_utc": "2026-07-02T05:26:52Z",
+  "skip_pipeline": false,
+  "clips": [
+    {
+      "clip": "pomona_baseline",
+      "returncode": 0,
+      "wall_sec": 72.6744396686554,
+      "report_path": "C:\\Users\\Andrew\\Desktop\\triton_tennis-main\\validation\\reports\\pomona_baseline__e49babe-dirty.json",
+      "thresholds": {
+        "min_recall": 0.55,
+        "max_mean_error": 14.0,
+        "max_p90_error": 30.0
+      },
+      "summary": {
+        "prediction_file_summary": {
+          "filled_frames": 654,
+          "filled_percent": 32.34421364985163,
+          "elapsed_sec": 49.64288806915283,
+          "effective_fps": 40.730909877429816,
+          "pass2_frames_rendered": 2022,
+          "chosen_track_id": 5,
+          "track_count": 39
+        },
+        "labeled_visible_frames": 79,
+        "matched_visible_frames": 74,
+        "missed_visible_frames": 5,
+        "recall": 0.9367088607594937,
+        "labeled_absent_frames": 1,
+        "false_positive_absent_frames": 1,
+        "absence_precision": 0.0,
+        "prediction_present_frames": 654,
+        "prediction_total_frames": 2022,
+        "prediction_filled_ratio": 0.32344213649851633,
+        "mean_error_px": 1.4290094302740213,
+        "median_error_px": 1.136487018770708,
+        "p90_error_px": 3.012432826241433,
+        "max_error_px": 5.503338078186208,
+        "within_5px": 73,
+        "within_10px": 74,
+        "within_20px": 74,
+        "source_counts": {
+          "carry": 40,
+          "det": 496,
+          "motion": 118
+        },
+        "large_jump_count": 1,
+        "effective_fps": 40.730909877429816
+      }
+    }
+  ]
+}

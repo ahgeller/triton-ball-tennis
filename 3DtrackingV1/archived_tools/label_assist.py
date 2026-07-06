@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 WINDOW = "label_assist"
-HUD_HEIGHT = 36
+HUD_HEIGHT = 60
 
 
 def _load_starter(path: Path) -> Dict[str, Any]:
@@ -83,6 +83,9 @@ def _draw_hud(img, idx: int, total: int, row: Dict[str, Any], dirty: bool):
     dirty_str = " *unsaved*" if dirty else ""
     text = f"[{idx + 1}/{total}] f={row.get('frame')} src={src} conf={conf} pred={coord} {status}{confirm_str}{dirty_str}"
     cv2.putText(img, text, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    help_text = "CLICK=set ball   v=visible/absent   c=confirm prefill   u=undo   n/SPACE=next   p=prev   s=save   q/ESC=save+quit"
+    cv2.putText(img, help_text, (8, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(img, help_text, (8, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
 
 def _draw_open_marker(img, x: int, y: int, color, radius: int, tick_gap: int, tick_len: int):

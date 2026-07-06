@@ -7,7 +7,7 @@ This folder holds hand-labeled clips and reports for measuring tracking quality 
 After labels exist for a clip, run the full pipeline -> validate -> report in a single command:
 
 ```powershell
-python tools/run_validation.py --clip pomona_baseline
+python 3DtrackingV1/archived_tools/run_validation.py --clip pomona_baseline
 ```
 
 This reads `validation/annotations/pomona_baseline.json`, locates the video via its `video` field, runs `now_main.py` with `--tracking-json`, then validates with thresholds and writes a tagged report to `validation/reports/pomona_baseline__<git_sha>.json`.
@@ -15,15 +15,15 @@ This reads `validation/annotations/pomona_baseline.json`, locates the video via 
 Useful flags:
 
 ```powershell
-python tools/run_validation.py --clip pomona_baseline --skip-pipeline   # re-validate an existing tracking JSON without re-rendering
-python tools/run_validation.py --clip pomona_baseline --min-recall 0.6 --max-mean-error 12 --max-p90-error 25
-python tools/run_validation.py --clip pomona_baseline --extra-now-args "--info"
+python 3DtrackingV1/archived_tools/run_validation.py --clip pomona_baseline --skip-pipeline   # re-validate an existing tracking JSON without re-rendering
+python 3DtrackingV1/archived_tools/run_validation.py --clip pomona_baseline --min-recall 0.6 --max-mean-error 12 --max-p90-error 25
+python 3DtrackingV1/archived_tools/run_validation.py --clip pomona_baseline --extra-now-args "--info"
 ```
 
 To compare two reports (before/after a change):
 
 ```powershell
-python tools/compare_reports.py `
+python 3DtrackingV1/archived_tools/compare_reports.py `
   --before validation/reports/pomona_baseline__abc1234.json `
   --after  validation/reports/pomona_baseline__def5678.json
 ```
@@ -37,7 +37,7 @@ Two paths:
 **A. Smart pre-fill (recommended).** Run the pipeline once to produce a `tracking.json`, then use `extract_label_frames.py` to pick 50-100 high-value frames (non-det sources, source transitions, sharp velocity changes) and pre-fill the annotation JSON with the pipeline's (x, y) so you only correct them:
 
 ```powershell
-python tools/extract_label_frames.py `
+python 3DtrackingV1/archived_tools/extract_label_frames.py `
   --tracking-json output_videos/pomona_baseline_tracking.json `
   --video "input_videos/PomonaPitzer Women vs. UCSD-cut-merged-1773082079341.mp4" `
   --out-dir validation/labels/pomona_baseline/ `
@@ -50,7 +50,7 @@ This writes 80 PNGs and `pomona_baseline_starter.json` into the out dir.
 Then launch the click labeler to correct them:
 
 ```powershell
-python tools/label_assist.py `
+python 3DtrackingV1/archived_tools/label_assist.py `
   --starter validation/labels/pomona_baseline/pomona_baseline_starter.json `
   --frames-dir validation/labels/pomona_baseline `
   --out validation/annotations/pomona_baseline.json
@@ -58,7 +58,7 @@ python tools/label_assist.py `
 
 Keys: left-click = set ball center, `v` = toggle visible, `c` = confirm pre-fill as-is, `u` = undo, `n`/`SPACE` = next, `p` = prev, `s` = save, `q`/`ESC` = save + quit. The yellow crosshair is the pipeline's pre-fill; the red crosshair is your label. Should take ~10-15 minutes for 80 frames.
 
-When you exit, `validation/annotations/pomona_baseline.json` is written in the canonical schema (no review fields). After that, `tools/run_validation.py --clip pomona_baseline --skip-pipeline` produces your first real report.
+When you exit, `validation/annotations/pomona_baseline.json` is written in the canonical schema (no review fields). After that, `3DtrackingV1/archived_tools/run_validation.py --clip pomona_baseline --skip-pipeline` produces your first real report.
 
 **B. From scratch.** Copy `validation/annotations/pomona_baseline.template.json` to `validation/annotations/<clip>.json` and fill in the `ball` array (50-100 frames concentrated around failure moments - see  2 below for what to target).
 
@@ -109,7 +109,7 @@ Start small: label 50-100 frames across serves, rallies, net play, occlusion, ad
 ## 3. Validate
 
 ```powershell
-python tools/validate_tracking.py `
+python 3DtrackingV1/archived_tools/validate_tracking.py `
   --predictions output_videos/your_clip_tracking.json `
   --annotations validation/annotations/your_clip.json `
   --report-json validation/reports/your_clip_report.json `
