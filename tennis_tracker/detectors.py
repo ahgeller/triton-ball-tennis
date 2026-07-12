@@ -388,7 +388,7 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
     def _preprocess_cuda_frame(self, frame_bgr_cuda):
         if not HAS_TORCH or not isinstance(frame_bgr_cuda, torch.Tensor):
             return None, None
-        if frame_bgr_cuda.device.type != self.device.type:
+        if frame_bgr_cuda.device != self.device:
             return None, None
         if frame_bgr_cuda.dim() != 3 or frame_bgr_cuda.shape[-1] != 3:
             return None, None
@@ -571,12 +571,12 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
                 t, scale = self._preprocess_cuda_frame(frame_bgr)
                 if t is not None:
                     preds, ev = self._forward_tensor(t, out_slot=out_slot)
-                    return {"preds": preds, "scale": scale, "event": ev}
+                    return {"preds": preds, "scale": scale, "event": ev, "input_tensor": t}
             frame_bgr = frame_bgr.detach().cpu().numpy()
 
         t, scale = self._preprocess_frame(frame_bgr)
         preds, ev = self._forward_tensor(t, out_slot=out_slot)
-        return {"preds": preds, "scale": scale, "event": ev}
+        return {"preds": preds, "scale": scale, "event": ev, "input_tensor": t}
 
     def detect_async_finish(self, pending) -> List[Tuple[list, float]]:
         if isinstance(pending, dict):
@@ -605,14 +605,16 @@ class PlayerDetector:
         # BoTSORT maintains its own robust internal dictionary of {ID: BoundingBox}
         self.slots = {} 
 
-        ep = _resolve_engine_path(cfg.player_model_path) if cfg.use_tensorrt else None
+        ep = _resolve_engine_path(cfg.player_model_path)
         if ep is None:
             print(f"[player] Engine not found at {cfg.player_model_path}, skipping")
             return
             
         try:
             self.session = _TensorRTRuntimeSession(
-                str(ep), async_execute=bool(getattr(cfg, "trt_async_execute", True))
+                str(ep),
+                device=torch.device(f"cuda:{int(cfg.device)}"),
+                async_execute=bool(getattr(cfg, "trt_async_execute", True)),
             )
             print(f"[player] TensorRT runtime initialized: {ep}")
         except Exception as e:
@@ -784,13 +786,15 @@ class CourtDetector:
         self.keypoints = None
         self.last_run_frame = -10**9
         self.session: Optional[_TensorRTRuntimeSession] = None
-        ep = _resolve_engine_path(cfg.court_model_path) if cfg.use_tensorrt else None
+        ep = _resolve_engine_path(cfg.court_model_path)
         if ep is None:
             print(f"[court] Engine not found at {cfg.court_model_path}, skipping")
             return
         try:
             self.session = _TensorRTRuntimeSession(
-                str(ep), async_execute=bool(getattr(cfg, "trt_async_execute", True))
+                str(ep),
+                device=torch.device(f"cuda:{int(cfg.device)}"),
+                async_execute=bool(getattr(cfg, "trt_async_execute", True)),
             )
             print(f"[court] TensorRT runtime initialized: {ep}")
             remap = "enabled" if cfg.court_remap_semantic_14 else "disabled (raw YOLO order)"

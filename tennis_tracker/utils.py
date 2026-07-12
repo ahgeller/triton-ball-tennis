@@ -61,16 +61,6 @@ def _check_capabilities(cfg: Config, device_str: str) -> Config:
     cfg = copy.copy(cfg)
     is_cuda = device_str not in ("cpu", "mps")
 
-    if cfg.use_tensorrt and not is_cuda:
-        cfg.use_tensorrt = False
-        print("[info] TensorRT disabled (requires NVIDIA CUDA GPU)")
-    if cfg.use_tensorrt and is_cuda:
-        try:
-            import tensorrt  # noqa: F401
-        except ImportError:
-            cfg.use_tensorrt = False
-            print("[info] TensorRT disabled (tensorrt package not found)")
-
     if cfg.use_nvenc:
         ffmpeg = find_ffmpeg()
         if not ffmpeg:
@@ -89,12 +79,7 @@ def _check_capabilities(cfg: Config, device_str: str) -> Config:
             print(f"[info] NVENC disabled (ffmpeg lacks h264_nvenc), {msg}")
     if not hasattr(cfg, "_use_libx264"):
         cfg._use_libx264 = False
-    if cfg.tensorrt_half and not is_cuda:
-        cfg.tensorrt_half = False
-
-    accel = []
-    if cfg.use_tensorrt:
-        accel.append("TensorRT FP16")
+    accel = ["TensorRT"]
     if cfg.use_nvenc:
         accel.append("NVENC encoding")
     elif cfg._use_libx264:
@@ -213,4 +198,3 @@ def _read_engine_names(engine_path: Path) -> Dict[int, str]:
     except Exception:
         pass
     return {0: "ball"}
-

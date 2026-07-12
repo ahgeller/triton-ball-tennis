@@ -25,8 +25,13 @@ class _PinnedFrameUploader:
         self.h = int(h)
         self.w = int(w)
         self.device = device
-        self._pinned_u8 = torch.empty((self.h, self.w, 3), dtype=torch.uint8, pin_memory=True)
-        self._pinned_np = self._pinned_u8.numpy()
+        self._slot = 0
+        self._pinned_u8 = [
+            torch.empty((self.h, self.w, 3), dtype=torch.uint8, pin_memory=True)
+            for _ in range(2)
+        ]
+        self._pinned_np = [t.numpy() for t in self._pinned_u8]
+        self._copy_done = [None, None]
 
     @_torch_no_grad()
     def upload_chw_f32(self, frame_bgr: np.ndarray):
@@ -34,8 +39,15 @@ class _PinnedFrameUploader:
             return torch.from_numpy(frame_bgr).to(
                 device=self.device, dtype=torch.float32
             ).permute(2, 0, 1).contiguous() / 255.0
-        np.copyto(self._pinned_np, frame_bgr)
-        t = self._pinned_u8.to(device=self.device, dtype=torch.float32, non_blocking=True)
+        slot = self._slot
+        self._slot = (self._slot + 1) % len(self._pinned_u8)
+        if self._copy_done[slot] is not None:
+            self._copy_done[slot].synchronize()
+        np.copyto(self._pinned_np[slot], frame_bgr)
+        t = self._pinned_u8[slot].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        done = torch.cuda.Event(blocking=False)
+        done.record(torch.cuda.current_stream(device=self.device))
+        self._copy_done[slot] = done
         return t.permute(2, 0, 1).contiguous() / 255.0
 
 @_torch_no_grad()

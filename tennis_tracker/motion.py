@@ -20,35 +20,8 @@ def _torch_no_grad():
     return torch.no_grad() if torch is not None else (lambda fn: fn)
 
 
-_MOTION_BUFFERS = {}
 _KERNEL_CACHE = {}
 _KERNEL_3x3 = np.ones((3, 3), np.uint8)
-
-class MotionBuffers:
-    """Pre-allocated buffers to avoid per-frame memory allocation."""
-    def __init__(self, h: int, w: int):
-        self.h = h
-        self.w = w
-        # Pre-allocate arrays used every frame
-        self.raw_motion_u8 = np.zeros((h, w), dtype=np.uint8)
-        self.boost_mask_u8 = np.zeros((h, w), dtype=np.uint8)
-        self.labels = np.zeros((h, w), dtype=np.int32)
-        self.keep_lut = np.zeros(256, dtype=np.uint8)  # Max 255 blobs typically
-        
-    def reset_raw_motion(self):
-        """Reset raw_motion_u8 buffer efficiently."""
-        self.raw_motion_u8.fill(0)
-        
-    def reset_boost_mask(self):
-        """Reset boost_mask_u8 buffer efficiently."""
-        self.boost_mask_u8.fill(0)
-
-def _get_motion_buffers(h: int, w: int) -> MotionBuffers:
-    """Get or create pre-allocated buffers for given resolution."""
-    key = (h, w)
-    if key not in _MOTION_BUFFERS:
-        _MOTION_BUFFERS[key] = MotionBuffers(h, w)
-    return _MOTION_BUFFERS[key]
 
 def _get_kernel(size: int) -> np.ndarray:
     k = _KERNEL_CACHE.get(size)
@@ -602,6 +575,12 @@ def _pack_mask_u8(mask_u8, roi=None):
     if mask_u8 is None:
         return None
     h, w = mask_u8.shape[:2]
+    if cv2.countNonZero(mask_u8) == 0:
+        return None
+
+    if roi is None:
+        x, y, rw, rh = cv2.boundingRect(mask_u8)
+        roi = (x, y, x + rw, y + rh)
 
     if roi is not None and len(roi) == 4:
         x1, y1, x2, y2 = [int(v) for v in roi]

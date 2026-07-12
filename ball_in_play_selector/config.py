@@ -110,7 +110,6 @@ class SelectorConfig:
     boost_mask_bonus: float = 1.5    # extra score when detection overlaps motion mask
 
     # Per-frame locking
-    frame_selection_mode: str = "legacy"  # "trail_only" | "legacy"
     guide_lock_frac: float = 0.022   # lock to exact-guide det within this * frame diag
     carry_interp_frames: int = 5     # keep predicted position this many no-det frames
     guide_gate_exact_frac: float = 0.09  # strict detection gate when guide is exact at frame t

@@ -105,7 +105,7 @@ def _run_clip(clip: Dict[str, Any], skip_pipeline: bool) -> Dict[str, Any]:
         "clip": name,
         "returncode": int(rc),
         "wall_sec": float(wall),
-        "report_path": str(report_path),
+        "report_path": str(report_path.relative_to(REPO_ROOT)),
         "thresholds": thresholds,
         "summary": None,
     }
@@ -215,11 +215,14 @@ def main() -> int:
 
     sha = _git_short_sha()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / f"benchmark__{sha}.json"
+    generated_at = time.gmtime()
+    generated_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", generated_at)
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", generated_at)
+    out_path = RESULTS_DIR / f"benchmark__{sha}__{timestamp}.json"
     payload = {
         "schema_version": 1,
         "git_sha": sha,
-        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "generated_utc": generated_utc,
         "skip_pipeline": bool(args.skip_pipeline),
         "clips": rows,
     }

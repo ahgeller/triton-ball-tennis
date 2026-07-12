@@ -450,15 +450,55 @@ def _write_tracking_json(
         json.dump(payload, f, indent=2)
 
 
+def _validate_io_paths(cfg) -> Path:
+    input_path = Path(cfg.input_video).expanduser().resolve()
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Input video not found: {input_path}")
+
+    outputs = []
+    if getattr(cfg, "save_tracking_video", True):
+        outputs.append(("tracking video", cfg.output_video))
+    if cfg.save_motion_debug:
+        outputs.append(("motion debug video", cfg.output_debug_path))
+    if getattr(cfg, "save_yolo_input_debug", False):
+        outputs.append(("pre-YOLO video", cfg.output_yolo_input_debug_path))
+    if cfg.save_guide_video:
+        outputs.append(("guide video", cfg.output_guide_path))
+    if getattr(cfg, "save_motion_tracks_video", False):
+        outputs.append(("motion-tracks video", cfg.output_motion_tracks_debug_path))
+    if getattr(cfg, "tracking_json", None):
+        outputs.append(("tracking JSON", cfg.tracking_json))
+
+    seen = {}
+    for label, value in outputs:
+        path = Path(value).expanduser().resolve()
+        if path == input_path:
+            raise ValueError(f"{label} must not overwrite the input video: {path}")
+        if path in seen:
+            raise ValueError(f"{label} and {seen[path]} resolve to the same output path: {path}")
+        seen[path] = label
+    return input_path
+
+
+def _detector_can_overlap(detector) -> bool:
+    return bool(getattr(detector, "use_async", False) and int(getattr(detector, "async_slots", 1)) >= 2)
+
+
 def run(cfg):
+    input_path = _validate_io_paths(cfg)
     t0 = time.time()
     info_timing = bool(getattr(cfg, "info_timing", False))
     timing = {} if info_timing else None
     init_perf_t0 = time.perf_counter() if info_timing else 0.0
 
     # Platform detection
-    device_str, device_desc = _detect_device(cfg.device)
-    cfg.device = device_str
+    device_str, _ = _detect_device(cfg.device)
+    if not str(device_str).isdigit():
+        raise RuntimeError("The tracking runtime requires an NVIDIA CUDA device index such as --device 0.")
+    device_index = int(device_str)
+    if not (HAS_TORCH and torch.cuda.is_available()) or device_index >= torch.cuda.device_count():
+        raise RuntimeError(f"CUDA device {device_index} is unavailable.")
+    cfg.device = str(device_index)
     cfg = _check_capabilities(cfg, device_str)
     HAS_CUDA = HAS_TORCH and torch.cuda.is_available()
     is_cuda = device_str not in ("cpu", "mps")
@@ -469,7 +509,7 @@ def run(cfg):
     ball_cls_name = None
 
     # TensorRT-only ball runtime path.
-    trt_engine_path = _resolve_engine_path_for_ball(cfg) if cfg.use_tensorrt else None
+    trt_engine_path = _resolve_engine_path_for_ball(cfg)
     if trt_engine_path is None:
         raise RuntimeError(
             f"Ball TensorRT engine not found for model_path='{cfg.model_path}'. "
@@ -497,7 +537,9 @@ def run(cfg):
         print("[init] Court perspective: disabled (no scaling)")
 
     # Open video
-    cap = cv2.VideoCapture(cfg.input_video)
+    cap = cv2.VideoCapture(str(input_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open input video: {input_path}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -533,7 +575,7 @@ def run(cfg):
     use_cuda = cfg.enable_preprocess and is_cuda and HAS_CUDA
     if use_cuda:
         print("[preprocess] CUDA S+V motion path")
-        cuda_device = torch.device("cuda")
+        cuda_device = torch.device(f"cuda:{device_index}")
     else:
         print("[preprocess] CPU S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
 
@@ -614,6 +656,7 @@ def run(cfg):
     last_aux_detect_frame = -10**9
     aux_force_interval = max(1, int(cfg.aux_force_interval))
     use_cuda_pre_frame = bool(use_cuda and detector.supports_cuda_frame())
+    can_overlap_ball_inference = _detector_can_overlap(detector)
     if use_cuda_pre_frame:
         print("[pass 1] CUDA zero-copy preprocess->YOLO path enabled")
     cache_pass2_frames = None
@@ -678,6 +721,14 @@ def run(cfg):
                 yolo_dbg_writer.write(record["pre_frame_cuda"].detach().cpu().numpy())
         if info_timing:
             timing["pass1_store"] = timing.get("pass1_store", 0.0) + (time.perf_counter() - store_t0)
+
+    def _finish_pending(pending):
+        if info_timing:
+            det_t0 = time.perf_counter()
+        dets = detector.detect_async_finish(pending["handle"])
+        if info_timing:
+            timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
+        _commit_frame(pending["record"], dets)
 
     while frame_curr is not None:
         # Keep previous pending handle; finish it after current preprocess/start
@@ -930,6 +981,9 @@ def run(cfg):
             # With per-pending CUDA events + output slots, this is safe and allows
             # overlap with post-mask CPU work below.
             if _do_yolo:
+                if prev_pending is not None and not can_overlap_ball_inference:
+                    _finish_pending(prev_pending)
+                    prev_pending = None
                 det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
                 det_pending = detector.detect_async_start(det_input)
 
@@ -996,12 +1050,7 @@ def run(cfg):
 
         # Finish previous frame inference after current frame preprocess.
         if prev_pending is not None:
-            if info_timing:
-                det_t0 = time.perf_counter()
-            dets_prev = detector.detect_async_finish(prev_pending["handle"])
-            if info_timing:
-                timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
-            _commit_frame(prev_pending["record"], dets_prev)
+            _finish_pending(prev_pending)
 
         # Detect ball - skip-frame YOLO for speed.
         # Cross-frame overlap: launch current frame now, finish it next iteration.
@@ -1051,10 +1100,6 @@ def run(cfg):
             elapsed = time.time() - t0
             print(f"  [pass1 {frame_idx}/{total}] {frame_idx/elapsed:.1f} fps")
         
-        # Prevent CUDA memory fragmentation from causing FPS decline over time
-        if use_cuda and frame_idx % 500 == 0:
-            torch.cuda.empty_cache()
-
         # Slide window
         if info_timing:
             slide_t0 = time.perf_counter()
@@ -1082,12 +1127,7 @@ def run(cfg):
 
     # Drain last pending YOLO inference.
     if pending_det is not None:
-        if info_timing:
-            det_t0 = time.perf_counter()
-        dets_prev = detector.detect_async_finish(pending_det["handle"])
-        if info_timing:
-            timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
-        _commit_frame(pending_det["record"], dets_prev)
+        _finish_pending(pending_det)
         pending_det = None
 
     reader.release()
@@ -1273,7 +1313,7 @@ def run(cfg):
         cap2 = None
         print(f"[pass 2] Using RAM frame cache ({len(cache_pass2_frames)} frames)")
     elif video_outputs_enabled:
-        cap2 = cv2.VideoCapture(cfg.input_video)
+        cap2 = cv2.VideoCapture(str(input_path))
         if cache_pass2_frames is not None:
             print("[pass 2] RAM frame cache incomplete; falling back to video decode")
     else:

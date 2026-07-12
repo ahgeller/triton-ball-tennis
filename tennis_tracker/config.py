@@ -13,12 +13,9 @@ class Config:
     # Ball detector
     ball_class_name: Optional[str] = None
     conf: float = 0.26
-    ball_backend: str = "trt"
     device: str = "auto"
 
     # TensorRT
-    use_tensorrt: bool = True
-    tensorrt_half: bool = True
     trt_async_execute: bool = True
     trt_async_slots: int = 3
 
@@ -32,8 +29,6 @@ class Config:
     player_model_path: Optional[str] = "models/player.engine"
     court_model_path: Optional[str] = "models/courtdetection.engine"
     player_detect_interval: int = 1
-    player_detect_interval_stable: int = 15  # interval when players haven't moved much
-    player_stable_thresh_frac: float = 0.02  # movement < this * diag = "stable"
     court_detect_interval: int = 400
     court_conf: float = 0.10
     print_court_raw: bool = False
@@ -67,9 +62,6 @@ class Config:
     motion_thresh: float = 11.0           # Minimum pixel diff floor (additive term in threshold); too high makes system blind to very weak motion
     motion_k_std: float = 3.0             # Std-dev multiplier; balanced with additive floor so variance can suppress static-ball halos
     motion_v_min: float = 40.0           # Lowered to catch dimmer ball motion in shadows
-    motion_temporal_soft: bool = False   # Disabled: this was causing the "lingering" yellow artifacts you noticed
-    motion_temporal_lo_frac: float = 0.55
-    motion_temporal_hi_mult: float = 1.35
     motion_flicker_suppress: bool = False # Disabled to prevent motion ghosts from lingering
     motion_flicker_min_area: int = 3
     motion_flicker_max_area: int = 220
@@ -96,12 +88,6 @@ class Config:
     boost_max_blob_area: int = 600   # Reduced from 1200: large blobs (sqrt(1200/pi) 19px radius) overshoot the ball
     boost_min_blob_area: int = 0
     
-    # Ball persistence hysteresis settings
-    ball_persist_frames: int = 20
-    ball_confidence_decay: float = 0.85
-    ball_reacquire_window: int = 15
-    ball_min_confidence: float = 0.15
-
     # Speed: skip-frame ball YOLO (run every Nth frame, interpolate gaps)
     skip_frame_yolo: int = 1          # 1 = every frame
     skip_frame_require_roi: bool = True
@@ -121,7 +107,6 @@ class Config:
 
     # blob shape filtering - IMPROVED for small tennis balls
     blob_shape_filter: bool = True
-    blob_erode_size: int = 3
     blob_max_aspect: float = 4.0
     blob_preserve_tiny: bool = True       # NEW: preserve very small ball-sized blobs
     blob_tiny_max_area: int = 120         # NEW: max area for "tiny" ball blobs to preserve
@@ -150,7 +135,6 @@ class Config:
     ball_marker_box_scale: float = 0.22
     ball_marker_min_radius: int = 3
     ball_marker_max_radius: int = 12
-    drop_unattached_carry: bool = True
     carry_attach_max_frac: float = 0.016  # keep carry only if it ends this close to next DET
 
     # output encoding
@@ -158,7 +142,7 @@ class Config:
     nvenc_preset: str = "p1"
     nvenc_bitrate: str = "8M"
     use_async_writer: bool = True
-    async_queue: int = 96
+    async_queue: int = 16
     cache_input_frames_pass2: bool = True  # keep decoded frames in RAM to avoid second decode
     pass2_cache_max_mb: int = 768
     progress_every: int = 200

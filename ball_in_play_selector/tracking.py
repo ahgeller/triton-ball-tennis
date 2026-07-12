@@ -987,8 +987,6 @@ def _build_track_guide(
     total_frames: int,
     cfg: SelectorConfig,
     max_interp_gap: int = 20,
-    apply_filters: bool = True,
-    filter_static_jumps: bool = False,
     all_dets: Optional[List[List["Detection"]]] = None,
 ) -> Tuple[Dict[int, Tuple[float, float, bool]], int]:
     """
@@ -996,12 +994,6 @@ def _build_track_guide(
     
     Gap-fill uses physics-based KF prediction (gravity + drag) instead of
     linear interpolation, producing parabolic arcs during carry frames.
-    
-    apply_filters: full filter suite (legacy mode).
-    filter_static_jumps: lighter filter - only removes static-ball snaps and
-        position spikes, without trimming the leading edge. Used in trail_only
-        mode to prevent guide from jumping to parked balls without losing
-        early-rally coverage.
     
     Returns: (frame_idx -> (cx, cy, is_exact_observation), dropped_spike_count)
     """
@@ -1013,20 +1005,11 @@ def _build_track_guide(
     obs_raw = sorted(track.observations, key=lambda o: o.frame)
     obs = list(obs_raw)
     dropped = 0
-    if apply_filters:
-        obs, dropped = _filter_guide_observations(obs, cfg, diag)
-        obs, dropped_static_prefix = _trim_leading_static_guide_obs(obs, cfg, diag)
-        dropped += dropped_static_prefix
-        obs, dropped_static_runs = _prune_static_guide_runs(obs, cfg, diag)
-        dropped += dropped_static_runs
-    elif filter_static_jumps:
-        # Lightweight: only remove spikes and static-ball snaps.
-        # Do NOT trim the leading edge - that would lose early rally coverage.
-        obs, dropped = _filter_guide_observations(obs, cfg, diag)
-        # Still prune tight spatial clusters with no motion (parked balls that
-        # got merged into the stitched track via gap-fill observations).
-        obs, dropped_static_runs = _prune_static_guide_runs(obs, cfg, diag)
-        dropped += dropped_static_runs
+    obs, dropped = _filter_guide_observations(obs, cfg, diag)
+    obs, dropped_static_prefix = _trim_leading_static_guide_obs(obs, cfg, diag)
+    dropped += dropped_static_prefix
+    obs, dropped_static_runs = _prune_static_guide_runs(obs, cfg, diag)
+    dropped += dropped_static_runs
     if not obs:
         return guide, dropped
 
@@ -1148,7 +1131,7 @@ def _build_track_guide(
 
     # -- Physics-based tail extension --
     # Use KF prediction instead of constant-velocity extrapolation.
-    if apply_filters and len(obs) >= 2:
+    if len(obs) >= 2:
         last = obs[-1]
         prev = obs[-2]
         dt_tail = max(int(last.frame - prev.frame), 1)

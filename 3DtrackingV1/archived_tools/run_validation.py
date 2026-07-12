@@ -4,7 +4,6 @@
 Resolves paths by convention from --clip <name>:
   annotations: validation/annotations/<clip>.json
   video:       read from the "video" field in the annotation JSON
-  output mp4:  output_videos/<clip>__<git_sha>.mp4
   tracking:    output_videos/<clip>__<git_sha>_tracking.json
   report:      validation/reports/<clip>__<git_sha>.json
 
@@ -89,18 +88,17 @@ def main() -> int:
 
     sha = _git_short_sha()
     tag = f"{args.clip}__{sha}"
-    out_video = REPO_ROOT / "output_videos" / f"{tag}.mp4"
     out_json = REPO_ROOT / "output_videos" / f"{tag}_tracking.json"
     out_report = REPO_ROOT / "validation" / "reports" / f"{tag}.json"
 
-    out_video.parent.mkdir(parents=True, exist_ok=True)
+    out_json.parent.mkdir(parents=True, exist_ok=True)
     out_report.parent.mkdir(parents=True, exist_ok=True)
 
     if not args.skip_pipeline:
         now_cmd = [
             sys.executable, "now_main.py",
             "--input", str(video_path),
-            "--output", str(out_video),
+            "--outputs", "none",
             "--tracking-json", str(out_json),
         ]
         if args.extra_now_args.strip():

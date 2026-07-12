@@ -88,9 +88,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group("Detection")
     g.add_argument("--conf", type=float, default=d.conf, help="Ball confidence threshold")
-    g.add_argument("--ball-backend", default=d.ball_backend, choices=["trt"],
-                   help="Ball backend")
-    g.add_argument("--device", default=d.device, help="Device: auto, cpu, mps, 0, 1")
+    g.add_argument("--device", default=d.device, help="CUDA device index or auto")
 
     g = p.add_argument_group("Court Perspective")
     g.add_argument("--court-depth", default="none", choices=["top_far", "bot_far", "none"],
@@ -109,15 +107,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     g.add_argument("--static-sat-scale", type=float, default=d.static_sat_scale, help="Static-region desaturation")
     g.add_argument("--motion-thresh", type=float, default=d.motion_thresh, help="Motion sensitivity")
     g.add_argument("--motion-v-min", type=float, default=d.motion_v_min, help="Minimum V for motion pixels")
-    g.add_argument("--motion-temporal-soft", dest="motion_temporal_soft",
-                   action="store_true", default=d.motion_temporal_soft,
-                   help="Use soft 3-frame temporal gate")
-    g.add_argument("--motion-temporal-strict", dest="motion_temporal_soft",
-                   action="store_false", help="Use strict 3-frame AND gate")
-    g.add_argument("--motion-temporal-lo-frac", type=float, default=d.motion_temporal_lo_frac,
-                   help="Soft temporal low threshold fraction")
-    g.add_argument("--motion-temporal-hi-mult", type=float, default=d.motion_temporal_hi_mult,
-                   help="Soft temporal strong-threshold multiplier")
     g.add_argument("--motion-flicker-suppress", dest="motion_flicker_suppress",
                    action="store_true", default=d.motion_flicker_suppress,
                    help="Suppress one-frame flicker blobs")
@@ -151,14 +140,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group("Blob Filtering")
     g.add_argument("--no-shape-filter", action="store_true", help="Disable erosion + aspect filtering")
-    g.add_argument("--blob-erode", type=int, default=d.blob_erode_size)
     g.add_argument("--blob-max-aspect", type=float, default=d.blob_max_aspect)
 
     g = p.add_argument_group("Player & Court Detection")
     g.add_argument("--player-model", default=d.player_model_path, help="Player model path (.engine)")
     g.add_argument("--court-model", default=d.court_model_path, help="Court model path (.engine)")
     g.add_argument("--player-interval", type=int, default=d.player_detect_interval)
-    g.add_argument("--player-interval-stable", type=int, default=d.player_detect_interval_stable)
     g.add_argument("--num-players", type=int, default=d.num_players)
     g.add_argument("--court-interval", type=int, default=d.court_detect_interval)
     g.add_argument("--court-conf", type=float, default=d.court_conf)
@@ -173,7 +160,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-draw-court", action="store_true", help="Do not draw court lines")
 
     g = p.add_argument_group("Acceleration")
-    g.add_argument("--no-tensorrt", action="store_true", help="Disable TensorRT")
     g.add_argument("--no-nvenc", action="store_true", help="Disable NVENC encoding")
     g.add_argument("--trt-async", dest="trt_async_execute", action="store_true",
                    default=d.trt_async_execute, help="Use TensorRT async execution")
@@ -292,7 +278,6 @@ def config_from_args(args: argparse.Namespace) -> Config:
         save_motion_debug=save_motion,
         save_yolo_input_debug=save_pre_yolo,
         conf=args.conf,
-        ball_backend=args.ball_backend,
         device=args.device,
         court_depth=None if args.court_depth == "none" else args.court_depth,
         court_side=None if args.court_side == "none" else args.court_side,
@@ -306,9 +291,6 @@ def config_from_args(args: argparse.Namespace) -> Config:
         static_sat_scale=args.static_sat_scale,
         motion_thresh=args.motion_thresh,
         motion_v_min=args.motion_v_min,
-        motion_temporal_soft=args.motion_temporal_soft,
-        motion_temporal_lo_frac=args.motion_temporal_lo_frac,
-        motion_temporal_hi_mult=args.motion_temporal_hi_mult,
         motion_flicker_suppress=args.motion_flicker_suppress,
         motion_flicker_min_area=args.motion_flicker_min_area,
         motion_flicker_max_area=args.motion_flicker_max_area,
@@ -325,12 +307,10 @@ def config_from_args(args: argparse.Namespace) -> Config:
         boost_max_blob_area=args.boost_max_blob,
         boost_min_blob_area=args.boost_min_blob,
         blob_shape_filter=not args.no_shape_filter,
-        blob_erode_size=args.blob_erode,
         blob_max_aspect=args.blob_max_aspect,
         player_model_path=args.player_model,
         court_model_path=args.court_model,
         player_detect_interval=args.player_interval,
-        player_detect_interval_stable=args.player_interval_stable,
         num_players=max(1, int(args.num_players)),
         court_detect_interval=args.court_interval,
         court_conf=args.court_conf,
@@ -342,7 +322,6 @@ def config_from_args(args: argparse.Namespace) -> Config:
         player_iou=args.player_iou,
         draw_players=not args.no_draw_players,
         draw_court=not args.no_draw_court,
-        use_tensorrt=not args.no_tensorrt,
         use_nvenc=not args.no_nvenc,
         trt_async_execute=args.trt_async_execute,
         trt_async_slots=max(1, int(args.trt_async_slots)),
