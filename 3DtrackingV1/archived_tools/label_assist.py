@@ -9,6 +9,7 @@ annotation schema.
 
 Controls:
   left click          Set ball center at click location (visible=True)
+  i / j / k / l       Nudge label up / left / down / right by one pixel
   v                   Toggle visible flag (not-visible removes x/y on save)
   c                   Confirm pre-fill as-is (no change to x/y)
   u                   Undo last action on this frame
@@ -45,7 +46,7 @@ def _load_starter(path: Path) -> Dict[str, Any]:
 def _strip_review_fields(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
     for row in rows:
-        clean = {k: v for k, v in row.items() if not k.startswith("_")}
+        clean = {k: row[k] for k in ("frame", "x", "y", "visible") if k in row}
         if not bool(clean.get("visible", True)):
             clean.pop("x", None)
             clean.pop("y", None)
@@ -83,7 +84,7 @@ def _draw_hud(img, idx: int, total: int, row: Dict[str, Any], dirty: bool):
     dirty_str = " *unsaved*" if dirty else ""
     text = f"[{idx + 1}/{total}] f={row.get('frame')} src={src} conf={conf} pred={coord} {status}{confirm_str}{dirty_str}"
     cv2.putText(img, text, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-    help_text = "CLICK=set ball   v=visible/absent   c=confirm prefill   u=undo   n/SPACE=next   p=prev   s=save   q/ESC=save+quit"
+    help_text = "CLICK=set   IJKL=nudge   v=visible   c=confirm   u=undo   n/SPACE=next   p=prev   autosaves"
     cv2.putText(img, help_text, (8, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(img, help_text, (8, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
@@ -120,8 +121,8 @@ def main() -> int:
                         help="Directory holding frame_NNNNNN.png files")
     parser.add_argument("--out", required=True,
                         help="Output annotation JSON path")
-    parser.add_argument("--window-width", type=int, default=1280,
-                        help="Display window width (image is scaled to fit; default 1280)")
+    parser.add_argument("--window-width", type=int, default=1600,
+                        help="Fixed display width (default 1600)")
     args = parser.parse_args()
 
     import cv2
@@ -148,6 +149,10 @@ def main() -> int:
         "dirty": False,
     }
 
+    def _autosave():
+        _save(out_path, doc, rows)
+        state["dirty"] = False
+
     def _record_undo(i: int):
         snap = deepcopy(rows[i])
         state["history"].setdefault(i, []).append(snap)
@@ -159,26 +164,29 @@ def main() -> int:
         rows[i]["visible"] = True
         rows[i]["_confirmed"] = True
         state["dirty"] = True
+        _autosave()
 
     def _toggle_visible(i: int):
         _record_undo(i)
         rows[i]["visible"] = not bool(rows[i].get("visible", True))
         rows[i]["_confirmed"] = True
         state["dirty"] = True
+        _autosave()
 
     def _confirm(i: int):
         _record_undo(i)
         rows[i]["_confirmed"] = True
         state["dirty"] = True
+        _autosave()
 
     def _undo(i: int):
         stack = state["history"].get(i, [])
         if stack:
             rows[i] = stack.pop()
             state["dirty"] = True
+            _autosave()
 
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW, args.window_width, int(args.window_width * 9 / 16))
+    cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
 
     current_img_cache: Dict[int, Any] = {}
     current_scale: Dict[str, float] = {"sx": 1.0, "sy": 1.0}
@@ -202,6 +210,20 @@ def main() -> int:
                     del current_img_cache[k]
                     break
         return img
+
+    def _nudge(i: int, dx: float, dy: float):
+        row = rows[i]
+        if row.get("x") is None or row.get("y") is None:
+            return
+        img = _load_frame_image(i)
+        if img is None:
+            return
+        h, w = img.shape[:2]
+        _set_position(
+            i,
+            min(max(float(row["x"]) + dx, 0.0), float(w - 1)),
+            min(max(float(row["y"]) + dy, 0.0), float(h - 1)),
+        )
 
     def _redraw():
         i = state["idx"]
@@ -237,8 +259,8 @@ def main() -> int:
     cv2.setMouseCallback(WINDOW, _on_mouse)
     _redraw()
 
-    print("[label_assist] keys: LMB=set, v=toggle visible, c=confirm, u=undo,")
-    print("                 n/SPACE=next, p=prev, s=save, q/ESC=save+quit")
+    print("[label_assist] keys: LMB=set, I/J/K/L=nudge, v=toggle visible, c=confirm, u=undo,")
+    print("                 n/SPACE=next, p=prev, q/ESC=save+quit (every edit autosaves)")
 
     while True:
         key = cv2.waitKey(50)
@@ -262,6 +284,15 @@ def main() -> int:
             _redraw()
         elif key == ord("u"):
             _undo(i)
+            _redraw()
+        elif key in (ord("i"), ord("j"), ord("k"), ord("l")):
+            dx, dy = {
+                ord("i"): (0.0, -1.0),
+                ord("j"): (-1.0, 0.0),
+                ord("k"): (0.0, 1.0),
+                ord("l"): (1.0, 0.0),
+            }[key]
+            _nudge(i, dx, dy)
             _redraw()
         elif key == ord("s"):
             _save(out_path, doc, rows)
