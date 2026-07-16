@@ -364,7 +364,22 @@ def _select_timeline_chain(
     chain = [ordered[k] for k in idx_chain]
     if not chain:
         return [max(ordered, key=lambda t: t.score)]
-    return chain
+
+    # Continuity chooses between competing overlapping tracks. A validated,
+    # disjoint segment can be a separate rally and must not disappear merely
+    # because its endpoints do not connect to the surrounding rallies.
+    chosen_ids = {id(track) for track in chain}
+    for candidate in sorted(ordered, key=lambda track: track.score, reverse=True):
+        if id(candidate) in chosen_ids:
+            continue
+        if all(
+            candidate.last_obs_frame < track.first_frame
+            or candidate.first_frame > track.last_obs_frame
+            for track in chain
+        ):
+            chain.append(candidate)
+            chosen_ids.add(id(candidate))
+    return sorted(chain, key=lambda track: (track.first_frame, track.last_obs_frame))
 
 def _stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Track]:
     """Convert a timeline chain into one stitched track for guide building."""

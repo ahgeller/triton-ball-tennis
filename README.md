@@ -68,6 +68,11 @@ Use another CUDA device or detector threshold:
 python clean_tracker.py --device 1 --conf 0.55
 ```
 
+## Fine-tuning GridTrackNet
+
+The bundled GridTrackNet weights contain the latest fine-tuned checkpoint used
+to produce the demo.
+
 ## Validation
 
 Run the deterministic tracking checks:

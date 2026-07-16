@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 output/
 AiFolder/
+.venv/
+models/*finetuned*.npz
+models/*legacy*.npz

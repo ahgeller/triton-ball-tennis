@@ -180,6 +180,18 @@ def _self_test() -> None:
         [prior, false_overlap, real_overlap, reset_segment], selector_cfg, 60
     )] == [1, 3, 4]
 
+    # A strong, non-overlapping rally segment must survive even when its
+    # endpoints are spatially discontinuous with the surrounding rallies.
+    ucsd_cfg = SelectorConfig(fps=60.0, width=1920, height=1080).auto_scale()
+    before = timeline_track(22, 2508, 2678, -1658.2, 74.0)
+    middle = timeline_track(24, 2740, 2822, -1909.6, 26.17)
+    after = timeline_track(30, 2920, 3022, -1946.2, 38.7)
+    for track in (before, middle, after):
+        track.cfg = ucsd_cfg
+    assert [track.track_id for track in _select_timeline_chain(
+        [before, middle, after], ucsd_cfg, 3674
+    )] == [22, 24, 30]
+
     # A stale static false positive must not absorb a later moving detection.
     separated = [[] for _ in range(34)]
     for frame in range(10):
