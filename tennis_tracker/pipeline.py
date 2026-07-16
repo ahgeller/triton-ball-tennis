@@ -16,7 +16,7 @@ except Exception:
 
 from .config import Config
 from .utils import _detect_device, _check_capabilities, _resolve_engine_path_for_ball, find_ball_class_id_from_names, _read_engine_names
-from .detectors import BallDetectorBackend, CourtDetector, PlayerDetector, TensorRTRuntimeBallDetector
+from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
 from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, suppress_flicker_components, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
 from .tracking import ROIMotionTracker
 from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _court_axis_spans, _build_court_polygon, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _build_ground_projection_model, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
@@ -508,23 +508,25 @@ def run(cfg):
     ball_cls_id = None
     ball_cls_name = None
 
-    # TensorRT-only ball runtime path.
-    trt_engine_path = _resolve_engine_path_for_ball(cfg)
-    if trt_engine_path is None:
-        raise RuntimeError(
-            f"Ball TensorRT engine not found for model_path='{cfg.model_path}'. "
-            "Expected a .engine file."
+    model_path = Path(cfg.model_path).expanduser().resolve()
+    if model_path.suffix.lower() == ".npz":
+        if not model_path.is_file():
+            raise FileNotFoundError(f"GridTrackNet weights not found: {model_path}")
+        detector = GridTrackNetBallDetector(str(model_path), cfg)
+    else:
+        trt_engine_path = _resolve_engine_path_for_ball(cfg)
+        if trt_engine_path is None:
+            raise RuntimeError(
+                f"Ball TensorRT engine not found for model_path='{cfg.model_path}'. "
+                "Expected a .engine file."
+            )
+        model_names = _read_engine_names(trt_engine_path)
+        ball_cls_id, ball_cls_name = find_ball_class_id_from_names(model_names, cfg.ball_class_name)
+        print(f"[init] Model classes: {model_names}")
+        print(f"[init] Ball class: id={ball_cls_id}, name='{ball_cls_name}'")
+        detector = TensorRTRuntimeBallDetector(
+            str(trt_engine_path), cfg, ball_cls_id, names=model_names
         )
-    if not (HAS_TORCH and torch.cuda.is_available()):
-        raise RuntimeError("TensorRT runtime requires CUDA-enabled torch.")
-
-    model_names = _read_engine_names(trt_engine_path)
-    ball_cls_id, ball_cls_name = find_ball_class_id_from_names(model_names, cfg.ball_class_name)
-    print(f"[init] Model classes: {model_names}")
-    print(f"[init] Ball class: id={ball_cls_id}, name='{ball_cls_name}'")
-    detector = TensorRTRuntimeBallDetector(
-        str(trt_engine_path), cfg, ball_cls_id, names=model_names
-    )
 
     if cfg.court_depth or cfg.court_side:
         parts = []
@@ -545,6 +547,8 @@ def run(cfg):
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"[init] Video: {w}x{h} @ {fps:.1f}fps, ~{total} frames")
+    if isinstance(detector, GridTrackNetBallDetector):
+        detector.prepare_video(input_path, fps, w, h, total)
 
     court_det = CourtDetector(cfg)
     player_det = PlayerDetector(cfg, court_keypoints=None)
@@ -871,11 +875,18 @@ def run(cfg):
                 else:
                     roi_for_pack = None
                     fullframe_count += 1
-                # Skip cosmetic dim_static when ball is visible - saves a GPU round-trip
-                _skip_dim = (skip_preprocess_dim and
-                             len(roi_tracker.tracks) > 0 and
-                             roi_tracker.ball_visible)
-                need_cpu_pre_frame = bool((yolo_dbg_writer is not None) or (not use_cuda_pre_frame))
+                _skip_dim = bool(
+                    detector.uses_raw_frames
+                    or (
+                        skip_preprocess_dim
+                        and len(roi_tracker.tracks) > 0
+                        and roi_tracker.ball_visible
+                    )
+                )
+                need_cpu_pre_frame = bool(
+                    yolo_dbg_writer is not None
+                    or (not use_cuda_pre_frame and not detector.uses_raw_frames)
+                )
                 pre_frame, raw_motion_u8, boost_mask_u8, _, _, pre_frame_cuda = \
                     preprocess_frame_cuda(frame_curr, master_bg_v, master_bg_s,
                                           master_var_v, master_var_s, cfg,
@@ -896,7 +907,10 @@ def run(cfg):
                                           next_v_cached=next_v_t,
                                           next_s_cached=next_s_t,
                                           protect_mask_cuda_cached=protect_mask_cuda,
+                                          need_detector_boost=not detector.uses_raw_frames,
                                           perf=pre_cuda_perf)
+                if detector.uses_raw_frames:
+                    pre_frame = frame_curr
             else:
                 rois, rois_visual = roi_tracker.get_rois(frame_idx) if cfg.roi_motion_enabled else (None, None)
                 if rois:
@@ -971,11 +985,12 @@ def run(cfg):
                 else:
                     boost_yolo_u8 = boost_mask_u8
 
-                pre_frame = preprocess_frame(frame_curr, raw_motion_u8, boost_yolo_u8, cfg,
-                                              player_bboxes=player_boxes,
-                                              court_keypoints=court_kps,
-                                              hsv_cached=hsv_curr,
-                                              protect_mask_cached=protect_mask)
+                if not detector.uses_raw_frames:
+                    pre_frame = preprocess_frame(frame_curr, raw_motion_u8, boost_yolo_u8, cfg,
+                                                  player_bboxes=player_boxes,
+                                                  court_keypoints=court_kps,
+                                                  hsv_cached=hsv_curr,
+                                                  protect_mask_cached=protect_mask)
 
             # Start current frame inference as soon as detector input is ready.
             # With per-pending CUDA events + output slots, this is safe and allows
@@ -1310,7 +1325,7 @@ def run(cfg):
         cap2 = None
     # list of (raw_x, raw_y, smooth_x, smooth_y, source, conf) or None for gaps
     trail = []
-    trail_max = 50
+    trail_max = max(10, int(round(fps * 0.25)))
     guide_trail = []  # list of (x, y, exact) or None for guide gaps
     guide_trail_max = max(40, trail_max + 20)
     last_guide_point_dbg = None  # (x, y, exact)
@@ -1407,11 +1422,9 @@ def run(cfg):
                 if guide_frame is not None:
                     cv2.rectangle(guide_frame, (px1, py1), (px2, py2), (0, 0, 255), 2)
 
-        # Draw ALL raw detections (dim yellow thin boxes)
+        # Rejected raw proposals belong only in the optional guide/debug view.
         for ball_box, ball_conf in dets:
             ix1, iy1, ix2, iy2 = map(int, ball_box)
-            cv2.rectangle(frame_out, (ix1, iy1), (ix2, iy2), COLOR_RAW, 1)
-            cv2.line(frame_out, (ix1, iy2), (ix2, iy2), (0, 0, 255), 1)
             if guide_frame is not None:
                 cv2.rectangle(guide_frame, (ix1, iy1), (ix2, iy2), COLOR_RAW, 1)
                 cv2.line(guide_frame, (ix1, iy2), (ix2, iy2), (0, 0, 255), 1)
@@ -1722,10 +1735,8 @@ def run(cfg):
                     alpha = 0.55 + 0.45 * (i / len(trail))
                     base = _trail_base_color(src)
                     color = (int(base[0] * alpha), int(base[1] * alpha), int(base[2] * alpha))
-                    line_th = max(2, int(3 * alpha))
-                    outline_th = line_th + 1
-                    # Dark outline first so the trail stays readable against court/player textures.
-                    cv2.line(frame_out, p0, p1, (15, 15, 15), outline_th, cv2.LINE_AA)
+                    line_th = max(2, int(round(3 * alpha)))
+                    cv2.line(frame_out, p0, p1, (15, 15, 15), line_th + 1, cv2.LINE_AA)
                     cv2.line(frame_out, p0, p1, color, line_th, cv2.LINE_AA)
 
         # HUD

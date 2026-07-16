@@ -843,6 +843,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                           next_v_cached=None,
                           next_s_cached=None,
                           protect_mask_cuda_cached=None,
+                          need_detector_boost=True,
                           perf: Optional[Dict[str, float]] = None):
     """CUDA preprocessing with S+V motion detection.
     
@@ -1000,7 +1001,11 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     boost_yolo_u8 = None
     boost_has_blobs = False
     if raw_motion is not None:
-        boost_source = raw_motion_ungated if raw_motion_ungated is not None else raw_motion
+        boost_source = (
+            raw_motion_ungated
+            if need_detector_boost and raw_motion_ungated is not None
+            else raw_motion
+        )
         wide_distinct = boost_source is not raw_motion
         if rois is not None:
             h_u8 = int(curr_v.shape[0])
@@ -1077,6 +1082,11 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                 (boost_mask_u8 is not None and boost_mask_u8.max() > 0) or
                 (boost_yolo_u8 is not None and boost_yolo_u8.max() > 0)
             )
+
+    if skip_dim and not need_cpu_frame and not return_cuda_frame:
+        out = (frame, raw_motion_u8, boost_mask_u8, curr_v.detach(), curr_s.detach(), None)
+        _finalize_perf()
+        return out
 
     # Early exit: no ball-sized blobs -> just dim static regions
     if not boost_has_blobs:

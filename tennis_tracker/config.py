@@ -8,12 +8,13 @@ class Config:
     # paths
     input_video: str = r"input_videos/TMP.mp4"
     output_video: str = "output_videos/prof_test.mp4"
-    model_path: str = r"models/ball.engine"
+    model_path: str = r"models/gridtracknet_weights_torch.npz"
     
     # Ball detector
     ball_class_name: Optional[str] = None
-    conf: float = 0.26
+    conf: float = 0.50
     device: str = "auto"
+    gridtracknet_y_offset_px: float = 1.6
 
     # TensorRT
     trt_async_execute: bool = True

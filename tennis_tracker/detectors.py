@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections import OrderedDict, namedtuple
+import time
+from collections import OrderedDict, deque, namedtuple
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import cv2
@@ -209,6 +210,8 @@ class _TensorRTRuntimeSession:
 class BallDetectorBackend:
     """Swappable detector interface for ball detection backends."""
 
+    uses_raw_frames = False
+
     def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
         raise NotImplementedError
 
@@ -220,6 +223,114 @@ class BallDetectorBackend:
 
     def supports_cuda_frame(self) -> bool:
         return False
+
+
+class GridTrackNetBallDetector(BallDetectorBackend):
+    """Run the pretrained model at its native five-frame, 30-FPS cadence."""
+
+    uses_raw_frames = True
+    use_async = False
+    async_slots = 1
+
+    def __init__(self, weights_path: str, cfg: Config):
+        if not HAS_TORCH or not torch.cuda.is_available():
+            raise RuntimeError("GridTrackNet requires CUDA-enabled torch.")
+        from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
+
+        self.cfg = cfg
+        self.device = torch.device(f"cuda:{int(cfg.device)}")
+        self._decode = decode_predictions
+        self._frame_tensor = frame_tensor
+        torch.backends.cudnn.benchmark = True
+        self.model = load_model(Path(weights_path), self.device)
+        self.precomputed: Optional[List[List[Tuple[list, float]]]] = None
+        self.precomputed_index = 0
+        with torch.inference_mode():
+            self.model(torch.zeros((1, 15, HEIGHT, WIDTH), device=self.device, dtype=torch.float16))
+        torch.cuda.synchronize(self.device)
+        print(f"[detector] GridTrackNet FP16 (confidence={float(cfg.conf):.2f}, device={self.device})")
+
+    def prepare_video(self, video_path: Path, fps: float, width: int, height: int, total: int) -> None:
+        if 57.0 <= float(fps) <= 62.0:
+            source_stride = 2
+        elif 22.0 <= float(fps) <= 32.0:
+            source_stride = 1
+        else:
+            raise RuntimeError(f"GridTrackNet expects a 30 or 60 FPS video, got {fps:.3f} FPS")
+
+        capture = cv2.VideoCapture(str(video_path))
+        if not capture.isOpened():
+            raise RuntimeError(f"Could not open input video for GridTrackNet: {video_path}")
+        cached: List[List[Tuple[list, float]]] = [[] for _ in range(max(0, int(total)))]
+        unit = []
+        recent = deque(maxlen=5)
+        batches = []
+        frame_index = inference_calls = detected = 0
+        started = time.perf_counter()
+        y_offset = float(self.cfg.gridtracknet_y_offset_px) * height / 1080.0
+        radius = max(2.0, 0.003 * np.hypot(width, height))
+
+        def flush() -> None:
+            nonlocal inference_calls, detected
+            if not batches:
+                return
+            with torch.inference_mode():
+                output = self.model(torch.stack([item[0] for item in batches]))
+            decoded = self._decode(output, width, height, float(self.cfg.conf))
+            for batch_index, (_, indices) in enumerate(batches):
+                start = batch_index * 5
+                for source_index, (point, confidence) in zip(indices, decoded[start:start + 5]):
+                    if point is None or cached[source_index]:
+                        continue
+                    x, y = point[0], point[1] + y_offset
+                    cached[source_index] = [([x - radius, y - radius, x + radius, y + radius], confidence)]
+                    detected += 1
+            inference_calls += 1
+            batches.clear()
+
+        try:
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                if frame_index % source_stride == 0:
+                    item = (self._frame_tensor(frame, self.device), frame_index)
+                    recent.append(item)
+                    unit.append(item)
+                    if len(unit) == 5:
+                        batches.append((torch.cat([value for value, _ in unit]), [index for _, index in unit]))
+                        unit = []
+                        if len(batches) == 4:
+                            flush()
+                frame_index += 1
+            if unit and len(recent) == 5:
+                batches.append((torch.cat([value for value, _ in recent]), [index for _, index in recent]))
+            flush()
+            torch.cuda.synchronize(self.device)
+        finally:
+            capture.release()
+
+        elapsed = time.perf_counter() - started
+        self.precomputed = cached
+        self.precomputed_index = 0
+        print(
+            f"[detector] GridTrackNet prepass: {frame_index} source frames, {detected} detections, "
+            f"{inference_calls} batched calls in {elapsed:.1f}s ({frame_index / max(elapsed, 1e-9):.1f} source fps)"
+        )
+
+    def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
+        if self.precomputed is None:
+            raise RuntimeError("GridTrackNet.prepare_video() must run before detection.")
+        index = self.precomputed_index
+        self.precomputed_index += 1
+        return self.precomputed[index] if index < len(self.precomputed) else []
+
+    def detect_async_start(self, frame_bgr: np.ndarray):
+        return self.detect(frame_bgr)
+
+    def detect_async_finish(self, pending) -> List[Tuple[list, float]]:
+        return pending
+
 
 class TensorRTRuntimeBallDetector(BallDetectorBackend):
     """Direct TensorRT runtime backend for ball detection."""

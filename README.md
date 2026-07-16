@@ -1,64 +1,56 @@
 # Triton Ball Tennis
 
-A GPU-accelerated tennis video analyzer that detects the court and players,
-tracks the ball through fast or blurred motion, and exports an annotated video
-with structured tracking data.
+A GPU tennis-video tracker built around GridTrackNet temporal ball detection,
+TensorRT player and court detection, and conservative motion/physics recovery.
+It produces an annotated MP4 and per-frame tracking JSON.
 
 ## Demo
 
-[![Tennis tracking demo](media/tracking_demo.gif)](media/tracking_demo.mp4)
+[![GridTrackNet tennis tracking demo](media/tracking_demo.gif)](media/tracking_demo.mp4)
 
-The overlay shows court keypoints, player boxes, and the selected ball trail:
+The overlay distinguishes where each selected point came from:
 
-- **Green:** detector positions
-- **Orange:** motion corrections
-- **Cyan:** bounded interpolation and physics recovery
+- **Green (`DET`):** raw GridTrackNet detection
+- **Orange (`MOT`):** motion-supported recovery
+- **Cyan (`PHY`):** short bounded interpolation or physics recovery
 
-## Features
+Raw green detections are preserved. Recovery is deliberately conservative: an
+unresolved detector gap remains a gap instead of becoming a long predicted path.
 
-- Tennis ball, player, and court detection from match video
-- TensorRT inference with CUDA preprocessing
-- Motion-assisted recovery when the detector loses the ball
-- Ball-in-play track selection to reject static objects and false detections
-- Annotated MP4 and per-frame tracking JSON output
-- Automated accuracy, smoothness, and regression checks
+## Pipeline
 
-## What makes it different
-
-Many tennis-analyzer projects stop after drawing YOLO detections. This tracker
-uses the detector as one signal inside a larger tracking system:
-
-- **Better continuity:** motion, court position, player proximity, and trajectory
-  physics help recover short detector gaps.
-- **More efficient processing:** dynamic search regions, threaded frame reading,
-  overlapped GPU inference, and asynchronous video encoding reduce unnecessary work.
-- **More scalable code:** detection, motion, track selection, rendering, video I/O,
-  and validation live in separate modules instead of one large script.
-- **Measurable changes:** structured JSON and a frozen benchmark make model or
-  tracking changes directly comparable.
+- GridTrackNet runs on raw RGB frames in five-frame temporal units at its native
+  30 FPS cadence (30 or 60 FPS input is supported).
+- Player and court models run through TensorRT.
+- Motion masks support selection and short recovery but are not used to alter
+  GridTrackNet's input.
+- The ball-in-play selector rejects static objects and implausible track switches,
+  closes safe one-frame holes, and exports the selected source for every frame.
+- The renderer draws a short anti-aliased trail without inventing points across
+  lost sections.
 
 ## Requirements
 
 - Python 3.10
 - NVIDIA CUDA GPU
-- PyTorch with CUDA
+- CUDA-enabled PyTorch
 - TensorRT 10
 - OpenCV and NumPy
 - FFmpeg recommended for faster video encoding
 
-The repository includes TensorRT engines for the ball, player, and court models.
-Because TensorRT engines are platform-specific, they may need to be rebuilt for
-a different GPU or TensorRT version.
+The repository includes the GridTrackNet weight export and TensorRT engines used
+by the default pipeline. TensorRT engines are platform-specific and may need to
+be rebuilt for a different GPU or TensorRT version.
 
 ## Usage
 
-Run the bundled sample:
+Run the bundled Pomona sample:
 
 ```powershell
 python clean_tracker.py
 ```
 
-Run another match:
+Run another 30 or 60 FPS match:
 
 ```powershell
 python clean_tracker.py --input path\to\match.mp4 --output output\tracking.mp4 --tracking-json output\tracking.json
@@ -70,42 +62,41 @@ Export JSON without rendering a video:
 python clean_tracker.py --input path\to\match.mp4 --tracking-json output\tracking.json --no-video
 ```
 
+Use another CUDA device or detector threshold:
+
+```powershell
+python clean_tracker.py --device 1 --conf 0.55
+```
+
 ## Validation
+
+Run the deterministic tracking checks:
 
 ```powershell
 python clean_tracker.py --self-test
-python check_parity.py
 ```
 
-### Frozen benchmark
+Evaluate against annotations:
 
-| Metric | Previous tracker | Current tracker |
-|---|---:|---:|
-| Visible recall | 76/76 | **76/76** |
-| Mean error | 1.824 px | **1.571 px** |
-| p90 error | 2.862 px | **2.452 px** |
-| Large jumps | 1 | **0** |
-| Acceleration p95 | 5.118 px/frame² | **4.284 px/frame²** |
-
-These results are from the frozen Pomona sample. More labeled matches are needed
-before treating them as general accuracy claims.
+```powershell
+python clean_tracker.py --no-video --annotations sample\pomona_annotations.json
+```
 
 ## Project structure
 
 ```text
-clean_tracker.py              Main command-line entry point
-tennis_tracker/               Detection, motion, rendering, and video pipeline
-ball_in_play_selector/        Track construction, scoring, and physics recovery
-models/                       Ball, player, and court TensorRT engines
-sample/                       Sample videos and validation annotations
-validate_tracking.py          General tracking evaluator
-check_parity.py               Frozen regression benchmark
-build_trt_engines.py          TensorRT engine builder
+clean_tracker.py                         Command-line entry point
+tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
+tennis_tracker/                          Detection, motion, rendering, and video pipeline
+ball_in_play_selector/                   Track construction, scoring, and recovery
+models/gridtracknet_weights_torch.npz    GridTrackNet inference weights
+models/                                  Player and court TensorRT engines
+sample/                                  Sample videos and validation annotations
+output/                                  Generated videos, JSON, and reports (ignored)
 ```
 
-## Future implementation
+## Current limitation
 
-- Improve and retrain the ball, player, and court models
-- Evaluate alternative model types when they offer better accuracy or speed
-- Add persistent player tracking across frames
-- Add player identification so tracked players remain consistently labeled
+GridTrackNet can still miss a blurred ball or select a player/background feature.
+The conservative selector prevents many false continuations, but correcting raw
+green detector errors requires fine-tuning the model on additional labeled clips.

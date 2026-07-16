@@ -12,8 +12,13 @@ import numpy as np
 
 from ball_in_play_selector import select_ball_in_play
 from ball_in_play_selector.config import SelectorConfig
-from ball_in_play_selector.core import _selected_tracks, _trajectory_observations
-from ball_in_play_selector.models import Detection, Track
+from ball_in_play_selector.core import (
+    _direction_cosine,
+    _refine_trajectory,
+    _selected_tracks,
+    _trajectory_observations,
+)
+from ball_in_play_selector.models import Detection, FrameResult, Track
 from ball_in_play_selector.scoring import _select_timeline_chain
 from ball_in_play_selector.tracking import build_tracks
 from tennis_tracker.config import Config
@@ -31,7 +36,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("-i", "--input", default=str(ROOT / "sample" / "pomona.mp4"))
     parser.add_argument("-o", "--output", default=str(OUTPUT / "tracking.mp4"))
     parser.add_argument("--tracking-json", default=str(OUTPUT / "tracking.json"))
-    parser.add_argument("--conf", type=float, default=0.12)
+    parser.add_argument("--conf", type=float, default=0.50)
     parser.add_argument("--device", default="0")
     parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--info", action="store_true")
@@ -42,6 +47,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _self_test() -> None:
+    from tennis_tracker.gridtracknet import self_test as gridtracknet_self_test
+
+    gridtracknet_self_test()
     assert CourtDetector._LINE_PAIRS_14 == (
         (0, 4), (4, 6), (6, 1), (0, 2), (1, 3),
         (2, 5), (5, 7), (7, 3), (4, 8), (8, 10), (10, 5),
@@ -52,7 +60,7 @@ def _self_test() -> None:
     detections = []
     masks = []
     for frame in range(12):
-        x = 10 + 4 * frame
+        x = 10 + 12 * frame
         detections.append([([x, 20, x + 4, 24], 0.9)])
         mask = np.zeros((360, 640), dtype=np.uint8)
         mask[20:25, x:x + 5] = 255
@@ -71,16 +79,35 @@ def _self_test() -> None:
     )
     assert results[1] is not None and results[2] is not None
 
+    straight = [
+        Detection(frame, float(frame * 10), 20.0, 0, 0, 4, 4, 0.9, 16.0, True)
+        for frame in range(3)
+    ]
+    assert _direction_cosine(*straight) == 1.0
+    straight[2].cx = 0.0
+    assert _direction_cosine(*straight) == -1.0
+
+    # The robust refit repairs a short target-switch block without changing
+    # the source classification used by the renderer.
+    smooth = [
+        FrameResult(cx=float(frame * 10), cy=100.0, conf=0.9, source="det")
+        for frame in range(15)
+    ]
+    smooth[7].cy = smooth[8].cy = 180.0
+    _refine_trajectory(smooth)
+    assert max(abs(smooth[frame].cy - 100.0) for frame in (7, 8)) < 10.0
+    assert all(result.source == "det" for result in smooth)
+
     # One broad motion hit may support one physics point, never a blue tail
     # across later frames where the ball has disappeared.
     lost_detections = detections[:10] + [[] for _ in range(5)]
     lost_masks = masks[:10] + [np.zeros((360, 640), dtype=np.uint8) for _ in range(5)]
-    lost_masks[10][20:25, 60:65] = 255
+    lost_masks[10][20:25, 130:135] = 255
     results, _, _, _ = select_ball_in_play(
         lost_detections, 30.0, 640, 360,
         boost_masks=lost_masks, raw_motions=lost_masks,
     )
-    assert results[10] is not None and results[10].source == "carry"
+    assert results[10] is not None and results[10].source == "motion"
     assert all(result is None for result in results[11:])
 
     weak = [[([10 + frame, 20, 14 + frame, 24], 0.2)] for frame in range(4)]
@@ -124,6 +151,15 @@ def _self_test() -> None:
         "extent_px": 29.0,
     }
     assert rolling in _selected_tracks([rolling], 30.0)
+
+    fast_short = Track(track_id=101, cfg=selector_cfg)
+    fast_short.observations = [
+        Detection(frame * 2, 100.0 + 12.0 * frame, 100.0, 0, 0, 4, 4, 0.9, 16.0, True)
+        for frame in range(15)
+    ]
+    fast_short.score = 15.0
+    fast_short.score_breakdown = {"motion_frac_raw": 1.0}
+    assert fast_short in _selected_tracks([fast_short], 60.0)
 
     def timeline_track(track_id, start, end, x_offset, score):
         track = Track(track_id=track_id, cfg=selector_cfg)
@@ -192,7 +228,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         input_video=str(Path(args.input).resolve()),
         output_video=str(Path(args.output).resolve()),
         tracking_json=str(Path(args.tracking_json).resolve()),
-        model_path=str(ROOT / "models" / "ball.engine"),
+        model_path=str(ROOT / "models" / "gridtracknet_weights_torch.npz"),
         player_model_path=str(ROOT / "models" / "player.engine"),
         court_model_path=str(ROOT / "models" / "courtdetection.engine"),
         conf=float(args.conf),
