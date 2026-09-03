@@ -96,7 +96,7 @@ tennis_tracker/                          Detection, motion, rendering, and video
 ball_in_play_selector/                   Track construction, scoring, and recovery
 models/gridtracknet_weights_torch.npz    GridTrackNet inference weights
 models/                                  Player and court TensorRT engines
-sample/                                  Sample videos and validation annotations
+sample/                                  Sample video and validation annotations
 output/                                  Generated videos, JSON, and reports (ignored)
 ```
 
