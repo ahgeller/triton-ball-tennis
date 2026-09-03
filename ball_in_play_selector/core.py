@@ -21,41 +21,55 @@ from .utils import _ensure_mask_u8
 
 
 def _selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
-    """Keep established shots, reacquisitions, and slow in-court rolls."""
-    minimum_observations = max(3, int(round(float(fps) * 0.25)))
-    reacquire_observations = max(10, int(round(float(fps) * 0.16)))
+    """Keep established shots, reacquisitions, airborne balls, and slow in-court rolls."""
     selected = []
     for track in tracks:
+        cfg = track.cfg
         score = track.score_breakdown or {}
         motion_fraction = float(score.get("motion_frac_raw", 0.0))
+        # max(mask overlap, kinematic estimate) -- see scoring.score_tracks
+        motion_evidence = float(score.get("motion_frac", motion_fraction))
         confidences = sorted(float(item.conf) for item in track.observations)
         median_confidence = confidences[len(confidences) // 2] if confidences else 0.0
         score_density = track.score / max(track.num_obs, 1)
         # A ball the detector can see is seen on most frames; ten detections
         # sprinkled over seventy frames is a bystander, not a reacquisition.
         observation_density = track.num_obs / max(track.span, 1)
+        inside_strict = float(score.get("inside_strict_frac", 0.0))
+        extent_px = float(score.get("extent_px", 0.0))
         established = (
-            track.num_obs >= minimum_observations
-            and motion_fraction >= 0.5
-            and score_density >= 0.5
+            track.num_obs >= cfg.select_min_obs_frames
+            and motion_fraction >= cfg.select_established_motion_frac
+            and score_density >= cfg.select_score_density_min
         )
         reacquired = (
-            track.num_obs >= reacquire_observations
-            and motion_fraction >= 0.25
-            and median_confidence >= 0.55
-            and float(score.get("inside_strict_frac", 1.0)) <= 0.1
-            and score_density >= 0.5
-            and observation_density >= 0.5
+            track.num_obs >= cfg.select_reacquire_obs_frames
+            and motion_fraction >= cfg.select_reacquire_motion_frac
+            and median_confidence >= cfg.select_reacquire_conf
+            and float(score.get("inside_strict_frac", 1.0)) <= cfg.select_outside_strict_max
+            and score_density >= cfg.select_score_density_min
+            and observation_density >= cfg.select_obs_density_min
+        )
+        # A ball in flight is unmistakable from its own kinematics even when the
+        # boost mask barely fires on it (small, distant, or far-court), and it
+        # crosses the baseline, so it sits in neither court-fraction band above.
+        airborne = (
+            track.num_obs >= cfg.select_min_obs_frames
+            and motion_evidence >= cfg.select_kinematic_motion_frac
+            and median_confidence >= cfg.select_reacquire_conf
+            and extent_px >= cfg.select_kinematic_extent_frac * cfg.diag
+            and score_density >= cfg.select_score_density_min
+            and observation_density >= cfg.select_obs_density_min
         )
         rolling = (
-            track.num_obs >= minimum_observations
-            and motion_fraction >= 0.15
-            and median_confidence >= 0.80
-            and float(score.get("inside_strict_frac", 0.0)) >= 0.5
-            and float(score.get("extent_px", 0.0)) >= 0.02 * track.cfg.diag
-            and score_density >= 0.12
+            track.num_obs >= cfg.select_min_obs_frames
+            and motion_fraction >= cfg.select_rolling_motion_frac
+            and median_confidence >= cfg.select_rolling_conf
+            and inside_strict >= cfg.select_inside_strict_min
+            and extent_px >= cfg.select_rolling_extent_frac * cfg.diag
+            and score_density >= cfg.select_rolling_score_density_min
         )
-        if established or reacquired or rolling:
+        if established or reacquired or airborne or rolling:
             selected.append(track)
     return sorted(selected, key=lambda track: (track.first_frame, track.last_obs_frame))
 
@@ -74,11 +88,17 @@ def _trajectory_observations(track: Track, fps: float):
 
     A weak, motionless detection needs a neighbour within ~0.05 s.  Any
     detection separated from the rest of its track by more than ~0.1 s on
-    both sides is unverifiable regardless of confidence: association can
-    reconnect a static object (a van, a shoe) after a long miss, and a lone
-    endpoint like that must not draw a path or a dot.
+    both sides is unverifiable: association can reconnect a static object
+    (a van, a shoe) after a long miss, and a lone endpoint like that must
+    not draw a path or a dot.
+
+    One exception, because this rule was eating the very anchors the long-gap
+    fill then demands as corroboration: a detection that is both confident and
+    sitting on the motion mask is corroborated by the mask rather than by its
+    neighbours, so it survives.
     """
     observations = track.observations
+    cfg = track.cfg
     neighbor_frames = _neighbor_frames(fps)
     isolation_frames = _isolation_frames(fps)
     kept = []
@@ -100,11 +120,17 @@ def _trajectory_observations(track: Track, fps: float):
             and next_gap > neighbor_frames
         ):
             continue
-        if (
-            (not has_previous or previous_gap > isolation_frames)
-            and (not has_next or next_gap > isolation_frames)
-            and len(observations) > 1
-        ):
+        corroborated_by_mask = (
+            detection.conf >= cfg.isolation_keep_conf and detection.on_motion
+        )
+        previous_isolated = has_previous and previous_gap > isolation_frames
+        next_isolated = has_next and next_gap > isolation_frames
+        isolated = (
+            (previous_isolated or not has_previous)
+            and (next_isolated or not has_next)
+            and (has_previous or has_next)
+        )
+        if isolated and not corroborated_by_mask and len(observations) > 1:
             continue
         kept.append(detection)
     return kept
@@ -140,6 +166,22 @@ def _motion_near(
             best = {"x": cx, "y": cy, "bbox": (bx, by, bx + bw, by + bh), "area": area}
             best_distance = distance
     return best
+
+
+def _motion_search_radius(cfg: SelectorConfig, steps: int, speed: float) -> float:
+    """How far from the predicted point a motion blob may still be the ball.
+
+    Grows with the number of frames the prediction has run unanchored and with
+    the ball's own speed: a 3% prediction error on an 80 px/frame ball is
+    already outside any fixed radius that is safe for a slow one.
+    """
+    base = max(float(cfg.motion_search_min_px), float(cfg.motion_search_base_frac) * cfg.diag)
+    radius = (
+        base
+        + float(cfg.motion_search_growth_px) * max(0, int(steps) - 1)
+        + float(cfg.motion_search_vel_mult) * max(0.0, float(speed))
+    )
+    return min(radius, float(cfg.motion_search_max_frac) * cfg.diag)
 
 
 def _motion_candidate(
@@ -184,7 +226,7 @@ def _direction_cosine(first, second, third) -> float:
     return -1.0 if scale < 1e-6 else (ax * bx + ay * by) / scale
 
 
-def _result(x, y, source, detection=None, motion=None) -> FrameResult:
+def _result(x, y, source, detection=None, motion=None, search_radius=0.0) -> FrameResult:
     bbox = None
     confidence = 0.0
     if detection is not None:
@@ -201,6 +243,9 @@ def _result(x, y, source, detection=None, motion=None) -> FrameResult:
         source=source,
         search_cx=float(x),
         search_cy=float(y),
+        # Reported so the pipeline diagnostics judge a blob against the radius
+        # the selector actually used, not an unrelated one of their own.
+        search_radius=float(search_radius),
         source_reason={
             "det": "selected_track_observation",
             "motion": "bounded_motion_correction",
@@ -443,15 +488,16 @@ def select_ball_in_play(
             )
             strong_anchors = left.conf >= 0.5 and right.conf >= 0.5
             # Opposite incoming and outgoing directions mean a hit happened
-            # inside the gap; a straight fill would cut the vertex off.  One
-            # missing frame costs little, anything longer stays a gap.
-            if (
+            # inside the gap; a straight fill would cut the vertex off.  That
+            # rules out interpolation, but not a motion blob: a blob is an
+            # observation of where the ball actually was, and bounces are
+            # exactly where the detector loses it.
+            vertex_in_gap = (
                 gap >= 3
                 and index > 0
                 and index + 2 < len(observations)
                 and _segment_cosine(observations[index - 1], left, right, observations[index + 2]) < 0.0
-            ):
-                continue
+            )
             # A long fill (> ~0.1 s) is a physics claim: both anchors must be
             # corroborated by a same-track neighbour, and the ball may not
             # change speed by more than 2x across the gap.  A free-flying ball
@@ -466,7 +512,9 @@ def select_ball_in_play(
                     and observations[index + 2].frame - right.frame <= _isolation_frames(fps)
                 )
                 speed_consistent = all(
-                    0.5 <= speed / max(_segment_speed(first, second), 1e-6) <= 2.0
+                    cfg.fill_speed_ratio_min
+                    <= speed / max(_segment_speed(first, second), 1e-6)
+                    <= cfg.fill_speed_ratio_max
                     for first, second in (
                         (observations[index - 1], left) if index > 0 else (None, None),
                         (right, observations[index + 2]) if index + 2 < len(observations) else (None, None),
@@ -474,7 +522,9 @@ def select_ball_in_play(
                     if first is not None
                 )
                 strong_anchors = strong_anchors and corroborated and speed_consistent
-            pair_supported = (
+            # Judged once for the whole gap, but re-read per frame below: a single
+            # frame vetoed beside a player must not disqualify the rest of the gap.
+            gap_pair_supported = (
                 strong_anchors
                 and direction_supported
                 and (gap == 2 or speed >= minimum_speed)
@@ -496,9 +546,10 @@ def select_ball_in_play(
                 area = left.area + alpha * (right.area - left.area)
                 motion = _motion_candidate(
                     frame, base_x, base_y, area, boost_masks, raw_motions,
-                    gate=motion_snap_gate,
+                    gate=_motion_search_radius(cfg, frame - left.frame, speed),
                     area_ratio_max=4.0,
                 )
+                pair_supported = gap_pair_supported and not vertex_in_gap
                 motion_supported = (
                     motion is not None
                     and (direction_supported or gap == 2)
@@ -533,7 +584,8 @@ def select_ball_in_play(
                 x = base_x + endpoint_weight * offset_x
                 y = base_y + endpoint_weight * offset_y
                 results[frame] = _result(
-                    x, y, "motion" if motion else "interp", motion=motion
+                    x, y, "motion" if motion else "interp", motion=motion,
+                    search_radius=_motion_search_radius(cfg, frame - left.frame, speed),
                 )
 
     # Continue a segment only after nearby motion proves the tail still exists.
@@ -575,6 +627,8 @@ def select_ball_in_play(
         # A tail cannot help association here; tracks were already built above.
         # Emit it only while every current frame contains nearby strict motion.
         reentry_x, reentry_y = right.cx, right.cy
+        tail_speed = math.hypot(vx, vy)
+        misses = 0
         for step in range(1, fill_frames + 1):
             frame = right.frame + step
             if frame >= min(total, next_start):
@@ -590,13 +644,23 @@ def select_ball_in_play(
                 )
             motion = _motion_candidate(
                 frame, base_x, base_y, right.area, boost_masks, raw_motions,
-                gate=motion_snap_gate,
+                gate=_motion_search_radius(cfg, step, tail_speed),
                 area_ratio_max=4.0,
             )
             if motion is None:
-                break
+                # A single blobless frame is a dropped mask, not proof the ball
+                # is gone; keep coasting on the prediction for a moment. The
+                # run still ends the moment the evidence runs out for good.
+                misses += 1
+                if misses > cfg.motion_tail_miss_budget:
+                    break
+                continue
+            misses = 0
             if results[frame] is None:
-                results[frame] = _result(motion["x"], motion["y"], "motion", motion=motion)
+                results[frame] = _result(
+                    motion["x"], motion["y"], "motion", motion=motion,
+                    search_radius=_motion_search_radius(cfg, step, tail_speed),
+                )
             if top_reentry:
                 reentry_x, reentry_y = motion["x"], motion["y"]
 

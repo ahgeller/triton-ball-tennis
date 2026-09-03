@@ -246,6 +246,36 @@ def _self_test() -> None:
     fast_short.score_breakdown = {"motion_frac_raw": 1.0}
     assert fast_short in _selected_tracks([fast_short], 60.0)
 
+    # A lobbed ball crossing the baseline sits in neither court-fraction band
+    # (0.1 < inside_strict < 0.5) and the boost mask only catches it 39% of the
+    # time, but its flight is unmistakable. These are the measured numbers of
+    # the VolyAvw track that used to leave a 7.3 s hole in the middle of a rally.
+    def airborne_track(track_id, motion_frac, extent_px):
+        track = Track(track_id=track_id, cfg=SelectorConfig(fps=60.0, width=1920, height=1080).auto_scale())
+        track.observations = [
+            Detection(1940 + index, 945.0 + 1.5 * index, 200.0 - 0.5 * index,
+                      0, 0, 4, 4, 0.88, 16.0, index % 5 == 0)
+            for index in range(279)
+        ]
+        track.score = 281.0
+        track.score_breakdown = {
+            "motion_frac_raw": 0.391,
+            "motion_frac": motion_frac,
+            "inside_strict_frac": 0.251,
+            "extent_px": extent_px,
+        }
+        return track
+
+    lobbed_ball = airborne_track(104, 1.0, 663.0)
+    assert lobbed_ball in _selected_tracks([lobbed_ball], 60.0)
+    # The kinematic route is not a free pass: a wide but slow footprint scores at
+    # most 0.60 from the extent term alone, which must stay below the gate.
+    wide_and_slow = airborne_track(105, 0.60, 663.0)
+    assert wide_and_slow not in _selected_tracks([wide_and_slow], 60.0)
+    # ... and a genuinely fast ball still needs to travel to qualify.
+    fast_but_tiny = airborne_track(106, 1.0, 40.0)
+    assert fast_but_tiny not in _selected_tracks([fast_but_tiny], 60.0)
+
     def timeline_track(track_id, start, end, x_offset, score):
         track = Track(track_id=track_id, cfg=selector_cfg)
         track.observations = [

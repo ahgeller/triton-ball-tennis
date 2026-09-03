@@ -136,11 +136,34 @@ class SelectorConfig:
     motion_guided_step_ratio: float = 2.00
     motion_guided_min_step_px: float = 8.0
     motion_max_gap_frames: int = 14
-    motion_search_base_frac: float = 0.028
-    motion_search_growth_px: float = 4.5
-    motion_search_vel_mult: float = 1.40
-    motion_search_min_px: float = 28.0
-    motion_search_max_frac: float = 0.10
+    # Blob search radius, read by core._motion_search_radius.  A flat radius is
+    # wrong in both directions: too wide for a slow ball beside a player, too
+    # narrow for a fast one whose predicted point is off by a few percent of a
+    # large step.  So it grows with how far the prediction has run and with how
+    # fast the ball is moving.  These are deliberately tighter than the values
+    # this block shipped with (never wired, never measured); widen only with
+    # evaluate_archive.py numbers in hand.
+    # Measured: a 22 px base with a 132 px cap put three motion frames on a
+    # player, a line and the background on the UCSD clip, for +0.002 recall.
+    # The shape is right, the scale was not -- keep the base near the flat
+    # radius this replaced and let speed and elapsed prediction earn the rest.
+    motion_search_base_frac: float = 0.007   # 15.4 px at 1080p
+    motion_search_growth_px: float = 2.5     # per predicted frame beyond the first
+    motion_search_vel_mult: float = 0.20     # per px/frame of ball speed
+    motion_search_min_px: float = 14.0
+    motion_search_max_frac: float = 0.030    # 66 px at 1080p
+    motion_tail_miss_budget: int = 1         # consecutive blobless frames a tail may coast
+
+    # A detection this confident and on the motion mask is corroborated by the
+    # mask, so isolation from its own track does not condemn it.
+    isolation_keep_conf: float = 0.80
+
+    # -- Bounded fill -----------------------------------------------------
+    # A long fill is a physics claim, so the ball may not change speed wildly
+    # across it.  2x was too tight: gravity alone shifts |v| near apex and a
+    # racket strike routinely exceeds it.
+    fill_speed_ratio_min: float = 0.35
+    fill_speed_ratio_max: float = 3.00
 
     # -- Projectile physics (gravity model) ---------------------------
     gravity_px_per_frame2: float = 0.0   # auto-set: gravity accel in px/frame^2
@@ -159,6 +182,33 @@ class SelectorConfig:
     bounce_detect_min_up_speed: float = 1.5    # 30fps-ref px/frame
     bounce_restitution: float = 0.58      # reflected vy fraction on bounce
     bounce_tangent_damping: float = 0.94  # horizontal damping at bounce
+
+    # -- Track eligibility (_selected_tracks) ----------------------
+    # Seconds of observations a track needs before it may be selected at all.
+    select_min_obs_sec: float = 0.25
+    select_reacquire_obs_sec: float = 0.16
+    select_min_obs_frames: int = 8         # auto-set from select_min_obs_sec (30 fps value)
+    select_reacquire_obs_frames: int = 10  # auto-set from select_reacquire_obs_sec
+    select_established_motion_frac: float = 0.5   # raw mask overlap for a plain rally track
+    select_reacquire_motion_frac: float = 0.25
+    select_rolling_motion_frac: float = 0.15
+    select_reacquire_conf: float = 0.55
+    select_rolling_conf: float = 0.80
+    select_outside_strict_max: float = 0.1  # "mostly outside the court" ceiling for a reacquisition
+    select_inside_strict_min: float = 0.5   # "mostly inside the court" floor for a slow roll
+    select_rolling_extent_frac: float = 0.02
+    select_score_density_min: float = 0.5
+    select_rolling_score_density_min: float = 0.12
+    select_obs_density_min: float = 0.5
+    # A ball can be unmistakable from its flight alone. The boost mask misses
+    # small, distant and slow balls, and the two court-fraction gates above
+    # leave a dead band (outside_strict_max .. inside_strict_min) that a rally
+    # crossing the baseline lands in. Kinematic evidence covers both, so it is
+    # held to a higher bar than the mask path: 0.60 is the most the extent term
+    # alone can contribute (physics._kinematic_motion_frac), so this floor
+    # demands real speed, not merely a wide footprint.
+    select_kinematic_motion_frac: float = 0.75
+    select_kinematic_extent_frac: float = 0.05
 
     # -- Reacquire gate (after loss) -- IMPROVED for better ball reacquisition --
     reacquire_gate_frames: int = 6          # INCREASED from 4 for longer reacquisition window
@@ -192,6 +242,8 @@ class SelectorConfig:
         self.motion_max_gap_frames = _frames_for_seconds(45.0 / 30.0, min_frames=3, max_frames=90)
         self.carry_interp_frames = _frames_for_seconds(8.0 / 30.0, min_frames=3, max_frames=24)
         self.reacquire_gate_frames = _frames_for_seconds(4.0 / 30.0, min_frames=2, max_frames=16)
+        self.select_min_obs_frames = _frames_for_seconds(self.select_min_obs_sec, min_frames=3)
+        self.select_reacquire_obs_frames = _frames_for_seconds(self.select_reacquire_obs_sec, min_frames=10)
         self.guide_spike_max_neighbor_gap = _frames_for_seconds(6.0 / 30.0, min_frames=2, max_frames=24)
         self.trail_stitch_gap_frames = _frames_for_seconds(30.0 / 30.0, min_frames=6, max_frames=90)
         self.trail_stitch_min_stale_frames = _frames_for_seconds(3.0 / 30.0, min_frames=1, max_frames=12)
