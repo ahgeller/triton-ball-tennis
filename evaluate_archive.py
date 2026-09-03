@@ -1,8 +1,11 @@
 """Score ball detectors and the full pipeline against the hand-labelled archive clips.
 
-The archive (``gridtracknet_finetuning/archive``) holds ``videoN.mp4`` +
-``videoN_ball.csv`` pairs labelled with the click tool: one row per labelled
-frame, with invisible balls parked in the top-right corner.
+The label set holds ``videoN.mp4`` + ``videoN_ball.csv`` pairs labelled with the
+click tool: one row per labelled frame, with invisible balls parked in the
+top-right corner. ``--archive`` picks it; the default is ``$TENNIS_ARCHIVE``,
+then the standalone ``gridtracknet_finetuning/archive`` folder if it is still
+around, and otherwise this repo's own ``finetune/`` workspace, which holds the
+same clips plus the imported public ones.
 
 Modes:
   raw       run each detector's prepass at threshold 0 and sweep thresholds
@@ -21,6 +24,7 @@ import csv
 import fnmatch
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -30,7 +34,19 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 
 ROOT = Path(__file__).resolve().parent
-ARCHIVE = Path(r"C:\Users\Andrew\Desktop\gridtracknet_finetuning\archive")
+
+
+def default_archive() -> Path:
+    """Hand-labelled clips: $TENNIS_ARCHIVE, the standalone archive folder, else the in-repo workspace."""
+    for candidate in (os.environ.get("TENNIS_ARCHIVE"),
+                      Path.home() / "Desktop" / "gridtracknet_finetuning" / "archive",
+                      ROOT / "finetune"):
+        if candidate and Path(candidate).is_dir():
+            return Path(candidate)
+    return ROOT / "finetune"
+
+
+ARCHIVE = default_archive()
 MODELS = {
     "gridtracknet": ROOT / "models" / "gridtracknet_weights_torch.npz",
 }
@@ -302,7 +318,7 @@ def main() -> int:
     parser.add_argument("--device", default="0")
     parser.add_argument("--out-dir", default=str(ROOT / "output" / "archive_eval"))
     parser.add_argument("--archive", default=str(ARCHIVE),
-                        help="Label set: the flat archive folder or a finetune-style folder with videos/ and labels/")
+                        help="Label set: the flat archive folder or a finetune-style folder with videos/ and labels/ (default: $TENNIS_ARCHIVE, else the archive folder, else finetune/)")
     parser.add_argument("--gridtracknet-weights", help="Score a different GridTrackNet .npz (raw mode)")
     parser.add_argument("--gridtracknet-stride", type=int, default=None,
                         help="Force the frame spacing fed to GridTrackNet (1 = consecutive frames even at 60 FPS)")
@@ -312,6 +328,7 @@ def main() -> int:
     if not clips:
         print(f"No clips found in {args.archive}")
         return 1
+    print(f"[archive] {args.archive}  ({len(clips)} clips)")
     if args.mode == "raw":
         weights = {"gridtracknet": Path(args.gridtracknet_weights)} if args.gridtracknet_weights else None
         run_raw(args.models, clips, args.thresholds, args.device, weights, args.gridtracknet_stride)

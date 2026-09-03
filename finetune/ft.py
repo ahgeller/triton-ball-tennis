@@ -41,17 +41,68 @@ RUNS = WORKSPACE / "runs"
 MANIFEST = WORKSPACE / "clips.csv"
 REPO_WEIGHTS = ROOT / "models" / "gridtracknet_weights_torch.npz"
 BEST_WEIGHTS = MODELS / "gridtracknet_best.npz"
-VENV_PYTHON = Path(r"C:\Users\Andrew\Desktop\gridtracknet_finetuning\.venv\Scripts\python.exe")
+TRAINING_IMPORTS = "import cv2, numpy, torch"   # cheapest first: cv2 rules out most interpreters fast
+PYTHON_CACHE = WORKSPACE / ".training-python"
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
 OWN_SOURCES = ("custom", "custom-uncorrected")
 
 
 # --------------------------------------------------------------------------- interpreter
 
+def python_names() -> tuple:
+    return ("python.exe",) if os.name == "nt" else ("python3", "python")
+
+
+def candidate_interpreters() -> List[Path]:
+    """Places a torch + cv2 interpreter tends to live, best guess first."""
+    found: List[Path] = []
+
+    def add(path) -> None:
+        if not path:
+            return
+        candidate = Path(path)
+        if candidate.is_file() and candidate not in found:
+            found.append(candidate)
+
+    add(os.environ.get("TENNIS_FINETUNE_PYTHON"))
+    if PYTHON_CACHE.is_file():                       # whatever worked last time
+        add(PYTHON_CACHE.read_text(encoding="utf-8").strip())
+    for root in (ROOT, ROOT.parent):                 # a venv in or beside the repo
+        for venv in (".venv", "venv"):
+            for name in python_names():
+                add(root / venv / "Scripts" / name)
+                add(root / venv / "bin" / name)
+    home = Path.home()                               # conda / miniconda / anaconda environments
+    for base in (home / ".conda" / "envs", home / "anaconda3" / "envs", home / "miniconda3" / "envs"):
+        if base.is_dir():
+            for env in sorted(base.iterdir()):
+                for name in python_names():
+                    add(env / name)
+                    add(env / "bin" / name)
+    add(sys.executable)
+    for name in python_names():                      # finally whatever is on PATH
+        add(shutil.which(name))
+    return found
+
+
+def can_train(python: Path) -> bool:
+    try:
+        done = subprocess.run([str(python), "-c", TRAINING_IMPORTS], capture_output=True, timeout=300)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 def training_python() -> Optional[Path]:
-    for candidate in (os.environ.get("TENNIS_FINETUNE_PYTHON"), VENV_PYTHON, ROOT / ".venv" / "Scripts" / "python.exe"):
-        if candidate and Path(candidate).is_file():
-            return Path(candidate)
+    """First interpreter that can import cv2, numpy and torch; the winner is cached for next time."""
+    for candidate in candidate_interpreters():
+        if can_train(candidate):
+            try:
+                PYTHON_CACHE.write_text(str(candidate), encoding="utf-8")
+            except OSError:
+                pass
+            return candidate
+    PYTHON_CACHE.unlink(missing_ok=True)             # the cached one stopped working
     return None
 
 
@@ -67,7 +118,8 @@ def ensure_interpreter() -> None:
         pass
     python = training_python()
     if python is None or python.resolve() == Path(sys.executable).resolve():
-        print("This python has no cv2/numpy and no training venv was found; set TENNIS_FINETUNE_PYTHON", file=sys.stderr)
+        print("No interpreter with cv2, numpy and torch was found; install them or point "
+              "TENNIS_FINETUNE_PYTHON at a python that has them", file=sys.stderr)
         sys.exit(2)
     env = dict(os.environ, TENNIS_FINETUNE_NO_REEXEC="1")
     sys.exit(subprocess.call([str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env=env))

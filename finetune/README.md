@@ -58,8 +58,11 @@ Own labels (`video*_ball.csv`) are tracked in git; imported public labels
 | `tracknetv2-badminton` | 201 | 91,214 | 78,952 | **not imported by `all`** (removed 2026-08-31 as unneeded — `ft.py import tracknetv2` brings it back): the TrackNetV2 **badminton** set (V5Test's README called it tennis — it is not), broadcast shuttlecock rallies, 1280×720 @ 30 FPS. Cross-sport "tiny fast object" pre-training only |
 
 Sources are read from `V5Test/` and `gridtracknet_finetuning/archive` (paths in
-`import_data.py`); the importer converts TrackNet-style `Frame,Visibility,X,Y`
-labels, scales GridTrackNet's 1280×720 labels to the 1080p videos, and maps its
+`import_data.py`). They are only needed to import a clip in the first place —
+once a clip is in `finetune/videos` + `finetune/labels` the workspace no longer
+touches them, and `ft.py import` just skips any source folder that is gone. The
+importer converts TrackNet-style `Frame,Visibility,X,Y` labels, scales
+GridTrackNet's 1280×720 labels to the 1080p videos, and maps its
 60 FPS matches to frames 1, 3, 5, … (that is how its `FrameGenerator.py` sampled
 them — verified against the shipped PNGs). Visibility 3 (occluded, estimated
 position) becomes "not visible" unless `--keep-occluded`.

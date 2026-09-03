@@ -17,3 +17,4 @@ finetune/labels/*.tmp
 finetune/labels/tnv2_*
 finetune/labels/grid_*
 models/*_prev_*.npz
+finetune/.training-python

@@ -1,4 +1,5 @@
-# Front door for the fine-tuning workspace. Runs finetune/ft.py with the training venv.
+# Front door for the fine-tuning workspace. Runs finetune/ft.py, which re-runs itself
+# under an interpreter that has torch + cv2, so any python is enough to start it.
 #   .\finetune.ps1                       interactive menu (or double-click finetune.bat)
 #   .\finetune.ps1 status
 #   .\finetune.ps1 import all
@@ -7,9 +8,13 @@
 $ErrorActionPreference = "Stop"
 $candidates = @(
     $env:TENNIS_FINETUNE_PYTHON,
-    "C:\Users\Andrew\Desktop\gridtracknet_finetuning\.venv\Scripts\python.exe",
-    (Join-Path $PSScriptRoot ".venv\Scripts\python.exe")
+    (Join-Path $PSScriptRoot ".venv\Scripts\python.exe"),
+    (Get-Command python -ErrorAction SilentlyContinue).Source,
+    (Get-Command py -ErrorAction SilentlyContinue).Source
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
-$python = if ($candidates) { @($candidates)[0] } else { "python" }
+if (-not $candidates) {
+    throw "No python found. Install one, or set TENNIS_FINETUNE_PYTHON to a python with torch + cv2."
+}
+$python = @($candidates)[0]
 & $python (Join-Path $PSScriptRoot "finetune\ft.py") @args
 exit $LASTEXITCODE
