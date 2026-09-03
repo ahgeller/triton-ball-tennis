@@ -262,6 +262,15 @@ def _select_timeline_chain(
 
             i_end = ti.observations[-1]
             dt = max(gap + 1, 1)
+            if gap < 0:
+                # The tracks interleave.  Judge the handover where tj actually
+                # starts, from ti's last observation before that frame: ti's
+                # span end may be one stray detection grabbed long after the
+                # ball moved on, and that must not veto a good successor.
+                before = [obs for obs in ti.observations if obs.frame < sj]
+                if before:
+                    i_end = before[-1]
+                    dt = max(sj - i_end.frame, 1)
             shared_frames = set(obs.frame for obs in ti.observations) & set(
                 obs.frame for obs in tj.observations
             )
@@ -368,17 +377,42 @@ def _select_timeline_chain(
     # Continuity chooses between competing overlapping tracks. A validated,
     # disjoint segment can be a separate rally and must not disappear merely
     # because its endpoints do not connect to the surrounding rallies.
+    #
+    # Disjoint means the candidate observes frames the chain does not.  A
+    # track that lives inside another's span (the ball switched tracks at a
+    # bounce and switched back) is still the only evidence for its frames,
+    # so it is kept when its boundary is continuous with the chain.
     chosen_ids = {id(track) for track in chain}
+    chain_obs: Dict[int, Detection] = {}
+    for track in chain:
+        for obs in track.observations:
+            chain_obs.setdefault(obs.frame, obs)
+    handover_frames = max(2, int(round(cfg.fps * 0.1)))
+    handover_dist = max(12.0, jump_reject * diag)
+
+    def continuous(candidate: Track) -> bool:
+        for edge in (candidate.observations[0], candidate.observations[-1]):
+            for offset in range(1, handover_frames + 1):
+                for frame in (edge.frame - offset, edge.frame + offset):
+                    other = chain_obs.get(frame)
+                    if other is not None:
+                        return _xy_dist(edge.cx, edge.cy, other.cx, other.cy) <= handover_dist
+        return False
+
     for candidate in sorted(ordered, key=lambda track: track.score, reverse=True):
         if id(candidate) in chosen_ids:
             continue
-        if all(
+        span_disjoint = all(
             candidate.last_obs_frame < track.first_frame
             or candidate.first_frame > track.last_obs_frame
             for track in chain
-        ):
+        )
+        shared = sum(obs.frame in chain_obs for obs in candidate.observations)
+        if span_disjoint or (shared <= overlap_tol and continuous(candidate)):
             chain.append(candidate)
             chosen_ids.add(id(candidate))
+            for obs in candidate.observations:
+                chain_obs.setdefault(obs.frame, obs)
     return sorted(chain, key=lambda track: (track.first_frame, track.last_obs_frame))
 
 def _stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Track]:

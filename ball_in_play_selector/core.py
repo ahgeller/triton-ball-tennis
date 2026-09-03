@@ -31,6 +31,9 @@ def _selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
         confidences = sorted(float(item.conf) for item in track.observations)
         median_confidence = confidences[len(confidences) // 2] if confidences else 0.0
         score_density = track.score / max(track.num_obs, 1)
+        # A ball the detector can see is seen on most frames; ten detections
+        # sprinkled over seventy frames is a bystander, not a reacquisition.
+        observation_density = track.num_obs / max(track.span, 1)
         established = (
             track.num_obs >= minimum_observations
             and motion_fraction >= 0.5
@@ -42,6 +45,7 @@ def _selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
             and median_confidence >= 0.55
             and float(score.get("inside_strict_frac", 1.0)) <= 0.1
             and score_density >= 0.5
+            and observation_density >= 0.5
         )
         rolling = (
             track.num_obs >= minimum_observations
@@ -56,25 +60,50 @@ def _selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
     return sorted(selected, key=lambda track: (track.first_frame, track.last_obs_frame))
 
 
+def _isolation_frames(fps: float) -> int:
+    """Gap beyond which one detection has no same-track corroboration (~0.1 s)."""
+    return max(_neighbor_frames(fps) + 1, int(round(float(fps) * 0.1)))
+
+
+def _neighbor_frames(fps: float) -> int:
+    return max(2, int(round(float(fps) * 0.05)))
+
+
 def _trajectory_observations(track: Track, fps: float):
-    """Drop lone weak detections that cannot anchor a visible trajectory."""
+    """Drop lone detections that cannot anchor a visible trajectory.
+
+    A weak, motionless detection needs a neighbour within ~0.05 s.  Any
+    detection separated from the rest of its track by more than ~0.1 s on
+    both sides is unverifiable regardless of confidence: association can
+    reconnect a static object (a van, a shoe) after a long miss, and a lone
+    endpoint like that must not draw a path or a dot.
+    """
     observations = track.observations
-    neighbor_frames = max(2, int(round(float(fps) * 0.05)))
+    neighbor_frames = _neighbor_frames(fps)
+    isolation_frames = _isolation_frames(fps)
     kept = []
     for index, detection in enumerate(observations):
+        has_previous = index > 0
+        has_next = index + 1 < len(observations)
         previous_gap = (
             detection.frame - observations[index - 1].frame
-            if index else neighbor_frames + 1
+            if has_previous else neighbor_frames + 1
         )
         next_gap = (
             observations[index + 1].frame - detection.frame
-            if index + 1 < len(observations) else neighbor_frames + 1
+            if has_next else neighbor_frames + 1
         )
         if (
             detection.conf < 0.5
             and not detection.on_motion
             and previous_gap > neighbor_frames
             and next_gap > neighbor_frames
+        ):
+            continue
+        if (
+            (not has_previous or previous_gap > isolation_frames)
+            and (not has_next or next_gap > isolation_frames)
+            and len(observations) > 1
         ):
             continue
         kept.append(detection)
@@ -130,6 +159,18 @@ def _motion_candidate(
         if candidate is not None:
             return candidate
     return None
+
+
+def _segment_speed(first, second) -> float:
+    return math.hypot(second.cx - first.cx, second.cy - first.cy) / max(1, second.frame - first.frame)
+
+
+def _segment_cosine(a, b, c, d) -> float:
+    """Cosine between the incoming segment a->b and the outgoing segment c->d."""
+    ax, ay = b.cx - a.cx, b.cy - a.cy
+    bx, by = d.cx - c.cx, d.cy - c.cy
+    scale = math.hypot(ax, ay) * math.hypot(bx, by)
+    return 0.0 if scale < 1e-6 else (ax * bx + ay * by) / scale
 
 
 def _direction_cosine(first, second, third) -> float:
@@ -401,6 +442,38 @@ def select_ball_in_play(
                 and _direction_cosine(left, right, observations[index + 2]) >= 0.8
             )
             strong_anchors = left.conf >= 0.5 and right.conf >= 0.5
+            # Opposite incoming and outgoing directions mean a hit happened
+            # inside the gap; a straight fill would cut the vertex off.  One
+            # missing frame costs little, anything longer stays a gap.
+            if (
+                gap >= 3
+                and index > 0
+                and index + 2 < len(observations)
+                and _segment_cosine(observations[index - 1], left, right, observations[index + 2]) < 0.0
+            ):
+                continue
+            # A long fill (> ~0.1 s) is a physics claim: both anchors must be
+            # corroborated by a same-track neighbour, and the ball may not
+            # change speed by more than 2x across the gap.  A free-flying ball
+            # cannot triple its speed in the same direction; a detector jump to
+            # a static object after a long miss looks exactly like that.
+            long_gap = gap > _isolation_frames(fps)
+            if long_gap:
+                corroborated = (
+                    index > 0
+                    and left.frame - observations[index - 1].frame <= _isolation_frames(fps)
+                    and index + 2 < len(observations)
+                    and observations[index + 2].frame - right.frame <= _isolation_frames(fps)
+                )
+                speed_consistent = all(
+                    0.5 <= speed / max(_segment_speed(first, second), 1e-6) <= 2.0
+                    for first, second in (
+                        (observations[index - 1], left) if index > 0 else (None, None),
+                        (right, observations[index + 2]) if index + 2 < len(observations) else (None, None),
+                    )
+                    if first is not None
+                )
+                strong_anchors = strong_anchors and corroborated and speed_consistent
             pair_supported = (
                 strong_anchors
                 and direction_supported
@@ -436,7 +509,10 @@ def select_ball_in_play(
                     and speed < 15.0 * 30.0 / max(float(fps), 1.0)
                 ):
                     pair_supported = False
-                    motion_supported = False
+                    # A motion blob between adjacent sampled detections is direct
+                    # evidence, even when the ball is slow beside a player.
+                    if gap != 2:
+                        motion_supported = False
                 if not pair_supported and not motion_supported:
                     offset_x = offset_y = 0.0
                     offset_active = False

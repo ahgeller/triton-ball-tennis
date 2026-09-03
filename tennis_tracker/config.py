@@ -15,6 +15,8 @@ class Config:
     conf: float = 0.50
     device: str = "auto"
     gridtracknet_y_offset_px: float = 1.6
+    gridtracknet_source_stride: Optional[int] = None  # None = 2 at 60 FPS / 1 at 30 FPS (the training cadence)
+    gridtracknet_prepass_background: bool = True  # overlap the detector prepass with pass 1
 
     # TensorRT
     trt_async_execute: bool = True
@@ -41,6 +43,8 @@ class Config:
     player_bbox_pad: int = 10
     draw_players: bool = True
     draw_court: bool = True
+    draw_court_minimap: bool = False
+    bounce_model_path: Optional[str] = None
     num_players: int = 4
 
     # Ball tracking

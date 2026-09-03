@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import threading
 import time
 from collections import OrderedDict, deque, namedtuple
 from pathlib import Path
@@ -19,8 +21,11 @@ except Exception:
 try:
     from boxmot import ByteTrack
 except ImportError:
-    print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-    ByteTrack = None
+    try:
+        from boxmot.trackers.bbox.bytetrack import ByteTrack
+    except ImportError:
+        print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
+        ByteTrack = None
 
 from .config import Config
 from .utils import _resolve_engine_path
@@ -207,6 +212,10 @@ class _TensorRTRuntimeSession:
             torch.cuda.current_stream(device=self.device).wait_stream(self.stream)
 
 
+def _null_context():
+    return contextlib.nullcontext()
+
+
 class BallDetectorBackend:
     """Swappable detector interface for ball detection backends."""
 
@@ -245,30 +254,71 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self.model = load_model(Path(weights_path), self.device)
         self.precomputed: Optional[List[List[Tuple[list, float]]]] = None
         self.precomputed_index = 0
+        # Progressive prepass state: frames < ready_upto are final.
+        self._ready_upto = 0
+        self._ready = threading.Condition()
+        self._worker: Optional[threading.Thread] = None
+        self._worker_error: Optional[BaseException] = None
         with torch.inference_mode():
             self.model(torch.zeros((1, 15, HEIGHT, WIDTH), device=self.device, dtype=torch.float16))
         torch.cuda.synchronize(self.device)
         print(f"[detector] GridTrackNet FP16 (confidence={float(cfg.conf):.2f}, device={self.device})")
 
-    def prepare_video(self, video_path: Path, fps: float, width: int, height: int, total: int) -> None:
+    def source_stride_for(self, fps: float) -> int:
+        override = getattr(self.cfg, "gridtracknet_source_stride", None)
+        if override:
+            return max(1, int(override))
         if 57.0 <= float(fps) <= 62.0:
-            source_stride = 2
-        elif 22.0 <= float(fps) <= 32.0:
-            source_stride = 1
-        else:
-            raise RuntimeError(f"GridTrackNet expects a 30 or 60 FPS video, got {fps:.3f} FPS")
+            return 2
+        if 22.0 <= float(fps) <= 32.0:
+            return 1
+        raise RuntimeError(f"GridTrackNet expects a 30 or 60 FPS video, got {fps:.3f} FPS")
 
+    def prepare_video(self, video_path: Path, fps: float, width: int, height: int, total: int,
+                      background: Optional[bool] = None) -> None:
+        """Decode the video once and cache one detection per frame.
+
+        By default this runs on a worker thread so pass 1 can start on frame
+        0 while the detector is still ahead of it; ``detect()`` blocks only if
+        pass 1 catches up.  Results are identical to the synchronous pass.
+        """
+        source_stride = self.source_stride_for(fps)
         capture = cv2.VideoCapture(str(video_path))
         if not capture.isOpened():
             raise RuntimeError(f"Could not open input video for GridTrackNet: {video_path}")
-        cached: List[List[Tuple[list, float]]] = [[] for _ in range(max(0, int(total)))]
-        unit = []
-        recent = deque(maxlen=5)
+        self.precomputed = [[] for _ in range(max(0, int(total)))]
+        self.precomputed_index = 0
+        self._ready_upto = 0
+        self._worker_error = None
+        if background is None:
+            background = bool(getattr(self.cfg, "gridtracknet_prepass_background", True))
+        if background:
+            self._worker = threading.Thread(
+                target=self._prepass, args=(capture, source_stride, width, height), daemon=True, name="gridtracknet-prepass"
+            )
+            self._worker.start()
+        else:
+            self._worker = None
+            self._prepass(capture, source_stride, width, height)
+
+    def _publish(self, upto: int) -> None:
+        with self._ready:
+            self._ready_upto = max(self._ready_upto, upto)
+            self._ready.notify_all()
+
+    def _prepass(self, capture, source_stride: int, width: int, height: int) -> None:
+        cached = self.precomputed
+        # One independent five-frame unit per phase. The model wants 30 FPS
+        # spacing, so at 60 FPS the odd frames form a second, equally valid
+        # unit stream; running only phase 0 leaves every odd frame unobserved.
+        units = [[] for _ in range(source_stride)]
+        recent = [deque(maxlen=5) for _ in range(source_stride)]
         batches = []
         frame_index = inference_calls = detected = 0
         started = time.perf_counter()
         y_offset = float(self.cfg.gridtracknet_y_offset_px) * height / 1080.0
         radius = max(2.0, 0.003 * np.hypot(width, height))
+        stream = torch.cuda.Stream(device=self.device) if self._worker is not None else None
 
         def flush() -> None:
             nonlocal inference_calls, detected
@@ -276,7 +326,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
                 return
             with torch.inference_mode():
                 output = self.model(torch.stack([item[0] for item in batches]))
-            decoded = self._decode(output, width, height, float(self.cfg.conf))
+                decoded = self._decode(output, width, height, float(self.cfg.conf))
             for batch_index, (_, indices) in enumerate(batches):
                 start = batch_index * 5
                 for source_index, (point, confidence) in zip(indices, decoded[start:start + 5]):
@@ -286,44 +336,76 @@ class GridTrackNetBallDetector(BallDetectorBackend):
                     cached[source_index] = [([x - radius, y - radius, x + radius, y + radius], confidence)]
                     detected += 1
             inference_calls += 1
+            # Every frame below the oldest unit still being assembled is final.
+            pending_min = min((item[1] for unit in units for item in unit), default=frame_index + 1)
             batches.clear()
+            self._publish(min(pending_min, frame_index + 1))
 
+        # All of the worker's CUDA work lives on its own stream so it overlaps
+        # pass 1 on the default stream instead of serialising behind it.
+        stream_scope = torch.cuda.stream(stream) if stream is not None else _null_context()
         try:
-            while True:
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                if frame_index % source_stride == 0:
-                    item = (self._frame_tensor(frame, self.device), frame_index)
-                    recent.append(item)
-                    unit.append(item)
-                    if len(unit) == 5:
-                        batches.append((torch.cat([value for value, _ in unit]), [index for _, index in unit]))
-                        unit = []
-                        if len(batches) == 4:
-                            flush()
-                frame_index += 1
-            if unit and len(recent) == 5:
-                batches.append((torch.cat([value for value, _ in recent]), [index for _, index in recent]))
-            flush()
-            torch.cuda.synchronize(self.device)
+            with stream_scope:
+                while True:
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    if frame_index < len(cached):
+                        phase = frame_index % source_stride
+                        unit = units[phase]
+                        item = (self._frame_tensor(frame, self.device), frame_index)
+                        recent[phase].append(item)
+                        unit.append(item)
+                        if len(unit) == 5:
+                            batches.append((torch.cat([value for value, _ in unit]), [index for _, index in unit]))
+                            unit.clear()
+                            if len(batches) == 4:
+                                flush()
+                    frame_index += 1
+                # Cover each phase's trailing frames with one overlapping window.
+                for phase in range(source_stride):
+                    if units[phase] and len(recent[phase]) == 5:
+                        batches.append((
+                            torch.cat([value for value, _ in recent[phase]]),
+                            [index for _, index in recent[phase]],
+                        ))
+                flush()
+                if stream is not None:
+                    stream.synchronize()
+                else:
+                    torch.cuda.synchronize(self.device)
+        except BaseException as error:  # surfaced to the consumer in detect()
+            self._worker_error = error
         finally:
             capture.release()
+            self._publish(len(cached))
 
         elapsed = time.perf_counter() - started
-        self.precomputed = cached
-        self.precomputed_index = 0
         print(
             f"[detector] GridTrackNet prepass: {frame_index} source frames, {detected} detections, "
-            f"{inference_calls} batched calls in {elapsed:.1f}s ({frame_index / max(elapsed, 1e-9):.1f} source fps)"
+            f"{inference_calls} batched calls across {source_stride} phase(s) "
+            f"in {elapsed:.1f}s ({frame_index / max(elapsed, 1e-9):.1f} source fps)"
+            + (" [overlapped with pass 1]" if self._worker is not None else "")
         )
+
+    def wait_until_ready(self, index: int) -> None:
+        with self._ready:
+            while self._ready_upto <= index and self._worker_error is None:
+                if self._worker is not None and not self._worker.is_alive() and self._ready_upto <= index:
+                    break
+                self._ready.wait(timeout=0.5)
+        if self._worker_error is not None:
+            raise RuntimeError("GridTrackNet prepass failed") from self._worker_error
 
     def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
         if self.precomputed is None:
             raise RuntimeError("GridTrackNet.prepare_video() must run before detection.")
         index = self.precomputed_index
         self.precomputed_index += 1
-        return self.precomputed[index] if index < len(self.precomputed) else []
+        if index >= len(self.precomputed):
+            return []
+        self.wait_until_ready(index)
+        return self.precomputed[index]
 
     def detect_async_start(self, frame_bgr: np.ndarray):
         return self.detect(frame_bgr)
@@ -736,11 +818,10 @@ class PlayerDetector:
             self.tracker = None
         else:
             self.tracker = ByteTrack(
-                track_high_thresh=0.3, 
-                track_low_thresh=0.1,
-                new_track_thresh=0.4,
-                track_buffer=60,       
-                match_thresh=0.8
+                min_conf=0.1,
+                track_thresh=0.3,
+                track_buffer=60,
+                match_thresh=0.8,
             )
             print("[player] ByteTrack tracking initialized")
 
