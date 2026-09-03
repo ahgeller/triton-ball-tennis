@@ -241,7 +241,8 @@ def run_raw(models: List[str], clips, thresholds: List[float], device: str,
             print(f"{name}: mean offset on hits dx={dx / count:+.2f}px dy={dy / count:+.2f}px (n={count})")
 
 
-def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str, out_dir: Path) -> None:
+def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str,
+                 out_dir: Path, reuse_json: bool = False) -> None:
     from tennis_tracker.config import Config
     from tennis_tracker.pipeline import run
 
@@ -252,7 +253,10 @@ def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str, 
             fps, width, height, total = video_meta(video_path)
             labels = read_labels(csv_path, width, height)
             json_path = out_dir / f"{video_path.stem}_{name}.json"
-            if not json_path.is_file():
+            if json_path.is_file() and reuse_json:
+                print(f"[reuse] {json_path.name} -- NOT re-running the tracker; "
+                      f"these numbers are from whenever this file was written")
+            else:
                 cfg = Config(
                     input_video=str(video_path),
                     output_video=str(out_dir / f"{video_path.stem}_{name}.mp4"),
@@ -319,6 +323,9 @@ def main() -> int:
     parser.add_argument("--out-dir", default=str(ROOT / "output" / "archive_eval"))
     parser.add_argument("--archive", default=str(ARCHIVE),
                         help="Label set: the flat archive folder or a finetune-style folder with videos/ and labels/ (default: $TENNIS_ARCHIVE, else the archive folder, else finetune/)")
+    parser.add_argument("--reuse-json", action="store_true",
+                        help="Pipeline mode: score existing JSONs in --out-dir instead of re-running. "
+                             "Off by default -- reusing them after a code change silently scores the old code.")
     parser.add_argument("--gridtracknet-weights", help="Score a different GridTrackNet .npz (raw mode)")
     parser.add_argument("--gridtracknet-stride", type=int, default=None,
                         help="Force the frame spacing fed to GridTrackNet (1 = consecutive frames even at 60 FPS)")
@@ -336,7 +343,7 @@ def main() -> int:
         run_pipeline(
             args.models, clips,
             {"gridtracknet": args.gridtracknet_conf},
-            args.device, Path(args.out_dir),
+            args.device, Path(args.out_dir), reuse_json=bool(args.reuse_json),
         )
     return 0
 

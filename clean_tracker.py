@@ -41,6 +41,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--court", action="store_true", help="Draw the top-right 2D court minibar")
     parser.add_argument("--info", action="store_true")
+    parser.add_argument("--motion-diagnostics", action="store_true",
+                        help="Add per-frame motion diagnostics to the tracking JSON "
+                             "(costs ~1.7 ms/frame)")
     parser.add_argument("--annotations", help="Validate against this annotation JSON")
     parser.add_argument("--report-json", default=str(OUTPUT / "validation.json"))
     parser.add_argument("--self-test", action="store_true")
@@ -124,16 +127,28 @@ def _self_test() -> None:
     straight[2].cx = 0.0
     assert _direction_cosine(*straight) == -1.0
 
-    # The robust refit repairs a short target-switch block without changing
-    # the source classification used by the renderer.
+    # The robust refit repairs a short target-switch block. The repair itself is
+    # unbounded, but a detection dragged that far is no longer where the detector
+    # fired, so it stops being reported as one: green in the overlay and scored
+    # against the detector both mean "raw observation".
     smooth = [
         FrameResult(cx=float(frame * 10), cy=100.0, conf=0.9, source="det")
         for frame in range(15)
     ]
     smooth[7].cy = smooth[8].cy = 180.0
-    _refine_trajectory(smooth)
+    _refine_trajectory(smooth, 734.0)
     assert max(abs(smooth[frame].cy - 100.0) for frame in (7, 8)) < 10.0
-    assert all(result.source == "det" for result in smooth)
+    assert all(smooth[frame].source == "interp" for frame in (7, 8))
+    assert all(smooth[frame].source == "det" for frame in range(15) if frame not in (7, 8))
+
+    # Ordinary sub-pixel smoothing must not relabel anything.
+    nudged = [
+        FrameResult(cx=float(frame * 10), cy=100.0, conf=0.9, source="det")
+        for frame in range(15)
+    ]
+    nudged[7].cy = 103.0
+    _refine_trajectory(nudged, 734.0)
+    assert all(result.source == "det" for result in nudged)
 
     # One broad motion hit may support one physics point, never a blue tail
     # across later frames where the ball has disappeared.
@@ -450,6 +465,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         bounce_model_path=str(ROOT / "ctb_regr_bounce.cbm"),
         print_selector_tracks=False,
         info_timing=bool(args.info),
+        motion_diagnostics=bool(args.motion_diagnostics),
     )
     run(cfg)
     if not args.annotations:

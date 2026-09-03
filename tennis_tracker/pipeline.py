@@ -270,6 +270,26 @@ def _motion_diagnostic_reason(
     return "lost_despite_motion_candidate"
 
 
+def _pass2_cache_budget_mb(cfg) -> float:
+    """How much RAM pass 2's frame cache may use.
+
+    ``pass2_cache_max_mb`` > 0 is an explicit override.  Otherwise take half of
+    the memory actually free right now, capped by ``pass2_cache_ceiling_mb`` --
+    a fixed budget cannot know whether a 12 GiB clip fits on this machine.
+    """
+    explicit = int(getattr(cfg, "pass2_cache_max_mb", 0) or 0)
+    if explicit > 0:
+        return float(explicit)
+    ceiling = float(max(1, int(getattr(cfg, "pass2_cache_ceiling_mb", 4096))))
+    try:
+        import psutil
+
+        free_mb = psutil.virtual_memory().available / (1024.0 * 1024.0)
+    except Exception:
+        return 0.0          # cannot tell how much is free: do not risk the machine
+    return min(0.5 * free_mb, ceiling)
+
+
 def _build_motion_diagnostics(
     per_frame: List[Optional[FrameResult]],
     detections_by_frame: List[List[Tuple[list, float]]],
@@ -437,13 +457,17 @@ def _write_tracking_json(
         "last_valid_court_keypoints": _json_safe(_last_valid_court_keypoints(court_keypoints_by_frame)),
         "chosen_track": _track_to_json(chosen_track),
         "tracks": [_track_to_json(t) for t in (all_tracks or [])],
-        "motion_diagnostics": _build_motion_diagnostics(
-            per_frame,
-            detections_by_frame or [],
-            boost_masks or [],
-            raw_motions or [],
-            int(width),
-            int(height),
+        "motion_diagnostics": (
+            _build_motion_diagnostics(
+                per_frame,
+                detections_by_frame or [],
+                boost_masks or [],
+                raw_motions or [],
+                int(width),
+                int(height),
+            )
+            if bool(getattr(cfg, "motion_diagnostics", False))
+            else {}
         ),
         "frames": frame_rows,
     }
@@ -667,11 +691,12 @@ def run(cfg):
     cache_pass2_frames = None
     if needs_pass2_outputs and cfg.cache_input_frames_pass2 and total > 0:
         est_mb = (float(total) * float(w) * float(h) * 3.0) / (1024.0 * 1024.0)
-        if est_mb <= float(max(1, int(cfg.pass2_cache_max_mb))):
+        budget_mb = _pass2_cache_budget_mb(cfg)
+        if est_mb <= budget_mb:
             cache_pass2_frames = []
-            print(f"[pass 1] RAM frame cache enabled ({est_mb:.0f} MiB est)")
+            print(f"[pass 1] RAM frame cache enabled ({est_mb:.0f} MiB est, {budget_mb:.0f} MiB budget)")
         else:
-            print(f"[pass 1] RAM frame cache disabled ({est_mb:.0f} MiB > {int(cfg.pass2_cache_max_mb)} MiB)")
+            print(f"[pass 1] RAM frame cache disabled ({est_mb:.0f} MiB needed > {budget_mb:.0f} MiB budget)")
 
     pending_det = None
 

@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
 
-
-
 @dataclass
 class Config:
     # paths
@@ -48,9 +46,6 @@ class Config:
     num_players: int = 4
 
     # Ball tracking
-    ball_max_jump: float = 0.25
-    ball_iou_weight: float = 0.5
-    ball_dist_weight: float = 0.3
 
     # preprocessing
     enable_preprocess: bool = True
@@ -123,6 +118,10 @@ class Config:
     output_debug_path: str = "output_videos/prof_test_motion_debug.mp4"
     output_yolo_input_debug_path: str = "output_videos/prof_test_yolo_input_debug.mp4"
     debug_show_raw_motion: bool = False
+    # Per-frame motion diagnostics in the tracking JSON.  Nothing in the
+    # normal path reads them and they cost ~1.7 ms/frame (mask unpack plus
+    # findContours on every frame), so they are opt-in.
+    motion_diagnostics: bool = False
     debug_probe_motion_style: bool = True
     save_guide_video: bool = False
     output_guide_path: str = "output_videos/prof_test_guide_debug.mp4"
@@ -140,7 +139,6 @@ class Config:
     ball_marker_box_scale: float = 0.22
     ball_marker_min_radius: int = 3
     ball_marker_max_radius: int = 12
-    carry_attach_max_frac: float = 0.016  # keep carry only if it ends this close to next DET
 
     # output encoding
     use_nvenc: bool = True
@@ -149,7 +147,11 @@ class Config:
     use_async_writer: bool = True
     async_queue: int = 16
     cache_input_frames_pass2: bool = True  # keep decoded frames in RAM to avoid second decode
-    pass2_cache_max_mb: int = 768
+    # 0 = size it from RAM that is actually free at start-up (half of it,
+    # up to pass2_cache_ceiling_mb).  A fixed 768 could never hold a 1080p
+    # clip -- one needs 12-22 GiB -- so the cache never engaged at all.
+    pass2_cache_max_mb: int = 0
+    pass2_cache_ceiling_mb: int = 4096
     progress_every: int = 200
     info_timing: bool = False
     tracking_json: Optional[str] = None

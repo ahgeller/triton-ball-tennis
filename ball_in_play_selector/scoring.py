@@ -4,7 +4,7 @@ from typing import Optional, List, Tuple, Dict
 
 from .config import SelectorConfig
 from .models import Detection, Track
-from .utils import _cfg_diag, _fps_norm_pxpf
+from .utils import _cfg_diag
 from .physics import _kinematic_motion_frac, _xy_dist
 
 
@@ -71,33 +71,6 @@ def _track_extent(trk: Track) -> float:
     ys = [o.cy for o in trk.observations]
     return math.sqrt((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2)
 
-def _is_stationary_track(trk: Track, cfg: SelectorConfig, diag: float) -> bool:
-    """Hard filter for parked/static balls so they never enter final matching."""
-    if trk.num_obs < cfg.stationary_exclude_min_obs:
-        return False
-
-    sb = trk.score_breakdown if trk.score_breakdown else {}
-    avg_speed_fallback, peak_speed_fallback = _track_speed_stats(trk)
-    avg_speed = float(sb.get("avg_speed_pxpf", avg_speed_fallback))
-    peak_speed = float(sb.get("peak_speed_pxpf", peak_speed_fallback))
-    extent_px = float(sb.get("extent_px", _track_extent(trk)))
-    if "motion_frac" in sb:
-        motion_frac = float(sb["motion_frac"])
-    else:
-        motion_frac = sum(1 for o in trk.observations if o.on_motion) / max(trk.num_obs, 1)
-
-    max_avg_speed = _fps_norm_pxpf(cfg.stationary_exclude_max_avg_speed, cfg)
-    max_peak_speed = _fps_norm_pxpf(cfg.stationary_exclude_max_peak_speed, cfg)
-
-    if avg_speed > max_avg_speed:
-        return False
-    if peak_speed > max_peak_speed:
-        return False
-    if extent_px > cfg.stationary_exclude_max_extent_frac * diag:
-        return False
-    if motion_frac > cfg.stationary_exclude_max_motion_frac:
-        return False
-    return True
 
 def _is_near_player(x, y, player_boxes_by_frame, frame_idx, margin=80):
     """Check if (x,y) is near any player bbox at given frame."""
@@ -119,89 +92,6 @@ def _is_near_player(x, y, player_boxes_by_frame, frame_idx, margin=80):
             return True
     return False
 
-def _closest_player_distance(x, y, player_boxes_by_frame, frame_idx, margin=20):
-    """Distance from point to nearest (expanded) player bbox edge; 0 if inside."""
-    if player_boxes_by_frame is None or frame_idx >= len(player_boxes_by_frame):
-        return None
-    pboxes = player_boxes_by_frame[frame_idx]
-    if pboxes is None:
-        return None
-    boxes = pboxes.values() if isinstance(pboxes, dict) else pboxes
-    best = None
-    for pb in boxes:
-        if pb is None or len(pb) < 4:
-            continue
-        x1, y1, x2, y2 = map(float, pb[:4])
-        x1 -= margin
-        y1 -= margin
-        x2 += margin
-        y2 += margin
-        dx = max(x1 - x, 0.0, x - x2)
-        dy = max(y1 - y, 0.0, y - y2)
-        d = math.sqrt(dx * dx + dy * dy)
-        if best is None or d < best:
-            best = d
-    return best
-
-def _track_movement_score(trk: Track, cfg: SelectorConfig, diag: float) -> float:
-    """Movement score used for track-level merge eligibility."""
-    sb = trk.score_breakdown if trk.score_breakdown else {}
-    if "movement" in sb:
-        return float(sb["movement"])
-
-    speed_ref = max(0.010 * diag, 1.0)
-    peak_ref = max(0.022 * diag, 1.0)
-    extent_ref = max(0.18 * diag, 1.0)
-    avg_speed, peak_speed = _track_speed_stats(trk)
-    extent = _track_extent(trk)
-    motion_frac = sum(1 for o in trk.observations if o.on_motion) / max(trk.num_obs, 1)
-    motion_smooth = _motion_consistency(trk)
-
-    speed_norm = min(avg_speed / speed_ref, 1.0)
-    peak_norm = min(peak_speed / peak_ref, 1.0)
-    extent_norm = min(extent / extent_ref, 1.0)
-    movement_quality = (
-        0.34 * speed_norm +
-        0.18 * peak_norm +
-        0.28 * extent_norm +
-        0.15 * motion_smooth +
-        0.05 * motion_frac
-    )
-    return cfg.w_movement * movement_quality
-
-def _annotate_track_periods(
-    tracks: List[Track],
-    total_frames: int,
-    cfg: SelectorConfig
-) -> None:
-    """Attach temporal-period metadata to each track for cut-aware debugging."""
-    if not tracks:
-        return
-
-    denom = max(total_frames - 1, 1)
-    split_gap = max(1, int(round(max(0.0, cfg.period_split_gap_frac) * max(total_frames, 1))))
-
-    ordered = sorted(tracks, key=lambda t: (t.first_frame, t.last_obs_frame))
-    period_id = 0
-    period_end = ordered[0].last_obs_frame
-
-    for trk in ordered:
-        start_f = int(trk.first_frame)
-        end_f = int(trk.last_obs_frame)
-
-        if start_f - period_end > split_gap:
-            period_id += 1
-            period_end = end_f
-        else:
-            period_end = max(period_end, end_f)
-
-        sb = trk.score_breakdown if trk.score_breakdown else {}
-        sb["period_id"] = float(period_id)
-        sb["start_frame"] = float(start_f)
-        sb["end_frame"] = float(end_f)
-        sb["start_frac"] = start_f / float(denom)
-        sb["end_frac"] = end_f / float(denom)
-        trk.score_breakdown = sb
 
 def _select_timeline_chain(
     tracks: List[Track],
@@ -673,57 +563,4 @@ def score_tracks(
     tracks.sort(key=lambda t: t.score, reverse=True)
     return tracks
 
-def _passes_sanity(trk: Track, cfg: SelectorConfig) -> bool:
-    """Reject tracks that are clearly junk.
 
-    The scoring should do the heavy lifting.
-    """
-    if trk.num_obs < 3:
-        return False
-    sb = trk.score_breakdown if trk.score_breakdown else {}
-    avg_speed = float(sb.get("avg_speed_pxpf", 0.0))
-    extent_px = float(sb.get("extent_px", 0.0))
-    inside_frac = float(sb.get("inside_frac", 0.5))
-    motion_frac = float(sb.get("motion_frac", 0.0))
-    near_player_frac = float(sb.get("near_player_frac", 0.0))
-    near_player_court_frac = float(sb.get("near_player_court_frac", 0.0))
-    min_obs_required = int(float(sb.get("min_obs_required", 0.0)))
-    redflag_outside_long = float(sb.get("redflag_outside_long_bool", 0.0)) > 0.5
-    diag = _cfg_diag(cfg)
-
-    very_static_thresh = _fps_norm_pxpf(1.1, cfg)
-    weak_motion_thresh = _fps_norm_pxpf(1.6, cfg)
-
-    # Hard reject very static compact tracks (typical parked balls).
-    if avg_speed < very_static_thresh and extent_px < 0.05 * diag:
-        return False
-
-    # Hard reject tracks mostly outside court unless they clearly interact with players.
-    if inside_frac < 0.10 and near_player_frac < 0.12:
-        return False
-    # Hard reject long tracks that are effectively never on court.
-    if redflag_outside_long:
-        return False
-
-    # Reject tracks that almost never satisfy the intended context.
-    if near_player_court_frac < 0.02 and inside_frac < 0.35 and near_player_frac < 0.12:
-        return False
-
-    # Reject weak/no-motion/no-player context tracks.
-    if motion_frac < 0.04 and avg_speed < weak_motion_thresh and near_player_frac < 0.08:
-        return False
-
-    # In longer videos, avoid selecting tiny late/early bursts as the main track.
-    if min_obs_required > 0 and trk.num_obs < min_obs_required:
-        if inside_frac < 0.85 or near_player_court_frac < 0.35:
-            return False
-    return True
-
-def select_best_track(
-    tracks: List[Track],
-    cfg: SelectorConfig
-) -> Optional[Track]:
-    """Pick the single highest-score track (test mode)."""
-    if not tracks:
-        return None
-    return max(tracks, key=lambda t: float(t.score))

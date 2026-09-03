@@ -256,6 +256,10 @@ def _result(x, y, source, detection=None, motion=None, search_radius=0.0) -> Fra
 
 
 _REFINE_SOURCE_WEIGHT = {"det": 1.0, "motion": 0.30, "interp": 0.15, "carry": 0.10}
+_REFERENCE_DIAG = 2203.0        # diagonal of 1920x1080
+# Past this much correction a "det" point is no longer where the detector
+# fired, so it stops being reported as one (~44 px at 1080p).
+_REFINE_DET_RELABEL_FRAC = 0.02
 
 
 def _find_trajectory_kinks(x: np.ndarray, y: np.ndarray) -> List[int]:
@@ -315,7 +319,7 @@ def _find_spikes(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return spikes
 
 
-def _refine_run(results, start: int, end: int) -> None:
+def _refine_run(results, start: int, end: int, diag: float = _REFERENCE_DIAG) -> None:
     """Robust weighted local polynomial refit of one continuous trajectory run."""
     points = results[start:end]
     m = len(points)
@@ -406,12 +410,24 @@ def _refine_run(results, start: int, end: int) -> None:
         new_x[i] = x[i] + dx
         new_y[i] = y[i] + dy
 
+    # Repairing a short target switch needs a large correction, so the move
+    # itself stays unbounded.  But a "det" frame is advertised as a raw
+    # observation -- green in the overlay, scored against the detector by
+    # evaluate_archive.py -- and once the fit has dragged it this far it is a
+    # fitted position, not a detection.  Say so rather than crediting or
+    # blaming the detector for a point it never produced.
+    relabel_px = max(12.0, _REFINE_DET_RELABEL_FRAC * float(diag))
     for index, item in enumerate(points):
+        moved = math.hypot(new_x[index] - item.cx, new_y[index] - item.cy)
         item.cx = float(new_x[index])
         item.cy = float(new_y[index])
+        if item.source == "det" and moved > relabel_px:
+            item.source = "interp"
+            item.interpolated = True
+            item.source_reason = "refit_relocated_detection"
 
 
-def _refine_trajectory(results) -> None:
+def _refine_trajectory(results, diag: float = _REFERENCE_DIAG) -> None:
     frame = 0
     while frame < len(results):
         if results[frame] is None:
@@ -421,7 +437,7 @@ def _refine_trajectory(results) -> None:
         while frame < len(results) and results[frame] is not None:
             frame += 1
         if frame - start >= 9:
-            _refine_run(results, start, frame)
+            _refine_run(results, start, frame, diag)
 
 
 def select_ball_in_play(
@@ -443,7 +459,6 @@ def select_ball_in_play(
     resolution_scale = cfg.diag / 2203.0
     fill_frames = max(3, int(round(float(fps) * 0.30)))
     motion_gate = max(12.0, 40.0 * resolution_scale)
-    motion_snap_gate = max(6.0, 13.0 * resolution_scale)
     detections = build_detections(detections_by_frame, boost_masks)
     tracks = score_tracks(
         build_tracks(detections, cfg),
@@ -694,7 +709,7 @@ def select_ball_in_play(
                 "interp",
             )
 
-    _refine_trajectory(results)
+    _refine_trajectory(results, cfg.diag)
 
     if debug:
         print(f"[clean selector] selected tracks: {[track.track_id for track in selected]}")

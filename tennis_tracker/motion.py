@@ -383,19 +383,6 @@ def suppress_flicker_components(
             out[comp] = 0
     return out
 
-def build_player_protect_mask(h, w, player_bboxes, pad=0):
-    """Mask of player-box regions that should remain color-neutral."""
-    if not player_bboxes:
-        return None
-    mask = np.zeros((h, w), dtype=bool)
-    for pb in player_bboxes:
-        if pb is None or len(pb) < 4:
-            continue
-        x1, y1, x2, y2 = max(0, int(pb[0])-pad), max(0, int(pb[1])-pad), \
-                          min(w-1, int(pb[2])+pad), min(h-1, int(pb[3])+pad)
-        if x2 >= x1 and y2 >= y1:
-            mask[y1:y2+1, x1:x2+1] = True
-    return mask if np.any(mask) else None
 
 def _court_kpt_xy(court_keypoints, idx):
     if court_keypoints is None:
