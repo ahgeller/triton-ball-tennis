@@ -12,7 +12,7 @@ Controls:
   left click               ball is here -> save and go to next frame
   SPACE / ENTER / c        guess is good -> next frame
   v                        ball not visible on this frame -> next frame
-  mouse wheel, + / -       zoom in / out (kept across frames)
+  mouse wheel, + / -       smooth zoom in / out about the mouse / the ball (kept across frames)
   right click              re-centre the view here
   i / j / k / l            nudge the point one pixel up / left / down / right (stays on frame)
   n / d / right arrow      next frame        p / a / left arrow   previous frame
@@ -21,7 +21,11 @@ Controls:
   t                        toggle trail       s   save        q / ESC   save and quit
 
 Output: labels/<clip>_ball.csv (frame,ball_x,ball_y).  Review progress lives
-in labels/<clip>_ball.review.json so you can quit and resume.
+in labels/<clip>_ball.review.json so you can quit and resume.  Everything is
+autosaved every few seconds and on any exit; a frame you already dealt with
+shows a REVIEWED (space) or EDITED (click / v / nudge) badge in the top-right
+corner when you come back to it, and the top-left corner counts how many
+frames are left to do.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import csv
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -44,7 +49,9 @@ WINDOW = "label_tool"
 HUD = 58
 CONFIDENT_CONF = 0.70
 VIEW_MAX_WIDTH = 1600
-ZOOM_LEVELS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
+ZOOM_STEP = 1.25          # per wheel notch / keypress; multiplicative so every step feels the same size
+ZOOM_MAX = 12.0
+AUTOSAVE_SECONDS = 5.0    # write labels + review progress this often while there are unsaved changes
 
 try:  # cursor placement is a Windows nicety; everything else works without it
     import ctypes
@@ -147,6 +154,7 @@ class Tool:
         self.dirty = False
         self.frame_cache: Dict[int, np.ndarray] = {}
         self.pending_cursor_move = False
+        self.last_save = time.monotonic()
 
     # ---------------------------------------------------------------- geometry
     @property
@@ -193,13 +201,10 @@ class Tool:
         row = self.rows[self.cursor]
         image = self.frame(row.frame)
         x0, y0 = self.origin
-        span_w, span_h = self.view_w / self.scale, self.view_h / self.scale
-        crop = image[int(y0):int(np.ceil(y0 + span_h)) + 1, int(x0):int(np.ceil(x0 + span_w)) + 1]
-        # Resize the crop with exact sub-pixel origin handling via warpAffine.
+        # Resize with exact sub-pixel origin handling via warpAffine.
         matrix = np.array([[self.scale, 0.0, -x0 * self.scale], [0.0, self.scale, -y0 * self.scale]], dtype=np.float64)
         display = cv2.warpAffine(image, matrix, (self.view_w, self.view_h),
                                  flags=cv2.INTER_LINEAR if self.zoom < 3 else cv2.INTER_NEAREST)
-        del crop
         if self.trail:
             for previous in self.rows[max(0, self.cursor - 12):self.cursor]:
                 if previous.visible:
@@ -212,13 +217,28 @@ class Tool:
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 cv2.line(display, (cx + dx * (radius - 3), cy + dy * (radius - 3)),
                          (cx + dx * (radius + 8), cy + dy * (radius + 8)), colour, 1)
-        hud = np.zeros((HUD, self.view_w, 3), dtype=np.uint8)
+        if row.reviewed or row.edited:
+            badge = "EDITED" if row.edited else "REVIEWED"
+            fill = (60, 140, 255) if row.edited else (70, 190, 70)
+            (text_w, text_h), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            left = self.view_w - text_w - 26
+            cv2.rectangle(display, (left, 10), (self.view_w - 10, 24 + text_h), fill, -1)
+            cv2.putText(display, badge, (left + 8, 17 + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 0, 0), 2, cv2.LINE_AA)
         reviewed = sum(r.reviewed for r in self.rows)
+        remaining = len(self.rows) - reviewed
+        counter = "ALL DONE" if remaining == 0 else f"{remaining} LEFT"
+        fill, text_colour = ((70, 190, 70), (0, 0, 0)) if remaining == 0 else ((50, 50, 50), (255, 255, 255))
+        (text_w, text_h), _ = cv2.getTextSize(counter, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(display, (10, 10), (26 + text_w, 24 + text_h), fill, -1)
+        cv2.putText(display, counter, (18, 17 + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    text_colour, 2, cv2.LINE_AA)
+        hud = np.zeros((HUD, self.view_w, 3), dtype=np.uint8)
         uncertain_left = sum(1 for r in self.rows if r.uncertain and not r.reviewed)
         state = "NOT VISIBLE" if not row.visible else f"({row.x:.1f}, {row.y:.1f})"
         tag = "EDITED" if row.edited else "ok" if row.reviewed else "unreviewed"
         line1 = (f"{self.clip}  frame {row.frame}  [{self.cursor + 1}/{len(self.rows)}]  {state}  "
-                 f"guess {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:g}{'  *unsaved*' if self.dirty else ''}")
+                 f"guess {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:.1f}{'  *unsaved*' if self.dirty else ''}")
         line2 = (f"reviewed {reviewed}/{len(self.rows)}  uncertain left {uncertain_left}   "
                  "click=fix+next  SPACE=good+next  v=invisible+next  f=next uncertain  wheel=zoom  q=save+quit")
         cv2.putText(hud, line1, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
@@ -253,15 +273,28 @@ class Tool:
             self.center = self.to_frame(x, y)
             self.clamp_view()
         elif event == cv2.EVENT_MOUSEWHEEL:
-            self.zoom_step(1 if flags > 0 else -1, anchor=self.to_frame(x, y))
+            self.zoom_at(1 if flags > 0 else -1, float(x), float(y))
 
-    def zoom_step(self, direction: int, anchor=None) -> None:
-        index = min(range(len(ZOOM_LEVELS)), key=lambda i: abs(ZOOM_LEVELS[i] - self.zoom))
-        index = min(max(index + direction, 0), len(ZOOM_LEVELS) - 1)
-        self.zoom = ZOOM_LEVELS[index]
-        if anchor is not None:
-            self.center = anchor
+    def zoom_at(self, direction: int, vx: float, vy: float) -> None:
+        """Zoom about the view point (vx, vy): whatever sits under the mouse stays under it."""
+        fx, fy = self.to_frame(vx, vy)
+        previous = self.zoom
+        self.zoom = min(max(self.zoom * ZOOM_STEP ** direction, 1.0), ZOOM_MAX)
+        if self.zoom == previous:
+            return
+        self.center = (fx + (self.view_w / 2.0 - vx) / self.scale,
+                       fy + (self.view_h / 2.0 - vy) / self.scale)
         self.clamp_view()
+
+    def zoom_key(self, direction: int) -> None:
+        """Keyboard zoom pivots on the ball so it stays put on screen (view centre when invisible)."""
+        row = self.rows[self.cursor]
+        if row.visible:
+            vx, vy = self.to_view(row.x, row.y)
+            self.zoom_at(direction, float(vx), float(vy))
+        else:
+            self.zoom_at(direction, self.view_w / 2.0, self.view_h / 2.0)
+        self.pending_cursor_move = True
 
     def set_point(self, x: float, y: float) -> None:
         row = self.rows[self.cursor]
@@ -305,30 +338,42 @@ class Tool:
         self.cursor = len(self.rows) - 1 if direction > 0 else 0
         self.follow_ball()
 
-    def save(self) -> None:
+    def save(self, quiet: bool = False) -> None:
         save_rows(self.out_csv, self.rows, self.width, self.height)
         save_review(self.review, self.rows, self.cursor, self.zoom)
         self.dirty = False
-        print(f"[save] {self.out_csv} ({sum(r.visible for r in self.rows)} visible, "
-              f"{sum(r.reviewed for r in self.rows)}/{len(self.rows)} reviewed)")
+        self.last_save = time.monotonic()
+        if not quiet:
+            print(f"[save] {self.out_csv} ({sum(r.visible for r in self.rows)} visible, "
+                  f"{sum(r.reviewed for r in self.rows)}/{len(self.rows)} reviewed)")
 
     # ---------------------------------------------------------------- loop
     def run(self) -> None:
         cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(WINDOW, self.on_mouse)
         self.follow_ball()
+        try:
+            self.loop()
+        finally:
+            # Any way out - q, the window's X, Ctrl+C, a crash - keeps the work done so far.
+            self.save()
+            cv2.destroyAllWindows()
+
+    def loop(self) -> None:
         while True:
             cv2.imshow(WINDOW, self.render())
             if self.pending_cursor_move:
                 cv2.waitKey(1)
                 self.place_cursor()
             key = cv2.waitKeyEx(30)
+            if self.dirty and time.monotonic() - self.last_save > AUTOSAVE_SECONDS:
+                self.save(quiet=True)
             if key == -1:
                 try:
                     if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
-                        break
+                        return
                 except cv2.error:
-                    break
+                    return
                 continue
             code = key & 0xFF if key < 0x10000 else key
             if code in (ord("q"), 27):
@@ -355,17 +400,13 @@ class Tool:
                 dx, dy = {ord("i"): (0, -1), ord("j"): (-1, 0), ord("k"): (0, 1), ord("l"): (1, 0)}[code]
                 self.nudge(dx, dy)
             elif code in (ord("+"), ord("=")):
-                self.zoom_step(1, anchor=(self.rows[self.cursor].x, self.rows[self.cursor].y) if self.rows[self.cursor].visible else None)
-                self.pending_cursor_move = True
+                self.zoom_key(1)
             elif code in (ord("-"), ord("_")):
-                self.zoom_step(-1)
-                self.pending_cursor_move = True
+                self.zoom_key(-1)
             elif code == ord("t"):
                 self.trail = not self.trail
             elif code == ord("s"):
                 self.save()
-        self.save()
-        cv2.destroyAllWindows()
 
 
 def main() -> int:

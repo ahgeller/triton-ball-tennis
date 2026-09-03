@@ -11,13 +11,14 @@ Modes:
             output the renderer would draw (selector quality)
 
 Caveat: the bundled GridTrackNet weights were fine-tuned on every archive clip
-except video10, so only video10 is held-out for it; TOTNet never saw any.
+except video10, so only video10 is held-out for it.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import fnmatch
 import json
 import math
 import re
@@ -32,7 +33,6 @@ ROOT = Path(__file__).resolve().parent
 ARCHIVE = Path(r"C:\Users\Andrew\Desktop\gridtracknet_finetuning\archive")
 MODELS = {
     "gridtracknet": ROOT / "models" / "gridtracknet_weights_torch.npz",
-    "totnet": ROOT / "models" / "totnet_tennis_best.pt",
 }
 HIT_PX = 10.0      # prediction counts as correct within this many pixels (1080p scale)
 WRONG_PX = 30.0    # beyond this it is tracking something else
@@ -63,7 +63,7 @@ def list_clips(names: Optional[List[str]], archive: Path = ARCHIVE) -> List[Tupl
     clips = []
     for csv_path in sorted(label_dir.glob("*_ball.csv"), key=natural_key):
         clip = csv_path.stem[: -len("_ball")]
-        if names and clip not in names:
+        if names and not any(fnmatch.fnmatchcase(clip, pattern) for pattern in names):
             continue
         videos = [p for d in video_dirs for p in d.glob(f"{clip}.*")
                   if p.suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".m4v"}]
@@ -180,11 +180,7 @@ def run_raw(models: List[str], clips, thresholds: List[float], device: str,
     for name in models:
         cfg = Config(conf=0.0, device=device, gridtracknet_source_stride=stride, gridtracknet_prepass_background=False)
         path = (weights or {}).get(name) or MODELS[name]
-        backend = backends.GridTrackNetBallDetector if name == "gridtracknet" else getattr(backends, "TOTNetBallDetector", None)
-        if backend is None:
-            print(f"[skip] {name}: this checkout has no TOTNet backend")
-            continue
-        detector = backend(str(path), cfg)
+        detector = backends.GridTrackNetBallDetector(str(path), cfg)
         for video_path, csv_path in clips:
             fps, width, height, total = video_meta(video_path)
             labels = read_labels(csv_path, width, height)
@@ -299,11 +295,10 @@ def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str, 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("raw", "pipeline"), default="raw")
-    parser.add_argument("--models", nargs="+", default=["gridtracknet", "totnet"], choices=sorted(MODELS))
-    parser.add_argument("--clips", nargs="*", default=None, help="Clip stems, e.g. video10 video12")
+    parser.add_argument("--models", nargs="+", default=["gridtracknet"], choices=sorted(MODELS))
+    parser.add_argument("--clips", nargs="*", default=None, help="Clip stems or globs, e.g. video10 'grid_match*'")
     parser.add_argument("--thresholds", nargs="+", type=float, default=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
     parser.add_argument("--gridtracknet-conf", type=float, default=0.50)
-    parser.add_argument("--totnet-conf", type=float, default=0.50)
     parser.add_argument("--device", default="0")
     parser.add_argument("--out-dir", default=str(ROOT / "output" / "archive_eval"))
     parser.add_argument("--archive", default=str(ARCHIVE),
@@ -323,7 +318,7 @@ def main() -> int:
     else:
         run_pipeline(
             args.models, clips,
-            {"gridtracknet": args.gridtracknet_conf, "totnet": args.totnet_conf},
+            {"gridtracknet": args.gridtracknet_conf},
             args.device, Path(args.out_dir),
         )
     return 0

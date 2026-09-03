@@ -5,3 +5,15 @@ AiFolder/
 .venv/
 models/*finetuned*.npz
 models/*legacy*.npz
+
+# fine-tuning workspace: videos, caches, runs and drafts are regenerable; own labels are kept
+finetune/videos/
+finetune/cache/
+finetune/runs/
+finetune/models/
+finetune/labels/*.draft
+finetune/labels/*.review.json
+finetune/labels/*.tmp
+finetune/labels/tnv2_*
+finetune/labels/grid_*
+models/*_prev_*.npz

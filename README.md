@@ -73,6 +73,21 @@ python clean_tracker.py --device 1 --conf 0.55
 The bundled GridTrackNet weights contain the latest fine-tuned checkpoint used
 to produce the demo.
 
+`finetune.bat` (or `.\finetune.ps1`) opens the fine-tuning workspace and runs
+`finetune/ft.py`, which covers importing clips, labelling, checking labels,
+scoring the detector, training and promoting the winner:
+
+```powershell
+.\finetune.ps1 status                       what is labelled and which model is current
+.\finetune.ps1 add C:\clips\rally7.mp4      copy a video in and pre-label it
+.\finetune.ps1 label rally7                 click-correct the labels
+.\finetune.ps1 train --val-clips video10    fine-tune; keeps the better of new vs start
+```
+
+The videos and caches the workspace builds are regenerable and stay untracked;
+`finetune/labels/` keeps the hand-corrected own-camera labels. See
+`finetune/README.md` for the full loop and `finetune/DATASETS.md` for sources.
+
 ## Validation
 
 Run the deterministic tracking checks:
@@ -97,6 +112,8 @@ ball_in_play_selector/                   Track construction, scoring, and recove
 models/gridtracknet_weights_torch.npz    GridTrackNet inference weights
 models/                                  Player and court TensorRT engines
 sample/                                  Sample video and validation annotations
+finetune.bat / finetune.ps1              Front door for the fine-tuning workspace
+finetune/                                Labelling, import, training, and evaluation tools
 output/                                  Generated videos, JSON, and reports (ignored)
 ```
 
