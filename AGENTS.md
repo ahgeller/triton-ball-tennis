@@ -96,3 +96,8 @@ assertions do NOT mean those defects are fixed. Convert relevant checks to
 desired-behavior regression tests when making fixes. The user has now authorized
 fixing the reviewed defects and running validation. Architecture experiments
 remain separate from the correctness fixes; do not promote a model implicitly.
+
+The disabled manual perspective scaling, homography gravity, color gate,
+flicker suppression and raw-component experiments were subsequently removed.
+Keep automatic FPS/resolution normalization and supported debug outputs.
+See `audit/CLEANUP_RESULTS.md` for rationale and measured output differences.

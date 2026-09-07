@@ -20,7 +20,7 @@ from finetune.train_gridtracknet import better
 from tennis_tracker.config import Config
 from tennis_tracker.detectors import GridTrackNetBallDetector
 from tennis_tracker.video_io import VideoWriter
-from tennis_tracker.motion import preprocess_frame_cuda, refine_raw_motion_temporal_cpu
+from tennis_tracker.motion import preprocess_frame_cuda, refine_raw_motion_temporal_cpu, filter_boost_mask
 from ball_in_play_selector.config import SelectorConfig
 from ball_in_play_selector.physics import BallKalmanFilter, _predict_projectile, _predict_projectile_vel
 from ball_in_play_selector.core import _motion_near
@@ -33,8 +33,15 @@ from tennis_tracker.pipeline import _frame_result_to_json
 
 
 class FixTests(unittest.TestCase):
-    def test_color_gate_is_opt_in(self):
-        self.assertFalse(Config().motion_raw_ball_color_gate)
+    def test_manual_scaling_and_unused_filters_are_removed(self):
+        for field in ("court_depth", "court_side", "motion_flicker_suppress",
+                      "motion_raw_ball_color_gate", "motion_raw_component_filter"):
+            self.assertNotIn(field, Config.__dataclass_fields__)
+
+    def test_empty_motion_clears_reused_boost_buffer(self):
+        buffers = SimpleNamespace(boost_mask_u8=np.full((10, 10), 255, np.uint8))
+        result = filter_boost_mask(np.zeros((10, 10), np.uint8), 0, 600, Config(), buffers=buffers)
+        self.assertFalse(np.any(result))
 
     def test_verified_policy_does_not_clear_grid_matches(self):
         policy = {"verified_video_min": 13}
@@ -117,25 +124,20 @@ class FixTests(unittest.TestCase):
         self.assertEqual((result["x"], result["y"], result["area"]), (50., 50., 9.))
         self.assertIsNone(_motion_near(mask, 0, 0, 175., 20., 4.))
 
-    def test_cuda_color_gate_matches_cpu_policy(self):
+    def test_motion_retains_non_yellow_evidence(self):
         frame = np.zeros((32, 32, 3), np.uint8)
         frame[10:20, 10:20, 2] = 255
         t = torch.from_numpy(frame).permute(2, 0, 1).float() / 255
         zeros = torch.zeros(32, 32)
         cfg = Config(motion_raw_temporal_gate=False, motion_raw_close_size=0,
                      motion_thresh=1., motion_v_min=0.)
-        masks = []
-        for enabled in (False, True):
-            cfg.motion_raw_ball_color_gate = enabled
-            _, raw, _, _, _, _ = preprocess_frame_cuda(
-                frame, zeros, zeros, zeros, zeros, cfg, frame_gpu_t=t,
-                protect_mask_cuda_cached=zeros.bool(), skip_dim=True,
-                need_cpu_frame=False, need_detector_boost=False)
-            masks.append(raw)
-        self.assertEqual(np.count_nonzero(masks[0]), 100)
-        self.assertEqual(np.count_nonzero(masks[1]), 0)
-        expected = refine_raw_motion_temporal_cpu(masks[0], None, frame, None, cfg)
-        np.testing.assert_array_equal(expected, masks[1])
+        _, raw, _, _, _, _ = preprocess_frame_cuda(
+            frame, zeros, zeros, zeros, zeros, cfg, frame_gpu_t=t,
+            protect_mask_cuda_cached=zeros.bool(), skip_dim=True,
+            need_cpu_frame=False, need_detector_boost=False)
+        self.assertEqual(np.count_nonzero(raw), 100)
+        expected = refine_raw_motion_temporal_cpu(raw, None, frame, None, cfg)
+        np.testing.assert_array_equal(expected, raw)
 
     def test_metric_counts_localization_errors(self):
         stats = metric_probe(5, {i: [100, 100] if i == 0 else [120, 100] for i in range(5)})

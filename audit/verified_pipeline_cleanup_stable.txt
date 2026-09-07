@@ -1,0 +1,684 @@
+[archive] finetune  (41 clips)
+[09/07/2026-16:06:47] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:06:47] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:47] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:06:47] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:06:47] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:06:47] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:47] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:06:47] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:06:47] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:06:47] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:06:47] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:06:52] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:06:52] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:52] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:06:52] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:06:52] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:06:52] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:52] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:06:52] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:06:52] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:06:52] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:06:52] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:06:55] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:06:55] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:55] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:06:55] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:06:55] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:06:55] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:55] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:06:55] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:06:55] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:06:55] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:06:55] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:06:56] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:06:56] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:56] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:06:56] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:06:56] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:06:56] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:56] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:06:56] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:06:56] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:06:56] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:06:56] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:06:57] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:06:57] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:57] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:06:57] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:06:57] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:06:57] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:06:57] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:06:57] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:06:57] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:06:57] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:06:57] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:04] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:04] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:04] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:04] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:04] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:04] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:04] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:04] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:04] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:04] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:04] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:10] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:10] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:11] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:11] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:11] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:11] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:11] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:11] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:11] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:11] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:11] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:12] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:12] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:12] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:12] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:12] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:12] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:12] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:12] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:12] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:12] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:12] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:14] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:14] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:14] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:14] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:14] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:14] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:14] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:14] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:14] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:14] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:14] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:17] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:17] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:17] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:17] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:17] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:17] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:17] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:17] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:17] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:17] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:17] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:20] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:20] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:21] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:21] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:21] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:21] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:21] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:21] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:21] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:21] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:21] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~361 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 361 source frames, 344 detections, 19 batched calls across 1 phase(s) in 2.7s (133.8 source fps) [overlapped with pass 1]
+  [pass1 200/361] 44.6 fps
+[pass 1] Done: 361 frames in 5.6s (64.7 fps), detections in 344 frames
+[pass 1] ROI motion: 384 ROI frames, 5 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 21 frames in 0.01s
+[court polygon] Ordered corners [0,2,3,1]: TL=[372.0, 126.0], BL=[187.0, 575.4375], BR=[1088.0, 574.3125], TR=[903.0, 125.71875]
+[court polygon] bbox=(187,125,902x451)
+[court polygon] Center (638,350) dist=224.4 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 7 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video13_gridtracknet.json
+
+[done] 352/361 frames filled (97.5%)
+[done] 5.7s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~199 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 199 source frames, 188 detections, 10 batched calls across 1 phase(s) in 1.5s (135.2 source fps) [overlapped with pass 1]
+[pass 1] Done: 199 frames in 2.7s (73.2 fps), detections in 188 frames
+[pass 1] ROI motion: 222 ROI frames, 4 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 20 frames in 0.01s
+[court polygon] Ordered corners [0,2,3,1]: TL=[372.75, 127.40625], BL=[184.5, 576.0], BR=[1093.0, 574.3125], TR=[904.5, 127.40625]
+[court polygon] bbox=(184,127,910x450)
+[court polygon] Center (639,352) dist=223.2 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 4 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video14_gridtracknet.json
+
+[done] 192/199 frames filled (96.5%)
+[done] 2.8s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~36 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[detector] GridTrackNet prepass: 36 source frames, 36 detections, 2 batched calls across 1 phase(s) in 0.4s (98.1 source fps) [overlapped with pass 1]
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[pass 1] Done: 36 frames in 1.0s (36.7 fps), detections in 36 frames
+[pass 1] ROI motion: 34 ROI frames, 2 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 0 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[372.0, 126.84375], BL=[185.25, 574.875], BR=[1088.0, 573.46875], TR=[903.0, 126.84375]
+[court polygon] bbox=(185,126,904x449)
+[court polygon] Center (637,350) dist=223.7 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 1 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video15_gridtracknet.json
+
+[done] 36/36 frames filled (100.0%)
+[done] 1.0s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~45 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 45 source frames, 39 detections, 3 batched calls across 1 phase(s) in 0.4s (106.7 source fps) [overlapped with pass 1]
+[pass 1] Done: 45 frames in 1.1s (41.5 fps), detections in 39 frames
+[pass 1] ROI motion: 43 ROI frames, 2 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 0 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[372.0, 126.84375], BL=[185.5, 574.875], BR=[1088.0, 573.46875], TR=[903.0, 126.5625]
+[court polygon] bbox=(185,126,904x449)
+[court polygon] Center (637,350) dist=223.7 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 2 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video16_gridtracknet.json
+
+[done] 45/45 frames filled (100.0%)
+[done] 1.1s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~598 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+  [pass1 200/598] 49.6 fps
+[detector] GridTrackNet prepass: 598 source frames, 585 detections, 30 batched calls across 1 phase(s) in 4.1s (146.2 source fps) [overlapped with pass 1]
+  [pass1 400/598] 71.9 fps
+[pass 1] Done: 598 frames in 6.9s (87.1 fps), detections in 585 frames
+[pass 1] ROI motion: 717 ROI frames, 3 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 49 frames in 0.03s
+[court polygon] Ordered corners [0,2,3,1]: TL=[465.0, 148.78125], BL=[71.0, 453.375], BR=[1206.0, 443.8125], TR=[815.5, 148.78125]
+[court polygon] bbox=(71,148,1136x306)
+[court polygon] Center (639,301) dist=147.6 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 6 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video17_gridtracknet.json
+
+[done] 588/598 frames filled (98.3%)
+[done] 7.0s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~485 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[09/07/2026-16:07:27] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:27] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:27] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:27] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:27] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:27] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:27] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:27] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:27] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:27] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:27] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:30] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:30] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:30] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:30] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:30] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:30] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:30] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:30] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:30] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:30] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:30] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:31] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:31] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:31] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:31] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:31] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:31] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:31] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:31] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:31] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:31] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:32] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:07:34] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:07:34] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:37] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:07:37] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:07:37] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:07:37] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:07:37] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:07:37] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:07:37] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:07:37] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:07:37] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:08:18] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:08:18] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:08:26] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:08:26] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:08:26] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:08:26] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:08:26] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:08:26] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:08:26] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:08:26] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:08:26] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 485 source frames, 459 detections, 25 batched calls across 1 phase(s) in 3.5s (140.0 source fps) [overlapped with pass 1]
+  [pass1 200/485] 49.9 fps
+  [pass1 400/485] 76.0 fps
+[pass 1] Done: 485 frames in 5.8s (83.1 fps), detections in 459 frames
+[pass 1] ROI motion: 532 ROI frames, 7 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 32 frames in 0.01s
+[court polygon] Ordered corners [0,2,3,1]: TL=[464.5, 148.78125], BL=[70.0, 453.375], BR=[1206.0, 443.25], TR=[815.5, 148.640625]
+[court polygon] bbox=(70,148,1137x306)
+[court polygon] Center (638,301) dist=147.3 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 3 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video18_gridtracknet.json
+
+[done] 464/485 frames filled (95.7%)
+[done] 6.0s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~112 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 112 source frames, 111 detections, 6 batched calls across 1 phase(s) in 0.8s (132.4 source fps) [overlapped with pass 1]
+[pass 1] Done: 112 frames in 1.7s (65.3 fps), detections in 111 frames
+[pass 1] ROI motion: 110 ROI frames, 2 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 0 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[463.5, 145.6875], BL=[69.5, 452.25], BR=[1210.0, 442.40625], TR=[816.0, 145.6875]
+[court polygon] bbox=(69,145,1142x308)
+[court polygon] Center (640,299) dist=148.3 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 4 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video19_gridtracknet.json
+
+[done] 106/112 frames filled (94.6%)
+[done] 1.7s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~102 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 102 source frames, 83 detections, 6 batched calls across 1 phase(s) in 0.8s (130.2 source fps) [overlapped with pass 1]
+[pass 1] Done: 102 frames in 1.6s (63.4 fps), detections in 83 frames
+[pass 1] ROI motion: 99 ROI frames, 3 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 5 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[463.0, 145.6875], BL=[70.5, 451.6875], BR=[1209.0, 441.5625], TR=[816.0, 145.6875]
+[court polygon] bbox=(70,145,1140x307)
+[court polygon] Center (640,298) dist=148.1 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 3 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video20_gridtracknet.json
+
+[done] 86/102 frames filled (84.3%)
+[done] 1.6s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~225 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 225 source frames, 211 detections, 12 batched calls across 1 phase(s) in 1.8s (122.4 source fps) [overlapped with pass 1]
+  [pass1 200/225] 68.8 fps
+[pass 1] Done: 225 frames in 3.1s (73.2 fps), detections in 211 frames
+[pass 1] ROI motion: 281 ROI frames, 6 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 22 frames in 0.01s
+[court polygon] Ordered corners [0,2,3,1]: TL=[464.5, 144.984375], BL=[87.0, 452.8125], BR=[1200.0, 438.75], TR=[815.5, 145.546875]
+[court polygon] bbox=(87,144,1114x309)
+[court polygon] Center (644,298) dist=147.3 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 5 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video21_gridtracknet.json
+
+[done] 212/225 frames filled (94.2%)
+[done] 3.1s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~233 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 233 source frames, 218 detections, 12 batched calls across 1 phase(s) in 1.7s (133.3 source fps) [overlapped with pass 1]
+  [pass1 200/233] 69.6 fps
+[pass 1] Done: 233 frames in 3.1s (75.7 fps), detections in 218 frames
+[pass 1] ROI motion: 253 ROI frames, 2 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 8 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[464.0, 143.859375], BL=[72.5, 451.125], BR=[1208.0, 440.71875], TR=[814.5, 143.859375]
+[court polygon] bbox=(72,143,1137x309)
+[court polygon] Center (640,298) dist=148.4 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 3 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video22_gridtracknet.json
+
+[done] 218/233 frames filled (93.6%)
+[done] 3.2s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~483 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 483 source frames, 419 detections, 25 batched calls across 1 phase(s) in 3.6s (135.7 source fps) [overlapped with pass 1]
+  [pass1 200/483] 49.8 fps
+  [pass1 400/483] 75.4 fps
+[pass 1] Done: 483 frames in 5.9s (81.5 fps), detections in 419 frames
+[pass 1] ROI motion: 577 ROI frames, 6 full-frame frames
+[09/07/2026-16:08:52] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:08:52] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:08:54] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:08:54] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:08:54] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:08:54] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:08:54] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:08:54] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:08:54] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:08:54] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:08:55] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:09:10] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:09:10] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:09:13] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:09:13] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:09:13] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:09:13] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:09:13] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:09:13] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:09:13] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:09:13] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:09:13] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:09:39] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:09:39] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:09:42] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:09:42] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:09:42] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:09:42] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:09:42] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:09:42] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:09:42] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:09:42] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:09:45] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:09:58] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:09:58] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:09:58] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:09:58] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:09:58] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:09:58] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:09:58] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:09:58] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:09:58] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:09:58] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:10:01] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:10:26] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:10:26] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:10:26] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:10:26] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:10:26] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:10:26] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:10:26] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:10:26] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:10:26] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:10:26] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:10:29] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:10:44] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:10:44] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:10:44] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:10:44] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:10:44] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:10:44] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:10:44] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:10:44] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:10:44] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:10:44] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:10:47] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 52 frames in 0.02s
+[court polygon] Ordered corners [0,2,3,1]: TL=[464.0, 143.4375], BL=[71.5, 450.5625], BR=[1208.0, 440.15625], TR=[814.5, 143.578125]
+[court polygon] bbox=(71,143,1138x308)
+[court polygon] Center (640,297) dist=148.4 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 10 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video23_gridtracknet.json
+
+[done] 423/483 frames filled (87.6%)
+[done] 6.1s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~191 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 191 source frames, 183 detections, 10 batched calls across 1 phase(s) in 1.6s (120.8 source fps) [overlapped with pass 1]
+[pass 1] Done: 191 frames in 2.7s (69.6 fps), detections in 183 frames
+[pass 1] ROI motion: 203 ROI frames, 2 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 4 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[461.5, 132.890625], BL=[123.5, 507.375], BR=[1174.0, 499.5], TR=[834.5, 132.890625]
+[court polygon] bbox=(123,132,1052x376)
+[court polygon] Center (649,320) dist=183.4 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 6 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video24_gridtracknet.json
+
+[done] 180/191 frames filled (94.2%)
+[done] 2.8s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~57 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 57 source frames, 50 detections, 3 batched calls across 1 phase(s) in 0.4s (133.3 source fps) [overlapped with pass 1]
+[pass 1] Done: 57 frames in 1.1s (49.9 fps), detections in 50 frames
+[pass 1] ROI motion: 55 ROI frames, 2 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 0 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[461.5, 131.90625], BL=[122.0, 506.25], BR=[1174.0, 498.9375], TR=[834.0, 131.90625]
+[court polygon] bbox=(122,131,1053x376)
+[court polygon] Center (648,319) dist=183.6 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 2 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video25_gridtracknet.json
+
+[done] 50/57 frames filled (87.7%)
+[done] 1.2s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~75 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 75 source frames, 57 detections, 4 batched calls across 1 phase(s) in 2.1s (35.8 source fps) [overlapped with pass 1]
+[pass 1] Done: 75 frames in 2.8s (26.7 fps), detections in 57 frames
+[pass 1] ROI motion: 79 ROI frames, 11 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 15 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[462.0, 130.21875], BL=[122.5, 505.96875], BR=[1173.0, 498.375], TR=[833.5, 130.359375]
+[court polygon] bbox=(122,130,1052x376)
+[court polygon] Center (648,318) dist=184.2 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 2 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video26_gridtracknet.json
+
+[done] 56/75 frames filled (74.7%)
+[done] 2.8s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~247 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 247 source frames, 223 detections, 13 batched calls across 1 phase(s) in 38.4s (6.4 source fps) [overlapped with pass 1]
+  [pass1 200/247] 4.7 fps
+[pass 1] Done: 247 frames in 43.8s (5.6 fps), detections in 223 frames
+[pass 1] ROI motion: 318 ROI frames, 8 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 37 frames in 0.01s
+[court polygon] Ordered corners [0,2,3,1]: TL=[461.5, 128.8125], BL=[124.0, 505.125], BR=[1172.0, 496.6875], TR=[834.5, 128.53125]
+[court polygon] bbox=(124,128,1049x378)
+[court polygon] Center (648,317) dist=183.9 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 5 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video27_gridtracknet.json
+
+[done] 225/247 frames filled (91.1%)
+[done] 43.9s total
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~110 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+[detector] GridTrackNet prepass: 110 source frames, 109 detections, 6 batched calls across 1 phase(s) in 32.1s (3.4 source fps) [overlapped with pass 1]
+[pass 1] Done: 110 frames in 34.3s (3.2 fps), detections in 109 frames
+[pass 1] ROI motion: 122 ROI frames, 2 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 5 frames in 0.00s
+[court polygon] Ordered corners [0,2,3,1]: TL=[461.5, 121.921875], BL=[117.0, 498.375], BR=[1176.0, 489.9375], TR=[832.5, 121.921875]
+[court polygon] bbox=(117,121,1060x378)
+[court polygon] Center (647,310) dist=184.1 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 2 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\verified_cleanup_stable_20260907\video28_gridtracknet.json
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[09/07/2026-16:10:51] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:10:51] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:10:51] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:10:51] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:10:51] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:10:51] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:10:51] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:10:51] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:10:51] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:10:51] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:10:54] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30

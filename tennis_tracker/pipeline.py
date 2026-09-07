@@ -17,7 +17,7 @@ except Exception:
 from .config import Config
 from .utils import _detect_device, _check_capabilities, _resolve_engine_path_for_ball, find_ball_class_id_from_names, _read_engine_names
 from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
-from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, suppress_flicker_components, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
+from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
 from .tracking import ROIMotionTracker
 from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _court_axis_spans, _build_court_polygon, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _build_ground_projection_model, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
 from .court_overlay import build_rally_legs, detect_player_contacts, draw_court_minimap, infer_kinematic_bounces, predict_bounces
@@ -562,16 +562,6 @@ def run(cfg):
             str(trt_engine_path), cfg, ball_cls_id, names=model_names
         )
 
-    if cfg.court_depth or cfg.court_side:
-        parts = []
-        if cfg.court_depth:
-            parts.append(f"depth={cfg.court_depth} (y_strength={cfg.y_scale_strength})")
-        if cfg.court_side:
-            parts.append(f"side={cfg.court_side} (x_strength={cfg.x_scale_strength})")
-        print(f"[init] Court perspective: {', '.join(parts)}")
-    else:
-        print("[init] Court perspective: disabled (no scaling)")
-
     # Open video
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
@@ -674,7 +664,6 @@ def run(cfg):
     side_mask_cache_key = None
     protect_mask_cuda_cache = None
     protect_mask_cuda_cache_key = None
-    prev_boost_for_flicker = None
     prev_raw_motion_cuda = None  # CUDA boolean mask from previous frame - avoids CPU -> GPU re-upload in WTA
     prev_raw_motion_u8 = None    # CPU uint8 mask from previous frame for HSV WTA background
     collect_motion_stats = bool(cfg.save_motion_debug)
@@ -1052,25 +1041,6 @@ def run(cfg):
                 motion_frames_boost += 1
             raw_motion_u8 = apply_exclude_mask_u8(raw_motion_u8, side_mask)
             boost_mask_u8 = apply_exclude_mask_u8(boost_mask_u8, side_mask)
-            if cfg.motion_flicker_suppress:
-                keep_mask_u8 = None
-                if len(roi_tracker.tracks) > 0:
-                    r_keep = int(round(max(4.0, cfg.motion_flicker_keep_radius_frac * roi_tracker.diag)))
-                    if r_keep > 0:
-                        keep_mask_u8 = np.zeros((frame_curr.shape[0], frame_curr.shape[1]), dtype=np.uint8)
-                        for t in roi_tracker.tracks:
-                            pred = t.predicted_center(roi_tracker.phys_cfg)
-                            pcx = int(np.clip(round(pred[0]), 0, frame_curr.shape[1] - 1))
-                            pcy = int(np.clip(round(pred[1]), 0, frame_curr.shape[0] - 1))
-                            cv2.circle(keep_mask_u8, (pcx, pcy), r_keep, 255, -1, cv2.LINE_AA)
-                boost_mask_u8 = suppress_flicker_components(
-                    boost_mask_u8, prev_boost_for_flicker, keep_mask_u8, cfg
-                )
-                if boost_mask_u8 is not None and boost_mask_u8.max() > 0:
-                    prev_boost_for_flicker = boost_mask_u8.copy()
-                else:
-                    prev_boost_for_flicker = None
-
             if collect_motion_stats and raw_motion_u8 is not None:
                 motion_raw_px_after_exclude += int(cv2.countNonZero(raw_motion_u8))
             if collect_motion_stats and boost_mask_u8 is not None:

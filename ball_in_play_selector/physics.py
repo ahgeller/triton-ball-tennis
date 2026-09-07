@@ -7,7 +7,7 @@ except ImportError:
     KalmanFilter = None
 
 from .config import SelectorConfig
-from .utils import _fps_norm_pxpf, _clamp01, court_px_per_meter
+from .utils import _fps_norm_pxpf, _clamp01
 
 
 def _kinematic_motion_frac(
@@ -119,13 +119,6 @@ class BallKalmanFilter:
         
         # Control Input Matrix (for gravity and drag)
         self.kf.B = np.array([[0.], [0.], [0.], [1.]])
-        # Court homography for depth-aware gravity (set after construction)
-        self._court_H: Optional[np.ndarray] = None
-        self._court_H_inv: Optional[np.ndarray] = None
-        self._court_w_m: float = 10.97
-        # Cached reference px/m scale (updated each predict call)
-        self._ref_px_per_m: Optional[float] = None
-
     def _meas_sigma_px(self, conf: Optional[float]) -> float:
         """Map detection confidence -> measurement std-dev in pixels."""
         if conf is None:
@@ -153,42 +146,15 @@ class BallKalmanFilter:
         d2 = float((y.T @ Sinv @ y).item())
         return d2
 
-    def set_homography(
-        self,
-        H: np.ndarray,
-        H_inv: np.ndarray,
-        court_w_m: float = 10.97,
-    ) -> None:
-        """Attach a court homography for depth-aware gravity scaling."""
-        self._court_H = H
-        self._court_H_inv = H_inv
-        self._court_w_m = court_w_m
 
     def _x(self) -> np.ndarray:
         """Always return a 1D view of the state (handles both (4,) and (4,1) shapes)."""
         return self.kf.x.flatten()
 
-    def _gravity_at(self, x, reference):
-        # Depth-aware gravity: compute local px/meter at current ball position,
-        # then scale gravity so 1 real-world g maps correctly regardless of depth.
-        base_g = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
-        if base_g != 0.0 and self._court_H is not None:
-            local_scale = court_px_per_meter(
-                float(x[0]), float(x[1]),
-                self._court_H, self._court_H_inv, self._court_w_m
-            )
-            if local_scale is not None and reference is not None and reference > 0:
-                # Scale gravity so that near/far balls both feel the same real g
-                depth_scale = local_scale / reference
-                base_g *= depth_scale
-            elif local_scale is not None:
-                # First valid measurement: store as reference
-                reference = local_scale
-        return base_g, reference
 
     def predict(self) -> Tuple[float, float]:
         """Use the same transition for ROI, filter state and covariance."""
-        gravity, self._ref_px_per_m = self._gravity_at(self._x(), self._ref_px_per_m)
+        gravity = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
         self.kf.F, self.kf.B = _projectile_matrices(self.cfg)
         self.kf.predict(u=np.array([[gravity]]))
         x = self._x()
@@ -197,10 +163,9 @@ class BallKalmanFilter:
     def predict_dt(self, dt: int) -> Tuple[float, float]:
         """Predict the state an arbitrary number of frames ahead WITHOUT changing the true state."""
         x_pred = self._x().copy()
-        reference = self._ref_px_per_m
+        gravity = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
         F, B = _projectile_matrices(self.cfg)
         for _ in range(dt):
-            gravity, reference = self._gravity_at(x_pred, reference)
             x_pred = F @ x_pred + B[:, 0] * gravity
                 
         return float(x_pred[0]), float(x_pred[1])

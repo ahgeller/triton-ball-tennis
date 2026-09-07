@@ -91,23 +91,6 @@ def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) 
     combined = np.maximum(gray_diff, np.maximum(v_diff, s_scaled))
     return cv2.GaussianBlur(combined, (3, 3), 0)
 
-def _ball_color_support_from_bgr(frame_bgr: np.ndarray, cfg: Config) -> np.ndarray:
-    """Loose tennis-ball color support, dilated so blurred ball edges survive."""
-    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    h_min = float(getattr(cfg, "motion_raw_color_h_min", 18.0))
-    h_max = float(getattr(cfg, "motion_raw_color_h_max", 75.0))
-    s_min = float(getattr(cfg, "motion_raw_color_s_min", 0.12)) * 255.0
-    v_min = float(getattr(cfg, "motion_raw_color_v_min", 0.18)) * 255.0
-    h = hsv[:, :, 0].astype(np.float32)
-    support = (
-        (h >= h_min) & (h <= h_max) &
-        (hsv[:, :, 1].astype(np.float32) >= s_min) &
-        (hsv[:, :, 2].astype(np.float32) >= v_min)
-    ).astype(np.uint8) * 255
-    k = int(getattr(cfg, "motion_raw_color_dilate", 5) or 0)
-    if k > 1:
-        support = cv2.dilate(support, _get_kernel(k), iterations=1)
-    return support
 
 def compute_motion_sv_from_hsv(
     hsv_prev: np.ndarray, hsv_curr: np.ndarray, thresh: float
@@ -116,8 +99,8 @@ def compute_motion_sv_from_hsv(
     _, mask = cv2.threshold(combined, int(thresh), 255, cv2.THRESH_BINARY)
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL_3x3)
 
-def _filter_raw_motion_components(mask_u8: Optional[np.ndarray], cfg: Config) -> Optional[np.ndarray]:
-    """Optional raw-mask component filter from the C++ probe; default is off for tracking."""
+def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Optional[np.ndarray]:
+    """Apply the active raw-mask morphology without appearance or size heuristics."""
     if mask_u8 is None or mask_u8.size == 0:
         return mask_u8
     if cv2.countNonZero(mask_u8) == 0:
@@ -131,34 +114,7 @@ def _filter_raw_motion_components(mask_u8: Optional[np.ndarray], cfg: Config) ->
     if open_size > 1:
         out = cv2.morphologyEx(out, cv2.MORPH_OPEN, _get_kernel(open_size))
 
-    if not bool(getattr(cfg, "motion_raw_component_filter", False)):
-        return out
-    if cv2.countNonZero(out) == 0:
-        return out
-
-    min_area = max(1, int(getattr(cfg, "motion_raw_component_min_area", 2) or 2))
-    max_area = max(min_area, int(getattr(cfg, "motion_raw_component_max_area", 260) or 260))
-    max_dim = max(1, int(getattr(cfg, "motion_raw_component_max_dim", 38) or 38))
-    max_aspect = max(1.0, float(getattr(cfg, "motion_raw_component_max_aspect", 5.5) or 5.5))
-    min_fill = max(0.0, min(1.0, float(getattr(cfg, "motion_raw_component_min_fill", 0.14) or 0.14)))
-
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(out, connectivity=8)
-    if num <= 1:
-        return np.zeros_like(out)
-
-    keep = np.zeros(num, dtype=np.uint8)
-    for i in range(1, num):
-        area = int(stats[i, cv2.CC_STAT_AREA])
-        bw = int(stats[i, cv2.CC_STAT_WIDTH])
-        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
-        if area < min_area or area > max_area or bw > max_dim or bh > max_dim:
-            continue
-        aspect = max(bw, bh) / max(min(bw, bh), 1)
-        fill = area / max(bw * bh, 1)
-        if aspect > max_aspect or fill < min_fill:
-            continue
-        keep[i] = 255
-    return keep[labels]
+    return out
 
 def refine_raw_motion_temporal_cpu(
     raw_motion_u8: Optional[np.ndarray],
@@ -186,9 +142,7 @@ def refine_raw_motion_temporal_cpu(
         else:
             temporal = d_prev >= hi
         refined = cv2.bitwise_and(refined, temporal.astype(np.uint8) * 255)
-    if bool(getattr(cfg, "motion_raw_ball_color_gate", False)) and curr_bgr is not None:
-        refined = cv2.bitwise_and(refined, _ball_color_support_from_bgr(curr_bgr, cfg))
-    return _filter_raw_motion_components(refined, cfg)
+    return _clean_raw_motion_mask(refined, cfg)
 
 def compute_motion_sv_3frame_hsv(
     hsv_prev,
@@ -222,27 +176,6 @@ def compute_motion_sv_3frame_hsv(
     bright = (hsv_curr[:, :, 2] > float(v_min)).astype(np.uint8) * 255
     return cv2.bitwise_and(mask, bright)
 
-def _perspective_max_area(cy, cx, img_h, img_w, min_area, max_area, cfg):
-    """Compute perspective-scaled max blob area at position (cx, cy)."""
-    scale = 1.0
-    if cfg.court_depth is not None and img_h > 1:
-        y_norm = max(0.0, min(1.0, cy / float(img_h - 1)))
-        s = max(0.0, min(1.0, cfg.y_scale_strength))
-        if cfg.court_depth == "top_far":
-            scale *= (1.0 - s) + s * y_norm
-        elif cfg.court_depth == "bot_far":
-            scale *= (1.0 - s) + s * (1.0 - y_norm)
-    if cfg.court_side is not None and img_w > 1:
-        x_norm = max(0.0, min(1.0, cx / float(img_w - 1)))
-        s = max(0.0, min(1.0, cfg.x_scale_strength))
-        if cfg.court_side == "center_near":
-            dist = abs(x_norm - 0.5) * 2.0
-            scale *= 1.0 - s * (dist ** 2)
-        elif cfg.court_side == "left_far":
-            scale *= 1.0 - s * ((1.0 - x_norm) ** 2)
-        elif cfg.court_side == "right_far":
-            scale *= 1.0 - s * (x_norm ** 2)
-    return max(min_area, max_area * scale)
 
 def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, buffers=None):
     """Filter motion mask - OPTIMIZED with pre-allocated buffers and single CC pass.
@@ -258,10 +191,10 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
     # OPTIMIZATION: Early exit if no motion
     if not np.any(raw_motion):
         if buffers is not None:
+            buffers.boost_mask_u8.fill(0)
             return buffers.boost_mask_u8  # Return pre-allocated empty buffer
         return np.zeros((img_h, img_w), dtype=np.uint8)
     
-    has_perspective = cfg.court_depth is not None or cfg.court_side is not None
     preserve_tiny = getattr(cfg, 'blob_preserve_tiny', True)
     tiny_max_area = getattr(cfg, 'blob_tiny_max_area', 120)
     
@@ -275,6 +208,7 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
     
     if num <= 1:
         if buffers is not None:
+            buffers.boost_mask_u8.fill(0)
             return buffers.boost_mask_u8
         return np.zeros((img_h, img_w), dtype=np.uint8)
     
@@ -291,16 +225,8 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
         if area <= 0:
             continue
             
-        # Determine max area based on position (perspective)
-        if has_perspective:
-            cy = stats[i, cv2.CC_STAT_TOP] + 0.5 * stats[i, cv2.CC_STAT_HEIGHT]
-            cx = stats[i, cv2.CC_STAT_LEFT] + 0.5 * stats[i, cv2.CC_STAT_WIDTH]
-            max_area_local = _perspective_max_area(cy, cx, img_h, img_w, float(min_area), float(max_area), cfg)
-        else:
-            max_area_local = float(max_area)
-        
         # Area check
-        if area < min_area or area > max_area_local:
+        if area < min_area or area > max_area:
             continue
         
         # Small ball blobs bypass aspect check
@@ -337,51 +263,6 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
         return np.zeros((img_h, img_w), dtype=np.uint8) if buffers is None else result
     
     return result
-
-def suppress_flicker_components(
-    mask_u8: Optional[np.ndarray],
-    prev_mask_u8: Optional[np.ndarray],
-    keep_mask_u8: Optional[np.ndarray],
-    cfg: Config
-) -> Optional[np.ndarray]:
-    """Drop one-frame flicker blobs unless supported by history or predicted region."""
-    if mask_u8 is None:
-        return None
-    if not cfg.motion_flicker_suppress:
-        return mask_u8
-    if mask_u8.max() == 0:
-        return mask_u8
-
-    h, w = mask_u8.shape[:2]
-    prev_support = None
-    if prev_mask_u8 is not None and prev_mask_u8.shape[:2] == (h, w) and prev_mask_u8.max() > 0:
-        k = max(int(cfg.motion_flicker_prev_dilate), 1)
-        prev_support = cv2.dilate(prev_mask_u8, _get_kernel(k), iterations=1) > 0
-
-    keep_support = None
-    if keep_mask_u8 is not None and keep_mask_u8.shape[:2] == (h, w):
-        keep_support = keep_mask_u8 > 0
-
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
-    if num <= 1:
-        return mask_u8
-
-    out = mask_u8.copy()
-    min_area = max(int(cfg.motion_flicker_min_area), 1)
-    max_area = max(int(cfg.motion_flicker_max_area), min_area)
-    for i in range(1, num):
-        area = int(stats[i, cv2.CC_STAT_AREA])
-        if area < min_area:
-            out[labels == i] = 0
-            continue
-        if area > max_area:
-            continue
-        comp = labels == i
-        has_prev = bool(prev_support is not None and np.any(prev_support[comp]))
-        has_keep = bool(keep_support is not None and np.any(keep_support[comp]))
-        if not has_prev and not has_keep:
-            out[comp] = 0
-    return out
 
 
 def _court_kpt_xy(court_keypoints, idx):
@@ -605,14 +486,11 @@ def _unpack_mask_u8(mask_obj):
         return (flat.reshape(int(h), int(w)).astype(np.uint8) * 255)
     return mask_obj
 
-def _probe_component_boxes(mask_u8: Optional[np.ndarray], cfg: Config, limit: int = 100) -> List[Tuple[int, int, int, int]]:
+def _probe_component_boxes(mask_u8: Optional[np.ndarray], limit: int = 100) -> List[Tuple[int, int, int, int]]:
     if mask_u8 is None or mask_u8.size == 0 or cv2.countNonZero(mask_u8) == 0:
         return []
-    min_area = max(1, int(getattr(cfg, "motion_raw_component_min_area", 2) or 2))
-    max_area = max(min_area, int(getattr(cfg, "motion_raw_component_max_area", 260) or 260))
-    max_dim = max(1, int(getattr(cfg, "motion_raw_component_max_dim", 38) or 38))
-    max_aspect = max(1.0, float(getattr(cfg, "motion_raw_component_max_aspect", 5.5) or 5.5))
-    min_fill = max(0.0, min(1.0, float(getattr(cfg, "motion_raw_component_min_fill", 0.14) or 0.14)))
+    # Display-only box limits; these never filter tracking evidence.
+    min_area, max_area, max_dim, max_aspect, min_fill = 2, 260, 38, 5.5, 0.14
     num, _, stats, _ = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
     boxes: List[Tuple[int, int, int, int]] = []
     for i in range(1, num):
@@ -654,7 +532,7 @@ def _draw_probe_motion_overlay(
     out[both] = (0, 255, 255)
     out[boost_vis & (~raw_mask)] = (255, 220, 0)
 
-    for x, y, bw, bh in _probe_component_boxes(raw_motion, cfg):
+    for x, y, bw, bh in _probe_component_boxes(raw_motion):
         cv2.rectangle(out, (x, y), (x + bw, y + bh), (255, 255, 0), 1, cv2.LINE_AA)
 
     if rois_dbg:
@@ -786,31 +664,6 @@ def _motion_probe_delta_cuda(prev_frame_t, curr_frame_t, prev_v_t, prev_s_t, cur
     s_diff = torch.abs(curr_s_t - prev_s_t) * (255.0 * 1.25)
     delta = torch.maximum(gray_diff, torch.maximum(v_diff, s_diff))
     return F.avg_pool2d(delta.unsqueeze(0).unsqueeze(0), 3, stride=1, padding=1).squeeze(0).squeeze(0)
-
-def _ball_color_support_cuda(frame_t, curr_v, curr_s, cfg):
-    """Loose tennis-ball color support on CUDA, returned as a bool mask."""
-    b, g, r = frame_t[0], frame_t[1], frame_t[2]
-    minc = torch.min(frame_t, dim=0).values
-    delta = curr_v - minc
-    h = torch.zeros_like(curr_v)
-    valid = delta > 1e-6
-    h_r = ((g - b) / (delta + 1e-6)) % 6.0
-    h_g = ((b - r) / (delta + 1e-6)) + 2.0
-    h_b = ((r - g) / (delta + 1e-6)) + 4.0
-    h = torch.where((curr_v == r) & valid, h_r, h)
-    h = torch.where((curr_v == g) & valid, h_g, h)
-    h = torch.where((curr_v == b) & valid, h_b, h)
-    hue_cv = (h / 6.0) * 180.0
-    support = (
-        (hue_cv >= float(getattr(cfg, "motion_raw_color_h_min", 18.0))) &
-        (hue_cv <= float(getattr(cfg, "motion_raw_color_h_max", 75.0))) &
-        (curr_s >= float(getattr(cfg, "motion_raw_color_s_min", 0.12))) &
-        (curr_v >= float(getattr(cfg, "motion_raw_color_v_min", 0.18)))
-    )
-    k = int(getattr(cfg, "motion_raw_color_dilate", 5) or 0)
-    if k > 1:
-        support = _dilate_motion_cuda(support, k)
-    return support
 
 
 @_torch_no_grad()
@@ -978,8 +831,6 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
             raw_motion_ungated = raw_motion
             raw_motion = raw_motion & temporal_motion
 
-    if raw_motion is not None and bool(getattr(cfg, "motion_raw_ball_color_gate", False)):
-        raw_motion = raw_motion & _ball_color_support_cuda(t, curr_v, curr_s, cfg)
 
     # Two boost masks with different roles:
     #   boost_mask_u8 (returned) - narrow, gated source -> selector's motion-blob picker.
@@ -1018,7 +869,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                     )
                 if perf is not None:
                     perf_d2h += (time.perf_counter() - t_d2h)
-                raw_motion_roi_u8 = _filter_raw_motion_components(raw_motion_roi_u8, cfg)
+                raw_motion_roi_u8 = _clean_raw_motion_mask(raw_motion_roi_u8, cfg)
                 np.maximum(raw_motion_u8[ry1:ry2, rx1:rx2], raw_motion_roi_u8, out=raw_motion_u8[ry1:ry2, rx1:rx2])
 
                 # Narrow selector-grade boost from gated raw motion
@@ -1053,7 +904,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                 wide_u8 = (boost_source.byte().cpu().numpy() * 255)
             if perf is not None:
                 perf_d2h += (time.perf_counter() - t_d2h)
-            raw_motion_u8 = _filter_raw_motion_components(raw_motion_u8, cfg)
+            raw_motion_u8 = _clean_raw_motion_mask(raw_motion_u8, cfg)
             t_cc = time.perf_counter() if perf is not None else 0.0
             boost_mask_u8 = filter_boost_mask(
                 raw_motion_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,

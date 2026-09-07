@@ -1,7 +1,6 @@
 import math
 import numpy as np
-import cv2
-from typing import Optional, Tuple
+from typing import Optional
 
 from .config import SelectorConfig
 
@@ -65,58 +64,3 @@ def _mask_has_motion_near(
     if x2 < x1 or y2 < y1:
         return False
     return bool(np.any(mask[y1:y2 + 1, x1:x2 + 1] > 0))
-
-def build_court_homography(
-    court_keypoints,
-    court_w_m: float = 10.97,
-    court_h_m: float = 23.77,
-) -> Optional[Tuple[np.ndarray, np.ndarray, float, float]]:
-    """
-    Build a perspective homography from 4 court corners (pixels) to a
-    normalized [0,1]^2 court canvas.  Returns (H, H_inv, court_w_m, court_h_m)
-    or None when keypoints are unavailable.
-    """
-    if court_keypoints is None or len(court_keypoints) < 16:
-        return None
-    def _kp(kps, idx):
-        i = idx * 2
-        if i + 1 < len(kps):
-            x, y = float(kps[i]), float(kps[i + 1])
-            if x > 0 or y > 0:
-                return np.float32([x, y])
-        return None
-    p0 = _kp(court_keypoints, 0)  # TL
-    p3 = _kp(court_keypoints, 3)  # TR
-    p4 = _kp(court_keypoints, 4)  # BL
-    p7 = _kp(court_keypoints, 7)  # BR
-    if any(p is None for p in (p0, p3, p4, p7)):
-        return None
-    src = np.float32([p0, p3, p4, p7])             # TL TR BL BR in pixels
-    dst = np.float32([[0, 0], [1, 0], [0, 1], [1, 1]])  # normalised court
-    H = cv2.getPerspectiveTransform(src, dst)
-    H_inv = np.linalg.inv(H)
-    return H, H_inv, float(court_w_m), float(court_h_m)
-
-def court_px_per_meter(
-    ball_cx: float,
-    ball_cy: float,
-    H: np.ndarray,
-    H_inv: np.ndarray,
-    court_w_m: float = 10.97,
-) -> Optional[float]:
-    """
-    Estimate the pixel scale (px per real meter) at a given ball position
-    by displacing 1 m sideways in court space and measuring the pixel shift.
-    Returns None when the projection is unstable.
-    """
-    try:
-        pt = np.float32([[[ball_cx, ball_cy]]])
-        court_pt = cv2.perspectiveTransform(pt, H)[0, 0]          # (cx_n, cy_n)
-        dx_norm = 1.0 / court_w_m                                  # 1 real m in normalised units
-        shifted = np.float32([[[court_pt[0] + dx_norm, court_pt[1]]]])
-        px_shifted = cv2.perspectiveTransform(shifted, H_inv)[0, 0]
-        scale = float(np.linalg.norm(px_shifted - np.array([ball_cx, ball_cy])))
-        return scale if np.isfinite(scale) and scale > 0.5 else None
-    except Exception:
-        return None
-

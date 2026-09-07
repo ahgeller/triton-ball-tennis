@@ -20,12 +20,6 @@ class Config:
     trt_async_execute: bool = True
     trt_async_slots: int = 3
 
-    # Court perspective
-    court_depth: Optional[str] = None
-    court_side: Optional[str] = None
-    y_scale_strength: float = 0.35
-    x_scale_strength: float = 0.15
-
     # Player & court detection
     player_model_path: Optional[str] = "models/player.engine"
     court_model_path: Optional[str] = "models/courtdetection.engine"
@@ -67,29 +61,12 @@ class Config:
     motion_thresh: float = 11.0           # Minimum pixel diff floor (additive term in threshold); too high makes system blind to very weak motion
     motion_k_std: float = 3.0             # Std-dev multiplier; balanced with additive floor so variance can suppress static-ball halos
     motion_v_min: float = 40.0           # Lowered to catch dimmer ball motion in shadows
-    motion_flicker_suppress: bool = False # Disabled to prevent motion ghosts from lingering
-    motion_flicker_min_area: int = 3
-    motion_flicker_max_area: int = 220
-    motion_flicker_prev_dilate: int = 9
-    motion_flicker_keep_radius_frac: float = 0.11
     motion_raw_temporal_gate: bool = True  # C++ probe-style frame-to-frame proof before raw foreground becomes motion evidence
     motion_raw_temporal_hi: float = 18.0
     motion_raw_temporal_lo: float = 8.0
     motion_raw_temporal_very_hi: float = 36.0
     motion_raw_close_size: int = 2
     motion_raw_open_size: int = 0
-    motion_raw_component_filter: bool = False  # Off by default; too strict for the main tracker so far
-    motion_raw_component_min_area: int = 2
-    motion_raw_component_max_area: int = 260
-    motion_raw_component_max_dim: int = 38
-    motion_raw_component_max_aspect: float = 5.5
-    motion_raw_component_min_fill: float = 0.14
-    motion_raw_ball_color_gate: bool = False  # Keep raw motion only near loose tennis-ball color support; off by default because the CUDA path never applied it, so every tuned number assumes it off
-    motion_raw_color_h_min: float = 18.0
-    motion_raw_color_h_max: float = 75.0
-    motion_raw_color_dilate: int = 5
-    motion_raw_color_s_min: float = 0.12
-    motion_raw_color_v_min: float = 0.18
     boost_max_blob_area: int = 600   # Reduced from 1200: large blobs (sqrt(1200/pi) 19px radius) overshoot the ball
     boost_min_blob_area: int = 0
     

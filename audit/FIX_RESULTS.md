@@ -1,5 +1,8 @@
 # Correctness fixes and verified-data runs — September 7, 2026
 
+This records the first fix pass. The later [disabled-feature cleanup](CLEANUP_RESULTS.md)
+removes the color gate and unused scaling experiments altogether.
+
 The raw-motion ball-color gate remains **disabled by default**, as requested.
 Both CPU and CUDA fallback checks also default to disabled. The CUDA option now
 works when explicitly enabled, but enabling it is not recommended by this run.

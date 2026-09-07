@@ -1,0 +1,45 @@
+[archive] finetune  (1 clips)
+[09/07/2026-16:05:36] [TRT] [I] Loaded engine size: 24 MiB
+[09/07/2026-16:05:36] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:05:37] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +119, now: CPU 0, GPU 141 (MiB)
+[09/07/2026-16:05:37] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[09/07/2026-16:05:37] [TRT] [I] Loaded engine size: 6 MiB
+[09/07/2026-16:05:37] [TRT] [W] Using an engine plan file across different models of devices is not supported and is likely to affect performance or even cause errors or deadlock.
+[09/07/2026-16:05:37] [TRT] [I] [MS] Running engine with multi stream info
+[09/07/2026-16:05:37] [TRT] [I] [MS] Number of aux streams is 4
+[09/07/2026-16:05:37] [TRT] [I] [MS] Number of total worker streams is 5
+[09/07/2026-16:05:37] [TRT] [I] [MS] The main stream provided by execute/enqueue calls is the first worker stream
+[09/07/2026-16:05:37] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +16, now: CPU 0, GPU 162 (MiB)
+SUCCESS  | ByteTrack: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, min_conf=0.1, track_thresh=0.3, match_thresh=0.8, track_buffer=60, frame_rate=30
+[platform] Device: 0
+[platform] Accelerations: TensorRT, NVENC encoding, CUDA preprocessing
+[detector] GridTrackNet FP16 (confidence=0.50, device=cuda:0)
+[init] Video: 1280x720 @ 30.0fps, ~529 frames
+[court] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\courtdetection.engine
+[court] 14-point semantic remap: disabled (raw YOLO order)
+[player] TensorRT runtime initialized: C:\Users\Andrew\Desktop\clean_version_gridtracknet_restart\models\player.engine
+[player] ByteTrack tracking initialized
+[preprocess] CUDA S+V motion path
+[pass 1] Collecting detections...
+  [pass1 200/529] 37.1 fps
+[detector] GridTrackNet prepass: 529 source frames, 399 detections, 27 batched calls across 1 phase(s) in 4.4s (119.7 source fps) [overlapped with pass 1]
+  [pass1 400/529] 57.7 fps
+[pass 1] Done: 529 frames in 7.8s (67.8 fps), detections in 399 frames
+[pass 1] ROI motion: 555 ROI frames, 11 full-frame frames
+[pass 1] Executing batched ghost ROI deletion...
+[pass 1] Batched ghost deletion cleaned 47 frames in 0.01s
+[court polygon] Ordered corners [0,2,3,1]: TL=[425.0, 218.8125], BL=[221.0, 592.875], BR=[1066.0, 592.3125], TR=[851.0, 218.953125]
+[court polygon] bbox=(221,218,846x375)
+[court polygon] Center (644,406) dist=186.6 (positive=inside)
+[selector] Running ball-in-play selection...
+[selector] 13 total tracks
+[pass 2] Skipped (no video outputs selected)
+[done] Tracking JSON: output\cleanup_repeat_video41\video41_gridtracknet.json
+
+[done] 395/529 frames filled (74.7%)
+[done] 8.1s total
+
+=== pipeline [gridtracknet] per clip ===
+video41        vis= 514 recall=0.720 wrong=0.002 miss=0.239 | invis= 15 falseAlarm=0.267 | med=2.9px p90=6.6px | by source: {'det': {'hit': 348, 'localized_error': 17, 'wrong': 0, 'invisible': 3}, 'motion': {'hit': 18, 'localized_error': 3, 'wrong': 0, 'invisible': 0}, 'interp': {'hit': 4, 'localized_error': 0, 'wrong': 1, 'invisible': 1}} | bad outputs landed on: {'player': 3, 'other': 1, 'line': 1}
+    bad frames: 46:i/det/player, 47:i/det/player, 48:i/det/player, 434:i/interp/other, 436:w/interp/line
+ALL            vis= 514 recall=0.720 wrong=0.002 miss=0.239 | invis= 15 falseAlarm=0.267 | med=2.9px p90=6.6px | bad outputs landed on: {'player': 3, 'other': 1, 'line': 1}

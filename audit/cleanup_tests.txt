@@ -1,0 +1,7 @@
+[detector] GridTrackNet prepass: 23 source frames, 0 detections, 2 batched calls across 1 phase(s) in 0.0s (23560.7 source fps)
+[detector] GridTrackNet prepass: 47 source frames, 0 detections, 3 batched calls across 2 phase(s) in 0.0s (83898.6 source fps)
+................
+----------------------------------------------------------------------
+Ran 16 tests in 0.046s
+
+OK

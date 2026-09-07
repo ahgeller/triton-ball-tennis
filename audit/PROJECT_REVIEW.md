@@ -5,6 +5,7 @@ Reviewed September 7, 2026 against the current, already modified worktree.
 **Historical review:** the findings and reproduction results below describe
 the pre-fix worktree. The subsequent authorized repairs, color-off default and
 verified video13–video53 runs are recorded in [FIX_RESULTS.md](FIX_RESULTS.md).
+The later removal of disabled experiments is in [CLEANUP_RESULTS.md](CLEANUP_RESULTS.md).
 
 **Recommendation: repair evaluation and label integrity first, then motion
 candidate selection and time-consistent prediction, then experiment with a

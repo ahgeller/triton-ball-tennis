@@ -1,0 +1,226 @@
+{
+  "clips": 41,
+  "frames": 9292,
+  "changed_frame_records": 4218,
+  "presence_changes": [
+    {
+      "clip": "video41_gridtracknet.json",
+      "frame": 215
+    },
+    {
+      "clip": "video41_gridtracknet.json",
+      "frame": 216
+    },
+    {
+      "clip": "video41_gridtracknet.json",
+      "frame": 217
+    },
+    {
+      "clip": "video41_gridtracknet.json",
+      "frame": 218
+    },
+    {
+      "clip": "video41_gridtracknet.json",
+      "frame": 219
+    }
+  ],
+  "position_changes_above_1px": 1,
+  "maximum_position_change_px": 13.88029831610092,
+  "first_20_changes": [
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 0,
+      "changed_fields": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 1,
+      "changed_fields": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 2,
+      "changed_fields": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 3,
+      "changed_fields": [
+        "conf",
+        "measurement",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 4,
+      "changed_fields": [
+        "conf",
+        "measurement",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 5,
+      "changed_fields": [
+        "bbox",
+        "conf",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 6,
+      "changed_fields": [
+        "bbox",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 7,
+      "changed_fields": [
+        "bbox",
+        "conf",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 8,
+      "changed_fields": [
+        "bbox",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 10,
+      "changed_fields": [
+        "bbox",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 11,
+      "changed_fields": [
+        "bbox",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 12,
+      "changed_fields": [
+        "conf",
+        "measurement",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 13,
+      "changed_fields": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 14,
+      "changed_fields": [
+        "bbox",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 15,
+      "changed_fields": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 16,
+      "changed_fields": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 18,
+      "changed_fields": [
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 19,
+      "changed_fields": [
+        "bbox",
+        "measurement",
+        "search",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 20,
+      "changed_fields": [
+        "conf",
+        "measurement",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "clip": "video13_gridtracknet.json",
+      "frame": 21,
+      "changed_fields": [
+        "search",
+        "x",
+        "y"
+      ]
+    }
+  ]
+}
