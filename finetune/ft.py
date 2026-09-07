@@ -310,7 +310,14 @@ def cmd_prelabel(args: argparse.Namespace) -> int:
 
 
 def cmd_label(args: argparse.Namespace) -> int:
-    clip = args.clip
+    clips = args.clip if isinstance(args.clip, list) else [args.clip]
+    if len(clips) > 1 or ".." in clips[0]:
+        # a run across several clips: label_tool expands the range and keeps each clip's files apart
+        return run_script("label_tool.py", [*clips, *args.rest])
+    clip = clips[0]
+    if clip in read_exclusions():
+        print(f"[warn] {clip} is in exclude.txt: its labels belong to a different cut of the video,"
+              " so every frame looks wrong. There is nothing here worth correcting by hand.")
     if not any(VIDEOS.glob(f"{clip}.*")):
         print(f"No video named {clip}.* in {VIDEOS}. Add one with:  python finetune/ft.py add <path> --name {clip}")
         return 1
@@ -319,7 +326,47 @@ def cmd_label(args: argparse.Namespace) -> int:
         code = run_script("pretrack.py", ["--clips", clip])
         if code:
             return code
-    return run_script("label_tool.py", [clip, *args.rest])
+    before = set(read_review(clip))
+    code = run_script("label_tool.py", [clip, *args.rest])
+    offer_realign(clip, before)
+    return code
+
+
+def read_review(clip: str) -> List[int]:
+    """Frames you have settled in the click tool, by looking at them: confirmed or corrected."""
+    path = LABELS / f"{clip}_ball.review.json"
+    if not path.is_file():
+        return []
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return sorted({int(f) for f in state.get("reviewed", [])} | {int(f) for f in state.get("edited", [])})
+
+
+def offer_realign(clip: str, settled_before: set) -> None:
+    """A clip with unplaceable frames gets better every time you settle one of them.
+
+    Each frame you deal with pins that row, which tells realign.py which side of the cut it is on,
+    so the frames you have not reached can be re-timed to agree. Only worth raising when you have
+    actually settled something inside a doubtful stretch.
+    """
+    unplaceable = set(outstanding_suspects(clip)["unplaceable"]) | set(read_suspects(clip)["unplaceable"])
+    if not unplaceable:
+        return
+    settled_now = set(read_review(clip))
+    fresh = (settled_now - settled_before) & unplaceable
+    if not fresh:
+        return
+    left = len(unplaceable - settled_now)
+    print(f"\n[auto] you settled {len(fresh)} of the {len(unplaceable)} frames that could not be placed "
+          f"in {clip}; {left} still unplaced.")
+    print(f"       realign.py can now re-time those {left} to agree with what you decided - your own "
+          f"frames stay exactly where you put them.")
+    answer = _ask("       re-time them now? it re-runs the detector on this clip [y/N] ")
+    if answer and answer.lower().startswith("y"):
+        if run_script("realign.py", [clip, clip, "--apply"]) == 0:
+            run_cli(["check", "--audit", "--mark", "--clips", clip])
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -385,7 +432,7 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(f"[ ok ] {clip}: {len(frames)} labels, {width}x{height} @{fps:.0f}")
     print(f"{checked} label files checked, {problems} with problems")
     if args.audit:
-        problems += audit_labels(args.clips, args.weights, args.fix)
+        problems += audit_labels(args.clips, args.weights, args.fix, args.mark)
     return 1 if problems else 0
 
 
@@ -405,6 +452,74 @@ def read_exclusions() -> List[str]:
             if line.split("#", 1)[0].strip()]
 
 
+SUSPECT_SUFFIX = "_ball.suspect.json"
+
+
+def read_suspects(clip: str) -> Dict[str, List[int]]:
+    """Frames of this clip somebody still has to look at, in two kinds.
+
+    unplaceable  we could not work out which video frame this label belongs to - the clip is only
+                 partly repaired, and these are the doubtful part of it
+    check        the detector disagrees with the label here. Usually that is the detector losing a
+                 ball at the racket rather than a bad label, so it is a prompt, not a defect
+    """
+    path = LABELS / f"{clip}{SUSPECT_SUFFIX}"
+    empty = {"unplaceable": [], "check": []}
+    if not path.is_file():
+        return empty
+    try:
+        blob = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return empty
+    return {"unplaceable": [int(f) for f in blob.get("unplaceable", [])],
+            "check": [int(f) for f in blob.get("check", blob.get("frames", []))]}
+
+
+def write_suspects(clip: str, kind: str, frames: List[int], note: str) -> None:
+    """Record (or clear) one kind of flag, leaving the other kind alone."""
+    path = LABELS / f"{clip}{SUSPECT_SUFFIX}"
+    current = read_suspects(clip)
+    current[kind] = sorted(set(int(f) for f in frames))
+    notes = {}
+    if path.is_file():
+        try:
+            notes = json.loads(path.read_text(encoding="utf-8")).get("notes", {})
+        except (OSError, ValueError):
+            notes = {}
+    notes[kind] = note
+    if not (current["unplaceable"] or current["check"]):
+        path.unlink(missing_ok=True)
+        return
+    path.write_text(json.dumps({"generated": str(dt.date.today()), "notes": notes,
+                                "unplaceable": current["unplaceable"], "check": current["check"]}, indent=1),
+                    encoding="utf-8")
+
+
+def outstanding_suspects(clip: str) -> Dict[str, List[int]]:
+    """The flagged frames still to deal with: the file minus everything you have settled.
+
+    Confirming a label with SPACE answers the flag as fully as changing it does, so both count. A
+    frame with no ball on it is dropped from 'unplaceable' too - there is no position to put in the
+    wrong place, so which side of a cut it lands on cannot hurt anything.
+    """
+    flagged = read_suspects(clip)
+    if not (flagged["unplaceable"] or flagged["check"]):
+        return flagged
+    settled = set(read_review(clip))
+    blind = set()
+    path = LABELS / f"{clip}_ball.csv"
+    if flagged["unplaceable"] and path.is_file():
+        row = read_manifest().get(clip, {})
+        width, height = float(row.get("width") or 1920), float(row.get("height") or 1080)
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            for record in csv.DictReader(handle):
+                x, y = float(record["ball_x"]), float(record["ball_y"])
+                if x >= width * 0.95 and y <= height * 0.05:
+                    blind.add(int(re.search(r"(\d+)", record["frame"]).group(1)))
+    return {"unplaceable": [f for f in flagged["unplaceable"] if f not in settled and f not in blind],
+            "check": [f for f in flagged["check"] if f not in settled]}
+
+
 def add_exclusion(clip: str, reason: str) -> None:
     lines = EXCLUDE_FILE.read_text(encoding="utf-8").splitlines() if EXCLUDE_FILE.is_file() else []
     if any(line.split("#", 1)[0].strip() == clip for line in lines):
@@ -415,7 +530,7 @@ def add_exclusion(clip: str, reason: str) -> None:
     EXCLUDE_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: bool) -> int:
+def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: bool, mark: bool = False) -> int:
     """Cross-check every label file against the raw detector: agreement at offset 0, and the best temporal
     shift. Catches public clips whose labels were made on a different cut of the video."""
     import math
@@ -506,6 +621,18 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
             if at_edge:
                 verdict += f" (best shift at the {best_shift:+d} search limit)"
             suspects += 1
+        if mark and agree0 >= AUDIT_SUSPECT:
+            # The clip lines up, so a label the detector confidently contradicts is about that frame,
+            # not about the alignment. Flag it for a human; never rewrite it from the detector.
+            doubtful = [f for f in sorted(visible)
+                        if confident.get(f) is not None
+                        and math.hypot(confident[f][0] - visible[f][0], confident[f][1] - visible[f][1])
+                        * scale > AUDIT_AGREE_PX]
+            write_suspects(clip, "check", doubtful,
+                           f"detector disagrees by more than {AUDIT_AGREE_PX:.0f} px - often it simply lost "
+                           f"the ball at the racket, so confirm before changing anything")
+            if doubtful:
+                verdict += f"; {len(doubtful)} frame(s) to eyeball"
         print(f"  {clip:36s} {len(visible):7d} {len(fast):5d} {coverage:7.2f} {agree0:6.2f} {best[0]:6.2f} "
               f"{best_shift:+5d} {best[2]:7.1f}  {verdict}", flush=True)
         if fix and coverage >= 0.3 and agree0 < AUDIT_SUSPECT:
@@ -523,6 +650,10 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
 def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: int) -> None:
     """Renumber a clip's label rows by delta_frames (dropping rows that leave the video) and record it."""
     path = LABELS / f"{clip}_ball.csv"
+    if delta_frames == 0:
+        return
+    if any(path.with_suffix(suffix).exists() for suffix in (".review.json", ".suspect.json")):
+        raise ValueError(f"Cannot bulk-shift {clip}: review metadata needs an explicit frame remapping")
     rows = []
     with path.open(newline="", encoding="utf-8-sig") as handle:
         for row in csv.DictReader(handle):
@@ -535,6 +666,8 @@ def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: i
         writer.writerow(["frame", "ball_x", "ball_y"])
         for index, x, y in sorted(rows):
             writer.writerow([f"frame_{index:03d}", x, y])
+    backup = path.with_name(path.name + f".before_shift_{dt.datetime.now():%Y%m%d_%H%M%S_%f}")
+    shutil.copyfile(path, backup)
     temporary.replace(path)
     manifest = read_manifest()
     if clip in manifest and MANIFEST.is_file():
@@ -546,10 +679,14 @@ def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: i
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(ROOT))
+    from finetune.data_policy import read_review_status, is_verified
     manifest = read_manifest()
     clips = args.clips
     if not clips and not args.all:
-        clips = [clip for clip, row in manifest.items() if row.get("source") in OWN_SOURCES] or None
+        policy = read_review_status(WORKSPACE)
+        clips = [clip for clip, row in manifest.items()
+                 if is_verified(clip, policy) and (policy is not None or row.get("source") in OWN_SOURCES)] or None
         if clips is None and not manifest:
             clips = None   # no manifest: everything in the folder is own footage
     command = ["--mode", "raw", "--models", "gridtracknet", "--archive", str(WORKSPACE)]
@@ -741,32 +878,119 @@ def _menu_add() -> None:
             run_cli(["label", clip])
 
 
+def _label_origin(clip: str, manifest: dict, drafts: set, finals: set) -> str:
+    """Where a clip's labels came from: a dataset's own CSV, or our detector's pre-labelling pass.
+
+    Imported clips carry an origin in clips.csv - somebody hand-labelled those and the numbers are
+    ground truth. Anything else got its labels from pretrack.py, which is the detector guessing,
+    and needs your eyes on every frame. A source tagged '-uncorrected' counts as the second kind:
+    the labels came from a machine and nobody has been over them (video11 is the TrackNetV5 prep).
+    """
+    row = manifest.get(clip)
+    if row and row.get("origin") and not (row.get("source") or "").endswith("-uncorrected"):
+        return "csv"
+    return "det" if clip in drafts or clip in finals else "-"
+
+
+def _columns(cells: List[str], width: int, gap: int = 2) -> List[str]:
+    """Lay cells out down-then-across, like ls, so a long list stays one screen instead of one row each."""
+    if not cells:
+        return []
+    cell_width = max(len(cell) for cell in cells)
+    columns = max(1, (width + gap) // (cell_width + gap))
+    rows = -(-len(cells) // columns)                        # ceil: each column is filled top to bottom
+    lines = []
+    for row in range(rows):
+        parts = [cells[index] for index in range(row, len(cells), rows)]
+        lines.append((" " * gap).join(part.ljust(cell_width) for part in parts).rstrip())
+    return lines
+
+
+def _resolve_choice(answer: str, choices: List[str]) -> Optional[str]:
+    """Turn what was typed into a clip. None means it was ambiguous and has been explained.
+
+    A list number and a number *in a clip's name* are easy to mix up - typing 23 for grid_match23
+    opens whatever happens to be 23rd, which is a different clip with different labels. When both
+    readings exist, say so rather than silently picking one.
+    """
+    if answer.isdigit() and 1 <= int(answer) <= len(choices):
+        numbered = choices[int(answer) - 1]
+        named = [c for c in choices if re.search(rf"(?<![0-9]){re.escape(answer)}$", c)]
+        if named and named[0] != numbered:
+            print(f"  {answer} is two things here: number {answer} in the list is {numbered}, "
+                  f"and there is a clip called {named[0]}.")
+            print(f"  Type the name you want - {numbered} or {named[0]} - rather than the number.")
+            return None
+        return numbered
+    matches = [c for c in choices if c.lower() == answer.lower()] or \
+              [c for c in choices if answer.lower() in c.lower()]
+    if len(matches) > 1:
+        print(f"  '{answer}' matches {len(matches)}: {', '.join(matches[:8])}{' ...' if len(matches) > 8 else ''}")
+        return None
+    return matches[0] if matches else answer
+
+
 def _menu_label() -> None:
     manifest = read_manifest()
     videos = videos_in_workspace()
     finals = _final_labels()
+    drafts = {p.name[: -len("_ball.csv.draft")] for p in LABELS.glob("*_ball.csv.draft")} if LABELS.is_dir() else set()
+    excluded = set(read_exclusions())
     pending = sorted(set(videos) - finals, key=natural_key)
     labelled = sorted((c for c in finals if c in videos), key=natural_key)
-    choices = [(clip, "needs labels") for clip in pending] + \
-              [(clip, "labelled - open to review or correct") for clip in labelled]
+    choices = pending + labelled
     if not choices:
         print("nothing to label yet: no videos in finetune/videos (pick 2 to add one, or 8 to import)")
         return
-    print(f"which clip? ({len(pending)} pending, {len(labelled)} labelled across every source - custom, grid, etc.)")
-    for index, (clip, note) in enumerate(choices, 1):
-        row = manifest.get(clip, {})
-        source = row.get("source") or "custom"
-        size = f"{row.get('width', '?')}x{row.get('height', '?')}@{float(row['fps']):.0f}" if row.get("fps") else ""
-        counts = f"labels={row.get('label_frames', '?')} visible={row.get('visible', '?')}" if row.get("label_frames") else ""
-        detail = "  ".join(part for part in (source, size, counts) if part)
-        print(f"  {index:2d}) {clip:30s} {note:34s} {detail}")
-        if row.get("note"):
-            print(f"        {row['note'][:100]}")
+    width = max(40, shutil.get_terminal_size((100, 30)).columns - 4)
+    name_width = min(max(len(clip) for clip in choices), 18)   # one odd long name must not cost every column
+    suspects = {clip: outstanding_suspects(clip) for clip in choices}
+    tags = {clip: "BAD" if clip in excluded else "BAD*" if suspects[clip]["unplaceable"]
+            else _label_origin(clip, manifest, drafts, finals) for clip in choices}
+    counts = {tag: sum(1 for t in tags.values() if t == tag) for tag in ("csv", "det", "BAD", "BAD*")}
+    print(f"which clip? {len(choices)} across every source - custom, grid, prof, ...")
+    print(f"  csv = labels came with the clip, already ground truth ({counts['csv']})   "
+          f"det = machine guesses nobody has checked, yours to correct ({counts['det']})")
+    if counts["BAD"]:
+        print(f"  BAD = labels do not match this video at all, excluded from training ({counts['BAD']}) - "
+              f"see exclude.txt; there is nothing to correct in these, they belong to another cut")
+    if counts["BAD*"]:
+        worst = sorted(((len(v["unplaceable"]), c) for c, v in suspects.items() if v["unplaceable"]), reverse=True)
+        print(f"  BAD* = mostly repaired, but some frames could not be placed ({counts['BAD*']}) - open it and "
+              f"press f to walk them: " + ", ".join(f"{c} {n}" for n, c in worst[:4]))
+    to_eyeball = sorted(((len(v["check"]), c) for c, v in suspects.items() if v["check"]), reverse=True)
+    if to_eyeball:
+        print(f"  {sum(n for n, _ in to_eyeball)} frame(s) across {len(to_eyeball)} clip(s) are worth an eyeball "
+              f"(the detector disputes them; usually it is wrong): "
+              + ", ".join(f"{c} {n}" for n, c in to_eyeball[:4]))
+    if pending:
+        print(f"  needs labels ({len(pending)})")
+        for index, clip in enumerate(pending, 1):
+            row = manifest.get(clip, {})
+            size = f"{row.get('width', '?')}x{row.get('height', '?')}@{float(row['fps']):.0f}" if row.get("fps") else ""
+            print(f"    {index:3d} {clip}  {tags[clip]}  {size}")
+        print(f"  labelled - open to review or correct ({len(labelled)})")
+    cells = [f"{index:3d} {clip if len(clip) <= name_width else clip[:name_width - 1] + '~':<{name_width}} {tags[clip]:4s}"
+             for index, clip in enumerate(labelled, len(pending) + 1)]
+    for line in _columns(cells, width - 4):
+        print("    " + line)
+    print("    a range works too - type e.g. video22..video53 to work through them as one run;")
+    print("    add 'u' on the end (video22..video53 u) to stop only on the uncertain frames")
     answer = _ask("clip number or name (Enter to go back): ")
     if not answer:
         return
-    clip = choices[int(answer) - 1][0] if answer.isdigit() and 1 <= int(answer) <= len(choices) else answer
-    run_cli(["label", clip])
+    parts = answer.split()
+    only_uncertain = len(parts) > 1 and parts[-1].lower() in ("u", "uncertain")
+    if only_uncertain:
+        parts = parts[:-1]
+    extra = ["--uncertain"] if only_uncertain else []
+    if any(".." in part for part in parts):                  # let the tool expand and check it
+        run_cli(["label", *parts, *extra])
+        return
+    clip = _resolve_choice(" ".join(parts), choices)
+    if clip is None:
+        return
+    run_cli(["label", clip, *extra])
 
 
 def _menu_check() -> None:
@@ -799,7 +1023,7 @@ def _menu_promote() -> None:
 
 
 def _menu_import() -> None:
-    confirm = _ask("copy every labelled tennis clip on this PC into finetune/ (~44 clips)? [y/N] ")
+    confirm = _ask("copy every labelled tennis clip on this PC into finetune/ (~85 clips)? [y/N] ")
     if confirm and confirm.lower().startswith("y"):
         run_cli(["import", "all"])
 
@@ -860,8 +1084,8 @@ def run_cli(argv: List[str]) -> int:
     p.add_argument("--no-prelabel", action="store_true")
     p.set_defaults(func=cmd_add)
     subparsers.add_parser("prelabel", help="run the detector to draft labels (pretrack.py)").set_defaults(func=cmd_prelabel)
-    p = subparsers.add_parser("label", help="open the click tool on a clip (pre-labels first if needed)")
-    p.add_argument("clip")
+    p = subparsers.add_parser("label", help="open the click tool on a clip, or a run like video22..video53")
+    p.add_argument("clip", nargs="+")
     p.set_defaults(func=cmd_label)
     p = subparsers.add_parser("check", help="validate every label file against its video")
     p.add_argument("--clips", nargs="*", help="clip stems or globs")
@@ -870,6 +1094,9 @@ def run_cli(argv: List[str]) -> int:
                    help="also cross-check labels against the detector (finds clips labelled on a different cut)")
     p.add_argument("--fix", action="store_true", help="with --audit: shift fixable clips, list hopeless ones in exclude.txt")
     p.add_argument("--weights", help="with --audit: detector weights to audit with")
+    p.add_argument("--mark", action="store_true",
+                   help="with --audit: record the frames the detector disagrees with, so the click tool "
+                        "can take you straight to them (labels/<clip>_ball.suspect.json)")
     p.set_defaults(func=cmd_check)
     p = subparsers.add_parser("eval", help="raw detector metrics (default: own-camera clips only)")
     p.add_argument("--weights", help=".npz to score instead of the tracker's current weights")

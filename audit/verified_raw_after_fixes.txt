@@ -1,0 +1,133 @@
+[archive] finetune  (41 clips)
+[detector] GridTrackNet FP16 (confidence=0.00, device=cuda:0)
+[detector] GridTrackNet prepass: 361 source frames, 361 detections, 19 batched calls across 1 phase(s) in 3.4s (105.1 source fps)
+[gridtracknet] video13: 361 frames in 3.5s
+[detector] GridTrackNet prepass: 199 source frames, 199 detections, 10 batched calls across 1 phase(s) in 1.6s (122.0 source fps)
+[gridtracknet] video14: 199 frames in 1.7s
+[detector] GridTrackNet prepass: 36 source frames, 36 detections, 2 batched calls across 1 phase(s) in 0.3s (113.4 source fps)
+[gridtracknet] video15: 36 frames in 0.3s
+[detector] GridTrackNet prepass: 45 source frames, 45 detections, 3 batched calls across 1 phase(s) in 0.4s (106.6 source fps)
+[gridtracknet] video16: 45 frames in 0.4s
+[detector] GridTrackNet prepass: 598 source frames, 598 detections, 30 batched calls across 1 phase(s) in 5.4s (110.4 source fps)
+[gridtracknet] video17: 598 frames in 5.4s
+[detector] GridTrackNet prepass: 485 source frames, 485 detections, 25 batched calls across 1 phase(s) in 3.7s (132.0 source fps)
+[gridtracknet] video18: 485 frames in 3.7s
+[detector] GridTrackNet prepass: 112 source frames, 112 detections, 6 batched calls across 1 phase(s) in 1.3s (84.0 source fps)
+[gridtracknet] video19: 112 frames in 1.4s
+[detector] GridTrackNet prepass: 102 source frames, 102 detections, 6 batched calls across 1 phase(s) in 0.9s (111.3 source fps)
+[gridtracknet] video20: 102 frames in 0.9s
+[detector] GridTrackNet prepass: 225 source frames, 225 detections, 12 batched calls across 1 phase(s) in 1.9s (115.5 source fps)
+[gridtracknet] video21: 225 frames in 2.0s
+[detector] GridTrackNet prepass: 233 source frames, 233 detections, 12 batched calls across 1 phase(s) in 2.0s (117.0 source fps)
+[gridtracknet] video22: 233 frames in 2.0s
+[detector] GridTrackNet prepass: 483 source frames, 483 detections, 25 batched calls across 1 phase(s) in 4.1s (117.1 source fps)
+[gridtracknet] video23: 483 frames in 4.1s
+[detector] GridTrackNet prepass: 191 source frames, 191 detections, 10 batched calls across 1 phase(s) in 1.9s (98.2 source fps)
+[gridtracknet] video24: 191 frames in 2.0s
+[detector] GridTrackNet prepass: 57 source frames, 57 detections, 3 batched calls across 1 phase(s) in 0.6s (98.3 source fps)
+[gridtracknet] video25: 57 frames in 0.6s
+[detector] GridTrackNet prepass: 75 source frames, 75 detections, 4 batched calls across 1 phase(s) in 0.8s (98.4 source fps)
+[gridtracknet] video26: 75 frames in 0.8s
+[detector] GridTrackNet prepass: 247 source frames, 247 detections, 13 batched calls across 1 phase(s) in 2.5s (99.5 source fps)
+[gridtracknet] video27: 247 frames in 2.5s
+[detector] GridTrackNet prepass: 110 source frames, 110 detections, 6 batched calls across 1 phase(s) in 0.9s (117.5 source fps)
+[gridtracknet] video28: 110 frames in 1.0s
+[detector] GridTrackNet prepass: 221 source frames, 221 detections, 12 batched calls across 1 phase(s) in 1.5s (150.9 source fps)
+[gridtracknet] video29: 221 frames in 1.5s
+[detector] GridTrackNet prepass: 194 source frames, 194 detections, 10 batched calls across 1 phase(s) in 1.3s (146.9 source fps)
+[gridtracknet] video30: 194 frames in 1.3s
+[detector] GridTrackNet prepass: 117 source frames, 117 detections, 6 batched calls across 1 phase(s) in 1.0s (117.7 source fps)
+[gridtracknet] video31: 117 frames in 1.0s
+[detector] GridTrackNet prepass: 181 source frames, 181 detections, 10 batched calls across 1 phase(s) in 1.2s (151.2 source fps)
+[gridtracknet] video32: 181 frames in 1.2s
+[detector] GridTrackNet prepass: 110 source frames, 110 detections, 6 batched calls across 1 phase(s) in 0.8s (138.5 source fps)
+[gridtracknet] video33: 110 frames in 0.8s
+[detector] GridTrackNet prepass: 36 source frames, 36 detections, 2 batched calls across 1 phase(s) in 0.3s (133.8 source fps)
+[gridtracknet] video34: 36 frames in 0.3s
+[detector] GridTrackNet prepass: 173 source frames, 173 detections, 9 batched calls across 1 phase(s) in 1.3s (130.2 source fps)
+[gridtracknet] video35: 173 frames in 1.3s
+[detector] GridTrackNet prepass: 43 source frames, 43 detections, 3 batched calls across 1 phase(s) in 0.4s (115.0 source fps)
+[gridtracknet] video36: 43 frames in 0.4s
+[detector] GridTrackNet prepass: 35 source frames, 35 detections, 2 batched calls across 1 phase(s) in 0.4s (92.0 source fps)
+[gridtracknet] video37: 35 frames in 0.4s
+[detector] GridTrackNet prepass: 174 source frames, 174 detections, 9 batched calls across 1 phase(s) in 1.4s (124.5 source fps)
+[gridtracknet] video38: 174 frames in 1.4s
+[detector] GridTrackNet prepass: 596 source frames, 596 detections, 30 batched calls across 1 phase(s) in 4.0s (150.6 source fps)
+[gridtracknet] video39: 596 frames in 4.0s
+[detector] GridTrackNet prepass: 579 source frames, 579 detections, 29 batched calls across 1 phase(s) in 4.0s (145.8 source fps)
+[gridtracknet] video40: 579 frames in 4.0s
+[detector] GridTrackNet prepass: 529 source frames, 529 detections, 27 batched calls across 1 phase(s) in 4.1s (130.3 source fps)
+[gridtracknet] video41: 529 frames in 4.1s
+[detector] GridTrackNet prepass: 285 source frames, 285 detections, 15 batched calls across 1 phase(s) in 2.0s (142.4 source fps)
+[gridtracknet] video42: 285 frames in 2.0s
+[detector] GridTrackNet prepass: 128 source frames, 128 detections, 7 batched calls across 1 phase(s) in 1.0s (133.3 source fps)
+[gridtracknet] video43: 128 frames in 1.0s
+[detector] GridTrackNet prepass: 202 source frames, 202 detections, 11 batched calls across 1 phase(s) in 1.5s (133.8 source fps)
+[gridtracknet] video44: 202 frames in 1.5s
+[detector] GridTrackNet prepass: 47 source frames, 47 detections, 3 batched calls across 1 phase(s) in 0.4s (116.0 source fps)
+[gridtracknet] video45: 47 frames in 0.4s
+[detector] GridTrackNet prepass: 901 source frames, 901 detections, 46 batched calls across 1 phase(s) in 8.9s (101.5 source fps)
+[gridtracknet] video46: 901 frames in 8.9s
+[detector] GridTrackNet prepass: 316 source frames, 316 detections, 16 batched calls across 1 phase(s) in 2.9s (108.1 source fps)
+[gridtracknet] video47: 316 frames in 3.0s
+[detector] GridTrackNet prepass: 132 source frames, 132 detections, 7 batched calls across 1 phase(s) in 1.1s (123.2 source fps)
+[gridtracknet] video48: 132 frames in 1.1s
+[detector] GridTrackNet prepass: 188 source frames, 188 detections, 10 batched calls across 1 phase(s) in 1.4s (130.1 source fps)
+[gridtracknet] video49: 188 frames in 1.5s
+[detector] GridTrackNet prepass: 47 source frames, 47 detections, 3 batched calls across 1 phase(s) in 0.4s (118.0 source fps)
+[gridtracknet] video50: 47 frames in 0.4s
+[detector] GridTrackNet prepass: 65 source frames, 65 detections, 4 batched calls across 1 phase(s) in 0.5s (130.4 source fps)
+[gridtracknet] video51: 65 frames in 0.5s
+[detector] GridTrackNet prepass: 292 source frames, 292 detections, 15 batched calls across 1 phase(s) in 2.4s (123.2 source fps)
+[gridtracknet] video52: 292 frames in 2.4s
+[detector] GridTrackNet prepass: 142 source frames, 142 detections, 8 batched calls across 1 phase(s) in 1.0s (136.0 source fps)
+[gridtracknet] video53: 142 frames in 1.1s
+
+=== gridtracknet: threshold sweep (all clips pooled) ===
+conf>=0.30     vis=8965 recall=0.907 wrong=0.020 miss=0.040 | invis=327 falseAlarm=0.394 | med=3.1px p90=7.1px
+conf>=0.50     vis=8965 recall=0.875 wrong=0.011 miss=0.089 | invis=327 falseAlarm=0.242 | med=3.0px p90=6.5px
+conf>=0.70     vis=8965 recall=0.746 wrong=0.007 miss=0.235 | invis=327 falseAlarm=0.135 | med=2.9px p90=5.9px
+
+=== gridtracknet: per clip at conf>=0.50 ===
+video13        vis= 359 recall=0.922 wrong=0.003 miss=0.042 | invis=  2 falseAlarm=0.000 | med=3.3px p90=7.3px
+video14        vis= 199 recall=0.814 wrong=0.015 miss=0.055 | invis=  0 falseAlarm=0.000 | med=3.8px p90=12.9px
+video15        vis=  36 recall=1.000 wrong=0.000 miss=0.000 | invis=  0 falseAlarm=0.000 | med=3.1px p90=7.8px
+video16        vis=  44 recall=0.841 wrong=0.000 miss=0.114 | invis=  1 falseAlarm=0.000 | med=3.4px p90=6.6px
+video17        vis= 585 recall=0.959 wrong=0.002 miss=0.017 | invis= 13 falseAlarm=0.769 | med=3.1px p90=5.8px
+video18        vis= 474 recall=0.943 wrong=0.004 miss=0.042 | invis= 11 falseAlarm=0.455 | med=2.8px p90=5.5px
+video19        vis= 111 recall=0.991 wrong=0.000 miss=0.009 | invis=  1 falseAlarm=1.000 | med=2.3px p90=4.5px
+video20        vis=  92 recall=0.837 wrong=0.000 miss=0.141 | invis= 10 falseAlarm=0.400 | med=3.0px p90=6.8px
+video21        vis= 219 recall=0.945 wrong=0.005 miss=0.041 | invis=  6 falseAlarm=0.167 | med=2.6px p90=5.2px
+video22        vis= 224 recall=0.906 wrong=0.009 miss=0.062 | invis=  9 falseAlarm=0.889 | med=2.5px p90=5.3px
+video23        vis= 430 recall=0.930 wrong=0.009 miss=0.035 | invis= 53 falseAlarm=0.075 | med=2.8px p90=6.0px
+video24        vis= 191 recall=0.927 wrong=0.010 miss=0.042 | invis=  0 falseAlarm=0.000 | med=3.0px p90=5.9px
+video25        vis=  56 recall=0.857 wrong=0.000 miss=0.125 | invis=  1 falseAlarm=1.000 | med=2.8px p90=7.1px
+video26        vis=  64 recall=0.859 wrong=0.016 miss=0.125 | invis= 11 falseAlarm=0.091 | med=2.8px p90=6.7px
+video27        vis= 235 recall=0.923 wrong=0.004 miss=0.068 | invis= 12 falseAlarm=0.333 | med=3.1px p90=6.2px
+video28        vis= 108 recall=0.926 wrong=0.000 miss=0.019 | invis=  2 falseAlarm=1.000 | med=3.3px p90=8.6px
+video29        vis= 219 recall=0.959 wrong=0.005 miss=0.018 | invis=  2 falseAlarm=1.000 | med=2.5px p90=5.2px
+video30        vis= 188 recall=0.904 wrong=0.000 miss=0.053 | invis=  6 falseAlarm=0.000 | med=2.5px p90=5.5px
+video31        vis= 117 recall=0.906 wrong=0.009 miss=0.051 | invis=  0 falseAlarm=0.000 | med=3.1px p90=7.4px
+video32        vis= 180 recall=0.972 wrong=0.006 miss=0.006 | invis=  1 falseAlarm=1.000 | med=2.8px p90=5.2px
+video33        vis= 110 recall=0.918 wrong=0.009 miss=0.036 | invis=  0 falseAlarm=0.000 | med=2.8px p90=7.1px
+video34        vis=  36 recall=0.972 wrong=0.000 miss=0.028 | invis=  0 falseAlarm=0.000 | med=2.3px p90=4.9px
+video35        vis= 169 recall=0.947 wrong=0.006 miss=0.024 | invis=  4 falseAlarm=0.000 | med=2.9px p90=6.3px
+video36        vis=  43 recall=0.907 wrong=0.070 miss=0.000 | invis=  0 falseAlarm=0.000 | med=3.3px p90=7.7px
+video37        vis=  34 recall=0.912 wrong=0.000 miss=0.088 | invis=  1 falseAlarm=1.000 | med=3.1px p90=5.3px
+video38        vis= 133 recall=0.850 wrong=0.000 miss=0.135 | invis= 41 falseAlarm=0.049 | med=2.9px p90=6.0px
+video39        vis= 553 recall=0.754 wrong=0.013 miss=0.224 | invis= 43 falseAlarm=0.186 | med=3.2px p90=7.0px
+video40        vis= 573 recall=0.747 wrong=0.002 miss=0.237 | invis=  6 falseAlarm=0.000 | med=3.3px p90=6.4px
+video41        vis= 514 recall=0.735 wrong=0.000 miss=0.239 | invis= 15 falseAlarm=0.533 | med=3.4px p90=7.0px
+video42        vis= 270 recall=0.789 wrong=0.015 miss=0.193 | invis= 15 falseAlarm=0.200 | med=2.9px p90=5.9px
+video43        vis= 124 recall=0.750 wrong=0.032 miss=0.153 | invis=  4 falseAlarm=0.000 | med=3.5px p90=13.4px
+video44        vis= 198 recall=0.889 wrong=0.051 miss=0.030 | invis=  4 falseAlarm=0.250 | med=3.5px p90=8.3px
+video45        vis=  46 recall=0.783 wrong=0.000 miss=0.130 | invis=  1 falseAlarm=0.000 | med=3.1px p90=10.8px
+video46        vis= 851 recall=0.816 wrong=0.040 miss=0.094 | invis= 50 falseAlarm=0.220 | med=3.3px p90=10.0px
+video47        vis= 316 recall=0.956 wrong=0.003 miss=0.028 | invis=  0 falseAlarm=0.000 | med=2.8px p90=5.2px
+video48        vis= 132 recall=0.924 wrong=0.000 miss=0.061 | invis=  0 falseAlarm=0.000 | med=2.8px p90=5.4px
+video49        vis= 188 recall=0.926 wrong=0.021 miss=0.048 | invis=  0 falseAlarm=0.000 | med=2.9px p90=5.5px
+video50        vis=  47 recall=0.915 wrong=0.000 miss=0.000 | invis=  0 falseAlarm=0.000 | med=2.9px p90=6.8px
+video51        vis=  64 recall=0.938 wrong=0.031 miss=0.000 | invis=  1 falseAlarm=0.000 | med=2.7px p90=7.1px
+video52        vis= 292 recall=0.921 wrong=0.007 miss=0.058 | invis=  0 falseAlarm=0.000 | med=2.8px p90=5.1px
+video53        vis= 141 recall=0.915 wrong=0.043 miss=0.028 | invis=  1 falseAlarm=1.000 | med=3.0px p90=6.4px
+gridtracknet: mean offset on hits dx=+0.12px dy=+1.34px (n=7987)

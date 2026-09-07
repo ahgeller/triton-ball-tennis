@@ -55,6 +55,15 @@ def _frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict
         "source": str(getattr(result, "source", "")),
         "interpolated": bool(getattr(result, "interpolated", False)),
         "bbox": _json_safe(getattr(result, "bbox", None)),
+        "measurement": (
+            {"x": float(result.measurement[0]), "y": float(result.measurement[1]),
+             "conf": float(result.conf), "bbox": _json_safe(result.bbox)}
+            if result.measurement is not None else None
+        ),
+        "position_kind": (
+            "measurement" if result.measurement == (result.cx, result.cy)
+            else "filtered" if result.measurement is not None else "recovered"
+        ),
         "search": {
             "x": float(getattr(result, "search_cx", 0.0)),
             "y": float(getattr(result, "search_cy", 0.0)),

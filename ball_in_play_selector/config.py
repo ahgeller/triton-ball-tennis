@@ -101,7 +101,7 @@ class SelectorConfig:
     gravity_px_per_frame2: float = 0.0   # auto-set: gravity accel in px/frame^2
     gravity_base_ppf2_30fps: float = 0.55  # gravity at 30fps in px/frame^2 (tunable)
     gravity_enabled: bool = True         # enable parabolic prediction
-    gravity_drag_factor: float = 0.985   # per-frame horizontal drag (1.0 = no drag)
+    gravity_drag_factor: float = 0.985   # velocity retention per 30 FPS reference step (1.0 = no drag)
     bounce_restitution: float = 0.58      # reflected vy fraction on bounce
 
     # -- Track eligibility (_selected_tracks) ----------------------

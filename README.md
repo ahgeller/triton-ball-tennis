@@ -10,11 +10,13 @@ It produces an annotated MP4 and per-frame tracking JSON.
 
 The overlay distinguishes where each selected point came from:
 
-- **Green (`DET`):** raw GridTrackNet detection
+- **Green (`DET`):** a position supported by a GridTrackNet detection (may be smoothed)
 - **Orange (`MOT`):** motion-supported recovery
 - **Cyan (`PHY`):** short bounded interpolation or physics recovery
 
-Raw green detections are preserved. Recovery is deliberately conservative: an
+Raw detector coordinates are preserved in the JSON `measurement` field; `x/y`
+are the selected, possibly smoothed position and `position_kind` distinguishes
+measurement, filtered and recovered positions. Recovery is deliberately conservative: an
 unresolved detector gap remains a gap instead of becoming a long predicted path.
 
 ## Pipeline

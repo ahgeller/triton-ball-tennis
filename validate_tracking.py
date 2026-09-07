@@ -183,9 +183,14 @@ def validate(
         "matched_visible_frames": len(errors),
         "missed_visible_frames": len(misses),
         "recall": recall,
+        "presence_recall": recall,
+        "localization_recall_5px": sum(e <= 5.0 for e in errors) / max(len(visible_labels), 1),
+        "localization_recall_10px": sum(e <= 10.0 for e in errors) / max(len(visible_labels), 1),
+        "localization_recall_20px": sum(e <= 20.0 for e in errors) / max(len(visible_labels), 1),
         "labeled_absent_frames": len(absent_labels),
         "false_positive_absent_frames": len(false_positive_frames),
         "absence_precision": precision_on_labeled_absence,
+        "absence_specificity": precision_on_labeled_absence,
         "prediction_present_frames": pred_present,
         "prediction_total_frames": total_prediction_frames,
         "prediction_filled_ratio": pred_present / max(total_prediction_frames, 1),
@@ -223,7 +228,8 @@ def main() -> int:
     parser.add_argument("--jump-max-gap", type=int, default=1, help="Only count jumps across gaps up to this many frames")
     parser.add_argument("--max-mean-error", type=float, default=None, help="Fail if mean error exceeds this")
     parser.add_argument("--max-p90-error", type=float, default=None, help="Fail if p90 error exceeds this")
-    parser.add_argument("--min-recall", type=float, default=None, help="Fail if recall is below this 0..1 value")
+    parser.add_argument("--min-recall", type=float, default=None, help="Fail if localization recall within 10px is below this 0..1 value")
+    parser.add_argument("--min-presence-recall", type=float, default=None, help="Optional presence-only gate (does not check localization)")
     args = parser.parse_args()
 
     predictions = _load_json(Path(args.predictions))
@@ -269,7 +275,9 @@ def main() -> int:
         p90_error = summary["p90_error_px"]
         failed = failed or p90_error is None or p90_error > float(args.max_p90_error)
     if args.min_recall is not None:
-        failed = failed or float(summary["recall"]) < float(args.min_recall)
+        failed = failed or float(summary["localization_recall_10px"]) < float(args.min_recall)
+    if args.min_presence_recall is not None:
+        failed = failed or float(summary["presence_recall"]) < float(args.min_presence_recall)
 
     return 2 if failed else 0
 

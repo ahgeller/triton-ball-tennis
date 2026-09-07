@@ -126,6 +126,9 @@ class VideoWriter:
 
         if self._proc is None:
             self._cv = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+            if not self._cv.isOpened():
+                self._cv.release()
+                raise RuntimeError(f"Could not open video output: {path}")
 
         if cfg.use_async_writer:
             self._q = queue.Queue(maxsize=cfg.async_queue)
@@ -137,9 +140,10 @@ class VideoWriter:
     def _kill_proc(self):
         if self._proc:
             try:
+                self._proc.kill()
                 if self._proc.stdin:
                     self._proc.stdin.close()
-                self._proc.kill()
+                self._proc.wait(timeout=5)
             except Exception:
                 pass
         self._proc = None
@@ -193,31 +197,48 @@ class VideoWriter:
         except Exception as e:
             self._thread_error = e
 
+    def _enqueue(self, item):
+        while True:
+            if self._thread_error is not None:
+                raise RuntimeError(f"Async video writer failed: {self._thread_error}") from self._thread_error
+            if not self._thread.is_alive():
+                raise RuntimeError("Async video writer stopped before accepting output")
+            try:
+                self._q.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
     def write(self, frame):
-        if self._thread_error is not None:
-            raise RuntimeError(f"Async video writer failed: {self._thread_error}")
         if self._q:
-            self._q.put(frame)
+            self._enqueue(frame)
         else:
             self._raw_write(frame)
 
     def close(self):
-        if self._q:
-            self._q.put(None)
-            self._thread.join()
-            if self._thread_error is not None:
-                raise RuntimeError(f"Async video writer failed: {self._thread_error}")
-        if self._proc:
-            try:
+        try:
+            if self._q:
+                self._enqueue(None)
+                self._thread.join()
+                if self._thread_error is not None:
+                    raise RuntimeError(f"Async video writer failed: {self._thread_error}") from self._thread_error
+            if self._proc:
                 if self._proc.stdin:
                     self._proc.stdin.close()
-            except Exception:
-                pass
-            self._proc.wait()
-            if self._proc.returncode not in (0, None):
-                self._raise_proc_write_error("FFmpeg exited with a non-zero status")
-        elif self._cv:
-            self._cv.release()
+                self._proc.wait(timeout=30)
+                if self._proc.returncode not in (0, None):
+                    self._raise_proc_write_error("FFmpeg exited with a non-zero status")
+        finally:
+            if self._proc:
+                if self._proc.poll() is None:
+                    self._kill_proc()
+                else:
+                    if self._proc.stderr:
+                        self._proc.stderr.close()
+                    self._proc = None
+            if self._cv:
+                self._cv.release()
+                self._cv = None
 
 class ThreadedFrameReader:
     """Prefetch frames in a background thread to overlap decode with GPU work."""

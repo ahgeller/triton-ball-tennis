@@ -1,0 +1,76 @@
+{
+  "metric_denominator": {
+    "reported": {
+      "recall": 1.0,
+      "wrong": 0.0,
+      "false_alarm": 0.0,
+      "visible": 1,
+      "invisible": 0
+    },
+    "expected_visible": 5,
+    "expected_recall": 0.2
+  },
+  "metric_tail": {
+    "reported_recall": 0.7142857142857143,
+    "frames_never_inferred": [
+      5,
+      6
+    ]
+  },
+  "promotion_false_alarms": "100% false-alarm candidate beats 0% incumbent for +1% recall",
+  "fps_drag": {
+    "one_second_speed_retained_30fps": 0.6354580927313492,
+    "one_second_speed_retained_60fps": 0.403806987617764
+  },
+  "prediction_order": {
+    "kalman": [
+      243.38349033971878,
+      57.542123476690264
+    ],
+    "projectile": [
+      245.56699526875002,
+      56.89555682912716
+    ]
+  },
+  "small_blob_rejection": {
+    "ball_pixels": 9,
+    "contour_area": 4,
+    "minimum_contour_area": 34.940160000000006
+  },
+  "raw_provenance": {
+    "raw_y": 103.0,
+    "export_y": 100.45339366515844,
+    "source": "det"
+  },
+  "presence_recall": {
+    "recall": 1.0,
+    "error_px": 1258.6500705120545
+  },
+  "published_frame_mutation": {
+    "publications": [
+      [
+        20,
+        false
+      ],
+      [
+        20,
+        true
+      ],
+      [
+        23,
+        true
+      ]
+    ],
+    "changed_frame": 18
+  },
+  "writer_deadlock": "close blocks on full queue after consumer failure",
+  "duplicate_frame_identity": "correct sequential frame 1 rejected because its pixels equal frame 0",
+  "realign_soft_pins": {
+    "reviewed_frame": 220,
+    "chosen_offset": 1
+  },
+  "cuda_color_gate_unused": {
+    "cuda_path_red_pixels": 100,
+    "cpu_path_red_pixels": 0
+  }
+}

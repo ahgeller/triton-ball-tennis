@@ -7,6 +7,8 @@ Nothing here downloads anything: every source below is already on this PC.
   tracknetv2  V5Test\\archive\\TrackNetV2\\TrackNetV2      TrackNetV2 *badminton* set (V5Test called it tennis): 201 clips @ 1280x720/30
               (not part of 'all' - removed from the workspace 2026-08-31 as unneeded; import explicitly to bring it back)
   grid        V5Test\\archive\\Match-Data-...\\Match-Data  GridTrackNet's public set: 53 matches, 32 with usable media
+  prof        Desktop\\prof\\Dataset                       public TrackNet tennis set: 41 clips @ 1280x720/30,
+              imported as video13..video53 so they carry on the own-camera video1-12 numbering
   tracknet    any folder in a public TrackNet layout (see --src): Label.csv + frames, or csv/ + video/ pairs
 
 Everything lands in the workspace contract that pretrack.py, label_tool.py,
@@ -56,7 +58,10 @@ DEFAULT_SOURCES = {
     "video11": DESKTOP / "V5Test" / "held_back_custom_768" / "sources" / "custom" / "video11",
     "tracknetv2": DESKTOP / "V5Test" / "archive" / "TrackNetV2" / "TrackNetV2",
     "grid": DESKTOP / "V5Test" / "archive" / "Match-Data-20260716T144245Z-1-001" / "Match-Data",
+    "prof": DESKTOP / "prof" / "Dataset",
 }
+PROF_FIRST = 13          # video1..video12 are the own-camera clips; the prof set carries the numbering on
+PROF_FPS = 30.0          # the set ships one JPEG per frame of a 30 FPS broadcast
 GRID_LABEL_CANVAS = (1280, 720)   # GridTrackNet's FrameGenerator wrote 1280x720 PNGs; Labels.csv is in that space
 V5_CUSTOM_CANVAS = (1280, 720)    # the TrackNetV5 conversion put every custom label on a 1280x720 canvas
 
@@ -439,6 +444,30 @@ def import_grid(src: Path, manifest: Manifest, force: bool, link: bool, dry_run:
     return count
 
 
+def import_prof(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool,
+                keep_occluded: bool, start: int = PROF_FIRST) -> int:
+    """<root>/game*/Clip*/Label.csv + one 1280x720 JPEG per frame -> videoNN.mp4 + workspace CSV.
+
+    Named videoNN rather than prof_gameN_ClipN on purpose: the clips then sit directly under
+    video12 wherever ft.py lists a workspace by name. The number a clip gets comes from its
+    position in the natural game/clip order, so re-running gives every clip the same name.
+    The source tag stays 'prof' - these are broadcast clips, not the own camera.
+    """
+    folders = []
+    for game in sorted((p for p in src.iterdir() if p.is_dir()), key=lambda p: natural_key(p.name)):
+        for clip_dir in sorted((p for p in game.iterdir() if p.is_dir()), key=lambda p: natural_key(p.name)):
+            if any(p.name.lower() in ("label.csv", "labels.csv") for p in clip_dir.iterdir()):
+                folders.append((game.name, clip_dir))
+    count = 0
+    for offset, (game, clip_dir) in enumerate(folders):
+        clip = f"video{start + offset}"
+        if import_tracknet_frames(clip_dir, clip, manifest, "prof", game, f"prof_{game}", None, PROF_FPS,
+                                  keep_occluded, force, dry_run,
+                                  note=f"public TrackNet tennis set, {game}/{clip_dir.name}"):
+            count += 1
+    return count
+
+
 def import_tracknet(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool, keep_occluded: bool,
                     prefix: str, fps: float, canvas: Optional[Tuple[int, int]]) -> int:
     """Generic public layouts: <root>/**/Label.csv next to frames (TrackNet tennis: game1/Clip1/), or
@@ -462,8 +491,9 @@ def import_tracknet(src: Path, manifest: Manifest, force: bool, link: bool, dry_
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("sources", nargs="+", choices=("all", "archive", "video11", "tracknetv2", "grid", "tracknet"),
-                        help="what to import ('all' = archive video11 grid; the badminton set only with an explicit 'tracknetv2')")
+    parser.add_argument("sources", nargs="+",
+                        choices=("all", "archive", "video11", "tracknetv2", "grid", "prof", "tracknet"),
+                        help="what to import ('all' = archive video11 grid prof; the badminton set only with an explicit 'tracknetv2')")
     parser.add_argument("--src", type=Path, help="Override the source folder (required for 'tracknet')")
     parser.add_argument("--prefix", default="tracknet", help="Clip-name prefix / source tag for 'tracknet' imports")
     parser.add_argument("--fps", type=float, default=30.0, help="Frame rate for clips rebuilt from image folders")
@@ -476,7 +506,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="List what would be imported and stop")
     args = parser.parse_args()
 
-    wanted = ["archive", "video11", "grid"] if "all" in args.sources else list(dict.fromkeys(args.sources))
+    wanted = ["archive", "video11", "grid", "prof"] if "all" in args.sources else list(dict.fromkeys(args.sources))
     if "tracknet" in wanted and args.src is None:
         parser.error("'tracknet' needs --src <folder>")
     VIDEOS.mkdir(exist_ok=True)
@@ -497,6 +527,8 @@ def main() -> int:
             total += import_tracknetv2(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded)
         elif name == "grid":
             total += import_grid(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded)
+        elif name == "prof":
+            total += import_prof(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded)
         elif name == "tracknet":
             total += import_tracknet(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded,
                                      args.prefix, args.fps, tuple(args.canvas) if args.canvas else None)

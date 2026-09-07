@@ -179,3 +179,5 @@ class FrameResult:
     source_reasons: List[str] = field(default_factory=list)
     source_rejects: Dict[str, int] = field(default_factory=dict)
     source_policy: Dict[str, Any] = field(default_factory=dict)
+    # Immutable detector location, separate from the selected/refitted coordinates.
+    measurement: Optional[Tuple[float, float]] = None

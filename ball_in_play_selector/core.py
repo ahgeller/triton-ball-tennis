@@ -150,20 +150,18 @@ def _motion_near(
 
     best = None
     best_distance = float(gate) + 1.0
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for contour in contours:
-        area = float(cv2.contourArea(contour))
-        if area <= 0.0 or not 0.2 * reference_area <= area <= area_ratio_max * reference_area:
+    count, _, stats, centers = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    for index in range(1, count):
+        bx, by, bw, bh, pixels = stats[index]
+        area = float(pixels)
+        # GridTrackNet's bbox is synthetic, not a measured ball diameter.
+        # Keep small components; location/color/temporal evidence supplies the gate.
+        if not 2 <= area <= area_ratio_max * reference_area:
             continue
-        moments = cv2.moments(contour)
-        if not moments["m00"]:
-            continue
-        cx = float(moments["m10"] / moments["m00"])
-        cy = float(moments["m01"] / moments["m00"])
+        cx, cy = map(float, centers[index])
         distance = math.hypot(cx - x, cy - y)
         if distance <= gate and distance < best_distance:
-            bx, by, bw, bh = cv2.boundingRect(contour)
-            best = {"x": cx, "y": cy, "bbox": (bx, by, bx + bw, by + bh), "area": area}
+            best = {"x": cx, "y": cy, "bbox": tuple(map(int, (bx, by, bx + bw, by + bh))), "area": area}
             best_distance = distance
     return best
 
@@ -241,6 +239,7 @@ def _result(x, y, source, detection=None, motion=None, search_radius=0.0) -> Fra
         bbox=bbox,
         interpolated=source != "det",
         source=source,
+        measurement=(float(detection.cx), float(detection.cy)) if detection is not None else None,
         search_cx=float(x),
         search_cy=float(y),
         # Reported so the pipeline diagnostics judge a blob against the radius
@@ -411,13 +410,13 @@ def _refine_run(results, start: int, end: int, diag: float = _REFERENCE_DIAG) ->
         new_y[i] = y[i] + dy
 
     # Repairing a short target switch needs a large correction, so the move
-    # itself stays unbounded.  But a "det" frame is advertised as a raw
-    # observation -- green in the overlay, scored against the detector by
-    # evaluate_archive.py -- and once the fit has dragged it this far it is a
-    # fitted position, not a detection.  Say so rather than crediting or
-    # blaming the detector for a point it never produced.
+    # itself stays unbounded. Large relocations are labeled as fitted recovery;
+    # smaller detector-supported adjustments retain their source. The immutable
+    # measurement coordinates remain available separately in either case.
     relabel_px = max(12.0, _REFINE_DET_RELABEL_FRAC * float(diag))
     for index, item in enumerate(points):
+        if item.source == "det" and item.measurement is None:
+            item.measurement = (float(item.cx), float(item.cy))
         moved = math.hypot(new_x[index] - item.cx, new_y[index] - item.cy)
         item.cx = float(new_x[index])
         item.cy = float(new_y[index])

@@ -10,7 +10,7 @@ grid_match21,grid,,grid_match21,1920,1080,29.936,1,525,495,fixed,1.2,C:\Users\An
 grid_match22,grid,,grid_match22,1920,1080,30.000,1,733,623,fixed,0.9,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match22\Long Point Night.mp4,labels scaled from 1280x720; audit 2026-08-31: shifted +60 frames
 grid_match23,grid,,grid_match23,1920,1080,29.968,1,565,535,fixed,0.7,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match23\Practice Amature.mp4,labels scaled from 1280x720; audit 2026-08-31: shifted +6 frames
 grid_match24,grid,,grid_match24,1920,1080,58.991,2,624,612,fixed,1.9,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match24\Night amature.mp4,labels scaled from 1280x720
-grid_match26,grid,,grid_match26,1920,1080,29.965,1,1146,984,moving,4.7,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match26\Low fov night.mp4,labels scaled from 1280x720
+grid_match26,grid,,grid_match26,1920,1080,29.965,1,1138,976,moving,4.7,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match26\Low fov night.mp4,"labels scaled from 1280x720; own video, realigned 2026-09-03: the copy here is missing 26 frames part way through; labels re-timed in 2 segments"
 grid_match31,grid,,grid_match31,1920,1080,59.940,2,291,268,fixed,0.5,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match31\My Movie 2.mp4,labels scaled from 1280x720; audit 2026-08-31: shifted +8 frames
 grid_match36,grid,,grid_match36,1920,1080,59.940,2,781,759,moving,10.6,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match36\My Movie 2.mp4,labels scaled from 1280x720; audit 2026-08-31: shifted +2 frames
 grid_match37,grid,,grid_match37,1920,1080,59.940,2,215,201,fixed,0.8,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match37\My Movie 2.mp4,labels scaled from 1280x720; audit 2026-08-31: shifted +4 frames
@@ -20,10 +20,10 @@ grid_match42,grid,,grid_match42,1920,1080,59.940,2,451,445,fixed,0.4,C:\Users\An
 grid_match43,grid,,grid_match43,1920,1080,59.940,2,582,568,moving,6.7,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match43\My Movie 2.mp4,labels scaled from 1280x720
 grid_match44,grid,,grid_match44,1920,1080,59.940,2,630,595,fixed,0.3,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match44\My Movie 2.mp4,labels scaled from 1280x720; audit 2026-08-31: shifted +70 frames
 grid_match47,grid,,grid_match47,1920,1080,29.996,1,242,232,fixed,0.4,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match47\gravel amature.mp4,labels scaled from 1280x720
-grid_match49,grid,,grid_match49,1920,1080,60.000,2,702,607,fixed,1.1,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match49\gravel amature.mp4,labels scaled from 1280x720
-grid_match50,grid,,grid_match50,1920,1080,29.970,1,490,461,fixed,0.5,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match50\gravel amature.mp4,labels scaled from 1280x720
+grid_match49,grid,,grid_match49,1920,1080,29.996,1,702,607,fixed,0.4,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match47\gravel amature.mp4,labels scaled from 1280x720; media is match47's video: match47/49/50 are three rallies of one recording and this label set is the one at frame 681. realigned 2026-09-03
+grid_match50,grid,,grid_match50,1920,1080,29.996,1,490,461,fixed,0.4,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match47\gravel amature.mp4,labels scaled from 1280x720; media is match47's video: match47/49/50 are three rallies of one recording and this label set is the one at frame 1405. realigned 2026-09-03
 grid_match53,grid,,grid_match53,1280,720,30.000,1,129,126,fixed,0.3,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match53\frames,rebuilt from the shipped 1280x720 PNGs; frames->ffmpeg
-grid_match55,grid,,grid_match55,1920,1080,29.970,1,2728,2351,fixed,0.5,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match55\Indoor.mp4,labels scaled from 1280x720
+grid_match55,grid,,grid_match55,1920,1080,29.970,1,2706,2329,fixed,0.5,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match55\Indoor.mp4,"labels scaled from 1280x720; own video, realigned 2026-09-03: the copy here drops 276 frames across 7 cuts; labels re-timed in 8 segments"
 grid_match73,grid,,grid_match73,1280,720,30.000,1,212,211,fixed,0.4,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match73\frames,rebuilt from the shipped 1280x720 PNGs; frames->ffmpeg
 grid_match78,grid,,grid_match78,1280,720,30.000,1,126,126,fixed,0.3,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match78\frames,rebuilt from the shipped 1280x720 PNGs; frames->ffmpeg
 grid_match85,grid,,grid_match85,1920,1080,59.923,2,475,468,moving,13.5,C:\Users\Andrew\Desktop\V5Test\archive\Match-Data-20260716T144245Z-1-001\Match-Data\match85\Amateur Tennis - Full Match Doubles - LK 19.6 15.9 vs LK 20.5 20.6.mp4,labels scaled from 1280x720
@@ -42,4 +42,45 @@ video8,custom,archive,own-camera,1920,1080,30.059,1,513,500,fixed,0.7,C:\Users\A
 video9,custom,archive,own-camera,1920,1080,60.096,2,314,249,fixed,0.7,C:\Users\Andrew\Desktop\gridtracknet_finetuning\archive\video9.mp4,
 video10,custom,archive,own-camera,1920,1080,30.130,1,226,215,fixed,0.3,C:\Users\Andrew\Desktop\gridtracknet_finetuning\archive\video10.mp4,
 video11,custom-uncorrected,held-back,own-camera,768,432,30.000,1,300,245,fixed,0.5,C:\Users\Andrew\Desktop\V5Test\held_back_custom_768\sources\custom\video11,768x432 PNGs from the TrackNetV5 prep; labels never click-corrected; eval only; frames->ffmpeg
-video12,custom,archive,own-camera,1280,720,30.000,1,330,273,fixed,0.4,C:\Users\Andrew\Desktop\gridtracknet_finetuning\archive\video12.mp4,
+video12,custom-uncorrected,archive,own-camera,1280,720,30.000,1,330,273,fixed,0.4,C:\Users\Andrew\Desktop\gridtracknet_finetuning\archive\video12.mp4,"labels never click-corrected - treat as unchecked, not ground truth"
+video13,prof,game2,prof_game2,1280,720,30.000,1,361,360,fixed,0.6,C:\Users\Andrew\Desktop\prof\Dataset\game2\Clip1,"public TrackNet tennis set, game2/Clip1"
+video14,prof,game2,prof_game2,1280,720,30.000,1,199,199,fixed,0.5,C:\Users\Andrew\Desktop\prof\Dataset\game2\Clip2,"public TrackNet tennis set, game2/Clip2"
+video15,prof,game2,prof_game2,1280,720,30.000,1,36,36,fixed,0.1,C:\Users\Andrew\Desktop\prof\Dataset\game2\Clip3,"public TrackNet tennis set, game2/Clip3"
+video16,prof,game2,prof_game2,1280,720,30.000,1,45,45,fixed,0.6,C:\Users\Andrew\Desktop\prof\Dataset\game2\Clip4,"public TrackNet tennis set, game2/Clip4"
+video17,prof,game4,prof_game4,1280,720,30.000,1,598,594,fixed,0.6,C:\Users\Andrew\Desktop\prof\Dataset\game4\Clip1,"public TrackNet tennis set, game4/Clip1"
+video18,prof,game4,prof_game4,1280,720,30.000,1,485,482,fixed,0.4,C:\Users\Andrew\Desktop\prof\Dataset\game4\Clip2,"public TrackNet tennis set, game4/Clip2"
+video19,prof,game4,prof_game4,1280,720,30.000,1,112,112,fixed,1.0,C:\Users\Andrew\Desktop\prof\Dataset\game4\Clip3,"public TrackNet tennis set, game4/Clip3"
+video20,prof,game4,prof_game4,1280,720,30.000,1,102,102,fixed,1.5,C:\Users\Andrew\Desktop\prof\Dataset\game4\Clip4,"public TrackNet tennis set, game4/Clip4"
+video21,prof,game4,prof_game4,1280,720,30.000,1,225,221,fixed,0.5,C:\Users\Andrew\Desktop\prof\Dataset\game4\Clip5,"public TrackNet tennis set, game4/Clip5"
+video22,prof,game4,prof_game4,1280,720,30.000,1,233,232,fixed,0.4,C:\Users\Andrew\Desktop\prof\Dataset\game4\Clip6,"public TrackNet tennis set, game4/Clip6"
+video23,prof,game4,prof_game4,1280,720,30.000,1,483,434,fixed,0.7,C:\Users\Andrew\Desktop\prof\Dataset\game4\Clip7,"public TrackNet tennis set, game4/Clip7"
+video24,prof,game5,prof_game5,1280,720,30.000,1,191,191,fixed,0.5,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip1,"public TrackNet tennis set, game5/Clip1"
+video25,prof,game5,prof_game5,1280,720,30.000,1,57,57,fixed,1.1,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip2,"public TrackNet tennis set, game5/Clip2"
+video26,prof,game5,prof_game5,1280,720,30.000,1,75,66,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip3,"public TrackNet tennis set, game5/Clip3"
+video27,prof,game5,prof_game5,1280,720,30.000,1,247,246,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip4,"public TrackNet tennis set, game5/Clip4"
+video28,prof,game5,prof_game5,1280,720,30.000,1,110,110,fixed,0.6,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip5,"public TrackNet tennis set, game5/Clip5"
+video29,prof,game5,prof_game5,1280,720,30.000,1,221,219,fixed,1.1,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip6,"public TrackNet tennis set, game5/Clip6"
+video30,prof,game5,prof_game5,1280,720,30.000,1,194,190,fixed,0.5,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip7,"public TrackNet tennis set, game5/Clip7"
+video31,prof,game5,prof_game5,1280,720,30.000,1,117,117,fixed,0.4,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip8,"public TrackNet tennis set, game5/Clip8"
+video32,prof,game5,prof_game5,1280,720,30.000,1,181,181,fixed,0.4,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip9,"public TrackNet tennis set, game5/Clip9"
+video33,prof,game5,prof_game5,1280,720,30.000,1,110,110,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip10,"public TrackNet tennis set, game5/Clip10"
+video34,prof,game5,prof_game5,1280,720,30.000,1,36,36,fixed,1.2,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip11,"public TrackNet tennis set, game5/Clip11"
+video35,prof,game5,prof_game5,1280,720,30.000,1,173,169,fixed,0.4,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip12,"public TrackNet tennis set, game5/Clip12"
+video36,prof,game5,prof_game5,1280,720,30.000,1,43,43,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip13,"public TrackNet tennis set, game5/Clip13"
+video37,prof,game5,prof_game5,1280,720,30.000,1,35,35,fixed,0.5,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip14,"public TrackNet tennis set, game5/Clip14"
+video38,prof,game5,prof_game5,1280,720,30.000,1,174,135,fixed,0.8,C:\Users\Andrew\Desktop\prof\Dataset\game5\Clip15,"public TrackNet tennis set, game5/Clip15"
+video39,prof,game6,prof_game6,1280,720,30.000,1,596,575,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game6\Clip1,"public TrackNet tennis set, game6/Clip1"
+video40,prof,game6,prof_game6,1280,720,30.000,1,579,575,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game6\Clip2,"public TrackNet tennis set, game6/Clip2"
+video41,prof,game6,prof_game6,1280,720,30.000,1,529,527,fixed,0.3,C:\Users\Andrew\Desktop\prof\Dataset\game6\Clip3,"public TrackNet tennis set, game6/Clip3"
+video42,prof,game6,prof_game6,1280,720,30.000,1,285,272,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game6\Clip4,"public TrackNet tennis set, game6/Clip4"
+video43,prof,game7,prof_game7,1280,720,30.000,1,128,121,fixed,0.5,C:\Users\Andrew\Desktop\prof\Dataset\game7\Clip1,"public TrackNet tennis set, game7/Clip1"
+video44,prof,game7,prof_game7,1280,720,30.000,1,202,201,moving,2.2,C:\Users\Andrew\Desktop\prof\Dataset\game7\Clip2,"public TrackNet tennis set, game7/Clip2"
+video45,prof,game7,prof_game7,1280,720,30.000,1,47,46,fixed,0.3,C:\Users\Andrew\Desktop\prof\Dataset\game7\Clip3,"public TrackNet tennis set, game7/Clip3"
+video46,prof,game7,prof_game7,1280,720,30.000,1,901,847,fixed,0.4,C:\Users\Andrew\Desktop\prof\Dataset\game7\Clip4,"public TrackNet tennis set, game7/Clip4"
+video47,prof,game10,prof_game10,1280,720,30.000,1,316,316,fixed,0.3,C:\Users\Andrew\Desktop\prof\Dataset\game10\Clip1,"public TrackNet tennis set, game10/Clip1"
+video48,prof,game10,prof_game10,1280,720,30.000,1,132,132,fixed,0.3,C:\Users\Andrew\Desktop\prof\Dataset\game10\Clip2,"public TrackNet tennis set, game10/Clip2"
+video49,prof,game10,prof_game10,1280,720,30.000,1,188,188,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game10\Clip3,"public TrackNet tennis set, game10/Clip3"
+video50,prof,game10,prof_game10,1280,720,30.000,1,47,47,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game10\Clip4,"public TrackNet tennis set, game10/Clip4"
+video51,prof,game10,prof_game10,1280,720,30.000,1,65,65,fixed,0.1,C:\Users\Andrew\Desktop\prof\Dataset\game10\Clip5,"public TrackNet tennis set, game10/Clip5"
+video52,prof,game10,prof_game10,1280,720,30.000,1,292,292,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game10\Clip6,"public TrackNet tennis set, game10/Clip6"
+video53,prof,game10,prof_game10,1280,720,30.000,1,142,142,fixed,0.2,C:\Users\Andrew\Desktop\prof\Dataset\game10\Clip7,"public TrackNet tennis set, game10/Clip7"

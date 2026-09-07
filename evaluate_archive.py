@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cv2
+from finetune.data_policy import is_verified, read_review_status
 
 ROOT = Path(__file__).resolve().parent
 
@@ -77,9 +78,13 @@ def list_clips(names: Optional[List[str]], archive: Path = ARCHIVE) -> List[Tupl
     label_dir = archive / "labels" if (archive / "labels").is_dir() else archive
     video_dirs = [archive / "videos", archive] if (archive / "videos").is_dir() else [archive]
     clips = []
+    review_status = read_review_status(archive)
     for csv_path in sorted(label_dir.glob("*_ball.csv"), key=natural_key):
         clip = csv_path.stem[: -len("_ball")]
         if names and not any(fnmatch.fnmatchcase(clip, pattern) for pattern in names):
+            continue
+        if not is_verified(clip, review_status):
+            print(f"[skip] {clip}: labels are still under review")
             continue
         videos = [p for d in video_dirs for p in d.glob(f"{clip}.*")
                   if p.suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".m4v"}]
@@ -221,7 +226,9 @@ def run_raw(models: List[str], clips, thresholds: List[float], device: str,
             pairs = []
             for _, meta, rows in per_model[name]:
                 scale = 1080.0 / meta["width"] * (1920.0 / 1080.0) if meta["width"] != 1920 else 1.0
-                pairs.extend((label, pred if conf >= threshold else None) for label, pred, conf in rows)
+                pairs.extend((None if label is None else (label[0] * scale, label[1] * scale),
+                              (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
+                             for label, pred, conf in rows)
             print(fmt(f"conf>={threshold:.2f}", score(pairs, 1.0)))
         print(f"\n=== {name}: per clip at conf>=0.50 ===")
         for clip, meta, rows in per_model[name]:
@@ -284,7 +291,7 @@ def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str,
                 pred = (row["x"], row["y"]) if present else None
                 pairs.append((label, pred))
                 if present:
-                    bucket = by_source.setdefault(row.get("source", "?"), {"hit": 0, "wrong": 0, "invisible": 0})
+                    bucket = by_source.setdefault(row.get("source", "?"), {"hit": 0, "localized_error": 0, "wrong": 0, "invisible": 0})
                     bad = None
                     if label is None:
                         bucket["invisible"] += 1
@@ -293,12 +300,16 @@ def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str,
                         bucket["wrong"] += 1
                         bad = "wrong"
                     else:
-                        bucket["hit"] += 1
+                        error = math.hypot(pred[0] - label[0], pred[1] - label[1]) * scale
+                        bucket["hit" if error <= HIT_PX else "localized_error"] += 1
                     if bad:
                         where = _classify(pred[0], pred[1], row, fallback_keypoints, scale)
                         landed[where] = landed.get(where, 0) + 1
                         bad_frames.append((frame, bad, row.get("source"), where))
-            results.append((video_path.stem, score(pairs, scale), by_source, pairs, landed, bad_frames))
+            normalized_pairs = [(None if label is None else (label[0] * scale, label[1] * scale),
+                                 None if pred is None else (pred[0] * scale, pred[1] * scale))
+                                for label, pred in pairs]
+            results.append((video_path.stem, score(pairs, scale), by_source, normalized_pairs, landed, bad_frames))
         print(f"\n=== pipeline [{name}] per clip ===")
         pooled = []
         pooled_landed: Dict[str, int] = {}

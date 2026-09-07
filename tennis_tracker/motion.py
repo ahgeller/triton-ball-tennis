@@ -186,7 +186,7 @@ def refine_raw_motion_temporal_cpu(
         else:
             temporal = d_prev >= hi
         refined = cv2.bitwise_and(refined, temporal.astype(np.uint8) * 255)
-    if bool(getattr(cfg, "motion_raw_ball_color_gate", True)) and curr_bgr is not None:
+    if bool(getattr(cfg, "motion_raw_ball_color_gate", False)) and curr_bgr is not None:
         refined = cv2.bitwise_and(refined, _ball_color_support_from_bgr(curr_bgr, cfg))
     return _filter_raw_motion_components(refined, cfg)
 
@@ -857,7 +857,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
         pre_cuda = pre_cuda_hwc if return_cuda_frame else None
         return pre_np, raw_u8, boost_u8, cv.detach(), cs.detach(), pre_cuda
 
-    device = torch.device("cuda")
+    device = frame_gpu_t.device if frame_gpu_t is not None else torch.device(f"cuda:{int(cfg.device)}")
     if frame_gpu_t is not None:
         t = frame_gpu_t
     else:
@@ -977,6 +977,9 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
             # Gated motion drives downstream selector + dim_static (precision: rejects FPs).
             raw_motion_ungated = raw_motion
             raw_motion = raw_motion & temporal_motion
+
+    if raw_motion is not None and bool(getattr(cfg, "motion_raw_ball_color_gate", False)):
+        raw_motion = raw_motion & _ball_color_support_cuda(t, curr_v, curr_s, cfg)
 
     # Two boost masks with different roles:
     #   boost_mask_u8 (returned) - narrow, gated source -> selector's motion-blob picker.

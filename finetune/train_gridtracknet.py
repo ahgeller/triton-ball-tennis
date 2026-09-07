@@ -31,6 +31,7 @@ import re
 import shutil
 import sys
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -46,6 +47,7 @@ sys.path.insert(0, str(ROOT))
 from tennis_tracker.gridtracknet import (  # noqa: E402
     FRAMES_PER_UNIT, GRID_COLS, GRID_ROWS, HEIGHT, WIDTH, GridTrackNet, decode_predictions, frame_tensor, load_model,
 )
+from finetune.data_policy import is_verified, read_review_status
 
 WORKSPACE = Path(__file__).resolve().parent
 DATA_VERSION = 4
@@ -112,6 +114,7 @@ def find_clips(videos: Path, labels: Path, sources: Optional[List[str]] = None,
                exclude_clips: Optional[List[str]] = None, include_excluded: bool = False,
                cameras: Optional[List[str]] = None) -> List[Clip]:
     manifest = read_manifest(labels)
+    review_status = read_review_status(labels.parent)
     excluded = set() if include_excluded else set(read_exclusions(labels))
     if excluded:
         print(f"[data] skipping {len(excluded)} clip(s) listed in exclude.txt (--include-excluded to keep them)")
@@ -122,6 +125,8 @@ def find_clips(videos: Path, labels: Path, sources: Optional[List[str]] = None,
         clip = csv_path.stem[: -len("_ball")]
         row = manifest.get(clip, {})
         source = row.get("source") or ("custom" if not manifest else "unknown")
+        if not include_excluded and (not is_verified(clip, review_status) or source in {"custom-uncorrected", "unknown"}):
+            continue
         if sources and source not in sources:
             continue
         if cameras and (row.get("camera") or "untagged") not in cameras:
@@ -404,7 +409,9 @@ def evaluate_loss(model, loader, device, max_steps=None) -> float:
 def detector_metrics(weights: Path, clips: List[Clip], device: torch.device, threshold: float = 0.5) -> Dict[str, float]:
     """Raw-detector recall / wrong-object / false-alarm on whole clips (the evaluate_archive metric)."""
     model = load_model(weights, device)
-    hit = wrong = miss = false_alarm = quiet = 0
+    from evaluate_archive import score
+    from tennis_tracker.config import Config
+    pairs = []
     with torch.inference_mode():
         for clip, video, csv_path, _ in clips:
             fps, width, height, total = video_meta(video)
@@ -413,49 +420,49 @@ def detector_metrics(weights: Path, clips: List[Clip], device: torch.device, thr
             scale = 1920.0 / width
             capture = cv2.VideoCapture(str(video))
             units = [[] for _ in range(stride)]
+            recent = [deque(maxlen=FRAMES_PER_UNIT) for _ in range(stride)]
             predictions: Dict[int, Optional[Tuple[float, float]]] = {}
+            y_offset = Config().gridtracknet_y_offset_px * height / 1080.0
+            def infer(unit):
+                output = model(torch.cat([t for t, _ in unit]).unsqueeze(0))
+                for (_, frame_index), (point, _) in zip(unit, decode_predictions(output, width, height, threshold)):
+                    # A finalized miss is immutable, just like a detection.
+                    if frame_index not in predictions:
+                        predictions[frame_index] = None if point is None else (point[0], point[1] + y_offset)
             index = 0
-            while True:
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                unit = units[index % stride]
-                unit.append((frame_tensor(frame, device), index))
-                if len(unit) == FRAMES_PER_UNIT:
-                    output = model(torch.cat([t for t, _ in unit]).unsqueeze(0))
-                    for (_, frame_index), (point, _) in zip(unit, decode_predictions(output, width, height, threshold)):
-                        predictions[frame_index] = point
-                    unit.clear()
-                index += 1
-            capture.release()
+            try:
+                while True:
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    phase = index % stride
+                    unit = units[phase]
+                    item = (frame_tensor(frame, device), index)
+                    unit.append(item)
+                    recent[phase].append(item)
+                    if len(unit) == FRAMES_PER_UNIT:
+                        infer(unit)
+                        unit.clear()
+                    index += 1
+                for phase in range(stride):
+                    if units[phase] and len(recent[phase]) == FRAMES_PER_UNIT:
+                        infer(recent[phase])
+            finally:
+                capture.release()
             for frame, label in labels.items():
                 point = predictions.get(frame)
-                if label is None:
-                    if point is None:
-                        quiet += 1
-                    else:
-                        false_alarm += 1
-                elif point is None:
-                    miss += 1
-                else:
-                    error = math.hypot(point[0] - label[0], point[1] - label[1]) * scale
-                    if error <= HIT_PX:
-                        hit += 1
-                    elif error > WRONG_PX:
-                        wrong += 1
-    visible = hit + wrong + miss
-    return {
-        "recall": hit / max(visible, 1),
-        "wrong": wrong / max(visible, 1),
-        "false_alarm": false_alarm / max(false_alarm + quiet, 1),
-        "visible": visible,
-        "invisible": false_alarm + quiet,
-    }
+                pairs.append((None if label is None else (label[0] * scale, label[1] * scale),
+                              None if point is None else (point[0] * scale, point[1] * scale)))
+    stats = score(pairs, 1.0)
+    stats["wrong"] = stats.pop("wrong_obj")
+    return stats
 
 
 def better(candidate: Dict[str, float], incumbent: Dict[str, float]) -> bool:
     """Best = more correct ball with no more wrong-object outputs (within 1 frame in 200)."""
     if candidate["wrong"] > incumbent["wrong"] + 0.005:
+        return False
+    if candidate.get("false_alarm", 0.0) > incumbent.get("false_alarm", 0.0) + 0.005:
         return False
     return candidate["recall"] - 2.0 * max(0.0, candidate["wrong"] - incumbent["wrong"]) > incumbent["recall"]
 
@@ -488,6 +495,15 @@ def train(args: argparse.Namespace) -> None:
     clips = find_clips(args.videos, args.labels, args.sources, args.exclude_clips, args.include_excluded, args.cameras)
     names = [clip for clip, _, _, _ in clips]
     val_clips = resolve_val_clips(names, args.val_clips)
+    metadata = read_manifest(args.labels)
+    val_groups = {metadata.get(name, {}).get("group") for name in val_clips} - {None, ""}
+    val_clips = [name for name in names if name in val_clips or metadata.get(name, {}).get("group") in val_groups]
+    review_status = read_review_status(args.labels.parent)
+    unverified = [name for name in val_clips if not is_verified(name, review_status)]
+    if unverified:
+        raise ValueError(f"Validation requires reviewed labels, including group members: {unverified}")
+    if len(val_clips) == len(names):
+        raise ValueError("Group-safe validation leaves no training clips; choose an independent recording group")
     oversample = parse_oversample(args.oversample)
     manifest = prepare_data(clips, args.data_dir, val_clips, args.rebuild_data, args.prep_workers)
     if args.prepare_only:
@@ -622,7 +638,7 @@ def main() -> None:
     parser.add_argument("--val-clips", nargs="*", help="Held-out clip stems or globs (default: video10 if present, else the last clip)")
     parser.add_argument("--sources", nargs="*", help="Only use clips whose clips.csv source is listed (e.g. custom grid)")
     parser.add_argument("--exclude-clips", nargs="*", help="Clip stems or globs to leave out entirely")
-    parser.add_argument("--include-excluded", action="store_true", help="Also use clips listed in finetune/exclude.txt")
+    parser.add_argument("--include-excluded", action="store_true", help="Explicitly include excluded/unverified clips for training (validation still requires verified labels)")
     parser.add_argument("--cameras", nargs="*", choices=("fixed", "moving", "unknown", "untagged"),
                         help="Only clips with these clips.csv camera tags (from  ft.py camera), e.g. --cameras fixed")
     parser.add_argument("--augment", choices=("basic", "strong"), default="basic",

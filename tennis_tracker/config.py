@@ -29,6 +29,11 @@ class Config:
     # Player & court detection
     player_model_path: Optional[str] = "models/player.engine"
     court_model_path: Optional[str] = "models/courtdetection.engine"
+    # Players move a few px per frame at 60 fps and ByteTrack coasts the boxes
+    # between inferences, while _is_near_player dilates them by margin plus
+    # twice the box height -- far more than one frame of staleness. Measured
+    # on the UCSD clip: det frames identical at every interval tried, 19 of
+    # 3674 frames differ, all in near-player fill vetoes.
     player_detect_interval: int = 1
     court_detect_interval: int = 400
     court_conf: float = 0.10
@@ -79,7 +84,7 @@ class Config:
     motion_raw_component_max_dim: int = 38
     motion_raw_component_max_aspect: float = 5.5
     motion_raw_component_min_fill: float = 0.14
-    motion_raw_ball_color_gate: bool = True  # Keep raw motion only near loose tennis-ball color support
+    motion_raw_ball_color_gate: bool = False  # Keep raw motion only near loose tennis-ball color support; off by default because the CUDA path never applied it, so every tuned number assumes it off
     motion_raw_color_h_min: float = 18.0
     motion_raw_color_h_max: float = 75.0
     motion_raw_color_dilate: int = 5

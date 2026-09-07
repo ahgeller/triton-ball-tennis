@@ -308,6 +308,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
 
     def _prepass(self, capture, source_stride: int, width: int, height: int) -> None:
         cached = self.precomputed
+        finalized = set()
         # One independent five-frame unit per phase. The model wants 30 FPS
         # spacing, so at 60 FPS the odd frames form a second, equally valid
         # unit stream; running only phase 0 leaves every odd frame unobserved.
@@ -330,7 +331,10 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             for batch_index, (_, indices) in enumerate(batches):
                 start = batch_index * 5
                 for source_index, (point, confidence) in zip(indices, decoded[start:start + 5]):
-                    if point is None or cached[source_index]:
+                    if source_index in finalized:
+                        continue
+                    finalized.add(source_index)
+                    if point is None:
                         continue
                     x, y = point[0], point[1] + y_offset
                     cached[source_index] = [([x - radius, y - radius, x + radius, y + radius], confidence)]

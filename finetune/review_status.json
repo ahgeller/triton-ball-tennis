@@ -1,0 +1,5 @@
+{
+  "verified_video_min": 13,
+  "verified_clips": [],
+  "note": "User confirmed video13 and onward manually verified on 2026-09-07. Other clips remain under review and are excluded from evaluation and default training. Update this file when the user clears additional clips."
+}

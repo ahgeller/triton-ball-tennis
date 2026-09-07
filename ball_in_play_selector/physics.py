@@ -36,6 +36,23 @@ def _kinematic_motion_frac(
 def _xy_dist(ax: float, ay: float, bx: float, by: float) -> float:
     return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
 
+def _projectile_matrices(cfg: SelectorConfig, dt: float = 1.0):
+    """Exact linear-drag transition in source-frame units; drag is a 30 FPS reference."""
+    drag = float(cfg.gravity_drag_factor) if cfg.gravity_enabled else 1.0
+    if not 0.0 < drag <= 1.0:
+        raise ValueError("gravity_drag_factor must be in (0, 1]")
+    rate = -math.log(drag) * 30.0 / max(float(cfg.fps), 1.0)
+    if rate < 1e-8:
+        decay, travel, fall = 1.0, float(dt), 0.5 * dt * dt
+    else:
+        decay = math.exp(-rate * dt)
+        travel = -math.expm1(-rate * dt) / rate
+        fall = (dt - travel) / rate
+    F = np.array([[1., 0., travel, 0.], [0., 1., 0., travel],
+                  [0., 0., decay, 0.], [0., 0., 0., decay]])
+    B = np.array([[0.], [fall], [0.], [travel]])
+    return F, B
+
 def _predict_projectile(
     pos: Tuple[float, float],
     vel: Tuple[float, float],
@@ -52,17 +69,9 @@ def _predict_projectile(
     if not cfg.gravity_enabled or dt <= 0:
         return (pos[0] + vel[0] * dt, pos[1] + vel[1] * dt)
 
-    g = cfg.gravity_px_per_frame2
-    drag = cfg.gravity_drag_factor
-    x, y = pos
-    vx, vy = vel
-
-    for _ in range(dt):
-        x += vx
-        y += vy
-        vx *= drag
-        vy = vy * drag + g
-    return (x, y)
+    F, B = _projectile_matrices(cfg, dt)
+    state = F @ np.array([*pos, *vel]) + B[:, 0] * cfg.gravity_px_per_frame2
+    return float(state[0]), float(state[1])
 
 def _predict_projectile_vel(
     vel: Tuple[float, float],
@@ -72,13 +81,9 @@ def _predict_projectile_vel(
     """Predict velocity after dt frames under projectile physics."""
     if not cfg.gravity_enabled or dt <= 0:
         return vel
-    g = cfg.gravity_px_per_frame2
-    drag = cfg.gravity_drag_factor
-    vx, vy = vel
-    for _ in range(dt):
-        vx *= drag
-        vy = vy * drag + g
-    return (vx, vy)
+    F, B = _projectile_matrices(cfg, dt)
+    state = F @ np.array([0., 0., *vel]) + B[:, 0] * cfg.gravity_px_per_frame2
+    return float(state[2]), float(state[3])
 
 class BallKalmanFilter:
     def __init__(self, x0: float, y0: float, cfg: SelectorConfig):
@@ -163,9 +168,7 @@ class BallKalmanFilter:
         """Always return a 1D view of the state (handles both (4,) and (4,1) shapes)."""
         return self.kf.x.flatten()
 
-    def predict(self) -> Tuple[float, float]:
-        """Predict the next state, scaling gravity by local pixel depth."""
-        x = self._x()
+    def _gravity_at(self, x, reference):
         # Depth-aware gravity: compute local px/meter at current ball position,
         # then scale gravity so 1 real-world g maps correctly regardless of depth.
         base_g = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
@@ -174,40 +177,31 @@ class BallKalmanFilter:
                 float(x[0]), float(x[1]),
                 self._court_H, self._court_H_inv, self._court_w_m
             )
-            if local_scale is not None and self._ref_px_per_m is not None and self._ref_px_per_m > 0:
+            if local_scale is not None and reference is not None and reference > 0:
                 # Scale gravity so that near/far balls both feel the same real g
-                depth_scale = local_scale / self._ref_px_per_m
+                depth_scale = local_scale / reference
                 base_g *= depth_scale
             elif local_scale is not None:
                 # First valid measurement: store as reference
-                self._ref_px_per_m = local_scale
-        u = np.array([[base_g]])
+                reference = local_scale
+        return base_g, reference
 
-        # Apply drag to velocity before prediction
-        if self.cfg.gravity_enabled:
-            self.kf.x[2, 0] = x[2] * self.cfg.gravity_drag_factor
-            self.kf.x[3, 0] = x[3] * self.cfg.gravity_drag_factor
-
-        self.kf.predict(u=u)
+    def predict(self) -> Tuple[float, float]:
+        """Use the same transition for ROI, filter state and covariance."""
+        gravity, self._ref_px_per_m = self._gravity_at(self._x(), self._ref_px_per_m)
+        self.kf.F, self.kf.B = _projectile_matrices(self.cfg)
+        self.kf.predict(u=np.array([[gravity]]))
         x = self._x()
         return float(x[0]), float(x[1])
 
     def predict_dt(self, dt: int) -> Tuple[float, float]:
         """Predict the state an arbitrary number of frames ahead WITHOUT changing the true state."""
         x_pred = self._x().copy()
-        
+        reference = self._ref_px_per_m
+        F, B = _projectile_matrices(self.cfg)
         for _ in range(dt):
-            # Apply drag to predictions
-            if self.cfg.gravity_enabled:
-                x_pred[2] *= self.cfg.gravity_drag_factor
-                x_pred[3] *= self.cfg.gravity_drag_factor
-                
-            x_pred = np.dot(self.kf.F, x_pred)
-            x_pred = np.asarray(x_pred).flatten()
-            
-            # Apply gravity to predictions
-            if self.cfg.gravity_enabled:
-                x_pred[3] += self.cfg.gravity_px_per_frame2
+            gravity, reference = self._gravity_at(x_pred, reference)
+            x_pred = F @ x_pred + B[:, 0] * gravity
                 
         return float(x_pred[0]), float(x_pred[1])
 
