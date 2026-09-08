@@ -82,7 +82,7 @@ class FixTests(unittest.TestCase):
             def read(self):
                 ok, frame = super().read()
                 return ok, np.full_like(frame, 42) if ok else None
-        source = SimpleNamespace(position=0, capture=DuplicateCapture(3), sig_of={})
+        source = SimpleNamespace(position=0, capture=DuplicateCapture(3), sig_of={}, end=None)
         tool = SimpleNamespace(source=source, signature=label_tool.Tool.signature)
         tool.remember = lambda index, sig: label_tool.Tool.remember(tool, index, sig)
         for index in range(3):
