@@ -85,6 +85,8 @@ import argparse
 import csv
 import hashlib
 import json
+import math
+import os
 import re
 import sys
 import time
@@ -218,6 +220,44 @@ def shift_held() -> bool:
     return bool(_user32.GetKeyState(0x10) & 0x8000)          # VK_SHIFT
 
 
+def replace_file(temporary: Path, path: Path) -> None:
+    """Move a finished temporary file over `path`. Windows refuses while another process (Excel,
+    an editor, a virus scan) has the target open, so retry for a moment before giving up."""
+    for attempt in range(5):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` through a temporary file, flushed to disk first, so a crash or power
+    cut leaves either the old file or the new one, never a truncated one."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    replace_file(temporary, path)
+
+
+# Keys with no character of their own come back from this build as their bare virtual-key code,
+# and some of those codes are also printable keys the tool binds: F1..F12 are 112..123, which read
+# as p, q, r, s, t, u, v ...; Insert/Delete are 45/46 ('-', '.'); PgUp/PgDn/End/Home are 33..36.
+# The arrows (37..40) are wanted and handled as arrows. A letter is typed on a different key, so
+# asking the OS whether the virtual key itself is down tells the two apart.
+NON_CHARACTER_KEYS = set(range(0x70, 0x7C)) | {0x2D, 0x2E} | set(range(0x21, 0x25))
+
+
+def non_character_key(code: int) -> bool:
+    """Is `code` an F-key, Insert, Delete or a page key that only looks like a printable one?"""
+    return (_user32 is not None and code in NON_CHARACTER_KEYS
+            and bool(_user32.GetKeyState(code) & 0x8000))
+
+
 def load_settings(path: Path) -> dict:
     """The toggles worth keeping between sessions. Missing or broken file: the defaults."""
     try:
@@ -229,9 +269,7 @@ def load_settings(path: Path) -> dict:
 
 def save_settings(path: Path, settings: dict) -> None:
     try:
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(json.dumps(settings, indent=1), encoding="utf-8")
-        temporary.replace(path)
+        write_atomic(path, json.dumps(settings, indent=1))
     except OSError as error:
         print(f"[warn] could not save settings to {path}: {error}")
 
@@ -280,6 +318,11 @@ def enhance(display: np.ndarray, mode: str, previous: Optional[np.ndarray] = Non
 class Row:
     __slots__ = ("frame", "x", "y", "visible", "source", "conf", "reviewed", "edited", "suspect",
                  "history", "clip")
+    revision = 0                      # bumped by every write to any row; Tool.render_state keys on it
+
+    def __setattr__(self, name, value) -> None:
+        object.__setattr__(self, name, value)
+        Row.revision += 1
 
     def __init__(self, frame: int, x: float, y: float, visible: bool, source: str, conf: float):
         self.frame, self.x, self.y, self.visible = frame, x, y, visible
@@ -320,10 +363,14 @@ def fit_text(text: str, width: int, scale: float, thin: int) -> str:
     full = measure(text)
     if full <= width:
         return text
+    original = text
     text = text[:max(0, int(len(text) * width / full))]
     while text and measure(text) > width:
         text = text[:-1]
-    return text
+    # End on a whole word ("q=qui" reads as a typo), unless the cut already fell between words.
+    if original[len(text):len(text) + 1] not in (" ", "") and " " in text.strip():
+        text = text[:text.rstrip().rfind(" ")]
+    return text.rstrip()
 
 
 def is_visible(x: float, y: float, width: int, height: int) -> bool:
@@ -337,7 +384,10 @@ def load_rows(csv_path: Path, width: int, height: int, origin: str = "det") -> L
     rows = []
     with csv_path.open(newline="", encoding="utf-8-sig") as handle:
         for record in csv.DictReader(handle):
-            frame = int(re.fullmatch(r"frame_(\d+)", record["frame"].strip()).group(1))
+            match = re.fullmatch(r"frame_(\d+)", (record["frame"] or "").strip())
+            if match is None:
+                raise ValueError(f"{csv_path.name}: bad frame cell {record['frame']!r}")
+            frame = int(match.group(1))
             x, y = float(record["ball_x"]), float(record["ball_y"])
             visible = is_visible(x, y, width, height)
             conf = record.get("conf")
@@ -358,7 +408,9 @@ def save_rows(csv_path: Path, rows: List[Row], width: int, height: int) -> None:
                 writer.writerow([f"frame_{row.frame:03d}", f"{row.x:.2f}", f"{row.y:.2f}"])
             else:
                 writer.writerow([f"frame_{row.frame:03d}", width - 1, 0])
-    temporary.replace(csv_path)
+        handle.flush()
+        os.fsync(handle.fileno())
+    replace_file(temporary, csv_path)
 
 
 def save_suspects(path: Path, rows: List[Row]) -> None:
@@ -371,32 +423,33 @@ def save_suspects(path: Path, rows: List[Row]) -> None:
         return
     try:
         blob = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        # Older audits wrote their check list as "frames"; load_suspects still reads it, so it has
+        # to be carried over here too, or the first save would throw those flags away.
+        flagged = {"unplaceable": [int(f) for f in blob.get("unplaceable", [])],
+                   "check": [int(f) for f in blob.get("check", blob.get("frames", []))]}
+    except (OSError, ValueError, TypeError, AttributeError):
         return
     settled = {row.frame for row in rows if row.settled}
-    kept = {kind: [f for f in blob.get(kind, []) if int(f) not in settled]
-            for kind in ("unplaceable", "check")}
+    kept = {kind: [f for f in frames if f not in settled] for kind, frames in flagged.items()}
     if not (kept["unplaceable"] or kept["check"]):
         path.unlink(missing_ok=True)
         return
-    if all(kept[kind] == blob.get(kind, []) for kind in kept):
+    if kept == flagged and "frames" not in blob:
         return
+    blob.pop("frames", None)
     blob.update(kept)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(blob, indent=1), encoding="utf-8")
-    temporary.replace(path)
+    write_atomic(path, json.dumps(blob, indent=1))
 
 
 def save_review(path: Path, rows: List[Row], cursor: int, zoom: float) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps({
+    write_atomic(path, json.dumps({
         "cursor": cursor,
+        "frame": rows[cursor].frame if 0 <= cursor < len(rows) else None,   # resume by frame, not index
         "zoom": zoom,
         "reviewed": [row.frame for row in rows if row.reviewed],
         "edited": [row.frame for row in rows if row.edited],
         "evidence": {str(row.frame): {"source": row.source, "conf": row.conf} for row in rows},
-    }), encoding="utf-8")
-    temporary.replace(path)
+    }))
 
 
 def load_suspects(path: Path, rows: List[Row]) -> int:
@@ -407,7 +460,8 @@ def load_suspects(path: Path, rows: List[Row]) -> int:
         blob = json.loads(path.read_text(encoding="utf-8"))
         frames = set(int(f) for f in blob.get("unplaceable", [])) | \
                  set(int(f) for f in blob.get("check", blob.get("frames", [])))
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError, AttributeError):
+        print(f"[warn] {path.name} is not a flag file this tool can read; its flags are ignored")
         return 0
     for row in rows:
         row.suspect = row.frame in frames
@@ -421,13 +475,20 @@ def load_review(path: Path, rows: List[Row]):
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    reviewed, edited = set(state.get("reviewed", [])), set(state.get("edited", []))
+    if not isinstance(state, dict):
+        print(f"[warn] {path.name} is not a review file this tool can read; starting it afresh")
+        return None
+    reviewed, edited = set(state.get("reviewed") or []), set(state.get("edited") or [])
+    evidence_of = state.get("evidence") if isinstance(state.get("evidence"), dict) else {}
     for row in rows:
         row.reviewed = row.frame in reviewed
         row.edited = row.frame in edited
-        evidence = state.get("evidence", {}).get(str(row.frame))
-        if evidence is not None:
-            row.source, row.conf = evidence["source"], float(evidence["conf"])
+        evidence = evidence_of.get(str(row.frame))
+        if isinstance(evidence, dict) and "source" in evidence and "conf" in evidence:
+            try:
+                row.source, row.conf = str(evidence["source"]), float(evidence["conf"])
+            except (TypeError, ValueError):
+                pass
     return state
 
 
@@ -525,6 +586,13 @@ class Tool:
         self.probe_at = 0.0           # when the last one was sent
         self.window_reset_needed = False
         self.window_resets = 0
+        self.reset_times: List[float] = []   # recent rebuilds, so a check that keeps failing gives up
+        self.normal_rect = None       # the window's rect before going full screen, to rebuild into
+        self.pending_key = -1         # a key pumped out of the queue by a short waitKey, kept for loop
+        self.render_key = None        # what the last single-frame render was drawn from, see render_state
+        self.render_cache = None
+        self.render_fresh = True      # did the last render() draw anything new?
+        self.shown = None             # the image last handed to imshow, so an unchanged one is not re-sent
         self.direction = 1            # which way the last move went, so prefetch runs ahead of a or d
 
     # ---------------------------------------------------------------- the clip we are in
@@ -554,6 +622,7 @@ class Tool:
         """Create a resizable window filling the desktop."""
         self.create_window()
         cv2.imshow(WINDOW, np.zeros((self.height, self.width, 3), dtype=np.uint8))
+        self.shown = None             # the window shows a blank, not the last render
         cv2.waitKey(1)
         area = work_area()
         hwnd = _user32.FindWindowW(None, WINDOW) if _user32 else None
@@ -568,13 +637,27 @@ class Tool:
         viewport's own zoom and pan back to x1 from outside, since highgui offers no call for it.
         Reached when probe_viewport finds the picture is not where it should be."""
         self.window_reset_needed = False
+        now = time.monotonic()
+        self.reset_times = [t for t in self.reset_times if now - t < 60.0] + [now]
+        if len(self.reset_times) > 3:
+            # A check that fails again straight after a rebuild is measuring something other than
+            # Qt's zoom; rebuilding every few seconds forever is far worse than not checking.
+            self.probe_at = float("inf")
+            self.viewport_probe = None
+            print("[view] the window zoom check keeps failing; it is off for the rest of this session")
+            return
         self.window_resets += 1
         rect = _RECT()
         hwnd = _user32.FindWindowW(None, WINDOW) if _user32 else None
-        placed = bool(hwnd) and bool(_user32.GetWindowRect(hwnd, ctypes.byref(rect)))
+        if self.fullscreen and self.normal_rect is not None:
+            rect.left, rect.top, rect.right, rect.bottom = self.normal_rect   # not the monitor's rect
+            placed = True
+        else:
+            placed = bool(hwnd) and bool(_user32.GetWindowRect(hwnd, ctypes.byref(rect)))
         cv2.destroyWindow(WINDOW)
         cv2.waitKey(1)
         self.create_window()
+        self.shown = None             # a new, empty window: whatever was shown went with the old one
         self.show()
         cv2.waitKey(1)
         hwnd = _user32.FindWindowW(None, WINDOW) if _user32 else None
@@ -595,14 +678,20 @@ class Tool:
         """Draw at the size the window actually is, so enlarging it gains detail instead of blur."""
         self.anchor = None
         self.aim = None
+        old = (self.view_w, self.view_h, self.hud_h)
         self.ui = max(1.0, min(client_w / UI_REFERENCE, 2.5))
         self.hud_h = int(round(HUD * self.ui))
         room_h = max(120, client_h - self.hud_h)
         self.base_scale = max(0.2, min(client_w / self.width, room_h / self.height, MAX_UPSCALE))
-        self.view_w = max(160, int(round(self.width * self.base_scale)))
-        self.view_h = max(90, int(round(self.height * self.base_scale)))
+        # The view is the whole client area, not just the frame at that scale: highgui keeps the
+        # image's aspect ratio and fills whatever is left over in white, which framed a capped or
+        # differently-shaped frame in bright bars. Beyond the frame the view is black.
+        self.view_w = max(160, int(client_w))
+        self.view_h = max(90, int(room_h))
         self.centre_view()
-        self.map_stale = True         # a new image size means highgui fits it differently: re-measure
+        if (self.view_w, self.view_h, self.hud_h) != old:
+            self.map_stale = True     # a new image size means highgui fits it differently: re-measure
+            self.void_probe()
 
     def track_window(self) -> None:
         """Notice the window being resized, maximised or full-screened, and follow it: both the render
@@ -618,6 +707,11 @@ class Tool:
         self.map_stale = True
 
     def toggle_fullscreen(self) -> None:
+        if not self.fullscreen and _user32 is not None:
+            hwnd, rect = _user32.FindWindowW(None, WINDOW), _RECT()
+            if hwnd and _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                self.normal_rect = (rect.left, rect.top, rect.right, rect.bottom)
+        self.void_probe()
         self.fullscreen = not self.fullscreen
         cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN,
                               cv2.WINDOW_FULLSCREEN if self.fullscreen else cv2.WINDOW_NORMAL)
@@ -640,8 +734,13 @@ class Tool:
         self.origin = (self.center[0] - self.view_w / self.scale / 2.0,
                        self.center[1] - self.view_h / self.scale / 2.0)
 
+    # Frame coordinates put pixel k's centre at k + 0.5 (what the click mapping, GridTrackNet's grid
+    # decode and training's encode all assume). View pixel u covers [u, u + 1), so a frame point maps
+    # to the view pixel whose span holds it (floor, not round: round's ties go to even, which put a
+    # ball dead centre a pixel off); render's warp is built on the same convention.
     def to_view(self, x: float, y: float):
-        return int(round((x - self.origin[0]) * self.scale)), int(round((y - self.origin[1]) * self.scale))
+        return (math.floor((x - self.origin[0]) * self.scale),
+                math.floor((y - self.origin[1]) * self.scale))
 
     def to_frame(self, vx: float, vy: float):
         return self.origin[0] + vx / self.scale, self.origin[1] + vy / self.scale
@@ -668,7 +767,12 @@ class Tool:
         """
         if self.last_clip != self.clip:
             if self.last_clip is not None:
-                self.by_clip[self.last_clip].frame_cache.clear()
+                # Let go of the clip being left, decoder included: each open capture holds 75-140 MB
+                # once it has decoded, and a long run otherwise keeps every clip it passed.
+                left = self.by_clip[self.last_clip]
+                left.frame_cache.clear()
+                left.capture.release()
+                left.position = -1        # decode_at reopens it if you come back
             self.last_clip = self.clip
             self.width, self.height = self.source.width, self.source.height
             self.fit_view(*(self.client or (self.view_w, self.view_h + self.hud_h)))
@@ -772,10 +876,14 @@ class Tool:
                tuple((i, self.rows[i].x, self.rows[i].y, self.rows[i].visible,
                       self.rows[i].reviewed, self.rows[i].edited) for i in self.grid_indices))
         if key == self.grid_cache_key:
+            self.render_fresh = False
             return self.grid_cache
+        self.render_fresh = True
         canvas = np.zeros((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
         tiles = []
         selected = self.cursor
+        ui = self.ui
+        band = int(round(28 * ui))                       # title strip above each tile
         try:
             for slot, index in enumerate(self.grid_indices):
                 self.cursor = index
@@ -783,35 +891,46 @@ class Tool:
                 image = self.frame(row.frame)
                 left, right = slot % 4 * self.view_w // 4, (slot % 4 + 1) * self.view_w // 4
                 top, bottom = slot // 4 * self.view_h // 2, (slot // 4 + 1) * self.view_h // 2
-                y0 = top + 28
+                y0 = top + band
                 width, height = right - left, bottom - y0
                 scale = width / 96.0 * self.grid_zoom if row.visible else min(width / self.width, height / self.height)
                 cx, cy = self.grid_centers[index] if row.visible else (self.width / 2, self.height / 2)
                 ox, oy = cx - width / (2 * scale), cy - height / (2 * scale)
-                matrix = np.array([[scale, 0, -ox * scale], [0, scale, -oy * scale]], np.float64)
+                # Pixel centres sit at k + 0.5 in frame coordinates, as in render (see to_view).
+                matrix = np.array([[scale, 0, scale * (0.5 - ox) - 0.5],
+                                   [0, scale, scale * (0.5 - oy) - 0.5]], np.float64)
                 tile = cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_NEAREST)
                 if FILTERS[self.filter] not in ("off", "motion"):    # motion needs the frame before
                     tile = enhance(tile, FILTERS[self.filter])
-                canvas[y0:bottom, left:right] = tile
                 color = (70, 210, 70) if row.settled else (0, 210, 255)
                 if row.visible:
-                    px, py = int(round((row.x-ox)*scale))+left, int(round((row.y-oy)*scale))+y0
-                    # Leave the actual ball center unobstructed, including at high zoom.
+                    px = math.floor((row.x - ox) * scale)     # the tile pixel holding the ball
+                    py = math.floor((row.y - oy) * scale)
+                    inner, outer = int(round(8 * ui)), int(round(17 * ui))
+                    # Drawn on the tile, so a mark near its edge cannot spill onto a neighbour, and
+                    # leaving the actual ball center unobstructed, including at high zoom.
                     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        cv2.line(canvas, (px+dx*8, py+dy*8), (px+dx*17, py+dy*17), (0,0,0), 3)
-                        cv2.line(canvas, (px+dx*8, py+dy*8), (px+dx*17, py+dy*17), (255,255,255), 1)
+                        start, end = (px + dx * inner, py + dy * inner), (px + dx * outer, py + dy * outer)
+                        cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
+                        cv2.line(tile, start, end, (255, 255, 255), max(1, int(round(ui))))
+                canvas[y0:bottom, left:right] = tile
                 title = f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
                 if not row.visible:
                     title += "  absent"
-                cv2.putText(canvas, title, (left+6, top+20), cv2.FONT_HERSHEY_SIMPLEX, .5, color, 1)
+                cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
+                            (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
+                            color, max(1, int(ui)))
                 cv2.rectangle(canvas, (left, top), (right-1, bottom-1), (255, 180, 50) if index == selected else (65, 65, 65), 2)
                 tiles.append((index, (left, y0, right-1, bottom-1), ox, oy, scale))
         finally:
             self.cursor = selected
         caption = f"{self.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}  a/d=page  TAB=single"
-        cv2.putText(canvas, fit_text(caption, self.view_w-12, .48, 1), (6, self.view_h+21), cv2.FONT_HERSHEY_SIMPLEX, .48, (255,255,255), 1)
-        cv2.putText(canvas, "+/- zoom | i/j/k/l: 1px | SHIFT+i/j/k/l: 0.25px | u: undo selected | v: absent | q: save/quit",
-                    (6, self.view_h+44), cv2.FONT_HERSHEY_SIMPLEX, .42, (200,200,200), 1)
+        thin = max(1, int(ui))
+        cv2.putText(canvas, fit_text(caption, self.view_w - 12, .48 * ui, thin),
+                    (6, self.view_h + int(round(21 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .48 * ui, (255, 255, 255), thin)
+        keys = "+/- zoom | i/j/k/l: 1px | SHIFT+i/j/k/l: 0.25px | u: undo selected | v: absent | q: save/quit"
+        cv2.putText(canvas, fit_text(keys, self.view_w - 12, .42 * ui, thin),
+                    (6, self.view_h + int(round(44 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .42 * ui, (200, 200, 200), thin)
         self.grid_tiles = tiles
         self.grid_cache_key, self.grid_cache = key, canvas
         return canvas
@@ -822,7 +941,9 @@ class Tool:
     def show(self) -> None:
         image = self.render()
         presented = (self.cursor, self.origin, self.scale)
-        cv2.imshow(WINDOW, image)
+        if self.render_fresh or image is not self.shown:   # unchanged and already on screen: skip
+            cv2.imshow(WINDOW, image)
+            self.shown = image
         self.presented = presented
 
     def grid_mouse(self, event, x, y) -> None:
@@ -839,13 +960,18 @@ class Tool:
                 else:                 # +0.5: highgui floors the pointer to a pixel; aim at its middle
                     fx, fy = ox + (x + 0.5 - box[0]) / scale, oy + (y + 0.5 - box[1]) / scale
                     if 0 <= fx < self.width and 0 <= fy < self.height:
-                        self.set_point(fx, fy)
+                        was_visible = self.rows[index].visible
+                        if self.set_point(fx, fy) and not was_visible:
+                            # The tile was showing the whole frame; zoom it on the ball just placed.
+                            self.grid_centers[index] = (self.rows[index].x, self.rows[index].y)
                 return
 
     @staticmethod
     def signature(image) -> bytes:
         """A cheap fingerprint of a frame, enough to recognise one we have decoded before."""
-        return hashlib.blake2b(cv2.resize(image, (96, 54), interpolation=cv2.INTER_AREA).tobytes(),
+        # INTER_LINEAR samples rather than averages: 20-50x cheaper than INTER_AREA on 1080p, where
+        # INTER_AREA cost as much as the decode itself, and just as distinct between frames.
+        return hashlib.blake2b(cv2.resize(image, (96, 54), interpolation=cv2.INTER_LINEAR).tobytes(),
                                digest_size=8).digest()
 
     def decode_at(self, index: int):
@@ -879,10 +1005,19 @@ class Tool:
                     source.end = source.position         # label past it fails fast, not four times
                 source.position = -1                     # (a failure at 0 is a capture that did not
                 return None                              # open, which a reopen may yet fix)
-            if source.position % LANDMARK == 0 and source.position not in source.sig_of:
+            at = source.position
+            landmark = at % LANDMARK == 0 and at not in source.sig_of
+            # A label frame just short of the target is worth keeping too: stepping back from here
+            # lands on it, and near the start of a clip (no seek allowed) that used to reopen the
+            # clip and walk from frame 0 on every press of `a`.
+            keep = (at in source.label_frames and index - at <= SEEK_BACKUP
+                    and at not in source.frame_cache)
+            if landmark or keep:
                 ok, passed = source.capture.retrieve()   # a landmark for a later seek to prove itself
                 if ok:                                   # against; one frame in eight costs little
-                    source.sig_of[source.position] = self.signature(passed)
+                    source.sig_of.setdefault(at, self.signature(passed))
+                    if keep:
+                        self.remember_frame(at, passed)
             source.position += 1
         ok, image = source.capture.read()
         if not ok:
@@ -939,6 +1074,9 @@ class Tool:
             if not ok:
                 break
             decoded.append((claimed, self.signature(image), image))
+            if len(decoded) > source.cache_limit:        # only the newest could be cached anyway:
+                old = decoded[-source.cache_limit - 1]   # do not hold 64 full frames to find out
+                decoded[-source.cache_limit - 1] = (old[0], old[1], None)
             claimed += 1
             if claimed > index:                          # through the frame wanted: proven yet?
                 offset = self.match_offset(decoded)
@@ -951,7 +1089,7 @@ class Tool:
             if truly < 0:
                 continue
             source.sig_of.setdefault(truly, signature)
-            if truly in source.label_frames:
+            if image is not None and truly in source.label_frames:
                 self.remember_frame(truly, image)
         source.position = decoded[-1][0] + offset + 1
         return True
@@ -1036,17 +1174,23 @@ class Tool:
 
         Keeps going for about a screen refresh rather than one frame per idle tick: a run of SPACE
         presses at two or three a second was outrunning one decode per 30 ms wait."""
+        s = self.step                                    # n/d/p/a land every step-th row
         if self.direction >= 0:
-            upcoming = (self.walk[self.walk_pos + 1:self.walk_pos + 1 + PREFETCH] if self.walk
-                        else range(self.cursor + 1, min(self.cursor + 1 + PREFETCH, len(self.rows))))
+            upcoming = (self.walk[self.walk_pos + s::s][:PREFETCH] if self.walk
+                        else range(self.cursor + s, min(self.cursor + s * PREFETCH + 1, len(self.rows)), s))
         else:                                            # heading back: run ahead of `a` instead
-            upcoming = (self.walk[max(0, self.walk_pos - PREFETCH):self.walk_pos][::-1] if self.walk
-                        else range(self.cursor - 1, max(-1, self.cursor - 1 - PREFETCH), -1))
+            upcoming = ((self.walk[self.walk_pos - s::-s][:PREFETCH] if self.walk_pos - s >= 0 else [])
+                        if self.walk else range(self.cursor - s, max(-1, self.cursor - s * PREFETCH - 1), -s))
         started, worked = time.monotonic(), False
         for index in upcoming:
             if self.rows[index].clip != self.rows[self.cursor].clip:
                 break                                    # do not disturb the next clip's capture yet
             frame = self.rows[index].frame
+            if FILTERS[self.filter] == "motion" and index > 0 and self.rows[index - 1].clip == self.rows[index].clip:
+                before = self.rows[index - 1].frame      # the motion view diffs against the row before;
+                if (before not in self.source.frame_cache and before not in self.source.missing
+                        and before >= self.source.position >= 0):
+                    self.frame(before)                   # forward of the capture, so no seek
             if frame in self.source.frame_cache or frame in self.source.missing:
                 continue
             self.frame(frame)
@@ -1104,25 +1248,49 @@ class Tool:
         cv2.rectangle(display, (left - 1, top - 1), (left + width, top + height), (110, 110, 110), 1)
         self.inset_box = (left, top, left + width - 1, top + height - 1)
 
+    def render_state(self, image: np.ndarray, before) -> tuple:
+        """Everything the single-frame view is drawn from. render redraws only when this changes,
+        so the loop can call it every 30 ms for free. IF YOU MAKE render, draw_inset OR THE HUD READ
+        SOMETHING NEW, ADD IT HERE - a screen that does not change when it should is far worse than
+        the CPU this saves. Any write to any Row bumps Row.revision, which covers the labels, review
+        flags, trail and every counter in the HUD; the frame images are keyed by identity, which
+        changes when one is decoded, evicted or replaced by a placeholder."""
+        return (Row.revision, self.cursor, self.origin, self.scale, self.zoom, self.view_w, self.view_h,
+                self.hud_h, self.ui, self.width, self.height, self.filter, self.inset, self.trail,
+                self.follow, self.step, self.dirty, id(self.walk), len(self.walk), self.walk_pos,
+                self.ghost, len(self.sources), id(image), id(before))
+
     def render(self) -> np.ndarray:
         if self.grid:
             return self.render_grid()
         self.centre_view()
         row = self.rows[self.cursor]
         image = self.frame(row.frame)
-        x0, y0 = self.origin
-        # Resize with exact sub-pixel origin handling via warpAffine.
-        matrix = np.array([[self.scale, 0.0, -x0 * self.scale], [0.0, self.scale, -y0 * self.scale]], dtype=np.float64)
-        interpolation = cv2.INTER_LINEAR if self.zoom < 8 else cv2.INTER_NEAREST
-        display = cv2.warpAffine(image, matrix, (self.view_w, self.view_h), flags=interpolation)
         mode = FILTERS[self.filter]
+        before = self.previous_image() if mode == "motion" else None
+        key = self.render_state(image, before)
+        if key == self.render_key:
+            self.render_fresh = False
+            return self.render_cache
+        self.render_fresh = True
+        x0, y0 = self.origin
+        # Resize with exact sub-pixel origin handling via warpAffine. warpAffine puts pixel centres on
+        # whole numbers while frame coordinates put them at k + 0.5 (see to_view): the half-pixel
+        # terms line the drawn picture up with where a click is stored.
+        s = self.scale
+        matrix = np.array([[s, 0.0, s * (0.5 - x0) - 0.5], [0.0, s, s * (0.5 - y0) - 0.5]], dtype=np.float64)
+        interpolation = cv2.INTER_LINEAR if self.zoom < 8 else cv2.INTER_NEAREST
+        # One canvas for picture and HUD, the picture warped straight into its top: building them
+        # apart and stacking them copied the whole view once more per redraw. A fresh canvas each
+        # time, so an image handed out earlier (the cache, a caller's reference) is never drawn over.
+        canvas = np.empty((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
+        display = canvas[:self.view_h]
+        cv2.warpAffine(image, matrix, (self.view_w, self.view_h), dst=display, flags=interpolation)
         if mode != "off":
             previous = None
-            if mode == "motion":
-                before = self.previous_image()
-                if before is not None:
-                    previous = cv2.warpAffine(before, matrix, (self.view_w, self.view_h), flags=interpolation)
-            display = enhance(display, mode, previous)
+            if before is not None:
+                previous = cv2.warpAffine(before, matrix, (self.view_w, self.view_h), flags=interpolation)
+            display[:] = enhance(display, mode, previous)
         ui = self.ui
         thin = max(1, int(round(ui)))
         if self.trail:
@@ -1163,7 +1331,8 @@ class Tool:
         cv2.rectangle(display, (int(10 * ui), int(10 * ui)), (int(26 * ui) + text_w, int(24 * ui) + text_h), fill, -1)
         cv2.putText(display, counter, (int(18 * ui), int(17 * ui) + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui,
                     text_colour, 2, cv2.LINE_AA)
-        hud = np.zeros((self.hud_h, self.view_w, 3), dtype=np.uint8)
+        hud = canvas[self.view_h:]
+        hud[:] = 0
         uncertain_left = sum(1 for r in self.rows if r.uncertain and not r.reviewed)
         flagged_left = sum(1 for r in self.rows if r.suspect and not r.settled)
         state = "NOT VISIBLE" if not row.visible else f"({row.x:.1f}, {row.y:.1f})"
@@ -1217,7 +1386,8 @@ class Tool:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55 * ui, (255, 255, 255), thin, cv2.LINE_AA)
         cv2.putText(hud, fit_text(line2, room, 0.48 * ui, thin), (int(8 * ui), int(46 * ui)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48 * ui, (180, 180, 180), thin, cv2.LINE_AA)
-        return np.vstack([display, hud])
+        self.render_key, self.render_cache = key, canvas
+        return canvas
 
     def screen_for(self, view_x: float, view_y: float):
         """The screen pixel a point of the displayed image sits on, or None if it cannot be said.
@@ -1320,7 +1490,8 @@ class Tool:
         """
         seq = self.pointer_seq
         _user32.SetCursorPos(screen_x + 6, screen_y + 6)
-        self.await_pointer(seq, 0.10)
+        if self.await_pointer(seq, 0.25) is None:
+            return None               # the jog's report could still arrive and pass for the reading
         seq = self.pointer_seq
         _user32.SetCursorPos(screen_x, screen_y)
         return self.await_pointer(seq, 0.25)
@@ -1329,10 +1500,18 @@ class Tool:
         """Pump highgui until it reports a pointer position newer than `seq`. None if it never does."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            cv2.waitKey(5)
+            self.pump(5)
             if self.pointer_seq != seq:
                 return self.pointer
         return None
+
+    def pump(self, ms: int) -> None:
+        """Let highgui deliver events for `ms` without losing a keypress: Qt's waitKey hands back,
+        and so takes off the queue, any key it meets, so a short wait that ignored it used to drop
+        a SPACE pressed while the pointer was being placed. The key is kept for the main loop."""
+        key = cv2.waitKeyEx(ms)
+        if key != -1 and self.pending_key == -1:
+            self.pending_key = key
 
     def scrolling(self) -> bool:
         """True just after a wheel notch. A wheel arrives in big discrete steps, and moving the mouse
@@ -1422,11 +1601,14 @@ class Tool:
             return                                  # a wheel the tool sent itself, not the hand's
         self.pointer = (x, y)                       # where the warp landed; check_placement reads it
         self.pointer_seq += 1
+        if event == cv2.EVENT_MOUSEWHEEL and (self.calibrating or self.grid or not self.view_ready()):
+            # A wheel the tool does not act on still zoomed Qt's own viewport: cancel that, or the
+            # next probe_viewport finds it and rebuilds the window.
+            self.repay_wheel(flags >> 16)
+            return
         if self.calibrating and event != cv2.EVENT_MOUSEMOVE:
             return                                  # the tool is moving the pointer itself just now
         if not self.grid and event != cv2.EVENT_MOUSEMOVE and not self.view_ready():
-            if event == cv2.EVENT_MOUSEWHEEL:
-                self.repay_wheel(flags >> 16)  # still cancel Qt's independent viewport zoom
             return  # a queued click must never edit the next frame before it is displayed
         if event == cv2.EVENT_LBUTTONDBLCLK:
             # The second press of a quick double-click comes through as this instead of a press. With
@@ -1460,8 +1642,10 @@ class Tool:
             if self.frame_missing():
                 return                              # nothing to see, so nothing to label
             fx, fy = self.to_frame(x + 0.5, y + 0.5)  # highgui floors the pointer to a pixel: aim at
-            self.set_point(fx, fy)                    # the middle of it, not its top-left corner
-            self.move(1)
+            if not (-2 <= fx < self.width + 2 and -2 <= fy < self.height + 2):   # its middle
+                return                                # a click in the black beyond the frame
+            if self.set_point(fx, fy):
+                self.move(1)
         elif event == cv2.EVENT_RBUTTONDOWN:
             frame_x, frame_y = self.to_frame(x + 0.5, y + 0.5)
             self.center = (min(max(frame_x, 0.0), self.width - 1.0),   # a click in the black beyond
@@ -1501,7 +1685,7 @@ class Tool:
                 if probe["stage"] == 4:
                     self.viewport_probe = None
                     tolerance = max(4.0, 0.008 * self.view_w)   # readings are whole pixels: 1 px noise
-                    if any(abs(seen[0] - want[0]) > tolerance or abs(seen[1] - want[1]) > tolerance
+                    if not probe.get("void") and any(abs(seen[0] - want[0]) > tolerance or abs(seen[1] - want[1]) > tolerance
                            for seen, want in zip(probe["seen"], probe["want"])):
                         self.window_reset_needed = True     # rebuilt from the main loop, not from here
                 return True
@@ -1532,6 +1716,12 @@ class Tool:
         lparam = ((screen[1] & 0xFFFF) << 16) | (screen[0] & 0xFFFF)
         return bool(_user32.PostMessageW(hwnd, WM_MOUSEWHEEL, wparam, lparam))
 
+    def void_probe(self) -> None:
+        """The window or picture changed size under a probe in flight: its expected readings no
+        longer hold. It still runs to the end, so its own wheels are swallowed, but judges nothing."""
+        if self.viewport_probe is not None:
+            self.viewport_probe["void"] = True
+
     def probe_viewport(self) -> None:
         """Every few idle seconds, ask the window which picture pixels sit at the middle of its client
         area and a quarter of the way across. With the aspect ratio kept and the window at x1 the
@@ -1540,6 +1730,8 @@ class Tool:
         has crept in some way not caught above, and the window is rebuilt. Each question is a
         1/120-notch wheel, since a zero delta is dropped, and both are paid back at once."""
         now = time.monotonic()
+        if self.viewport_probe is not None and now - self.viewport_probe["sent"] > 2.0:
+            self.viewport_probe = None    # never answered (window hidden, being resized): forget it
         if _user32 is None or self.viewport_probe is not None or now - self.probe_at < VIEWPORT_CHECK:
             return
         geometry = window_client()
@@ -1638,17 +1830,26 @@ class Tool:
             self.zoom_at(notches, self.view_w / 2.0, self.view_h / 2.0)
         self.pending_cursor_move = True
 
-    def set_point(self, x: float, y: float) -> None:
+    def set_point(self, x: float, y: float) -> bool:
+        """Put this frame's ball at (x, y). False when nothing was stored."""
         if self.frame_missing():
-            return
+            return False
+        x = float(min(max(x, 0.0), self.width - 1.0))
+        y = float(min(max(y, 0.0), self.height - 1.0))
+        if not is_visible(x, y, self.width, self.height):
+            # The label CSV marks "no ball" by a point in the top-right corner, and every reader in
+            # the workspace takes any point there to mean that. Stored, this would read back as absent.
+            print(f"[warn] frame {self.rows[self.cursor].frame}: ({x:.0f}, {y:.0f}) is in the top-right "
+                  f"corner the label files reserve for 'no ball', so it cannot be saved as a ball there")
+            return False
         row = self.rows[self.cursor]
         row.snapshot()
-        row.x = float(min(max(x, 0.0), self.width - 1.0))
-        row.y = float(min(max(y, 0.0), self.height - 1.0))
+        row.x, row.y = x, y
         row.visible = True
         row.reviewed = row.edited = True
         self.dirty = self.source.dirty = True
         self.source.cursor = self.cursor - self.source.start
+        return True
 
     def nudge(self, dx: float, dy: float) -> None:
         row = self.rows[self.cursor]
@@ -1704,7 +1905,7 @@ class Tool:
         """
         accepted = 0
         while not self.rows[self.cursor].uncertain:
-            if not self.rows[self.cursor].reviewed:
+            if not self.rows[self.cursor].reviewed and not self.frame_missing():
                 self.confirm()
                 accepted += 1
             previous = self.cursor
@@ -1745,23 +1946,31 @@ class Tool:
         The clip you are in gets its review file refreshed even with no edits, so quitting after
         only stepping through frames still resumes where you stopped rather than where you last
         clicked."""
-        written = []
+        written, failed = [], []
         for source in self.sources:
             here = source.start <= self.cursor < source.start + len(source.rows)
             if here:
                 source.cursor = self.cursor - source.start
-            if not source.dirty:
-                if here and source.cursor != source.saved_cursor:
-                    save_review(source.review, source.rows, source.cursor, self.zoom)
-                    source.saved_cursor = source.cursor
+            try:
+                if not source.dirty:
+                    if here and source.cursor != source.saved_cursor:
+                        save_review(source.review, source.rows, source.cursor, self.zoom)
+                        source.saved_cursor = source.cursor
+                    continue
+                save_rows(source.out_csv, source.rows, source.width, source.height)
+                save_review(source.review, source.rows, source.cursor, self.zoom)
+                save_suspects(source.suspects, source.rows)
+            except OSError as error:
+                # Another program has the file open, most likely. Keep the edits in memory and keep
+                # going: the next autosave tries again, and one stuck clip must not stop the others.
+                print(f"[warn] could not save {source.clip}: {error} - close the file wherever it is open; "
+                      f"the edits are kept and saving is retried")
+                failed.append(source)
                 continue
-            save_rows(source.out_csv, source.rows, source.width, source.height)
-            save_review(source.review, source.rows, source.cursor, self.zoom)
-            save_suspects(source.suspects, source.rows)
             source.saved_cursor = source.cursor
             source.dirty = False
             written.append(source)
-        self.dirty = False
+        self.dirty = bool(failed)
         self.last_save = time.monotonic()
         if not quiet and written:
             for source in written:
@@ -1783,11 +1992,29 @@ class Tool:
             self.loop()
         finally:
             # Any way out - q, the window's X, Ctrl+C, a crash - keeps the work done so far.
-            self.save()
-            self.remember_settings()
-            cv2.destroyAllWindows()
+            try:
+                self.save()
+                self.rescue_unsaved()
+            finally:
+                self.remember_settings()
+                cv2.destroyAllWindows()
+
+    def rescue_unsaved(self) -> None:
+        """Labels that still could not be written at exit go to <clip>_ball.unsaved.csv beside the
+        real file, so closing the tool never throws edits away. Nothing reads that file; copy it
+        over the label file once whatever held it open has let go."""
+        for source in self.sources:
+            if not source.dirty:
+                continue
+            rescue = source.out_csv.with_name(source.out_csv.stem + ".unsaved.csv")
+            try:
+                save_rows(rescue, source.rows, source.width, source.height)
+                print(f"[save] {source.out_csv.name} could not be written; your labels are in {rescue.name}")
+            except OSError as error:
+                print(f"[error] {source.clip}: unsaved labels lost, {rescue.name} failed too: {error}")
 
     def loop(self) -> None:
+        quit_warned = False
         while True:
             if self.window_reset_needed:
                 self.reset_window()
@@ -1801,10 +2028,13 @@ class Tool:
                 # Placed once per frame change, not on every redraw. follow_ball has centred the ball
                 # and the glide has no anchor, so the ball stays under the cursor while the zoom
                 # finishes - repeating the warp only fought a hand that was on the wheel.
-                cv2.waitKey(1)
+                self.pump(1)
                 if self.view_ready():
                     self.place_cursor()
-            key = cv2.waitKeyEx(8 if gliding else 30)
+            if self.pending_key != -1:
+                key, self.pending_key = self.pending_key, -1
+            else:
+                key = cv2.waitKeyEx(8 if gliding else 30)
             if not self.grid:
                 if self.view_ready():
                     self.check_placement()  # only reconcile reports for the displayed view
@@ -1824,6 +2054,8 @@ class Tool:
                     self.probe_viewport()    # is the window still showing the whole picture at x1?
                 continue
             code = key & 0xFF if key < 0x10000 else key
+            if non_character_key(code):
+                continue              # F1 is not p, F2 is not q: see NON_CHARACTER_KEYS
             if not self.grid and not self.view_ready() and code not in (ord("q"), 27):
                 continue  # a mouse callback may have advanced while waitKey dispatched events
             # Arrows: this build hands back the bare virtual-key codes (37/39), older Win32 builds
@@ -1832,6 +2064,12 @@ class Tool:
             forward = code in (ord("n"), ord("d")) or key in KEYS_NEXT or code in KEYS_NEXT
             backward = code in (ord("p"), ord("a")) or key in KEYS_PREV or code in KEYS_PREV
             if code in (ord("q"), 27):
+                self.save()
+                if self.dirty and not quit_warned:
+                    quit_warned = True
+                    print("[warn] some labels could not be saved (see above). Close the file in the other "
+                          "program and press q again; quitting anyway keeps them in <clip>_ball.unsaved.csv")
+                    continue
                 break
             elif code == 9:
                 self.toggle_grid()
@@ -1893,7 +2131,8 @@ class Tool:
 
 def expand(names: List[str], labels: Path) -> List[str]:
     """Turn what was typed into a clip list. 'a..b' means every labelled clip from a to b in order."""
-    available = sorted((path.name[: -len("_ball.csv")] for path in labels.glob("*_ball.csv")), key=natural_key)
+    available = sorted({path.name.split("_ball.csv")[0] for path in labels.glob("*_ball.csv*")
+                        if path.name.endswith(("_ball.csv", "_ball.csv.draft"))}, key=natural_key)
     out: List[str] = []
     for name in names:
         if ".." in name:
@@ -1934,20 +2173,54 @@ def build_source(clip: str, videos: Path, labels: Path):
     if not from_file.is_file():
         print(f"[skip] {clip}: no labels; run  python finetune/pretrack.py --clips {clip}")
         return None
-    rows = load_rows(from_file, width, height, "det" if draft.is_file() else "csv")
+    try:
+        rows = load_rows(from_file, width, height, "det" if draft.is_file() else "csv")
+    except (OSError, ValueError, KeyError) as error:
+        print(f"[skip] {clip}: {from_file.name} could not be read: {error}")
+        return None
+    if not rows:
+        print(f"[skip] {clip}: {from_file.name} has no label rows")
+        return None
     review = labels / f"{clip}_ball.review.json"
     source = Source(clip, video, rows, width, height, final, review)
     flagged = load_suspects(source.suspects, rows)
     state = load_review(review, rows)
     if state is not None:
-        source.cursor = min(int(state.get("cursor", 0)), len(rows) - 1)
+        try:
+            cursor = int(state.get("cursor") or 0)
+        except (TypeError, ValueError):
+            cursor = 0
+        index_of = {row.frame: i for i, row in enumerate(rows)}
+        if state.get("frame") in index_of:        # rows can be added or dropped (check --fix, realign)
+            cursor = index_of[state["frame"]]     # between sessions: the frame is what to come back to
+        source.cursor = max(0, min(cursor, len(rows) - 1))
         source.saved_cursor = source.cursor
-        source.zoom = float(state.get("zoom", 2.0))
+        try:
+            source.zoom = float(state.get("zoom") or 2.0)
+        except (TypeError, ValueError):
+            source.zoom = 2.0
     source.flagged = flagged
     return source
 
 
+def highgui_backend() -> str:
+    """The GUI line of OpenCV's build information: QT6, WIN32UI, GTK3, ..."""
+    for line in cv2.getBuildInformation().splitlines():
+        if line.strip().startswith("GUI:"):
+            return line.split(":", 1)[1].strip()
+    return "unknown"
+
+
 def main() -> int:
+    backend = highgui_backend()
+    if not backend.upper().startswith("QT"):
+        # The view, wheel and key handling are built around Qt's window: on another backend the
+        # zoom check never passes and the window is rebuilt over and over.
+        print(f"[error] this OpenCV draws its windows with {backend}, but the label tool needs the Qt "
+              f"build. Install conda-forge's instead of pip's:\n"
+              f"        pip uninstall opencv-python && conda install -c conda-forge opencv",
+              file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("clips", nargs="+", help="Clip stem(s), or a range like video22..video53")
     parser.add_argument("--videos", type=Path, default=VIDEOS)

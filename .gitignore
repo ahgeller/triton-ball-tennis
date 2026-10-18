@@ -13,6 +13,7 @@ finetune/runs/
 finetune/models/
 finetune/labels/*.draft
 finetune/labels/*.review.json
+finetune/labels/label_tool.settings.json
 finetune/labels/*.tmp
 finetune/labels/tnv2_*
 finetune/labels/grid_*

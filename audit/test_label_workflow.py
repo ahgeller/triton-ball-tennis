@@ -18,14 +18,18 @@ def source(clip, count=10, width=1280, height=720):
     rows = [Row(i, 30.25 + i*11, 24.75+i*3, True, "csv", 0.) for i in range(count)]
     for row in rows:
         row.clip = clip
+    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
     return SimpleNamespace(clip=clip, rows=rows, width=width, height=height, frame_cache={},
-                           dirty=False, cursor=0, start=0, missing=set(), saved_cursor=0)
+                           dirty=False, cursor=0, start=0, missing=set(), saved_cursor=0,
+                           capture=capture, position=0)
 
 
 class LabelWorkflowTests(unittest.TestCase):
     def tool(self, *sources):
         tool = Tool(list(sources or [source("test")]))
-        tool.frame = lambda index: np.zeros((tool.source.height, tool.source.width, 3), np.uint8)
+        frames = {}                   # one array per frame, as the real cache hands back
+        tool.frame = lambda index: frames.setdefault(
+            (tool.source.clip, index), np.zeros((tool.source.height, tool.source.width, 3), np.uint8))
         tool.follow_ball()
         return tool
 
@@ -140,6 +144,227 @@ class LabelWorkflowTests(unittest.TestCase):
         self.assertEqual(tool.accept_run(), 4)
         self.assertTrue(a.dirty and b.dirty)
         self.assertTrue(all(row.reviewed for row in tool.rows))
+
+    def test_drawn_picture_and_stored_click_agree_to_the_pixel(self):
+        tool = self.tool()
+        blank = np.zeros((720, 1280, 3), np.uint8)
+        image = blank.copy()
+        image[50, 100] = 255                       # frame pixel (100, 50): centre at (100.5, 50.5)
+        tool.rows[0].x, tool.rows[0].y = 100.5, 50.5
+        tool.zoom = tool.zoom_target = 6.
+        tool.follow_ball()
+        tool.frame = lambda index: blank           # the same markers over nothing, to subtract
+        markers = tool.render()[:tool.view_h].astype(int)
+        tool.frame = lambda index: image
+        drawn = tool.render()[:tool.view_h].astype(int)
+        lit = np.argwhere(np.abs(drawn - markers).max(2) > 127)
+        (top, left), (bottom, right) = lit.min(0), lit.max(0)
+        click = ((left + right) // 2, (top + bottom) // 2)
+        stored = tool.to_frame(click[0] + .5, click[1] + .5)
+        # Clicking the middle of the drawn pixel stores its centre, to within half a view pixel;
+        # the warp used to draw everything 0.5 - 0.5/scale frame px off from where clicks went.
+        slack = .5 / tool.scale + 1e-9
+        self.assertLessEqual(abs(stored[0] - 100.5), slack, stored)
+        self.assertLessEqual(abs(stored[1] - 50.5), slack, stored)
+        self.assertTrue(left <= tool.to_view(100.5, 50.5)[0] <= right)
+        for u, v in ((0, 0), (37, 91), (tool.view_w - 1, tool.view_h - 1)):
+            self.assertEqual(tool.to_view(*tool.to_frame(u + .5, v + .5)), (u, v))
+
+    def test_idle_render_is_cached_and_every_change_redraws(self):
+        tool = self.tool()
+        frames = {}
+        tool.frame = lambda index: frames.setdefault(index, np.zeros((720, 1280, 3), np.uint8))
+        tool.follow_ball()
+        first = tool.render()
+        with patch.object(cv2, "warpAffine", wraps=cv2.warpAffine) as warp:
+            self.assertIs(tool.render(), first)          # nothing changed: nothing drawn
+            self.assertEqual(warp.call_count, 0)
+        changes = {
+            "label moved": lambda t: setattr(t.rows[0], "x", t.rows[0].x + 1),
+            "another row reviewed (counter)": lambda t: setattr(t.rows[7], "reviewed", True),
+            "flagged": lambda t: setattr(t.rows[0], "suspect", True),
+            "filter": lambda t: setattr(t, "filter", 1),
+            "inset": lambda t: setattr(t, "inset", not t.inset),
+            "trail": lambda t: setattr(t, "trail", not t.trail),
+            "follow": lambda t: setattr(t, "follow", not t.follow),
+            "step": lambda t: setattr(t, "step", 4),
+            "unsaved": lambda t: setattr(t, "dirty", not t.dirty),
+            "zoom": lambda t: setattr(t, "zoom", t.zoom * 1.5),
+            "pan": lambda t: setattr(t, "center", (t.center[0] + 7, t.center[1])),
+            "walk": lambda t: t.only_uncertain(),
+            "ghost": lambda t: setattr(t, "ghost", (400., 300.)),
+            "next frame": lambda t: t.move(1),
+            "frame re-decoded": lambda t: frames.update({t.rows[t.cursor].frame: np.ones((720, 1280, 3), np.uint8)}),
+            "window resized": lambda t: t.fit_view(900, 600),
+        }
+        for name, change in changes.items():
+            before = tool.render()
+            change(tool)
+            self.assertIsNot(tool.render(), before, name)
+
+    def test_show_resends_only_when_needed(self):
+        tool = self.tool()
+        with patch.object(cv2, "imshow") as imshow:
+            tool.show()
+            tool.show()
+            self.assertEqual(imshow.call_count, 1)       # the same picture is not re-sent
+            tool.shown = None                            # what reset_window does for a new window
+            tool.show()
+            self.assertEqual(imshow.call_count, 2)
+            tool.toggle_grid()
+            tool.show()
+            tool.toggle_grid()
+            tool.show()                                  # back from the grid: the frame view again
+            self.assertEqual(imshow.call_count, 4)
+
+    def test_stepping_back_near_the_start_hits_the_cache(self):
+        frames = [np.full((36, 64, 3), i, np.uint8) for i in range(80)]
+
+        class Capture:
+            opened = 0
+
+            def __init__(self):
+                Capture.opened += 1
+                self.at = 0
+
+            def isOpened(self):
+                return True
+
+            def grab(self):
+                self.at += 1
+                return self.at <= len(frames)
+
+            def retrieve(self):
+                return True, frames[self.at - 1].copy()
+
+            def read(self):
+                return (self.grab() and True), (frames[self.at - 1].copy() if self.at <= len(frames) else None)
+
+            def set(self, *args):
+                return False
+
+            def release(self):
+                pass
+
+        rows = [Row(i, 10., 10., True, "csv", 0.) for i in range(1, 60, 2)]   # odd phase, as 60 FPS clips
+        clip = source("c")
+        clip.rows, clip.width, clip.height = rows, 64, 36
+        for row in rows:
+            row.clip = "c"
+        clip.label_frames, clip.sig_of, clip.end, clip.cache_limit = {r.frame for r in rows}, {}, None, 64
+        clip.capture, clip.video = Capture(), Path("c.mp4")
+        tool = Tool([clip])
+        with patch.object(cv2, "VideoCapture", lambda path: Capture()):
+            tool.cursor = len(rows) - 1
+            tool.frame(rows[-1].frame)
+            Capture.opened = 0
+            for i in range(len(rows) - 1, -1, -1):       # `a` all the way back to the start
+                tool.cursor = i
+                self.assertEqual(int(tool.frame(rows[i].frame)[0, 0, 0]), rows[i].frame)
+        self.assertLessEqual(Capture.opened, 2)          # was one reopen per press
+
+    def test_point_in_the_no_ball_corner_is_refused(self):
+        tool = self.tool()
+        before = (tool.rows[0].x, tool.rows[0].y)
+        self.assertFalse(tool.set_point(1270, 10))  # would read back as "no ball"
+        self.assertEqual((tool.rows[0].x, tool.rows[0].y), before)
+        self.assertFalse(tool.rows[0].settled)
+        self.assertTrue(tool.set_point(600, 300))
+
+    def test_click_beyond_the_frame_is_not_a_label(self):
+        tool = self.tool()
+        with patch.object(cv2, "imshow"):
+            tool.show()
+        tool.on_mouse(cv2.EVENT_LBUTTONDOWN, 0, 0, 0, None)   # top-left of a view centred near (30, 25)
+        self.assertEqual(tool.cursor, 0)
+        self.assertFalse(tool.rows[0].settled)
+
+    def test_wheel_in_grid_or_while_calibrating_still_cancels_window_zoom(self):
+        tool = self.tool()
+        tool.toggle_grid()
+        with patch.object(tool, "repay_wheel") as repay:
+            tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
+        repay.assert_called_once_with(120)
+        tool.toggle_grid()
+        tool.calibrating = True
+        with patch.object(tool, "repay_wheel") as repay:
+            tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
+        repay.assert_called_once_with(120)
+
+    def test_window_rebuilds_stop_when_the_check_keeps_failing(self):
+        import finetune.label_tool as label_tool
+        tool = self.tool()
+        with patch.object(label_tool, "_user32", None), patch.object(cv2, "destroyWindow"), \
+                patch.object(cv2, "waitKey"), patch.object(tool, "create_window"), patch.object(tool, "show"):
+            for _ in range(6):
+                tool.reset_window()
+        self.assertEqual(tool.window_resets, 3)
+        self.assertEqual(tool.probe_at, float("inf"))
+
+    def test_function_keys_do_not_pass_for_letters(self):
+        import finetune.label_tool as label_tool
+        held = {0x71}                                # F2, which reads as "q"
+        fake = SimpleNamespace(GetKeyState=lambda vk: 0x8000 if vk in held else 0)
+        with patch.object(label_tool, "_user32", fake):
+            self.assertTrue(label_tool.non_character_key(ord("q")))
+            held.clear()                             # the q key itself: VK_F2 is not down
+            self.assertFalse(label_tool.non_character_key(ord("q")))
+            self.assertFalse(label_tool.non_character_key(ord("d")))
+
+    def test_save_survives_a_locked_file_and_keeps_the_edits(self):
+        import finetune.label_tool as label_tool
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            a, b = source("a", 2), source("b", 2)
+            for clip in (a, b):
+                clip.out_csv = directory / f"{clip.clip}_ball.csv"
+                clip.review = directory / f"{clip.clip}_ball.review.json"
+                clip.suspects = directory / f"{clip.clip}_ball.suspect.json"
+            tool = self.tool(a, b)
+            a.dirty = b.dirty = tool.dirty = True
+            real = label_tool.save_rows
+
+            def locked(path, *rest):
+                if path == a.out_csv:
+                    raise PermissionError(13, "in use by another program")
+                real(path, *rest)
+            with patch.object(label_tool, "save_rows", side_effect=locked):
+                tool.save(quiet=True)
+            self.assertTrue(b.out_csv.is_file())     # one stuck clip does not stop the others
+            self.assertTrue(a.dirty and tool.dirty)  # ... and its edits are kept for the next try
+            self.assertFalse(b.dirty)
+            tool.rescue_unsaved()
+            self.assertTrue((directory / "a_ball.unsaved.csv").is_file())
+
+    def test_legacy_flag_list_survives_a_save(self):
+        from finetune.label_tool import save_suspects, load_suspects
+        with tempfile.TemporaryDirectory() as directory:
+            flags = Path(directory) / "clip_ball.suspect.json"
+            flags.write_text(json.dumps({"frames": [1, 3]}))
+            rows = source("clip", 5).rows
+            self.assertEqual(load_suspects(flags, rows), 2)
+            save_suspects(flags, rows)               # nothing settled: nothing may be dropped
+            self.assertEqual(load_suspects(flags, rows), 2)
+            rows[1].reviewed = True
+            save_suspects(flags, rows)
+            self.assertEqual(json.loads(flags.read_text()), {"unplaceable": [], "check": [3]})
+
+    def test_damaged_review_file_does_not_stop_the_tool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            review = Path(directory) / "clip_ball.review.json"
+            rows = source("clip", 3).rows
+            for broken in ("[1, 2]", '{"reviewed": null, "edited": null}',
+                           '{"evidence": {"0": {"source": "det"}}}', '{"evidence": [1]}'):
+                review.write_text(broken)
+                load_review(review, rows)            # must not raise
+
+    def test_ranges_include_clips_that_only_have_a_draft(self):
+        from finetune.label_tool import expand
+        with tempfile.TemporaryDirectory() as directory:
+            labels = Path(directory)
+            for name in ("v1_ball.csv", "v2_ball.csv.draft", "v3_ball.csv", "v4_ball.unsaved.csv"):
+                (labels / name).write_text("frame,ball_x,ball_y\n")
+            self.assertEqual(expand(["v1..v3"], labels), ["v1", "v2", "v3"])
 
 
 if __name__ == "__main__":
