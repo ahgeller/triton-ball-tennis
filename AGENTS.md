@@ -51,25 +51,34 @@ runs. `check_parity.py` verifies a frozen Pomona benchmark; the September 7, 202
 worktree fails several of its gates. Do not silently refresh that baseline to
 make a change pass.
 
-## User-specified label review exclusions — September 7, 2026
+## Label review status - October 18, 2026
 
-Do not test, compare, tune thresholds, or select models using these clips until
-the user says their review is finished:
+The user has reviewed, by hand in the label tool:
 
-`grid_match21`, `grid_match24`, `grid_match26`, `grid_match31`, `grid_match37`,
-`grid_match40`, `grid_match47`, `grid_match49`, `grid_match50`, `grid_match55`,
-`grid_match73`, `grid_match78`, `grid_match85`, `grid_match86`, `grid_match87`,
-`grid_match89`, `grid_match92`, `video3`, `video8`, `video11`, `video12`.
+- every video clip: `PomonaPitzer_Women_vs._UCSD-cut-merged-1778697988405` and
+  `video1` through `video53`, including `video3`, `video8`, `video11` and
+  `video12`, which were unreviewed before;
+- every GridTrackNet clip from `grid_match1` through `grid_match31` (1, 4, 7, 8,
+  16, 17, 19, 21, 22, 23, 24, 26, 31).
 
-The user also identified "the one after grid_match31" as wobbly; its exact ID is
-unresolved. Do not infer that ID from sorting or assume another GridTrackNet
-clip is cleared. The user subsequently confirmed that **video13 and all higher
-numbered video clips are manually verified and accurate**. Use those for the
-fix-validation runs; their numeric names refer to video clips, not grid_match
-IDs. Other labels are still being worked on. Do not overwrite ongoing edits.
-The user specifically says video11 and video12 have not been reviewed at all.
-`review.txt` contains the original notes. These restrictions concern evaluation;
-do not silently rewrite labels or training exclusions as part of a review.
+`grid_match36` is in progress: it is "the one after grid_match31" from
+`review.txt`, and the user may have the label tool open on it, so never write
+its files. The user also said "done 33"; no `grid_match33` exists, so that is
+unresolved - do not guess what it means.
+
+Until the user says otherwise, do not test, compare, tune thresholds, or select
+models using `grid_match36` or the clips `review.txt` still lists as needing
+work: `grid_match37`, `grid_match40`, `grid_match47`, `grid_match49`,
+`grid_match50`, `grid_match55`, `grid_match73`, `grid_match78`, `grid_match85`,
+`grid_match86`, `grid_match87`, `grid_match89`, `grid_match92`. The remaining
+GridTrackNet clips above 31 (38, 42, 43, 44, 53) were never on that list, but
+the user has not said they are reviewed either. Reviewed clips may be used for
+measurement and validation; video13 and up remain the standard set.
+
+`review.txt` holds the user's original notes. These rules concern evaluation; do
+not silently rewrite labels or training exclusions as part of a review. Label
+files for grid_match and video13+ clips are gitignored, so back them up before
+any bulk change.
 
 ## Data and change discipline
 
