@@ -21,6 +21,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `tennis_tracker/motion.py`, `tracking.py`: CPU/CUDA motion masks and ROI tracking.
 - `tennis_tracker/court_overlay.py`: CatBoost/kinematic bounce candidates,
   player contacts and schematic rally legs.
+- `finetune/refine.py`: model-free sub-pixel ball suggestions for the label tool
+  (motion centroid, candidates chosen by trajectory, trust score).
 - `finetune/ft.py`: workflow front door; `train_gridtracknet.py`: training;
   `pretrack.py`: drafts; `label_tool.py`: manual edits; `import_data.py` and
   `realign.py`: source conversion and temporal realignment.
@@ -92,6 +94,10 @@ uncommitted edits to training/labeling tools, labels, manifests and Config befor
 this review. Do not revert those or promote/retrain weights as incidental cleanup.
 `clips.csv` notes, `exclude.txt` and review sidecars convey different things:
 passing the format checker does not establish annotation correctness.
+
+Labels clicked in the label tool before commit 307f632 (2026-10-18) sat about half a
+pixel up-left of the ball; commit 8c36b5e moved them back (backups:
+`<csv>.before_halfpixel_fix`). Do not apply that correction again.
 
 Keep RGB detector inputs unchanged unless an experiment explicitly changes the
 model contract. Keep observations distinguishable from fitted positions. Short
