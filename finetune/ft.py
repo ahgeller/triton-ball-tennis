@@ -41,7 +41,10 @@ RUNS = WORKSPACE / "runs"
 MANIFEST = WORKSPACE / "clips.csv"
 REPO_WEIGHTS = ROOT / "models" / "gridtracknet_weights_torch.npz"
 BEST_WEIGHTS = MODELS / "gridtracknet_best.npz"
-TRAINING_IMPORTS = "import cv2, numpy, torch"   # cheapest first: cv2 rules out most interpreters fast
+# cheapest first: cv2 rules out most interpreters fast. Exit 3 means usable for training but with an
+# OpenCV whose windows are not Qt's, which the label tool refuses (see label_tool.highgui_backend).
+TRAINING_IMPORTS = ("import sys, cv2, numpy, torch; sys.exit(0 if any(line.strip().startswith('GUI:') "
+                    "and 'QT' in line.upper() for line in cv2.getBuildInformation().splitlines()) else 3)")
 PYTHON_CACHE = WORKSPACE / ".training-python"
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
 OWN_SOURCES = ("custom", "custom-uncorrected")
@@ -72,8 +75,9 @@ def candidate_interpreters() -> List[Path]:
             for name in python_names():
                 add(root / venv / "Scripts" / name)
                 add(root / venv / "bin" / name)
-    home = Path.home()                               # conda / miniconda / anaconda environments
-    for base in (home / ".conda" / "envs", home / "anaconda3" / "envs", home / "miniconda3" / "envs"):
+    home = Path.home()                               # conda / miniconda / anaconda / miniforge environments
+    conda_roots = ("anaconda3", "miniconda3", "miniforge3", "mambaforge")
+    for base in (home / ".conda" / "envs", *(home / root / "envs" for root in conda_roots)):
         if base.is_dir():
             for env in sorted(base.iterdir()):
                 for name in python_names():
@@ -85,50 +89,81 @@ def candidate_interpreters() -> List[Path]:
     return found
 
 
-def can_train(python: Path) -> bool:
+def probe_interpreter(python: Path) -> Optional[int]:
+    """0: has cv2 (Qt build), numpy and torch. 3: the same with a non-Qt cv2. None: not usable."""
+    print(f"[python] trying {python}", flush=True)
     try:
-        done = subprocess.run([str(python), "-c", TRAINING_IMPORTS], capture_output=True, timeout=300)
+        done = subprocess.run([str(python), "-c", TRAINING_IMPORTS], capture_output=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0
+        return None
+    return done.returncode if done.returncode in (0, 3) else None
 
 
 def training_python() -> Optional[Path]:
-    """First interpreter that can import cv2, numpy and torch; the winner is cached for next time."""
+    """First interpreter that can import cv2, numpy and torch, preferring one whose cv2 is the Qt
+    build the label tool needs; the winner is cached for next time."""
+    fallback = None
     for candidate in candidate_interpreters():
-        if can_train(candidate):
-            try:
-                PYTHON_CACHE.write_text(str(candidate), encoding="utf-8")
-            except OSError:
-                pass
-            return candidate
-    PYTHON_CACHE.unlink(missing_ok=True)             # the cached one stopped working
-    return None
+        result = probe_interpreter(candidate)
+        if result == 0:
+            fallback = candidate
+            break
+        if result == 3 and fallback is None:
+            fallback = candidate
+    if fallback is None:
+        PYTHON_CACHE.unlink(missing_ok=True)         # the cached one stopped working
+        return None
+    try:
+        PYTHON_CACHE.write_text(str(fallback), encoding="utf-8")
+    except OSError:
+        pass
+    return fallback
+
+
+def current_is_complete() -> bool:
+    """Does this very interpreter have cv2 (the Qt build), numpy and torch? Torch is only looked up,
+    not imported: importing it costs seconds, and the menu itself never needs it."""
+    try:
+        import importlib.util
+        import cv2
+        import numpy
+    except ImportError:
+        return False
+    qt = any(line.strip().startswith("GUI:") and "QT" in line.upper()
+             for line in cv2.getBuildInformation().splitlines())
+    return qt and bool(numpy.__version__) and importlib.util.find_spec("torch") is not None
+
+
+def wait_child(command: List[str], **kwargs) -> int:
+    """subprocess.call, minus its habit of killing the child 0.25 s after a Ctrl+C. The child got
+    the same Ctrl+C and may be saving labels; let it finish and pass its exit code on."""
+    process = subprocess.Popen(command, **kwargs)
+    while True:
+        try:
+            return process.wait()
+        except KeyboardInterrupt:
+            continue
 
 
 def ensure_interpreter() -> None:
     """Re-run under the venv that has torch + cv2 when the current python lacks them."""
-    if os.environ.get("TENNIS_FINETUNE_NO_REEXEC"):
+    if os.environ.get("TENNIS_FINETUNE_NO_REEXEC") or current_is_complete():
         return
-    try:
-        import cv2  # noqa: F401
-        import numpy  # noqa: F401
-        return
-    except ImportError:
-        pass
     python = training_python()
-    if python is None or python.resolve() == Path(sys.executable).resolve():
+    if python is not None and python.resolve() == Path(sys.executable).resolve():
+        return                                       # the best there is; the label tool says if it is not Qt
+    if python is None:
         print("No interpreter with cv2, numpy and torch was found; install them or point "
               "TENNIS_FINETUNE_PYTHON at a python that has them", file=sys.stderr)
         sys.exit(2)
     env = dict(os.environ, TENNIS_FINETUNE_NO_REEXEC="1")
-    sys.exit(subprocess.call([str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env=env))
+    sys.exit(wait_child([str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env=env))
 
 
 def run_script(script: str, arguments: List[str]) -> int:
     command = [sys.executable, str(WORKSPACE / script if not script.startswith("..") else ROOT / script[3:]), *arguments]
     print("$", " ".join(f'"{part}"' if " " in part else part for part in command), flush=True)
-    return subprocess.call(command, cwd=str(ROOT))
+    return wait_child(command, cwd=str(ROOT))
 
 
 # --------------------------------------------------------------------------- workspace facts
@@ -311,6 +346,13 @@ def cmd_prelabel(args: argparse.Namespace) -> int:
 
 def cmd_label(args: argparse.Namespace) -> int:
     clips = args.clip if isinstance(args.clip, list) else [args.clip]
+    # Every label_tool option is declared on this subcommand, so a bare word left over is a clip
+    # that came after an option (label video10 --zoom 3 video11), not an option's value.
+    clips += [word for word in args.rest if not word.startswith("-")]
+    args.rest = [word for word in args.rest if word.startswith("-")]
+    options = ((["--zoom", str(args.zoom)] if args.zoom is not None else [])
+               + (["--grid"] if args.grid else []) + (["--uncertain"] if args.uncertain else []))
+    args.rest = [*options, *args.rest]
     if len(clips) > 1 or ".." in clips[0]:
         # a run across several clips: label_tool expands the range and keeps each clip's files apart
         return run_script("label_tool.py", [*clips, *args.rest])
@@ -1086,6 +1128,11 @@ def run_cli(argv: List[str]) -> int:
     subparsers.add_parser("prelabel", help="run the detector to draft labels (pretrack.py)").set_defaults(func=cmd_prelabel)
     p = subparsers.add_parser("label", help="open the click tool on a clip, or a run like video22..video53")
     p.add_argument("clip", nargs="+")
+    # Declared here, not left to pass through: unknown options mixed in with the clip names were
+    # split wrongly (label --zoom 3 video10 read "3" as a clip).
+    p.add_argument("--zoom", type=float, help="starting zoom (label_tool.py --zoom)")
+    p.add_argument("--grid", action="store_true", help="open in the eight-crop review view")
+    p.add_argument("--uncertain", action="store_true", help="only stop on frames that want attention")
     p.set_defaults(func=cmd_label)
     p = subparsers.add_parser("check", help="validate every label file against its video")
     p.add_argument("--clips", nargs="*", help="clip stems or globs")
