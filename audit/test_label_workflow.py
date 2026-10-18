@@ -458,6 +458,55 @@ class GridKeyboardTests(unittest.TestCase):
         self.assertEqual((row.source, tool.cursor), ("refined", 3))
 
 
+class TrajectorySheetTests(unittest.TestCase):
+    def tool(self, *sources):
+        tool = Tool(list(sources or [source("test", 150)]))
+        frames = {}
+        tool.frame = lambda index: frames.setdefault((tool.clip, index),
+                                                     np.zeros((tool.source.height, tool.source.width, 3), np.uint8))
+        tool.follow_ball()
+        return tool
+
+    def test_sheet_draws_a_stretch_and_a_click_opens_that_frame(self):
+        tool = self.tool()
+        tool.cursor = 70
+        tool.toggle_sheet()
+        self.assertTrue(tool.sheet and not tool.grid)
+        self.assertEqual(tool.sheet_start, 40)                 # the cursor's stretch, centred on it
+        tool.render()
+        self.assertEqual([p[0] for p in tool.sheet_points], list(range(40, 100)))
+        index, x, y = tool.sheet_points[25]
+        tool.sheet_mouse(cv2.EVENT_LBUTTONDOWN, x + 2, y - 1)
+        self.assertFalse(tool.sheet)
+        self.assertEqual(tool.cursor, index)
+        self.assertFalse(any(row.settled for row in tool.rows))  # finding a frame edits nothing
+
+    def test_sheet_pages_stay_inside_the_clip(self):
+        tool = self.tool(source("a", 70), source("b", 70))
+        tool.cursor = 5
+        tool.toggle_sheet()
+        self.assertEqual(tool.sheet_start, 0)
+        tool.sheet_page(1)
+        self.assertEqual(tool.sheet_start, 10)                 # the last full stretch of clip a
+        tool.sheet_page(1)
+        self.assertEqual(tool.sheet_start, 10)
+        tool.render()
+        self.assertTrue(all(tool.rows[i].clip == "a" for i, *_ in tool.sheet_points))
+        tool.sheet_page(-1)
+        self.assertEqual(tool.sheet_start, 0)
+
+    def test_a_click_far_from_every_point_does_nothing(self):
+        tool = self.tool()
+        tool.toggle_sheet()
+        tool.render()
+        cursor = tool.cursor
+        tool.sheet_mouse(cv2.EVENT_LBUTTONDOWN, tool.view_w - 1, tool.view_h - 1)
+        self.assertTrue(tool.sheet)
+        self.assertEqual(tool.cursor, cursor)
+        tool.sheet_mouse(cv2.EVENT_RBUTTONDOWN, 0, 0)          # right click goes back
+        self.assertFalse(tool.sheet)
+
+
 class DraftTests(unittest.TestCase):
     def test_drafts_use_the_unshifted_detector_point(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune"))

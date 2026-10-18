@@ -43,6 +43,11 @@ Controls:
                            clears a flag as well as a click does: it is good where it is
   y                        take the suggestion: move the point to the orange mark and go on, like
                            a click there (see "Suggestions" below)
+  w                        trajectory sheet: the whole frame with every label of 60 label frames
+                           drawn on it, joined in order, and the suggestions as orange dots - a
+                           label off the ball's path stands out at once.
+                           Click a point to open that frame; a / d move to the stretch before /
+                           after; w or right click goes back. It only finds frames, never edits
   e / SHIFT+e              jump to the next / previous frame whose label the suggestion disagrees
                            with ("hint differs" on the bar), reviewed or not
   u                        undo last change on this frame
@@ -145,6 +150,7 @@ SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: f
 INSET_SHARE = 0.22        # width of the overview inset as a share of the view
 GHOST_REACH = 3           # rows either side searched for a ball to interpolate a missing guess from
 SNAP_PX = 4               # a wheel turned with the pointer this close to the ball zooms about the ball
+SHEET_ROWS = 60           # label frames on one trajectory sheet (w)
 GRID_SIZES = (8, 16)       # crops per grid page, four to a row; z switches between them
 VIEWPORT_CHECK = 3.0      # seconds between checks that the window's own zoom is still at x1
 WM_MOUSEWHEEL = 0x020A
@@ -595,6 +601,11 @@ class Tool:
         self.grid_cache_key = None
         self.grid_zoom = 1.0
         self.grid_size = GRID_SIZES[0]
+        self.sheet = False            # the trajectory sheet is showing, see render_sheet
+        self.sheet_start = 0          # its first row
+        self.sheet_points = []        # (row index, view x, view y) of each label drawn on it
+        self.sheet_cache_key = None
+        self.sheet_cache = None
         self.last_clip = None
         self.presented = None
         self.filter = 0               # index into FILTERS; h cycles it, the HUD chip shows it
@@ -634,6 +645,11 @@ class Tool:
     @property
     def clip(self) -> str:
         return self.source.clip
+
+    @property
+    def overview(self) -> bool:
+        """The grid or the trajectory sheet: views with no single frame under a parked mouse."""
+        return self.grid or self.sheet
 
     # ---------------------------------------------------------------- geometry
     @property
@@ -810,7 +826,7 @@ class Tool:
         self.anchor = None
         self.aim = None  # a pending OS cursor report belongs to the previous view
         self.zoom = self.zoom_target  # finish the old frame's animation before centering the next
-        if self.grid:
+        if self.overview:
             self.pending_cursor_move = False
             self.aim = None
             return
@@ -863,10 +879,118 @@ class Tool:
 
     # ---------------------------------------------------------------- frames
     def toggle_grid(self) -> None:
+        self.sheet = False
         self.grid = not self.grid
         if self.grid:
             self.prepare_grid(self.cursor)
         self.follow_ball()
+
+    # ---------------------------------------------------------------- trajectory sheet
+    def clip_bounds(self, index: int):
+        """(first, last + 1) row indices of the clip row `index` belongs to."""
+        source = self.by_clip[self.rows[index].clip]
+        return source.start, source.start + len(source.rows)
+
+    def toggle_sheet(self) -> None:
+        self.sheet = not self.sheet
+        if self.sheet:
+            self.grid = False
+            first, end = self.clip_bounds(self.cursor)
+            self.sheet_start = max(first, min(self.cursor - SHEET_ROWS // 2, end - SHEET_ROWS))
+            self.sheet_cache_key = None
+        self.follow_ball()
+
+    def sheet_page(self, direction: int) -> None:
+        first, end = self.clip_bounds(self.sheet_start)
+        start = max(first, min(self.sheet_start + direction * SHEET_ROWS, end - SHEET_ROWS))
+        if start != self.sheet_start:
+            self.sheet_start = start
+            self.cursor = start       # leaving the sheet lands in the stretch it shows
+            self.follow_ball()
+
+    def sheet_mouse(self, event, x, y) -> None:
+        if event == cv2.EVENT_RBUTTONDOWN:
+            self.toggle_sheet()
+        elif event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_LBUTTONDBLCLK) and self.sheet_points:
+            index, px, py = min(self.sheet_points, key=lambda p: (p[1] - x) ** 2 + (p[2] - y) ** 2)
+            if math.hypot(px - x, py - y) <= 14 * self.ui:
+                self.cursor = index
+                if self.walk and index in self.walk:
+                    self.walk_pos = self.walk.index(index)
+                self.sheet = False
+                self.follow_ball()
+
+    def render_sheet(self) -> np.ndarray:
+        """The whole frame, dimmed, with every label of a stretch of SHEET_ROWS label frames drawn
+        on it, joined in order, and the suggestions as small orange dots. The labels trace the ball's
+        flight, so one that is off it - or a run of them following a player - is plain at a glance,
+        and the orange path says where the video itself puts the ball.
+
+        A motion trace was tried as the background and dropped: the players' movement swamped it,
+        and the ball's streak is a pixel or two wide at this scale, under the labels anyway."""
+        end = self.clip_bounds(self.sheet_start)[1]
+        indices = list(range(self.sheet_start, min(self.sheet_start + SHEET_ROWS, end)))
+        key = (tuple(indices), Row.revision, self.suggest_version, self.view_w, self.view_h, self.hud_h,
+               self.cursor, self.ui)
+        if key == self.sheet_cache_key:
+            self.render_fresh = False
+            return self.sheet_cache
+        self.render_fresh = True
+        selected = self.cursor
+        base = self.frame(self.rows[selected].frame)
+        ui, thin = self.ui, max(1, int(round(self.ui)))
+        scale = min(self.view_w / self.width, self.view_h / self.height)
+        shown_w, shown_h = max(1, int(round(self.width * scale))), max(1, int(round(self.height * scale)))
+        scale = shown_w / self.width                     # what resize really does, for the points
+        off_x, off_y = (self.view_w - shown_w) // 2, (self.view_h - shown_h) // 2
+        picture = cv2.convertScaleAbs(base, alpha=0.45)
+        canvas = np.zeros((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
+        canvas[off_y:off_y + shown_h, off_x:off_x + shown_w] = cv2.resize(
+            picture, (shown_w, shown_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+        display = canvas[:self.view_h]
+        to_sheet = lambda x, y: (math.floor(x * scale + off_x), math.floor(y * scale + off_y))
+        for index in indices:                            # the suggestions first, under the labels
+            hint = self.suggestions.get(self.rows[index].clip, {}).get(self.rows[index].frame)
+            if hint is not None and self.rows[index].visible:
+                cv2.circle(display, to_sheet(hint["x"], hint["y"]), max(2, int(round(2 * ui))),
+                           (0, 150, 255), -1, cv2.LINE_AA)
+        self.sheet_points = []
+        last = None
+        for index in indices:
+            row = self.rows[index]
+            if not row.visible:
+                last = None
+                continue
+            point = to_sheet(row.x, row.y)
+            if last is not None:
+                cv2.line(display, last, point, (200, 200, 200), thin, cv2.LINE_AA)
+            last = point
+            self.sheet_points.append((index,) + point)
+        differs = 0
+        for index, px, py in self.sheet_points:
+            row = self.rows[index]
+            colour = (70, 210, 70) if row.settled else (0, 220, 255)
+            cv2.circle(display, (px, py), max(2, int(round(3 * ui))), colour, -1, cv2.LINE_AA)
+            if self.hint_verdict(index) == "differs":
+                differs += 1
+                cv2.circle(display, (px, py), int(round(8 * ui)), (0, 0, 255), thin, cv2.LINE_AA)
+            if index == selected:
+                cv2.circle(display, (px, py), int(round(12 * ui)), (255, 255, 255), thin, cv2.LINE_AA)
+            if (index - self.sheet_start) % 10 == 0:
+                cv2.putText(display, str(row.frame), (px + int(6 * ui), py - int(6 * ui)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42 * ui, (255, 255, 255), thin, cv2.LINE_AA)
+        rows = [self.rows[i] for i in indices]
+        line1 = (f"{self.rows[indices[0]].clip}  TRAJECTORY  frames {rows[0].frame}-{rows[-1].frame}  "
+                 f"{sum(r.visible for r in rows)} with a ball  reviewed {sum(r.settled for r in rows)}/{len(rows)}"
+                 + (f"  hint differs {differs} (red)" if differs else ""))
+        line2 = "click a point: open that frame   a/d: stretch before/after   w or right click: back   q: save/quit"
+        hud = canvas[self.view_h:]
+        cv2.putText(hud, fit_text(line1, self.view_w - int(16 * ui), 0.55 * ui, thin), (int(8 * ui), int(22 * ui)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * ui, (255, 255, 255), thin, cv2.LINE_AA)
+        cv2.putText(hud, fit_text(line2, self.view_w - int(16 * ui), 0.48 * ui, thin), (int(8 * ui), int(46 * ui)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48 * ui, (180, 180, 180), thin, cv2.LINE_AA)
+        self.sheet_cache_key, self.sheet_cache = key, canvas
+        return canvas
 
     def prepare_grid(self, start: int) -> None:
         candidates = self.walk if self.walk else list(range(len(self.rows)))
@@ -1335,6 +1459,8 @@ class Tool:
                 self.ghost, len(self.sources), id(image), id(before), self.suggest_version)
 
     def render(self) -> np.ndarray:
+        if self.sheet:
+            return self.render_sheet()
         if self.grid:
             return self.render_grid()
         self.centre_view()
@@ -1693,15 +1819,18 @@ class Tool:
             return                                  # a wheel the tool sent itself, not the hand's
         self.pointer = (x, y)                       # where the warp landed; check_placement reads it
         self.pointer_seq += 1
-        if event == cv2.EVENT_MOUSEWHEEL and (self.calibrating or self.grid or not self.view_ready()):
+        if event == cv2.EVENT_MOUSEWHEEL and (self.calibrating or self.overview or not self.view_ready()):
             # A wheel the tool does not act on still zoomed Qt's own viewport: cancel that, or the
             # next probe_viewport finds it and rebuilds the window.
             self.repay_wheel(flags >> 16)
             return
         if self.calibrating and event != cv2.EVENT_MOUSEMOVE:
             return                                  # the tool is moving the pointer itself just now
-        if not self.grid and event != cv2.EVENT_MOUSEMOVE and not self.view_ready():
+        if not self.overview and event != cv2.EVENT_MOUSEMOVE and not self.view_ready():
             return  # a queued click must never edit the next frame before it is displayed
+        if self.sheet:
+            self.sheet_mouse(event, x, y)
+            return
         if event == cv2.EVENT_LBUTTONDBLCLK:
             # The second press of a quick double-click comes through as this instead of a press. With
             # the pointer parked on the same screen pixel frame after frame, click-click on two
@@ -2207,7 +2336,7 @@ class Tool:
             self.show()
             if was_gliding and not gliding:
                 self.pending_cursor_move = True       # zoom has settled: put the mouse back on the ball
-            if not self.grid and self.pending_cursor_move and not self.scrolling():
+            if not self.overview and self.pending_cursor_move and not self.scrolling():
                 # Placed once per frame change, not on every redraw. follow_ball has centred the ball
                 # and the glide has no anchor, so the ball stays under the cursor while the zoom
                 # finishes - repeating the warp only fought a hand that was on the wheel.
@@ -2218,7 +2347,7 @@ class Tool:
                 key, self.pending_key = self.pending_key, -1
             else:
                 key = cv2.waitKeyEx(8 if gliding else 30)
-            if not self.grid:
+            if not self.overview:
                 if self.view_ready():
                     self.check_placement()  # only reconcile reports for the displayed view
             if self.dirty and time.monotonic() - self.last_save > AUTOSAVE_SECONDS:
@@ -2229,7 +2358,7 @@ class Tool:
                         return
                 except cv2.error:
                     return
-                if not self.grid and not gliding and self.aim is None:
+                if not self.overview and not gliding and self.aim is None:
                     self.prefetch()          # decode the frames SPACE is about to ask for, but not
                                              # while a warp is still waiting to be checked: a decode
                                              # runs long enough to age the answer out
@@ -2239,7 +2368,7 @@ class Tool:
             code = key & 0xFF if key < 0x10000 else key
             if non_character_key(code):
                 continue              # F1 is not p, F2 is not q: see NON_CHARACTER_KEYS
-            if not self.grid and not self.view_ready() and code not in (ord("q"), 27):
+            if not self.overview and not self.view_ready() and code not in (ord("q"), 27):
                 continue  # a mouse callback may have advanced while waitKey dispatched events
             # Arrows: this build hands back the bare virtual-key codes (37/39), older Win32 builds
             # pack them above bit 16, GTK and Qt have codes of their own. Match them all; none of
@@ -2254,6 +2383,15 @@ class Tool:
                           "program and press q again; quitting anyway keeps them in <clip>_ball.unsaved.csv")
                     continue
                 break
+            elif self.sheet:              # the sheet only finds frames: its own few keys, nothing else
+                if code in (ord("w"), 9):
+                    self.toggle_sheet()
+                    if code == 9:
+                        self.toggle_grid()
+                elif forward or backward:
+                    self.sheet_page(-1 if backward else 1)
+            elif code == ord("w"):
+                self.toggle_sheet()
             elif code == 9:
                 self.toggle_grid()
             elif self.grid and code in (ord(" "), 13, ord("c")):
