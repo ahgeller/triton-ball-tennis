@@ -407,6 +407,26 @@ class SuggestionTests(unittest.TestCase):
         self.assertIsNone(found[1]["smooth"])               # needs two neighbours either side
 
 
+class DraftTests(unittest.TestCase):
+    def test_drafts_use_the_unshifted_detector_point(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune"))
+        import pretrack
+        from tennis_tracker import detectors
+        seen = {}
+
+        class Detector:
+            def __init__(self, weights, cfg):
+                seen["offset"] = cfg.gridtracknet_y_offset_px
+                self.precomputed = [[([10, 20, 14, 24], .9)]]
+
+            def prepare_video(self, *args):
+                pass
+        with patch.object(detectors, "GridTrackNetBallDetector", Detector):
+            rows = pretrack.raw_rows(Path("clip.mp4"), Path("w.npz"), .5, "cpu", 30, 1280, 720, 1)
+        self.assertEqual(seen["offset"], 0.0)
+        self.assertEqual(rows[0][:2], (12.0, 22.0))
+
+
 class TakeSuggestionTests(LabelWorkflowTests.__base__):
     def tool(self):
         tool = LabelWorkflowTests.tool(self)

@@ -66,6 +66,14 @@ def video_meta(path: Path):
     return meta
 
 
+# The tracker shifts GridTrackNet points 1.6 px (at 1080p) down (Config.gridtracknet_y_offset_px).
+# Drafts exist to be corrected into hand labels, and against the hand-verified clips the shifted
+# points sat a median 2.07 px *below* the labels (8 clips, 3,089 frames; +1.4 to +2.3 per clip),
+# a median 3.03 px off overall, against 2.33 px unshifted. So drafts use the raw decode; whether the
+# tracker itself should keep the shift is a separate evaluation question.
+DRAFT_Y_OFFSET_PX = 0.0
+
+
 def write_draft(rows_by_frame, draft_path: Path, stride: int, width: int, height: int, total: int) -> int:
     """rows_by_frame: frame -> (x, y, source, conf) or None."""
     visible = 0
@@ -86,7 +94,8 @@ def write_draft(rows_by_frame, draft_path: Path, stride: int, width: int, height
 def raw_rows(video: Path, weights: Path, conf: float, device: str, fps, width, height, total):
     from tennis_tracker import detectors as backends
 
-    cfg = Config(conf=conf, device=device, gridtracknet_prepass_background=False)
+    cfg = Config(conf=conf, device=device, gridtracknet_prepass_background=False,
+                 gridtracknet_y_offset_px=DRAFT_Y_OFFSET_PX)
     if weights.suffix.lower() in (".pt", ".pth"):
         backend = getattr(backends, "TOTNetBallDetector", None)
         if backend is None:
@@ -115,6 +124,7 @@ def pipeline_rows(video: Path, weights: Path, conf, device: str, json_path: Path
         court_model_path=str(ROOT / "models" / "courtdetection.engine"),
         conf=0.50 if conf is None else conf,
         device=device,
+        gridtracknet_y_offset_px=DRAFT_Y_OFFSET_PX,
         save_tracking_video=False,
         print_selector_tracks=False,
     )
