@@ -41,6 +41,8 @@ Controls:
                            clears a flag as well as a click does: it is good where it is
   y                        take the suggestion: move the point to the orange mark and go on, like
                            a click there (see "Suggestions" below)
+  e / SHIFT+e              jump to the next / previous frame whose label the suggestion disagrees
+                           with ("hint CHECK" on the bar), reviewed or not
   u                        undo last change on this frame
   g / click the badge      auto-centre on / off. On (the default) every frame puts the guess in
                            the middle of the screen with the mouse on it; off leaves the view and
@@ -73,6 +75,9 @@ current label (finetune/refine.py; CPU only, no model). Where that differs from 
 drawn as a small orange mark with its distance on the bar; y moves the label there. It matched the
 hand-verified clips to a median 0.8 px, the same as two careful clicks. It is only a suggestion:
 nothing changes until you press y, and a label taken from it is recorded as source "refined".
+Where the suggestions run smoothly through a frame, the bar says whether the label agrees: "hint ok"
+(within 3 px) or "hint CHECK" (further), and e walks the CHECK frames. Agreeing never skips a frame
+or marks it reviewed - that is still your SPACE.
 
 --uncertain walks only the frames that want attention - no confident guess, or flagged by
 ft.py check --audit --mark - and skips confident predictions, which may still be wrong. n/p/SPACE step
@@ -609,6 +614,7 @@ class Tool:
         self.suggestions: Dict[str, Dict[int, dict]] = {}   # clip -> frame -> refine.suggest() entry
         self.suggest_seeds: Dict[str, Dict[int, tuple]] = {}  # ... and the label each started from
         self.suggest_version = 0      # bumped as suggestions arrive, so the view redraws with them
+        self.disputed_key, self.disputed = None, 0   # disputed_count's cache
         self.closing = False          # tells the suggestion thread to stop
         self.render_key = None        # what the last single-frame render was drawn from, see render_state
         self.render_cache = None
@@ -893,7 +899,7 @@ class Tool:
         self.grid_page(1)
 
     def render_grid(self) -> np.ndarray:
-        key = (self.view_w, self.view_h, self.grid_zoom, self.cursor, self.dirty,
+        key = (self.view_w, self.view_h, self.grid_zoom, self.cursor, self.dirty, self.suggest_version,
                tuple((i, self.rows[i].x, self.rows[i].y, self.rows[i].visible,
                       self.rows[i].reviewed, self.rows[i].edited) for i in self.grid_indices))
         if key == self.grid_cache_key:
@@ -938,6 +944,9 @@ class Tool:
                 title = f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
                 if not row.visible:
                     title += "  absent"
+                verdict = self.hint_verdict(index)
+                if verdict is not None:
+                    title += "  hint ok" if verdict == "agrees" else "  hint CHECK"
                 cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
                             (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
                             color, max(1, int(ui)))
@@ -1379,10 +1388,15 @@ class Tool:
         if hint is not None:
             gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.height
             state += f"  hint {gap:.1f}px" if gap >= 0.05 else "  hint: here"
+            verdict = self.hint_verdict(self.cursor)
+            if verdict is not None:
+                state += "  hint ok" if verdict == "agrees" else "  hint CHECK"
         line1 = (f"{place}  frame {row.frame}  {state}  "
                  f"from {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:.1f}{'  *unsaved*' if self.dirty else ''}")
+        disputed = self.disputed_count()
         line2 = (f"reviewed {reviewed}/{len(self.rows)}  uncertain left {uncertain_left}  "
                  f"{('flagged left ' + str(flagged_left) + '   ') if flagged_left else '  '}"
+                 f"{('hint CHECK ' + str(disputed) + ' (e)   ') if disputed else ''}"
                  "SPACE=good  y=take hint  v=invisible  r=accept run  f=uncertain  q=quit")
         # Buttons along the right end of the bar, laid out right to left and measured before the
         # two text lines, so a long clip name or a narrow window cuts the text short instead of
@@ -1908,6 +1922,40 @@ class Tool:
             return None
         return hint
 
+    def hint_verdict(self, index: int) -> Optional[str]:
+        """"agrees" when the label is within HINT_AGREE_PX of a suggestion that sits on a smooth path,
+        "differs" when such a suggestion is further than that from the label, None when there is no
+        smooth suggestion to judge by. Measured on the verified clips, labels that agree are never more
+        than 3 px off; "differs" is a frame worth a second look, not a verdict on it."""
+        hint = self.suggestion_for(index)
+        if hint is None or hint.get("smooth") is None or hint["smooth"] > refine.SMOOTH_PX_1080:
+            return None
+        row = self.rows[index]
+        gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.by_clip[row.clip].height
+        return "agrees" if gap <= refine.MOVE_PX_1080 else "differs"
+
+    def disputed_count(self) -> int:
+        """How many frames the suggestions disagree with, cached on the state it depends on."""
+        key = (Row.revision, self.suggest_version)
+        if self.disputed_key != key:
+            self.disputed_key = key
+            self.disputed = sum(1 for i in range(len(self.rows)) if self.hint_verdict(i) == "differs")
+        return self.disputed
+
+    def jump_disputed(self, direction: int) -> bool:
+        """Go to the next (or previous) frame the suggestions disagree with. False if there is none."""
+        index = self.cursor + direction
+        while 0 <= index < len(self.rows):
+            if self.hint_verdict(index) == "differs":
+                self.direction = direction
+                self.cursor = index
+                if self.walk and index in self.walk:
+                    self.walk_pos = self.walk.index(index)
+                self.follow_ball()
+                return True
+            index += direction
+        return False
+
     def take_suggestion(self) -> bool:
         """Move this frame's label to its suggestion. True when there was one to take."""
         hint = self.suggestion_for(self.cursor)
@@ -2174,6 +2222,11 @@ class Tool:
             elif code in (ord(" "), 13, ord("c")):
                 self.confirm()
                 self.move(1)
+            elif code == ord("e"):
+                if not self.jump_disputed(-1 if shift_held() else 1):
+                    print("[hint] no more frames the suggestions disagree with that way")
+                elif self.grid:
+                    self.prepare_grid(self.cursor)
             elif code == ord("y") and not self.grid:
                 if self.take_suggestion():
                     self.move(1)

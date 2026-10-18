@@ -435,6 +435,33 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         self.assertFalse(tool.take_suggestion())
         self.assertIsNone(tool.suggestion_for(1))    # no suggestion measured for this frame
 
+    def test_verdict_flags_labels_off_a_smooth_suggestion_and_e_walks_them(self):
+        tool = LabelWorkflowTests.tool(self)     # 1280x720: 1 frame px is 1.5 px at 1080p
+        hints, seeds = {}, {}
+        for row in tool.rows:
+            hints[row.frame] = {"x": row.x + 1.0, "y": row.y, "move": 1.5, "smooth": .4, "fits": True}
+            seeds[row.frame] = (row.x, row.y)
+        hints[3]["x"] = tool.rows[3].x + 2.5          # 3.75 px at 1080p: the label is off
+        hints[6]["x"] = tool.rows[6].x + 2.5
+        hints[8]["smooth"] = 4.0                      # the suggestion itself is not trusted here
+        hints[8]["x"] = tool.rows[8].x + 2.5
+        tool.suggestions["test"], tool.suggest_seeds["test"] = hints, seeds
+        tool.suggest_version += 1
+        self.assertEqual(tool.hint_verdict(0), "agrees")
+        self.assertEqual(tool.hint_verdict(3), "differs")
+        self.assertIsNone(tool.hint_verdict(8))
+        self.assertEqual(tool.disputed_count(), 2)
+        self.assertTrue(tool.jump_disputed(1))
+        self.assertEqual(tool.cursor, 3)
+        self.assertTrue(tool.jump_disputed(1))
+        self.assertEqual(tool.cursor, 6)
+        self.assertFalse(tool.jump_disputed(1))
+        self.assertTrue(tool.jump_disputed(-1))
+        self.assertEqual(tool.cursor, 3)
+        tool.set_point(tool.rows[3].x + 2.5, tool.rows[3].y)   # fixed: now it agrees
+        self.assertEqual(tool.disputed_count(), 1)
+        self.assertFalse(any(row.reviewed for row in tool.rows if row.frame != 3))   # nothing auto-accepted
+
     def test_suggestion_is_drawn_and_its_arrival_redraws(self):
         tool = LabelWorkflowTests.tool(self)
         tool.zoom = tool.zoom_target = 6.
