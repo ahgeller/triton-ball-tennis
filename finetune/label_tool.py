@@ -79,14 +79,17 @@ to the window straight away, the toolbar that could also zoom it is gone, and a 
 few seconds; if the window's zoom has crept in anyway it is rebuilt in place.
 
 Suggestions: while you work, the tool measures each label frame's ball from the video itself -
-the centre of what moved between that frame and its neighbours, in a small window around the
-current label (finetune/refine.py; CPU only, no model). Where that differs from the label it is
-drawn as a small orange mark with its distance on the bar; y moves the label there. It matched the
-hand-verified clips to a median 0.8 px, the same as two careful clicks. It is only a suggestion:
-nothing changes until you press y, and a label taken from it is recorded as source "refined".
-Where the suggestions run smoothly through a frame, the bar says whether the label agrees: "hint ok"
-(within 3 px) or "hint differs" (further), and e walks those. Agreeing never skips a frame
-or marks it reviewed - that is still your SPACE.
+the centre of what moved between that frame and its neighbours, looked for around the current label
+and around where the labels either side put the ball (finetune/refine.py; CPU only, no model). It
+is drawn as four small ticks with its distance on the bar - bright orange when trusted, dull when
+only a guess - and y moves the label there. It matched the hand-verified clips to a median 0.8 px,
+the same as two careful clicks. The clip you are in is re-measured a moment after you change or
+confirm a label, steered by the labels you have checked, so fixing a frame helps its neighbours. A
+frame labelled "no ball" gets one only when the video clearly shows a ball on its path. It is only
+a suggestion: nothing changes until you press y, and a label taken from it is recorded as source
+"refined". Where a trusted suggestion exists the bar says whether the label agrees: "hint ok"
+(within 3 px) or "hint differs" (further), and e walks those. Agreeing never skips a frame or
+marks it reviewed - that is still your SPACE.
 
 --uncertain walks only the frames that want attention - no confident guess, or flagged by
 ft.py check --audit --mark - and skips confident predictions, which may still be wrong. n/p/SPACE step
@@ -152,8 +155,13 @@ SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: f
 INSET_SHARE = 0.22        # width of the overview inset as a share of the view
 GHOST_REACH = 3           # rows either side searched for a ball to interpolate a missing guess from
 SNAP_PX = 4               # a wheel turned with the pointer this close to the ball zooms about the ball
+SUGGEST_SETTLE = 0.3      # seconds a clip's labels stay put before its suggestions are re-measured
+SUGGEST_MEASURE = 16      # after an edit, label frames either side re-measured ...
+SUGGEST_REPLACE = 8       # ... and either side replaced (the path reaches 8 frames for its points)
 SHEET_ROWS = 60           # label frames on one trajectory sheet (w)
-GRID_SIZES = (8, 16)       # crops per grid page, four to a row; z switches between them
+GRID_SIZES = (8, 16)
+HINT_TRUSTED = (0, 150, 255)     # BGR: the suggestion's ticks when it is trusted ...
+HINT_UNSURE = (70, 110, 150)     # ... and when it is only a guess       # crops per grid page, four to a row; z switches between them
 VIEWPORT_CHECK = 3.0      # seconds between checks that the window's own zoom is still at x1
 WM_MOUSEWHEEL = 0x020A
 VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 37, 38, 39, 40      # what waitKeyEx gives for the arrows here
@@ -638,7 +646,7 @@ class Tool:
         self.normal_rect = None       # the window's rect before going full screen, to rebuild into
         self.pending_key = -1         # a key pumped out of the queue by a short waitKey, kept for loop
         self.suggestions: Dict[str, Dict[int, dict]] = {}   # clip -> frame -> refine.suggest() entry
-        self.suggest_seeds: Dict[str, Dict[int, tuple]] = {}  # ... and the label each started from
+        self.suggested_state: Dict[str, tuple] = {}        # ... and the labels they were measured from
         self.suggest_version = 0      # bumped as suggestions arrive, so the view redraws with them
         self.disputed_key, self.disputed = None, 0   # disputed_count's cache
         self.closing = False          # tells the suggestion thread to stop
@@ -961,10 +969,10 @@ class Tool:
         display = canvas[:self.view_h]
         to_sheet = lambda x, y: (math.floor(x * scale + off_x), math.floor(y * scale + off_y))
         for index in indices:                            # the suggestions first, under the labels
-            hint = self.suggestions.get(self.rows[index].clip, {}).get(self.rows[index].frame)
-            if hint is not None and self.rows[index].visible:
+            hint = self.suggestion_for(index)
+            if hint is not None:
                 cv2.circle(display, to_sheet(hint["x"], hint["y"]), max(2, int(round(2 * ui))),
-                           (0, 150, 255), -1, cv2.LINE_AA)
+                           HINT_TRUSTED if hint["trusted"] else HINT_UNSURE, -1, cv2.LINE_AA)
         self.sheet_points = []
         last = None
         for index in indices:
@@ -1100,13 +1108,14 @@ class Tool:
                     tile = enhance(tile, FILTERS[self.filter])
                 color = (70, 210, 70) if row.settled else (0, 210, 255)
                 hint = self.suggestion_for(index)
-                if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25:
+                if hint is not None and (not row.visible or math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25):
                     hx, hy = math.floor((hint["x"] - ox) * scale), math.floor((hint["y"] - oy) * scale)
                     near, far = int(round(3 * ui)), int(round(7 * ui))
                     for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                         start, end = (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far)
                         cv2.line(tile, start, end, (0, 0, 0), max(1, int(round(ui))) + 2, cv2.LINE_AA)
-                        cv2.line(tile, start, end, (0, 150, 255), max(1, int(round(ui))), cv2.LINE_AA)
+                        cv2.line(tile, start, end, HINT_TRUSTED if hint["trusted"] else HINT_UNSURE,
+                                 max(1, int(round(ui))), cv2.LINE_AA)
                 if row.visible:
                     px = math.floor((row.x - ox) * scale)     # the tile pixel holding the ball
                     py = math.floor((row.y - oy) * scale)
@@ -1511,15 +1520,17 @@ class Tool:
                                (200, 200, 60), thin, cv2.LINE_AA)
         radius = int(max(8, 6 * self.zoom) * ui)
         hint = self.suggestion_for(self.cursor)
-        if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25:
-            # Four short orange ticks on the diagonals, leaving the suggested centre itself clear
+        if hint is not None and (not row.visible or math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25):
+            # Four short ticks on the diagonals, leaving the suggested centre itself clear: bright
+            # orange when the suggestion is trusted, a dull orange when it is only a guess
             hx, hy = self.to_view(hint["x"], hint["y"])
             near, far = int(round(3 * ui)), int(round(7 * ui))
+            tick = HINT_TRUSTED if hint["trusted"] else HINT_UNSURE
             for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                 cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
                          (0, 0, 0), thin + 2, cv2.LINE_AA)
                 cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
-                         (0, 150, 255), thin, cv2.LINE_AA)
+                         tick, thin, cv2.LINE_AA)
         if row.visible:
             colour = ((255, 0, 255) if row.suspect else (0, 0, 255) if row.edited
                       else (0, 220, 0) if row.reviewed else (0, 255, 255))
@@ -1566,12 +1577,16 @@ class Tool:
         if self.walk:
             left = sum(1 for i in self.walk if not self.rows[i].settled)
             place += f"  UNCERTAIN ONLY {self.walk_pos + 1}/{len(self.walk)} ({left} left)"
-        if hint is not None:
+        if hint is not None and not row.visible:
+            state += "  hint: the video shows a ball here (y takes it)"
+        elif hint is not None:
             gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.height
             state += f"  hint {gap:.1f}px" if gap >= 0.05 else "  hint: here"
             verdict = self.hint_verdict(self.cursor)
             if verdict is not None:
                 state += "  hint ok" if verdict == "agrees" else "  hint differs"
+            else:
+                state += " (unsure)"
         line1 = (f"{place}  frame {row.frame}  {state}  "
                  f"from {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:.1f}{'  *unsaved*' if self.dirty else ''}")
         disputed = self.disputed_count()
@@ -2065,42 +2080,92 @@ class Tool:
 
     # ---------------------------------------------------------------- suggestions
     def start_suggestions(self, wait: bool = False) -> None:
-        """Measure every clip's suggestions on a background thread, the clip you are in first, so the
-        window never waits for them. `wait` runs it in the caller instead (tests, headless use)."""
-        order = sorted(self.sources, key=lambda source: source.clip != self.clip)
+        """Measure suggestions for every clip, the one you are in first, and then keep the clip you
+        are in up to date: a background worker re-measures it shortly after its labels or what you
+        have confirmed change, so a fix on one frame improves the suggestions for its neighbours.
+        `wait` measures every clip once in the caller instead (tests, headless use)."""
         if wait:
-            self.suggest_all(order)
+            for source in self.suggestion_order():
+                self.suggest_clip(source)
             return
-        threading.Thread(target=self.suggest_all, args=(order,), daemon=True, name="suggestions").start()
+        threading.Thread(target=self.suggestion_worker, daemon=True, name="suggestions").start()
 
-    def suggest_all(self, sources) -> None:
-        for source in sources:
+    def suggestion_order(self):
+        return sorted(self.sources, key=lambda source: source.clip != self.clip)
+
+    @staticmethod
+    def label_state(source) -> tuple:
+        """Everything a clip's suggestions depend on: each label and whether you have checked it."""
+        return tuple((row.x, row.y, row.visible, row.settled) for row in source.rows)
+
+    def suggestion_worker(self) -> None:
+        for source in self.suggestion_order():
             if self.closing:
                 return
-            seeds = {row.frame: (row.x, row.y) for row in source.rows if row.visible}
-            try:
-                found = refine.suggest(source.video, seeds, refine.label_spacing(r.frame for r in source.rows),
-                                       stop=lambda: self.closing)
-            except Exception as error:            # a hint is never worth losing the session over
-                print(f"[hint] {source.clip}: no suggestions ({error})")
+            self.suggest_clip(source)
+        waiting: Dict[str, tuple] = {}
+        while not self.closing:
+            time.sleep(SUGGEST_SETTLE)
+            source = self.source
+            state = self.label_state(source)
+            if state == self.suggested_state.get(source.clip):
                 continue
-            if self.closing:
+            if waiting.get(source.clip) == state:     # unchanged for a moment: you have moved on
+                self.suggest_clip(source, state)
+            else:
+                waiting[source.clip] = state
+
+    def suggest_clip(self, source, state: Optional[tuple] = None) -> None:
+        """Measure one clip's suggestions from its labels as they are now. Once a clip has them, only
+        a stretch around the frames that changed is re-measured: an edit reaches the suggestions at
+        most a few label frames away, and Pomona's full pass (1,837 1080p frames) takes 9 s."""
+        state = state or self.label_state(source)
+        seeds = {row.frame: (row.x, row.y) if row.visible else None for row in source.rows}
+        confirmed = [row.frame for row in source.rows if row.settled and row.visible]
+        before = self.suggested_state.get(source.clip)
+        only = keep = None
+        if before is not None and len(before) == len(state) and source.clip in self.suggestions:
+            changed = [i for i, (old, new) in enumerate(zip(before, state)) if old != new]
+            if not changed:
                 return
-            self.suggest_seeds[source.clip] = seeds
-            self.suggestions[source.clip] = found
-            self.suggest_version += 1
-            self.grid_cache_key = None
-            print(f"[hint] {source.clip}: suggestions for {len(found)} of {len(source.rows)} frames")
+            frames = [row.frame for row in source.rows]
+            only = {frames[j] for i in changed for j in range(max(0, i - SUGGEST_MEASURE), min(len(frames), i + SUGGEST_MEASURE + 1))}
+            keep = {frames[j] for i in changed for j in range(max(0, i - SUGGEST_REPLACE), min(len(frames), i + SUGGEST_REPLACE + 1))}
+        try:
+            found = refine.suggest(source.video, seeds, refine.label_spacing(seeds),
+                                   stop=lambda: self.closing, confirmed=confirmed, only=only)
+        except Exception as error:            # a hint is never worth losing the session over
+            print(f"[hint] {source.clip}: no suggestions ({error})")
+            return
+        if self.closing:
+            return
+        first = source.clip not in self.suggestions
+        if keep is not None:                  # replace the stretch around the edit, keep the rest
+            merged = {f: hint for f, hint in self.suggestions[source.clip].items() if f not in keep}
+            merged.update({f: hint for f, hint in found.items() if f in keep})
+            found = merged
+        self.suggestions[source.clip] = found
+        self.suggested_state[source.clip] = state
+        self.suggest_version += 1
+        self.grid_cache_key = None
+        if first:
+            trusted = sum(1 for hint in found.values() if hint["trusted"])
+            print(f"[hint] {source.clip}: suggestions for {len(found)} of {len(source.rows)} frames, "
+                  f"{trusted} trusted")
 
     def suggestion_for(self, index: int) -> Optional[dict]:
-        """The suggestion for a row, or None: no ball, none measured, or the label has since been
-        moved so far from where the suggestion started that it may be about a different blob."""
+        """The suggestion for a row, or None when there is none worth showing: nothing ball-like moved
+        there, the label has moved since it was measured (a fresh one follows within a second or
+        so), or the frame is labelled "no ball" and the suggestion is not trusted - a ball where the
+        label says none is only offered when the video clearly shows one on the ball's path."""
         row = self.rows[index]
-        if not row.visible:
-            return None
         hint = self.suggestions.get(row.clip, {}).get(row.frame)
-        seed = self.suggest_seeds.get(row.clip, {}).get(row.frame)
-        if hint is None or seed is None:
+        if hint is None or not hint.get("ball_here"):
+            return None
+        seed = hint.get("seed")
+        if not row.visible:
+            return hint if seed is None and hint.get("trusted") else None
+        if seed is None:
             return None
         source = self.by_clip[row.clip]
         if math.hypot(row.x - seed[0], row.y - seed[1]) > refine.radius_for(source.height) / 2.0:
@@ -2108,16 +2173,16 @@ class Tool:
         return hint
 
     def hint_verdict(self, index: int) -> Optional[str]:
-        """"agrees" when the label is within HINT_AGREE_PX of a suggestion that sits on a smooth path,
-        "differs" when such a suggestion is further than that from the label, None when there is no
-        smooth suggestion to judge by. Measured on the verified clips, labels that agree are never more
-        than 3 px off; "differs" is a frame worth a second look, not a verdict on it."""
+        """"agrees" when the label is within AGREE_PX_1080 of a trusted suggestion, "differs" when it
+        is further, None when there is no trusted suggestion to judge by. Measured on the verified
+        clips, trusted suggestions are more than 3 px off 2% of the time; "differs" is a frame worth
+        a second look, not a verdict on it."""
         hint = self.suggestion_for(index)
-        if hint is None or hint.get("smooth") is None or hint["smooth"] > refine.SMOOTH_PX_1080:
-            return None
         row = self.rows[index]
+        if hint is None or not hint.get("trusted") or not row.visible:
+            return None
         gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.by_clip[row.clip].height
-        return "agrees" if gap <= refine.MOVE_PX_1080 else "differs"
+        return "agrees" if gap <= refine.AGREE_PX_1080 else "differs"
 
     def disputed_count(self) -> int:
         """How many frames the suggestions disagree with, cached on the state it depends on."""

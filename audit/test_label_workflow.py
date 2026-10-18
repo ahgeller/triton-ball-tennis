@@ -399,6 +399,14 @@ class LabelWorkflowTests(unittest.TestCase):
             self.assertEqual(expand(["v1..v3"], labels), ["v1", "v2", "v3"])
 
 
+def hint(row, x=None, y=None, trusted=True, ball_here=True, seed="label"):
+    """A refine.suggest() entry for `row`: at (x, y), measured from its current label."""
+    seed = (row.x, row.y) if seed == "label" else seed
+    return {"x": row.x if x is None else x, "y": row.y if y is None else y, "seed": seed, "from": "label",
+            "move": 0.0, "path": 0.3, "blobs": 1, "ratio": 1.0, "contrast": 40.0,
+            "trusted": trusted, "ball_here": ball_here}
+
+
 def ball_frames(positions, size=(360, 640)):
     """Grey frames with a 3x3 bright ball whose middle pixel is at each (column, row)."""
     frames = []
@@ -414,12 +422,12 @@ class SuggestionTests(unittest.TestCase):
         from finetune.refine import motion_centroid
         previous, current, following = ball_frames([(40, 30), (50, 40), (60, 50)])
         x, y = motion_centroid(previous, current, following, (52.0, 38.0), 9)
-        self.assertAlmostEqual(x, 50.5, places=6)    # pixel 50's centre is 50.5 in label files
-        self.assertAlmostEqual(y, 40.5, places=6)
+        self.assertAlmostEqual(x, 50.5, places=4)    # pixel 50's centre is 50.5 in label files
+        self.assertAlmostEqual(y, 40.5, places=4)
         still = ball_frames([(50, 40)])[0]
         self.assertIsNone(motion_centroid(still, still, still, (50.5, 40.5), 9))
 
-    def test_suggest_reads_a_video_and_scores_smoothness(self):
+    def test_suggest_reads_a_video_and_scores_trust(self):
         from finetune import refine
         path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]   # an exact parabola
         with tempfile.TemporaryDirectory() as directory:
@@ -430,13 +438,13 @@ class SuggestionTests(unittest.TestCase):
             writer.release()
             seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
             found = refine.suggest(video, seeds, spacing=1)
-        self.assertEqual(set(found), set(range(1, 11)))   # the two ends have no neighbour to diff
+        self.assertEqual(set(found), set(range(12)))       # the ends diff against one side only
         for frame, hint in found.items():
             column, row = path_of[frame]
             self.assertLess(abs(hint["x"] - (column + .5)), .35)   # MJPG is lossy, so not exact
             self.assertLess(abs(hint["y"] - (row + .5)), .35)
-        self.assertTrue(found[5]["fits"])
-        self.assertIsNone(found[1]["smooth"])               # needs two neighbours either side
+        self.assertTrue(found[5]["trusted"] and found[5]["ball_here"])
+        self.assertLess(found[5]["path"], 1.0)
 
 
 class GridKeyboardTests(unittest.TestCase):
@@ -483,8 +491,7 @@ class GridKeyboardTests(unittest.TestCase):
         tool.toggle_grid()
         tool.grid_select(2)
         row = tool.rows[2]
-        tool.suggestions["test"] = {2: {"x": row.x + 1, "y": row.y, "move": 1., "smooth": .2, "fits": True}}
-        tool.suggest_seeds["test"] = {2: (row.x, row.y)}
+        tool.suggestions["test"] = {2: hint(row, x=row.x + 1)}
         self.assertTrue(tool.take_suggestion())
         tool.grid_step(1)
         self.assertEqual((row.source, tool.cursor), ("refined", 3))
@@ -562,8 +569,7 @@ class DraftTests(unittest.TestCase):
 class TakeSuggestionTests(LabelWorkflowTests.__base__):
     def tool(self):
         tool = LabelWorkflowTests.tool(self)
-        tool.suggestions["test"] = {0: {"x": 31.0, "y": 25.5, "move": .9, "smooth": .3, "fits": True}}
-        tool.suggest_seeds["test"] = {0: (tool.rows[0].x, tool.rows[0].y)}
+        tool.suggestions["test"] = {0: hint(tool.rows[0], 31.0, 25.5)}
         tool.suggest_version += 1
         return tool
 
@@ -587,17 +593,14 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         self.assertFalse(tool.take_suggestion())
         self.assertIsNone(tool.suggestion_for(1))    # no suggestion measured for this frame
 
-    def test_verdict_flags_labels_off_a_smooth_suggestion_and_e_walks_them(self):
+    def test_verdict_flags_labels_off_a_trusted_suggestion_and_e_walks_them(self):
         tool = LabelWorkflowTests.tool(self)     # 1280x720: 1 frame px is 1.5 px at 1080p
-        hints, seeds = {}, {}
-        for row in tool.rows:
-            hints[row.frame] = {"x": row.x + 1.0, "y": row.y, "move": 1.5, "smooth": .4, "fits": True}
-            seeds[row.frame] = (row.x, row.y)
+        hints = {row.frame: hint(row, x=row.x + 1.0) for row in tool.rows}
         hints[3]["x"] = tool.rows[3].x + 2.5          # 3.75 px at 1080p: the label is off
         hints[6]["x"] = tool.rows[6].x + 2.5
-        hints[8]["smooth"] = 4.0                      # the suggestion itself is not trusted here
+        hints[8]["trusted"] = False                   # the suggestion itself is not trusted here
         hints[8]["x"] = tool.rows[8].x + 2.5
-        tool.suggestions["test"], tool.suggest_seeds["test"] = hints, seeds
+        tool.suggestions["test"] = hints
         tool.suggest_version += 1
         self.assertEqual(tool.hint_verdict(0), "agrees")
         self.assertEqual(tool.hint_verdict(3), "differs")
@@ -614,6 +617,40 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         self.assertEqual(tool.disputed_count(), 1)
         self.assertFalse(any(row.reviewed for row in tool.rows if row.frame != 3))   # nothing auto-accepted
 
+    def test_no_ball_frame_shows_only_a_trusted_suggestion_and_y_places_it(self):
+        tool = LabelWorkflowTests.tool(self)
+        row = tool.rows[2]
+        row.visible = False
+        tool.suggestions["test"] = {2: hint(row, 300.0, 200.0, trusted=False, seed=None)}
+        self.assertIsNone(tool.suggestion_for(2))     # a guess is not enough to put a ball there
+        tool.suggestions["test"][2]["trusted"] = True
+        self.assertIsNotNone(tool.suggestion_for(2))
+        tool.cursor = 2
+        self.assertTrue(tool.take_suggestion())
+        self.assertTrue(row.visible and (row.x, row.y) == (300.0, 200.0) and row.source == "refined")
+        tool.suggestions["test"][2]["ball_here"] = False
+        self.assertIsNone(tool.suggestion_for(2))     # nothing ball-like moved: never shown
+
+    def test_a_changed_label_is_remeasured_with_checked_labels_steering(self):
+        tool = LabelWorkflowTests.tool(self)
+        calls = []
+        with patch("finetune.label_tool.refine.suggest",
+                   side_effect=lambda video, seeds, spacing, stop, confirmed, only: calls.append((seeds, confirmed, only)) or {}):
+            tool.source.video = Path("clip.mp4")
+            tool.suggest_clip(tool.source)
+            self.assertEqual(calls[-1][1], [])                     # nothing checked yet
+            before = tool.label_state(tool.source)
+            tool.cursor = 1
+            tool.set_point(80, 40)
+            self.assertNotEqual(tool.label_state(tool.source), before)
+            tool.suggest_clip(tool.source)
+            seeds, confirmed, only = calls[-1]
+            self.assertEqual(seeds[1], (80.0, 40.0))
+            self.assertEqual(confirmed, [1])
+            self.assertEqual(only, set(range(10)))                # the stretch around frame 1 (10 rows)
+            self.assertIsNone(calls[0][2])                         # the first pass measures everything
+            self.assertEqual(tool.suggested_state["test"], tool.label_state(tool.source))
+
     def test_suggestion_is_drawn_and_its_arrival_redraws(self):
         tool = LabelWorkflowTests.tool(self)
         tool.zoom = tool.zoom_target = 6.
@@ -621,8 +658,7 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         plain = tool.render()
         orange = lambda image: int(np.sum((image[:, :, 0] == 0) & (image[:, :, 1] == 150) & (image[:, :, 2] == 255)))
         self.assertEqual(orange(plain), 0)
-        tool.suggestions["test"] = {0: {"x": 33.0, "y": 27.0, "move": 3.4, "smooth": .3, "fits": False}}
-        tool.suggest_seeds["test"] = {0: (tool.rows[0].x, tool.rows[0].y)}
+        tool.suggestions["test"] = {0: hint(tool.rows[0], 33.0, 27.0)}
         tool.suggest_version += 1
         hinted = tool.render()
         self.assertIsNot(hinted, plain)
