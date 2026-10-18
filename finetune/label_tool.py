@@ -20,9 +20,11 @@ resizable — drag it, maximise it, or press m for full screen — and the pictu
 is redrawn at whatever size you give it.
 
 Controls:
-  TAB                      toggle eight-crop precision review (or launch with --grid)
-                           click a crop to correct it without moving the crop; right click opens
-                           the full frame; SPACE confirms the displayed group; a/d change pages
+  TAB                      toggle the grid: a page of crops around each ball (or launch with
+                           --grid). Click a crop to correct it without moving the crop; right
+                           click opens the full frame; 1-9 or , / . pick the tile the keys act on;
+                           y takes its suggestion and moves on; SPACE confirms the displayed page;
+                           a/d change pages; z switches between 8 and 16 tiles a page
   SHIFT + i / j / k / l    nudge the selected point by 0.25 native pixels (normal keys: 1 pixel)
   left click               ball is here -> save and go to next frame
   SPACE / ENTER / c        guess is good -> next frame
@@ -42,7 +44,7 @@ Controls:
   y                        take the suggestion: move the point to the orange mark and go on, like
                            a click there (see "Suggestions" below)
   e / SHIFT+e              jump to the next / previous frame whose label the suggestion disagrees
-                           with ("hint CHECK" on the bar), reviewed or not
+                           with ("hint differs" on the bar), reviewed or not
   u                        undo last change on this frame
   g / click the badge      auto-centre on / off. On (the default) every frame puts the guess in
                            the middle of the screen with the mouse on it; off leaves the view and
@@ -76,7 +78,7 @@ drawn as a small orange mark with its distance on the bar; y moves the label the
 hand-verified clips to a median 0.8 px, the same as two careful clicks. It is only a suggestion:
 nothing changes until you press y, and a label taken from it is recorded as source "refined".
 Where the suggestions run smoothly through a frame, the bar says whether the label agrees: "hint ok"
-(within 3 px) or "hint CHECK" (further), and e walks the CHECK frames. Agreeing never skips a frame
+(within 3 px) or "hint differs" (further), and e walks those. Agreeing never skips a frame
 or marks it reviewed - that is still your SPACE.
 
 --uncertain walks only the frames that want attention - no confident guess, or flagged by
@@ -143,6 +145,7 @@ SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: f
 INSET_SHARE = 0.22        # width of the overview inset as a share of the view
 GHOST_REACH = 3           # rows either side searched for a ball to interpolate a missing guess from
 SNAP_PX = 4               # a wheel turned with the pointer this close to the ball zooms about the ball
+GRID_SIZES = (8, 16)       # crops per grid page, four to a row; z switches between them
 VIEWPORT_CHECK = 3.0      # seconds between checks that the window's own zoom is still at x1
 WM_MOUSEWHEEL = 0x020A
 VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 37, 38, 39, 40      # what waitKeyEx gives for the arrows here
@@ -591,6 +594,7 @@ class Tool:
         self.grid_cache = None
         self.grid_cache_key = None
         self.grid_zoom = 1.0
+        self.grid_size = GRID_SIZES[0]
         self.last_clip = None
         self.presented = None
         self.filter = 0               # index into FILTERS; h cycles it, the HUD chip shows it
@@ -869,7 +873,7 @@ class Tool:
         position = candidates.index(start) if start in candidates else 0
         clip = self.rows[candidates[position]].clip
         self.grid_indices = []
-        for index in candidates[position:position + 8]:
+        for index in candidates[position:position + self.grid_size]:
             if self.rows[index].clip != clip:
                 break
             self.grid_indices.append(index)
@@ -884,10 +888,39 @@ class Tool:
     def grid_page(self, direction: int) -> None:
         candidates = self.walk if self.walk else list(range(len(self.rows)))
         edge = self.grid_indices[-1] if direction > 0 else self.grid_indices[0]
-        position = candidates.index(edge) + (1 if direction > 0 else -8)
+        position = candidates.index(edge) + (1 if direction > 0 else -self.grid_size)
         if position >= len(candidates):
             return
         self.prepare_grid(candidates[max(0, position)])
+
+    def grid_select(self, slot: int) -> None:
+        """Make the grid's slot-th tile (0-based, clamped to the page) the one the keys act on."""
+        if not self.grid_indices:
+            return
+        self.cursor = self.grid_indices[min(max(slot, 0), len(self.grid_indices) - 1)]
+        if self.walk and self.cursor in self.walk:
+            self.walk_pos = self.walk.index(self.cursor)
+
+    def grid_step(self, direction: int) -> None:
+        """Move the selection one tile along, turning the page at either end."""
+        slot = self.grid_indices.index(self.cursor) + direction if self.cursor in self.grid_indices else 0
+        if 0 <= slot < len(self.grid_indices):
+            self.grid_select(slot)
+            return
+        before = self.grid_indices[0]
+        self.grid_page(direction)
+        if self.grid_indices[0] != before and direction < 0:
+            self.grid_select(len(self.grid_indices) - 1)   # came back a page: land on its last tile
+
+    def toggle_grid_size(self) -> None:
+        self.grid_size = GRID_SIZES[(GRID_SIZES.index(self.grid_size) + 1) % len(GRID_SIZES)] \
+            if self.grid_size in GRID_SIZES else GRID_SIZES[0]
+        if self.grid:
+            selected = self.cursor
+            self.prepare_grid(self.grid_indices[0])
+            if selected in self.grid_indices:
+                self.grid_select(self.grid_indices.index(selected))
+        self.remember_settings()
 
     def confirm_grid(self) -> None:
         # Confirm only frames actually rendered, never a prefetched/unseen page.
@@ -899,7 +932,7 @@ class Tool:
         self.grid_page(1)
 
     def render_grid(self) -> np.ndarray:
-        key = (self.view_w, self.view_h, self.grid_zoom, self.cursor, self.dirty, self.suggest_version,
+        key = (self.view_w, self.view_h, self.grid_zoom, self.grid_size, self.cursor, self.dirty, self.suggest_version,
                tuple((i, self.rows[i].x, self.rows[i].y, self.rows[i].visible,
                       self.rows[i].reviewed, self.rows[i].edited) for i in self.grid_indices))
         if key == self.grid_cache_key:
@@ -916,8 +949,9 @@ class Tool:
                 self.cursor = index
                 row = self.rows[index]
                 image = self.frame(row.frame)
+                rows_of = max(1, self.grid_size // 4)
                 left, right = slot % 4 * self.view_w // 4, (slot % 4 + 1) * self.view_w // 4
-                top, bottom = slot // 4 * self.view_h // 2, (slot // 4 + 1) * self.view_h // 2
+                top, bottom = slot // 4 * self.view_h // rows_of, (slot // 4 + 1) * self.view_h // rows_of
                 y0 = top + band
                 width, height = right - left, bottom - y0
                 scale = width / 96.0 * self.grid_zoom if row.visible else min(width / self.width, height / self.height)
@@ -930,6 +964,14 @@ class Tool:
                 if FILTERS[self.filter] not in ("off", "motion"):    # motion needs the frame before
                     tile = enhance(tile, FILTERS[self.filter])
                 color = (70, 210, 70) if row.settled else (0, 210, 255)
+                hint = self.suggestion_for(index)
+                if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25:
+                    hx, hy = math.floor((hint["x"] - ox) * scale), math.floor((hint["y"] - oy) * scale)
+                    near, far = int(round(3 * ui)), int(round(7 * ui))
+                    for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                        start, end = (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far)
+                        cv2.line(tile, start, end, (0, 0, 0), max(1, int(round(ui))) + 2, cv2.LINE_AA)
+                        cv2.line(tile, start, end, (0, 150, 255), max(1, int(round(ui))), cv2.LINE_AA)
                 if row.visible:
                     px = math.floor((row.x - ox) * scale)     # the tile pixel holding the ball
                     py = math.floor((row.y - oy) * scale)
@@ -941,12 +983,13 @@ class Tool:
                         cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
                         cv2.line(tile, start, end, (255, 255, 255), max(1, int(round(ui))))
                 canvas[y0:bottom, left:right] = tile
-                title = f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
+                title = (f"{slot + 1}  " if slot < 9 else "") + \
+                    f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
                 if not row.visible:
                     title += "  absent"
                 verdict = self.hint_verdict(index)
                 if verdict is not None:
-                    title += "  hint ok" if verdict == "agrees" else "  hint CHECK"
+                    title += "  hint ok" if verdict == "agrees" else "  hint differs"
                 cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
                             (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
                             color, max(1, int(ui)))
@@ -958,7 +1001,8 @@ class Tool:
         thin = max(1, int(ui))
         cv2.putText(canvas, fit_text(caption, self.view_w - 12, .48 * ui, thin),
                     (6, self.view_h + int(round(21 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .48 * ui, (255, 255, 255), thin)
-        keys = "+/- zoom | i/j/k/l: 1px | SHIFT+i/j/k/l: 0.25px | u: undo selected | v: absent | q: save/quit"
+        keys = ("1-9 or ,/. select | y: take hint | i/j/k/l: 1px (SHIFT 0.25px) | u: undo | v: absent | "
+                f"+/- zoom | z: {GRID_SIZES[(GRID_SIZES.index(self.grid_size) + 1) % len(GRID_SIZES)]} tiles | q: save/quit")
         cv2.putText(canvas, fit_text(keys, self.view_w - 12, .42 * ui, thin),
                     (6, self.view_h + int(round(44 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .42 * ui, (200, 200, 200), thin)
         self.grid_tiles = tiles
@@ -1390,13 +1434,13 @@ class Tool:
             state += f"  hint {gap:.1f}px" if gap >= 0.05 else "  hint: here"
             verdict = self.hint_verdict(self.cursor)
             if verdict is not None:
-                state += "  hint ok" if verdict == "agrees" else "  hint CHECK"
+                state += "  hint ok" if verdict == "agrees" else "  hint differs"
         line1 = (f"{place}  frame {row.frame}  {state}  "
                  f"from {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:.1f}{'  *unsaved*' if self.dirty else ''}")
         disputed = self.disputed_count()
         line2 = (f"reviewed {reviewed}/{len(self.rows)}  uncertain left {uncertain_left}  "
                  f"{('flagged left ' + str(flagged_left) + '   ') if flagged_left else '  '}"
-                 f"{('hint CHECK ' + str(disputed) + ' (e)   ') if disputed else ''}"
+                 f"{('hint differs ' + str(disputed) + ' (e)   ') if disputed else ''}"
                  "SPACE=good  y=take hint  v=invisible  r=accept run  f=uncertain  q=quit")
         # Buttons along the right end of the bar, laid out right to left and measured before the
         # two text lines, so a long clip name or a narrow window cuts the text short instead of
@@ -1808,6 +1852,7 @@ class Tool:
     def remember_settings(self) -> None:
         if self.settings_path is not None:
             save_settings(self.settings_path, {"filter": FILTERS[self.filter], "inset": self.inset,
+                                               "grid_size": self.grid_size,
                                                "trail": self.trail})
 
     @staticmethod
@@ -2215,6 +2260,15 @@ class Tool:
                 self.confirm_grid()
             elif self.grid and (forward or backward):
                 self.grid_page(-1 if backward else 1)
+            elif self.grid and code in (ord(","), ord(".")):
+                self.grid_step(-1 if code == ord(",") else 1)
+            elif self.grid and ord("1") <= code <= ord("9"):
+                self.grid_select(code - ord("1"))
+            elif self.grid and code == ord("y"):
+                if self.take_suggestion():
+                    self.grid_step(1)
+            elif code == ord("z"):
+                self.toggle_grid_size()
             elif self.grid and code == ord("r"):
                 continue  # only the displayed group can be batch-confirmed
             elif self.grid and code in (ord("+"), ord("="), ord("-"), ord("_")):
@@ -2372,7 +2426,7 @@ def main() -> int:
     parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--labels", type=Path, default=LABELS)
     parser.add_argument("--zoom", type=float, default=None, help="Starting zoom (default: last used, else 2)")
-    parser.add_argument("--grid", action="store_true", help="Review eight enlarged ball crops together; TAB toggles this view")
+    parser.add_argument("--grid", action="store_true", help="Review a page of enlarged ball crops together (z: 8 or 16); TAB toggles this view")
     parser.add_argument("--uncertain", action="store_true",
                         help="Only stop on frames that want attention: no confident guess, or flagged "
                              "by ft.py check --audit --mark. Every other label is left alone.")
@@ -2403,6 +2457,8 @@ def main() -> int:
         tool.filter = FILTERS.index(settings["filter"])
     tool.inset = bool(settings.get("inset", tool.inset))
     tool.trail = bool(settings.get("trail", tool.trail))
+    if settings.get("grid_size") in GRID_SIZES:
+        tool.grid_size = settings["grid_size"]
 
     total = sum(len(source.rows) for source in sources)
     flagged = sum(getattr(source, "flagged", 0) for source in sources)

@@ -407,6 +407,57 @@ class SuggestionTests(unittest.TestCase):
         self.assertIsNone(found[1]["smooth"])               # needs two neighbours either side
 
 
+class GridKeyboardTests(unittest.TestCase):
+    def tool(self):
+        tool = Tool([source("test", 40)])
+        tool.frame = lambda index: np.zeros((720, 1280, 3), np.uint8)
+        tool.follow_ball()
+        return tool
+
+    def test_sixteen_tiles_page_and_select_from_the_keyboard(self):
+        tool = self.tool()
+        tool.grid_size = 16
+        tool.toggle_grid()
+        tool.render_grid()
+        self.assertEqual(len(tool.grid_tiles), 16)
+        boxes = [box for _, box, *_ in tool.grid_tiles]
+        self.assertEqual(len({box[1] for box in boxes}), 4)          # four rows of four
+        self.assertTrue(all(box[3] < tool.view_h for box in boxes))  # none run into the bar
+        tool.grid_select(5)
+        self.assertEqual(tool.cursor, 5)
+        tool.grid_step(-1)
+        self.assertEqual(tool.cursor, 4)
+        tool.grid_select(15)
+        tool.grid_step(1)                                            # off the end: next page
+        self.assertEqual(tool.grid_indices, list(range(16, 32)))
+        self.assertEqual(tool.cursor, 16)
+        tool.grid_step(-1)                                           # and back onto the last tile
+        self.assertEqual(tool.grid_indices, list(range(16)))
+        self.assertEqual(tool.cursor, 15)
+
+    def test_switching_size_keeps_the_selected_frame(self):
+        tool = self.tool()
+        tool.toggle_grid()
+        tool.grid_select(6)
+        tool.toggle_grid_size()
+        self.assertEqual(tool.grid_size, 16)
+        self.assertEqual(len(tool.grid_indices), 16)
+        self.assertEqual(tool.cursor, 6)
+        tool.toggle_grid_size()
+        self.assertEqual(tool.grid_size, 8)
+
+    def test_y_in_the_grid_takes_the_selected_tiles_suggestion_and_moves_on(self):
+        tool = self.tool()
+        tool.toggle_grid()
+        tool.grid_select(2)
+        row = tool.rows[2]
+        tool.suggestions["test"] = {2: {"x": row.x + 1, "y": row.y, "move": 1., "smooth": .2, "fits": True}}
+        tool.suggest_seeds["test"] = {2: (row.x, row.y)}
+        self.assertTrue(tool.take_suggestion())
+        tool.grid_step(1)
+        self.assertEqual((row.source, tool.cursor), ("refined", 3))
+
+
 class DraftTests(unittest.TestCase):
     def test_drafts_use_the_unshifted_detector_point(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune"))
