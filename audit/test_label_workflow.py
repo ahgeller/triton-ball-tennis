@@ -367,5 +367,88 @@ class LabelWorkflowTests(unittest.TestCase):
             self.assertEqual(expand(["v1..v3"], labels), ["v1", "v2", "v3"])
 
 
+def ball_frames(positions, size=(360, 640)):
+    """Grey frames with a 3x3 bright ball whose middle pixel is at each (column, row)."""
+    frames = []
+    for column, row in positions:
+        image = np.full(size + (3,), 90, np.uint8)
+        image[row - 1:row + 2, column - 1:column + 2] = (60, 230, 230)
+        frames.append(image)
+    return frames
+
+
+class SuggestionTests(unittest.TestCase):
+    def test_centroid_finds_the_ball_in_label_coordinates(self):
+        from finetune.refine import motion_centroid
+        previous, current, following = ball_frames([(40, 30), (50, 40), (60, 50)])
+        x, y = motion_centroid(previous, current, following, (52.0, 38.0), 9)
+        self.assertAlmostEqual(x, 50.5, places=6)    # pixel 50's centre is 50.5 in label files
+        self.assertAlmostEqual(y, 40.5, places=6)
+        still = ball_frames([(50, 40)])[0]
+        self.assertIsNone(motion_centroid(still, still, still, (50.5, 40.5), 9))
+
+    def test_suggest_reads_a_video_and_scores_smoothness(self):
+        from finetune import refine
+        path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]   # an exact parabola
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "clip.avi"
+            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 30, (640, 360))
+            for image in ball_frames(path_of):
+                writer.write(image)
+            writer.release()
+            seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
+            found = refine.suggest(video, seeds, spacing=1)
+        self.assertEqual(set(found), set(range(1, 11)))   # the two ends have no neighbour to diff
+        for frame, hint in found.items():
+            column, row = path_of[frame]
+            self.assertLess(abs(hint["x"] - (column + .5)), .35)   # MJPG is lossy, so not exact
+            self.assertLess(abs(hint["y"] - (row + .5)), .35)
+        self.assertTrue(found[5]["fits"])
+        self.assertIsNone(found[1]["smooth"])               # needs two neighbours either side
+
+
+class TakeSuggestionTests(LabelWorkflowTests.__base__):
+    def tool(self):
+        tool = LabelWorkflowTests.tool(self)
+        tool.suggestions["test"] = {0: {"x": 31.0, "y": 25.5, "move": .9, "smooth": .3, "fits": True}}
+        tool.suggest_seeds["test"] = {0: (tool.rows[0].x, tool.rows[0].y)}
+        tool.suggest_version += 1
+        return tool
+
+    def test_y_takes_the_suggestion_as_refined_and_undo_restores_it(self):
+        tool = self.tool()
+        row = tool.rows[0]
+        self.assertTrue(tool.take_suggestion())
+        self.assertEqual((row.x, row.y, row.source), (31.0, 25.5, "refined"))
+        self.assertTrue(row.edited)
+        row.undo()
+        self.assertEqual((row.x, row.y, row.source), (30.25, 24.75, "csv"))
+        tool.take_suggestion()
+        tool.set_point(32, 26)                       # then corrected by hand
+        self.assertEqual(row.source, "click")
+
+    def test_suggestion_is_dropped_once_the_label_moves_away_from_its_seed(self):
+        tool = self.tool()
+        self.assertIsNotNone(tool.suggestion_for(0))
+        tool.rows[0].x += 40                         # far from where the suggestion was measured
+        self.assertIsNone(tool.suggestion_for(0))
+        self.assertFalse(tool.take_suggestion())
+        self.assertIsNone(tool.suggestion_for(1))    # no suggestion measured for this frame
+
+    def test_suggestion_is_drawn_and_its_arrival_redraws(self):
+        tool = LabelWorkflowTests.tool(self)
+        tool.zoom = tool.zoom_target = 6.
+        tool.follow_ball()
+        plain = tool.render()
+        orange = lambda image: int(np.sum((image[:, :, 0] == 0) & (image[:, :, 1] == 150) & (image[:, :, 2] == 255)))
+        self.assertEqual(orange(plain), 0)
+        tool.suggestions["test"] = {0: {"x": 33.0, "y": 27.0, "move": 3.4, "smooth": .3, "fits": False}}
+        tool.suggest_seeds["test"] = {0: (tool.rows[0].x, tool.rows[0].y)}
+        tool.suggest_version += 1
+        hinted = tool.render()
+        self.assertIsNot(hinted, plain)
+        self.assertGreater(orange(hinted), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

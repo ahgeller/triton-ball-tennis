@@ -39,6 +39,8 @@ Controls:
   f / b                    jump to next / previous unreviewed uncertain frame - that includes any
                            frame flagged by ft.py check --audit --mark, drawn in magenta. SPACE
                            clears a flag as well as a click does: it is good where it is
+  y                        take the suggestion: move the point to the orange mark and go on, like
+                           a click there (see "Suggestions" below)
   u                        undo last change on this frame
   g / click the badge      auto-centre on / off. On (the default) every frame puts the guess in
                            the middle of the screen with the mouse on it; off leaves the view and
@@ -64,6 +66,13 @@ is what used to leave the ball in a corner of the screen after zooming in: the t
 it, the window was showing a cropped, shifted part of the picture. Every notch is now paid back
 to the window straight away, the toolbar that could also zoom it is gone, and a check runs every
 few seconds; if the window's zoom has crept in anyway it is rebuilt in place.
+
+Suggestions: while you work, the tool measures each label frame's ball from the video itself -
+the centre of what moved between that frame and its neighbours, in a small window around the
+current label (finetune/refine.py; CPU only, no model). Where that differs from the label it is
+drawn as a small orange mark with its distance on the bar; y moves the label there. It matched the
+hand-verified clips to a median 0.8 px, the same as two careful clicks. It is only a suggestion:
+nothing changes until you press y, and a label taken from it is recorded as source "refined".
 
 --uncertain walks only the frames that want attention - no confident guess, or flagged by
 ft.py check --audit --mark - and skips confident predictions, which may still be wrong. n/p/SPACE step
@@ -93,8 +102,15 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import threading
+
 import cv2
 import numpy as np
+
+try:                                  # imported as finetune.label_tool (tests) or run as a script
+    from finetune import refine
+except ImportError:
+    import refine
 
 WORKSPACE = Path(__file__).resolve().parent
 VIDEOS = WORKSPACE / "videos"
@@ -344,11 +360,12 @@ class Row:
         return (self.suspect and not self.settled) or not (self.visible and self.conf >= CONFIDENT_CONF)
 
     def snapshot(self) -> None:
-        self.history.append((self.x, self.y, self.visible, self.reviewed, self.edited, self.suspect))
+        self.history.append((self.x, self.y, self.visible, self.reviewed, self.edited, self.suspect,
+                             self.source))
 
     def undo(self) -> None:
         if self.history:
-            self.x, self.y, self.visible, self.reviewed, self.edited, self.suspect = self.history.pop()
+            self.x, self.y, self.visible, self.reviewed, self.edited, self.suspect, self.source =                 self.history.pop()
 
 
 def hit(box, x: int, y: int) -> bool:
@@ -589,6 +606,10 @@ class Tool:
         self.reset_times: List[float] = []   # recent rebuilds, so a check that keeps failing gives up
         self.normal_rect = None       # the window's rect before going full screen, to rebuild into
         self.pending_key = -1         # a key pumped out of the queue by a short waitKey, kept for loop
+        self.suggestions: Dict[str, Dict[int, dict]] = {}   # clip -> frame -> refine.suggest() entry
+        self.suggest_seeds: Dict[str, Dict[int, tuple]] = {}  # ... and the label each started from
+        self.suggest_version = 0      # bumped as suggestions arrive, so the view redraws with them
+        self.closing = False          # tells the suggestion thread to stop
         self.render_key = None        # what the last single-frame render was drawn from, see render_state
         self.render_cache = None
         self.render_fresh = True      # did the last render() draw anything new?
@@ -1258,7 +1279,7 @@ class Tool:
         return (Row.revision, self.cursor, self.origin, self.scale, self.zoom, self.view_w, self.view_h,
                 self.hud_h, self.ui, self.width, self.height, self.filter, self.inset, self.trail,
                 self.follow, self.step, self.dirty, id(self.walk), len(self.walk), self.walk_pos,
-                self.ghost, len(self.sources), id(image), id(before))
+                self.ghost, len(self.sources), id(image), id(before), self.suggest_version)
 
     def render(self) -> np.ndarray:
         if self.grid:
@@ -1299,6 +1320,16 @@ class Tool:
                     cv2.circle(display, self.to_view(previous.x, previous.y), max(3, int(3 * ui)),
                                (200, 200, 60), thin, cv2.LINE_AA)
         radius = int(max(8, 6 * self.zoom) * ui)
+        hint = self.suggestion_for(self.cursor)
+        if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25:
+            # Four short orange ticks on the diagonals, leaving the suggested centre itself clear
+            hx, hy = self.to_view(hint["x"], hint["y"])
+            near, far = int(round(3 * ui)), int(round(7 * ui))
+            for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
+                         (0, 0, 0), thin + 2, cv2.LINE_AA)
+                cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
+                         (0, 150, 255), thin, cv2.LINE_AA)
         if row.visible:
             colour = ((0, 0, 255) if row.edited else (0, 220, 0) if row.reviewed
                       else (255, 0, 255) if row.suspect else (0, 255, 255))
@@ -1345,11 +1376,14 @@ class Tool:
         if self.walk:
             left = sum(1 for i in self.walk if not self.rows[i].settled)
             place += f"  UNCERTAIN ONLY {self.walk_pos + 1}/{len(self.walk)} ({left} left)"
+        if hint is not None:
+            gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.height
+            state += f"  hint {gap:.1f}px" if gap >= 0.05 else "  hint: here"
         line1 = (f"{place}  frame {row.frame}  {state}  "
                  f"from {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:.1f}{'  *unsaved*' if self.dirty else ''}")
         line2 = (f"reviewed {reviewed}/{len(self.rows)}  uncertain left {uncertain_left}  "
                  f"{('flagged left ' + str(flagged_left) + '   ') if flagged_left else '  '}"
-                 "SPACE=good  v=invisible  r=accept run  f=uncertain  q=quit")
+                 "SPACE=good  y=take hint  v=invisible  r=accept run  f=uncertain  q=quit")
         # Buttons along the right end of the bar, laid out right to left and measured before the
         # two text lines, so a long clip name or a narrow window cuts the text short instead of
         # running under them. Every box is kept for on_mouse: they are all clickable.
@@ -1830,6 +1864,58 @@ class Tool:
             self.zoom_at(notches, self.view_w / 2.0, self.view_h / 2.0)
         self.pending_cursor_move = True
 
+    # ---------------------------------------------------------------- suggestions
+    def start_suggestions(self, wait: bool = False) -> None:
+        """Measure every clip's suggestions on a background thread, the clip you are in first, so the
+        window never waits for them. `wait` runs it in the caller instead (tests, headless use)."""
+        order = sorted(self.sources, key=lambda source: source.clip != self.clip)
+        if wait:
+            self.suggest_all(order)
+            return
+        threading.Thread(target=self.suggest_all, args=(order,), daemon=True, name="suggestions").start()
+
+    def suggest_all(self, sources) -> None:
+        for source in sources:
+            if self.closing:
+                return
+            seeds = {row.frame: (row.x, row.y) for row in source.rows if row.visible}
+            try:
+                found = refine.suggest(source.video, seeds, refine.label_spacing(r.frame for r in source.rows),
+                                       stop=lambda: self.closing)
+            except Exception as error:            # a hint is never worth losing the session over
+                print(f"[hint] {source.clip}: no suggestions ({error})")
+                continue
+            if self.closing:
+                return
+            self.suggest_seeds[source.clip] = seeds
+            self.suggestions[source.clip] = found
+            self.suggest_version += 1
+            self.grid_cache_key = None
+            print(f"[hint] {source.clip}: suggestions for {len(found)} of {len(source.rows)} frames")
+
+    def suggestion_for(self, index: int) -> Optional[dict]:
+        """The suggestion for a row, or None: no ball, none measured, or the label has since been
+        moved so far from where the suggestion started that it may be about a different blob."""
+        row = self.rows[index]
+        if not row.visible:
+            return None
+        hint = self.suggestions.get(row.clip, {}).get(row.frame)
+        seed = self.suggest_seeds.get(row.clip, {}).get(row.frame)
+        if hint is None or seed is None:
+            return None
+        source = self.by_clip[row.clip]
+        if math.hypot(row.x - seed[0], row.y - seed[1]) > refine.radius_for(source.height) / 2.0:
+            return None
+        return hint
+
+    def take_suggestion(self) -> bool:
+        """Move this frame's label to its suggestion. True when there was one to take."""
+        hint = self.suggestion_for(self.cursor)
+        if hint is None or not self.set_point(hint["x"], hint["y"]):
+            return False
+        self.rows[self.cursor].source = "refined"   # kept apart from clicks in the review file
+        return True
+
     def set_point(self, x: float, y: float) -> bool:
         """Put this frame's ball at (x, y). False when nothing was stored."""
         if self.frame_missing():
@@ -1845,6 +1931,8 @@ class Tool:
         row = self.rows[self.cursor]
         row.snapshot()
         row.x, row.y = x, y
+        if row.source == "refined":
+            row.source = "click"      # placed by hand now, not taken from a suggestion
         row.visible = True
         row.reviewed = row.edited = True
         self.dirty = self.source.dirty = True
@@ -1988,9 +2076,11 @@ class Tool:
         cv2.waitKey(1)
         if not self.grid:
             self.calibrate_cursor()
+        self.start_suggestions()
         try:
             self.loop()
         finally:
+            self.closing = True
             # Any way out - q, the window's X, Ctrl+C, a crash - keeps the work done so far.
             try:
                 self.save()
@@ -2084,6 +2174,9 @@ class Tool:
             elif code in (ord(" "), 13, ord("c")):
                 self.confirm()
                 self.move(1)
+            elif code == ord("y") and not self.grid:
+                if self.take_suggestion():
+                    self.move(1)
             elif code == ord("v"):
                 self.mark_invisible()
                 if not self.grid:
