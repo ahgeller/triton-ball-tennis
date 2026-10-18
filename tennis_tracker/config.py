@@ -12,7 +12,10 @@ class Config:
     ball_class_name: Optional[str] = None
     conf: float = 0.50
     device: str = "auto"
-    gridtracknet_y_offset_px: float = 1.6
+    # Shift applied to GridTrackNet points, in px at 1080p (positive = down). Was 1.6; on the 41
+    # hand-verified clips video13-53 that put detections a median 2 px below the labels, and 0
+    # takes the median error from 3.0 to 2.3 px (p90 6.5 -> 5.8) at every confidence threshold.
+    gridtracknet_y_offset_px: float = 0.0
     gridtracknet_source_stride: Optional[int] = None  # None = 2 at 60 FPS / 1 at 30 FPS (the training cadence)
     gridtracknet_prepass_background: bool = True  # overlap the detector prepass with pass 1
 
