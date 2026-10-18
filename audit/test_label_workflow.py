@@ -345,9 +345,41 @@ class LabelWorkflowTests(unittest.TestCase):
             self.assertEqual(load_suspects(flags, rows), 2)
             save_suspects(flags, rows)               # nothing settled: nothing may be dropped
             self.assertEqual(load_suspects(flags, rows), 2)
-            rows[1].reviewed = True
+            rows[1].suspect = False                  # answered (SPACE or an edit in the tool)
             save_suspects(flags, rows)
-            self.assertEqual(json.loads(flags.read_text()), {"unplaceable": [], "check": [3]})
+            self.assertEqual(json.loads(flags.read_text()),
+                             {"unplaceable": [], "check": [3], "answered": {"1": [41.25, 27.75]}})
+
+    def test_new_audit_flag_reopens_a_reviewed_frame_until_answered(self):
+        tool = self.tool()
+        for done in tool.rows[:8]:
+            done.reviewed = True                     # the start of the clip is reviewed ...
+        row = tool.rows[4]
+        row.suspect = True                           # ... and an audit after that flagged frame 4
+        self.assertTrue(row.uncertain)
+        tool.cursor = 0
+        tool.jump(1)
+        self.assertEqual(tool.cursor, 4)             # f goes to it even though it was reviewed
+        self.assertEqual(tool.only_uncertain() and 4 in tool.walk, True)
+        tool.walk = []
+        tool.cursor = 4
+        tool.confirm()                               # SPACE: it is right where it is
+        self.assertFalse(row.suspect)
+        row.undo()
+        self.assertTrue(row.suspect)                 # undo puts the question back
+
+    def test_a_later_audit_does_not_reask_an_answered_frame(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune"))
+        import ft
+        with tempfile.TemporaryDirectory() as directory:
+            labels = Path(directory)
+            (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")
+            (labels / "clip_ball.suspect.json").write_text(json.dumps(
+                {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
+            with patch.object(ft, "LABELS", labels), patch.object(ft, "read_manifest", lambda: {}):
+                ft.write_suspects("clip", "check", [1, 3], "audit")
+                self.assertEqual(ft.read_suspects("clip")["check"], [3])   # 3's label moved since
+                self.assertEqual(ft.outstanding_suspects("clip")["check"], [3])
 
     def test_damaged_review_file_does_not_stop_the_tool(self):
         with tempfile.TemporaryDirectory() as directory:

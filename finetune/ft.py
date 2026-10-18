@@ -529,25 +529,65 @@ def write_suspects(clip: str, kind: str, frames: List[int], note: str) -> None:
         except (OSError, ValueError):
             notes = {}
     notes[kind] = note
-    if not (current["unplaceable"] or current["check"]):
+    answered = read_answered(clip)
+    if answered:
+        # A frame you already answered (SPACE or a fix in the label tool) is not asked about again
+        # while its label is still the one you answered at; move the label and it can be flagged anew.
+        labels = read_label_points(clip)
+        current[kind] = [f for f in current[kind]
+                         if not (str(f) in answered and same_point(answered[str(f)], labels.get(f, "missing")))]
+    if not (current["unplaceable"] or current["check"] or answered):
         path.unlink(missing_ok=True)
         return
     path.write_text(json.dumps({"generated": str(dt.date.today()), "notes": notes,
-                                "unplaceable": current["unplaceable"], "check": current["check"]}, indent=1),
+                                "unplaceable": current["unplaceable"], "check": current["check"],
+                                "answered": answered}, indent=1),
                     encoding="utf-8")
 
 
-def outstanding_suspects(clip: str) -> Dict[str, List[int]]:
-    """The flagged frames still to deal with: the file minus everything you have settled.
+def read_answered(clip: str) -> dict:
+    """frame (as text) -> [x, y] (or None for no ball) of the flags already answered in the tool."""
+    path = LABELS / f"{clip}{SUSPECT_SUFFIX}"
+    try:
+        answered = json.loads(path.read_text(encoding="utf-8")).get("answered") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return answered if isinstance(answered, dict) else {}
 
-    Confirming a label with SPACE answers the flag as fully as changing it does, so both count. A
-    frame with no ball on it is dropped from 'unplaceable' too - there is no position to put in the
-    wrong place, so which side of a cut it lands on cannot hurt anything.
+
+def read_label_points(clip: str) -> dict:
+    """frame -> (x, y), or None where the label says no ball, from the clip's label file."""
+    path = LABELS / f"{clip}_ball.csv"
+    if not path.is_file():
+        return {}
+    row = read_manifest().get(clip, {})
+    width, height = float(row.get("width") or 1920), float(row.get("height") or 1080)
+    points = {}
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        for record in csv.DictReader(handle):
+            x, y = float(record["ball_x"]), float(record["ball_y"])
+            frame = int(re.search(r"(\d+)", record["frame"]).group(1))
+            points[frame] = None if (x >= width * 0.95 and y <= height * 0.05) else (x, y)
+    return points
+
+
+def same_point(answered, label) -> bool:
+    if answered is None or label is None:
+        return answered is None and label is None
+    return label != "missing" and abs(answered[0] - label[0]) < 0.01 and abs(answered[1] - label[1]) < 0.01
+
+
+def outstanding_suspects(clip: str) -> Dict[str, List[int]]:
+    """The flagged frames still to deal with.
+
+    The label tool takes a flag out of the file once you answer it - SPACE answers it as fully as
+    a fix does - so what is in the file is still open, even on a frame you had reviewed before the
+    audit raised it. A frame with no ball on it is dropped from 'unplaceable' too - there is no
+    position to put in the wrong place, so which side of a cut it lands on cannot hurt anything.
     """
     flagged = read_suspects(clip)
     if not (flagged["unplaceable"] or flagged["check"]):
         return flagged
-    settled = set(read_review(clip))
     blind = set()
     path = LABELS / f"{clip}_ball.csv"
     if flagged["unplaceable"] and path.is_file():
@@ -558,8 +598,8 @@ def outstanding_suspects(clip: str) -> Dict[str, List[int]]:
                 x, y = float(record["ball_x"]), float(record["ball_y"])
                 if x >= width * 0.95 and y <= height * 0.05:
                     blind.add(int(re.search(r"(\d+)", record["frame"]).group(1)))
-    return {"unplaceable": [f for f in flagged["unplaceable"] if f not in settled and f not in blind],
-            "check": [f for f in flagged["check"] if f not in settled]}
+    return {"unplaceable": [f for f in flagged["unplaceable"] if f not in blind],
+            "check": list(flagged["check"])}
 
 
 def add_exclusion(clip: str, reason: str) -> None:

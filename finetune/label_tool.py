@@ -38,9 +38,11 @@ Controls:
   1 / 2 / 4 / 6 / 8        how many frames those four move at a time - the x1..x8 buttons on the
                            bar do the same. Holding d or a at x8 covers ground eight times as
                            fast; SPACE, v and a click always move exactly one frame
-  f / b                    jump to next / previous unreviewed uncertain frame - that includes any
-                           frame flagged by ft.py check --audit --mark, drawn in magenta. SPACE
-                           clears a flag as well as a click does: it is good where it is
+  f / b                    jump to next / previous unreviewed uncertain frame, and to any frame an
+                           audit (ft.py check --audit --mark) has flagged, drawn in magenta - even
+                           one you had reviewed before the audit. SPACE answers a flag as well as a
+                           click does (it is good where it is), and a later audit does not raise it
+                           again unless the label moves
   y                        take the suggestion: move the point to the orange mark and go on, like
                            a click there (see "Suggestions" below)
   w                        trajectory sheet: the whole frame with every label of 60 label frames
@@ -360,7 +362,7 @@ class Row:
         self.source, self.conf = source, conf
         self.reviewed = False
         self.edited = False
-        self.suspect = False          # flagged by ft.py check --audit --mark; cleared once you edit it
+        self.suspect = False          # flagged by ft.py check --audit --mark; answered by SPACE or an edit
         self.history: List[tuple] = []
 
     @property
@@ -370,8 +372,9 @@ class Row:
 
     @property
     def uncertain(self) -> bool:
-        """Worth stopping on: no confident guess, or something already found this frame doubtful."""
-        return (self.suspect and not self.settled) or not (self.visible and self.conf >= CONFIDENT_CONF)
+        """Worth stopping on: no confident guess, or an audit flag you have not answered yet - which
+        reopens a frame you had already reviewed, since catching those is what an audit is for."""
+        return self.suspect or not (self.visible and self.conf >= CONFIDENT_CONF)
 
     def snapshot(self) -> None:
         self.history.append((self.x, self.y, self.visible, self.reviewed, self.edited, self.suspect,
@@ -445,10 +448,13 @@ def save_rows(csv_path: Path, rows: List[Row], width: int, height: int) -> None:
 
 
 def save_suspects(path: Path, rows: List[Row]) -> None:
-    """Drop the frames you have settled from the flag file, and remove it once none are left.
+    """Drop the flags you have answered from the flag file, and remember each answer.
 
-    A flag is a question, and confirming the label answers it just as well as changing the label
-    does. Leaving answered ones behind would keep the clip marked BAD* for work already done.
+    A flag is a question, and confirming the label (SPACE) answers it just as well as changing it
+    does. A flag on a frame you had reviewed before the audit stays open until you look at it
+    again: catching mistakes in reviewed frames is what an audit is for. Answered frames go in an
+    "answered" map with the label they were answered at, so a later audit does not raise the same
+    question about the same label again (ft.py write_suspects reads it).
     """
     if not path.is_file():
         return
@@ -460,15 +466,20 @@ def save_suspects(path: Path, rows: List[Row]) -> None:
                    "check": [int(f) for f in blob.get("check", blob.get("frames", []))]}
     except (OSError, ValueError, TypeError, AttributeError):
         return
-    settled = {row.frame for row in rows if row.settled}
-    kept = {kind: [f for f in frames if f not in settled] for kind, frames in flagged.items()}
-    if not (kept["unplaceable"] or kept["check"]):
-        path.unlink(missing_ok=True)
-        return
-    if kept == flagged and "frames" not in blob:
+    by_frame = {row.frame: row for row in rows}
+    open_now = {row.frame for row in rows if row.suspect}
+    kept = {kind: [f for f in frames if f in open_now or f not in by_frame] for kind, frames in flagged.items()}
+    answered = dict(blob.get("answered") or {}) if isinstance(blob.get("answered"), dict) else {}
+    for frames in flagged.values():
+        for frame in frames:
+            if frame in by_frame and frame not in open_now:
+                row = by_frame[frame]
+                answered[str(frame)] = [round(row.x, 2), round(row.y, 2)] if row.visible else None
+    if kept == flagged and "frames" not in blob and answered == blob.get("answered", {}):
         return
     blob.pop("frames", None)
     blob.update(kept)
+    blob["answered"] = answered
     write_atomic(path, json.dumps(blob, indent=1))
 
 
@@ -1510,8 +1521,8 @@ class Tool:
                 cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
                          (0, 150, 255), thin, cv2.LINE_AA)
         if row.visible:
-            colour = ((0, 0, 255) if row.edited else (0, 220, 0) if row.reviewed
-                      else (255, 0, 255) if row.suspect else (0, 255, 255))
+            colour = ((255, 0, 255) if row.suspect else (0, 0, 255) if row.edited
+                      else (0, 220, 0) if row.reviewed else (0, 255, 255))
             cx, cy = self.to_view(row.x, row.y)
             cv2.circle(display, (cx, cy), radius, colour, thin, cv2.LINE_AA)
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
@@ -1526,8 +1537,8 @@ class Tool:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45 * ui, (255, 200, 0), thin, cv2.LINE_AA)
         self.draw_inset(display, image, row, ui)
         if row.settled or row.suspect:
-            badge = "EDITED" if row.edited else "REVIEWED" if row.reviewed else "CHECK THIS"
-            fill = (60, 140, 255) if row.edited else (70, 190, 70) if row.reviewed else (200, 60, 200)
+            badge = "CHECK THIS" if row.suspect else "EDITED" if row.edited else "REVIEWED"
+            fill = (200, 60, 200) if row.suspect else (60, 140, 255) if row.edited else (70, 190, 70)
             (text_w, text_h), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui, 2)
             left = self.view_w - text_w - int(26 * ui)
             cv2.rectangle(display, (left, int(10 * ui)), (self.view_w - int(10 * ui), int(24 * ui) + text_h), fill, -1)
@@ -1544,7 +1555,7 @@ class Tool:
         hud = canvas[self.view_h:]
         hud[:] = 0
         uncertain_left = sum(1 for r in self.rows if r.uncertain and not r.reviewed)
-        flagged_left = sum(1 for r in self.rows if r.suspect and not r.settled)
+        flagged_left = sum(1 for r in self.rows if r.suspect)
         state = "NOT VISIBLE" if not row.visible else f"({row.x:.1f}, {row.y:.1f})"
         tag = "EDITED" if row.edited else "ok" if row.reviewed else "unreviewed"
         source = self.source
@@ -2152,6 +2163,7 @@ class Tool:
             return False
         row = self.rows[self.cursor]
         row.snapshot()
+        row.suspect = False           # an edit answers an audit flag
         row.x, row.y = x, y
         if row.source == "refined":
             row.source = "click"      # placed by hand now, not taken from a suggestion
@@ -2172,6 +2184,7 @@ class Tool:
             return
         row = self.rows[self.cursor]
         row.snapshot()
+        row.suspect = False
         row.visible = False
         row.reviewed = row.edited = True
         self.dirty = self.source.dirty = True
@@ -2180,8 +2193,9 @@ class Tool:
         if self.frame_missing():
             return                    # a black placeholder is not something to say "good" to
         row = self.rows[self.cursor]
-        if not row.reviewed:
+        if not row.reviewed or row.suspect:
             row.snapshot()
+        row.suspect = False           # "it is right where it is" answers an audit flag
         row.reviewed = True
         self.dirty = self.source.dirty = True
 
@@ -2191,7 +2205,7 @@ class Tool:
         A filter on where you go, never on what is saved: every row stays in its clip's list, so
         the frames you skip past are written back exactly as they were.
         """
-        self.walk = [i for i, row in enumerate(self.rows) if row.uncertain and not row.settled]
+        self.walk = [i for i, row in enumerate(self.rows) if row.suspect or (row.uncertain and not row.settled)]
         self.walk_pos = 0
         if self.walk:
             self.cursor = self.walk[0]
@@ -2230,7 +2244,7 @@ class Tool:
         if self.walk:                                  # already walking the uncertain ones
             position = self.walk_pos + direction
             while 0 <= position < len(self.walk):
-                if not self.rows[self.walk[position]].settled:
+                if self.rows[self.walk[position]].suspect or not self.rows[self.walk[position]].settled:
                     self.walk_pos, self.cursor = position, self.walk[position]
                     self.follow_ball()
                     return
@@ -2242,7 +2256,7 @@ class Tool:
         index = self.cursor + direction
         while 0 <= index < len(self.rows):
             row = self.rows[index]
-            if row.uncertain and not row.reviewed:
+            if row.suspect or (row.uncertain and not row.reviewed):
                 self.cursor = index
                 self.follow_ball()
                 return
