@@ -451,12 +451,14 @@ class SuggestionTests(unittest.TestCase):
         path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]
         seen = []
 
-        class Nudge:                      # stands in for the network: 1 px right, frame 5 far off
+        class Nudge:                      # stands in for the network: 0.5 px right, frame 5 far off
             cut = staticmethod(cnn_refiner.cut)
+            sure = None                   # a version without the self-check
 
             def place(self, items, height):
                 seen.extend(crop.shape for crop, _, _ in items)
-                return [(start[0] + (8.0 if abs(start[0] - 160.5) < 2 else 0.5), start[1]) for _, _, start in items]
+                return [(start[0] + (8.0 if abs(start[0] - 160.5) < 2 else 0.5), start[1], self.sure)
+                        for _, _, start in items]
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "clip.avi"
             writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 30, (640, 360))
@@ -473,7 +475,19 @@ class SuggestionTests(unittest.TestCase):
             self.assertAlmostEqual(hint["x"], hint["centroid"][0] + moved, places=2)
         self.assertTrue(plain[4]["trusted"] and placed[4]["trusted"])    # 1.5 px at 1080p: still trusted
         self.assertTrue(plain[5]["trusted"])
-        self.assertFalse(placed[5]["trusted"])           # 8 px at 360p is 24 px at 1080p from its measurement
+        self.assertFalse(placed[5]["trusted"])
+        with tempfile.TemporaryDirectory() as directory:     # a self-check decides trust by itself
+            video = Path(directory) / "clip.avi"
+            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 30, (640, 360))
+            for image in ball_frames(path_of):
+                writer.write(image)
+            writer.release()
+            unsure, checked = Nudge(), Nudge()
+            unsure.sure, checked.sure = False, True
+            doubted = refine.suggest(video, seeds, spacing=1, placer=unsure)
+            vouched = refine.suggest(video, seeds, spacing=1, placer=checked)
+        self.assertFalse(any(h["trusted"] for h in doubted.values()))
+        self.assertTrue(vouched[5]["trusted"])            # far from its measurement, but the network is sure           # 8 px at 360p is 24 px at 1080p from its measurement
 
 
 class CnnRefinerTests(unittest.TestCase):
@@ -487,12 +501,46 @@ class CnnRefinerTests(unittest.TestCase):
         peak = np.unravel_index(np.argmax(crop[..., 4]), crop.shape[:2])
         self.assertTrue(47 <= peak[0] <= 48 and 47 <= peak[1] <= 48)
         placer = object.__new__(cnn_refiner.Placer)
-        placer.device, placer.ROUNDS = "cpu", 1
+        placer.device, placer.ROUNDS, placer.threshold = "cpu", 1, 0.5
         lo = (cnn_refiner.WINDOW - 1) / 2.0
-        placer.net = lambda x: torch.tensor([[lo + 3.0, lo]] * x.shape[0])   # "the ball is 3 px right"
-        (x, y), = placer.place([(crop, (500.5, 300.5), (502.5, 301.5))], 720)
+        placer.net = lambda x: (torch.tensor([[lo + 3.0, lo]] * x.shape[0]),   # "the ball is 3 px right"
+                                torch.full((x.shape[0],), 2.0))                  # ... and sure (0.88)
+        (x, y, sure), = placer.place([(crop, (500.5, 300.5), (502.5, 301.5))], 720)
+        self.assertTrue(sure)
         self.assertAlmostEqual(x, 502.5 + 3.0 * 720 / 1080, places=4)
         self.assertAlmostEqual(y, 301.5, places=4)
+
+    def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(self):
+        from finetune import cnn_refiner
+        confs = np.linspace(1.0, 0.0, 3000)
+        errors = np.where(np.arange(3000) >= 2000, 9.0, 0.5)       # the least confident third is wrong
+        threshold = cnn_refiner.sure_threshold(errors, confs)
+        sure = confs >= threshold
+        self.assertLessEqual(np.mean(errors[sure] > 5), cnn_refiner.SURE_FAR_SHARE)
+        self.assertGreater(sure.sum(), 1990)                         # ... and nearly all the good ones are sure
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "clips.csv"
+            manifest.write_text("clip,origin\n"
+                                "video13,C:\\prof\\Dataset\\game2\\Clip1\n"
+                                "video14,C:\\prof\\Dataset\\game2\\Clip2\n"
+                                "video1,C:\\archive\\video1.mp4\n", encoding="utf-8")
+            with patch.object(cnn_refiner, "HERE", Path(directory)):
+                fold_of = cnn_refiner.folds(["video13", "video14", "video1", "grid_match4"],
+                                            {"video13": 300, "video14": 200, "video1": 400, "grid_match4": 600})
+        self.assertEqual(fold_of["video13"], fold_of["video14"])
+        self.assertEqual(len(set(fold_of.values())), 3)
+
+    def test_a_version_from_before_the_self_check_still_loads(self):
+        import torch
+        from finetune import cnn_refiner
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "refiner-20261019-120547.pt"
+            torch.save({"state": cnn_refiner.network(False).state_dict(), "trained": "then"}, path)
+            placer = cnn_refiner.Placer(path)
+            crop = np.zeros((cnn_refiner.CROP, cnn_refiner.CROP, 9), np.uint8)
+            (x, y, sure), = placer.place([(crop, (100.0, 100.0), (100.0, 100.0))], 1080)
+        self.assertIsNone(placer.threshold)
+        self.assertIsNone(sure)                                      # refine.py's own rule decides
 
     def test_versions_newest_is_current_until_one_is_chosen_and_old_ones_stay(self):
         from finetune import cnn_refiner

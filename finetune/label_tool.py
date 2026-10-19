@@ -83,10 +83,10 @@ the centre of what moved between that frame and its neighbours, looked for aroun
 and around where the labels either side put the ball (finetune/refine.py). A small network trained
 on the frames you have checked (finetune/cnn_refiner.py; "hint model" in the finetune menu retrains
 it) then puts it where you would click: a median 0.66 px from your clicks on clips it never saw,
-against 0.79 px for the measurement alone. Without a trained version the measurement is shown as
-it is. It is drawn as four small ticks with its distance on the bar - bright orange when trusted,
-dull when only a guess - and y moves the label there. The clip you are in is re-measured a moment after you change or
-confirm a label, steered by the labels you have checked, so fixing a frame helps its neighbours. A
+against 0.79 px for the measurement alone, and says whether it is sure. Without a trained version
+the measurement is shown as it is. It is drawn as four small ticks with its distance on the bar -
+bright orange when trusted (sure), dull when only a guess - and y moves the label there. The clip
+you are in is re-measured a moment after you change or confirm a label, steered by the labels you have checked, so fixing a frame helps its neighbours. A
 frame labelled "no ball" gets one only when the video clearly shows a ball on its path. It is only
 a suggestion: nothing changes until you press y, and a label taken from it is recorded as source
 "refined". Where a trusted suggestion exists the bar says whether the label agrees: "hint ok"

@@ -22,8 +22,9 @@ the hand-verified clips video13-53, seeded from the detector's drafts: median 0.
 label; the trusted ones (61%) are more than 3 px off 2% of the time and more than 5 px off 0.1%.
 
 With a `placer` (finetune/cnn_refiner.py, a small network trained on your own clicks) the chosen
-blob is then placed where you would click it; everything else - finding the ball, choosing between
-blobs, trusting - stays this model-free measurement. Without one this runs on the CPU, no model.
+blob is then placed where you would click it, and a placer with a self-check decides `trusted` by
+its own confidence (where a ball is here at all); finding the ball and choosing between blobs stay
+this model-free measurement. Without one this runs on the CPU, no model.
 Frame coordinates follow the label files: pixel k's centre is at k + 0.5.
 """
 from __future__ import annotations
@@ -49,8 +50,9 @@ TRUST_PATH_PX_1080 = 2.0   # "trusted": this close to the path through the neigh
 TRUST_PEAK_SHARE = 0.9     # ... its own peak this share of the brightest change in the window
 BALL_CONTRAST = 20.0       # peak over the window's median: below this nothing ball-like moved
 PLACE_REACH_1080 = 16.0    # the placer sees this far around the point it was cut at
-TRUST_PLACE_PX_1080 = 2.0  # a placed suggestion further than this from its measurement is not trusted:
-                           # keeps 97% of the trusted frames, and those over 5 px off 0.19% -> 0.08%
+TRUST_PLACE_PX_1080 = 2.0  # without a self-check, a placed suggestion further than this from its
+                           # measurement is not trusted: keeps 97% of the trusted frames, and those
+                           # over 5 px off 0.19% -> 0.08%
 AGREE_PX_1080 = 3.0        # a label this close to a trusted suggestion agrees with it
 
 
@@ -315,7 +317,8 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
     out = {}
     for frame, point in chosen.items():
         centroid_point = point
-        point = placed.get(frame, point)
+        x, y, sure = placed.get(frame, (point[0], point[1], None))
+        point = (x, y)
         entry = min(options[frame], key=lambda o: math.hypot(o["x"] - point[0], o["y"] - point[1]))
         guess = (predict(chosen if anchors is None else {f: p for f, p in chosen.items() if f in anchors},
                          frame, order) or predict(chosen, frame, order))
@@ -323,10 +326,13 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
         seed = labels.get(frame)
         move = None if seed is None else math.hypot(point[0] - seed[0], point[1] - seed[1]) * to_1080
         ball_here = entry["contrast"] >= BALL_CONTRAST
-        trusted = (ball_here and path is not None and path <= TRUST_PATH_PX_1080 and entry["blobs"] <= 1
-                   and entry["ratio"] >= TRUST_PEAK_SHARE
-                   and math.hypot(point[0] - centroid_point[0], point[1] - centroid_point[1]) * to_1080
-                   <= TRUST_PLACE_PX_1080)
+        if sure is not None:              # the placer's self-check: 64% sure vs 55% by the rule below,
+            trusted = ball_here and sure  # at the same 0.09% of them over 5 px off
+        else:
+            trusted = (ball_here and path is not None and path <= TRUST_PATH_PX_1080 and entry["blobs"] <= 1
+                       and entry["ratio"] >= TRUST_PEAK_SHARE
+                       and math.hypot(point[0] - centroid_point[0], point[1] - centroid_point[1]) * to_1080
+                       <= TRUST_PLACE_PX_1080)
         out[frame] = {"x": round(point[0], 3), "y": round(point[1], 3), "seed": seed, "from": entry["from"],
                       "move": None if move is None else round(move, 3),
                       "path": None if path is None else round(path, 3),

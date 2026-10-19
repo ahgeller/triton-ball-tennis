@@ -1112,12 +1112,13 @@ def _menu_promote() -> None:
 
 def _menu_hints() -> None:
     print("the label tool's suggestions (what y places) are put where you would click by a small")
-    print("network trained on the frames you have checked. Retrain it after labelling more; every")
-    print("version is kept and the new one is used from the label tool's next start.")
+    print("network trained on the frames you have checked, which also decides which ones are sure")
+    print("(bright orange). Retrain it after labelling more; every version is kept and the new one")
+    print("is used from the label tool's next start.")
     print()
     run_script("cnn_refiner.py", ["list"])
     print()
-    print("  t) train a new version now (about 15 minutes on the GPU)")
+    print("  t) train a new version now (about 10 minutes on the GPU)")
     print("  u <version>) go back to an older version, e.g. u 20261019")
     answer = _ask("pick, or Enter for the menu: ")
     if not answer:
