@@ -446,6 +446,85 @@ class SuggestionTests(unittest.TestCase):
         self.assertTrue(found[5]["trusted"] and found[5]["ball_here"])
         self.assertLess(found[5]["path"], 1.0)
 
+    def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(self):
+        from finetune import cnn_refiner, refine
+        path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]
+        seen = []
+
+        class Nudge:                      # stands in for the network: 1 px right, frame 5 far off
+            cut = staticmethod(cnn_refiner.cut)
+
+            def place(self, items, height):
+                seen.extend(crop.shape for crop, _, _ in items)
+                return [(start[0] + (8.0 if abs(start[0] - 160.5) < 2 else 0.5), start[1]) for _, _, start in items]
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "clip.avi"
+            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 30, (640, 360))
+            for image in ball_frames(path_of):
+                writer.write(image)
+            writer.release()
+            seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
+            plain = refine.suggest(video, seeds, spacing=1)
+            placed = refine.suggest(video, seeds, spacing=1, placer=Nudge())
+        self.assertEqual(set(seen), {(cnn_refiner.CROP, cnn_refiner.CROP, 9)})
+        for frame, hint in placed.items():
+            self.assertAlmostEqual(hint["centroid"][0], plain[frame]["x"], places=2)   # the measurement is kept
+            moved = 8.0 if frame == 5 else 0.5
+            self.assertAlmostEqual(hint["x"], hint["centroid"][0] + moved, places=2)
+        self.assertTrue(plain[4]["trusted"] and placed[4]["trusted"])    # 1.5 px at 1080p: still trusted
+        self.assertTrue(plain[5]["trusted"])
+        self.assertFalse(placed[5]["trusted"])           # 8 px at 360p is 24 px at 1080p from its measurement
+
+
+class CnnRefinerTests(unittest.TestCase):
+    def test_cut_centres_the_point_and_place_maps_window_pixels_back(self):
+        import torch
+        from finetune import cnn_refiner
+        image = np.zeros((720, 1280, 3), np.uint8)
+        image[300, 500] = 255
+        crop = cnn_refiner.cut([image] * 3, (500.5, 300.5), 720)     # pixel 500's centre, 720p -> 1080p scale
+        self.assertEqual(crop.shape, (96, 96, 9))
+        peak = np.unravel_index(np.argmax(crop[..., 4]), crop.shape[:2])
+        self.assertTrue(47 <= peak[0] <= 48 and 47 <= peak[1] <= 48)
+        placer = object.__new__(cnn_refiner.Placer)
+        placer.device, placer.ROUNDS = "cpu", 1
+        lo = (cnn_refiner.WINDOW - 1) / 2.0
+        placer.net = lambda x: torch.tensor([[lo + 3.0, lo]] * x.shape[0])   # "the ball is 3 px right"
+        (x, y), = placer.place([(crop, (500.5, 300.5), (502.5, 301.5))], 720)
+        self.assertAlmostEqual(x, 502.5 + 3.0 * 720 / 1080, places=4)
+        self.assertAlmostEqual(y, 301.5, places=4)
+
+    def test_versions_newest_is_current_until_one_is_chosen_and_old_ones_stay(self):
+        from finetune import cnn_refiner
+        with tempfile.TemporaryDirectory() as directory:
+            models = Path(directory)
+            with patch.object(cnn_refiner, "MODELS", models), patch.object(cnn_refiner, "CURRENT", models / "current.txt"):
+                self.assertIsNone(cnn_refiner.current())
+                for name in ("refiner-20261001-090000.pt", "refiner-20261019-110000.pt"):
+                    (models / name).write_bytes(b"")
+                self.assertEqual(cnn_refiner.current().name, "refiner-20261019-110000.pt")
+                cnn_refiner.use("20261001")
+                self.assertEqual(cnn_refiner.current().name, "refiner-20261001-090000.pt")
+                (models / "refiner-20261020-080000.pt").write_bytes(b"")
+                self.assertEqual(cnn_refiner.current().name, "refiner-20261001-090000.pt")   # a choice sticks
+                (models / "refiner-20261001-090000.pt").unlink()
+                self.assertEqual(cnn_refiner.current().name, "refiner-20261020-080000.pt")   # ... unless it is gone
+                self.assertEqual(len(cnn_refiner.versions()), 2)
+                with self.assertRaises(SystemExit):
+                    cnn_refiner.use("2026")                 # ambiguous
+
+    def test_label_tool_reloads_the_placer_when_the_current_version_changes(self):
+        tool = LabelWorkflowTests.tool(self)
+        first, second = Path("refiner-a.pt"), Path("refiner-b.pt")
+        loaded = []
+        with patch("finetune.label_tool.cnn_refiner.current", side_effect=[first, first, second, None]),                 patch("finetune.label_tool.cnn_refiner.load_current",
+                      side_effect=lambda: loaded.append(1) or SimpleNamespace(name=f"v{len(loaded)}")):
+            self.assertEqual(tool.current_placer().name, "v1")
+            self.assertEqual(tool.current_placer().name, "v1")       # unchanged: not loaded again
+            self.assertEqual(tool.current_placer().name, "v2")       # retrained: the new version
+            self.assertIsNone(tool.current_placer())                 # none left: the centroid alone
+        self.assertEqual(len(loaded), 2)
+
 
 class GridKeyboardTests(unittest.TestCase):
     def tool(self):
@@ -635,7 +714,8 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         tool = LabelWorkflowTests.tool(self)
         calls = []
         with patch("finetune.label_tool.refine.suggest",
-                   side_effect=lambda video, seeds, spacing, stop, confirmed, only: calls.append((seeds, confirmed, only)) or {}):
+                   side_effect=lambda video, seeds, spacing, stop, confirmed, only, placer:
+                   calls.append((seeds, confirmed, only)) or {}),                 patch("finetune.label_tool.cnn_refiner.current", return_value=None):
             tool.source.video = Path("clip.mp4")
             tool.suggest_clip(tool.source)
             self.assertEqual(calls[-1][1], [])                     # nothing checked yet

@@ -80,10 +80,12 @@ few seconds; if the window's zoom has crept in anyway it is rebuilt in place.
 
 Suggestions: while you work, the tool measures each label frame's ball from the video itself -
 the centre of what moved between that frame and its neighbours, looked for around the current label
-and around where the labels either side put the ball (finetune/refine.py; CPU only, no model). It
-is drawn as four small ticks with its distance on the bar - bright orange when trusted, dull when
-only a guess - and y moves the label there. It matched the hand-verified clips to a median 0.8 px,
-the same as two careful clicks. The clip you are in is re-measured a moment after you change or
+and around where the labels either side put the ball (finetune/refine.py). A small network trained
+on the frames you have checked (finetune/cnn_refiner.py; "hint model" in the finetune menu retrains
+it) then puts it where you would click: a median 0.66 px from your clicks on clips it never saw,
+against 0.79 px for the measurement alone. Without a trained version the measurement is shown as
+it is. It is drawn as four small ticks with its distance on the bar - bright orange when trusted,
+dull when only a guess - and y moves the label there. The clip you are in is re-measured a moment after you change or
 confirm a label, steered by the labels you have checked, so fixing a frame helps its neighbours. A
 frame labelled "no ball" gets one only when the video clearly shows a ball on its path. It is only
 a suggestion: nothing changes until you press y, and a label taken from it is recorded as source
@@ -125,8 +127,9 @@ import cv2
 import numpy as np
 
 try:                                  # imported as finetune.label_tool (tests) or run as a script
-    from finetune import refine
+    from finetune import cnn_refiner, refine
 except ImportError:
+    import cnn_refiner
     import refine
 
 WORKSPACE = Path(__file__).resolve().parent
@@ -648,6 +651,8 @@ class Tool:
         self.suggestions: Dict[str, Dict[int, dict]] = {}   # clip -> frame -> refine.suggest() entry
         self.suggested_state: Dict[str, tuple] = {}        # ... and the labels they were measured from
         self.suggest_version = 0      # bumped as suggestions arrive, so the view redraws with them
+        self.placer = None            # the trained network placing suggestions (cnn_refiner), if any
+        self.placer_model: Optional[Path] = None   # ... and the version it was loaded from
         self.disputed_key, self.disputed = None, 0   # disputed_count's cache
         self.closing = False          # tells the suggestion thread to stop
         self.render_key = None        # what the last single-frame render was drawn from, see render_state
@@ -2133,7 +2138,8 @@ class Tool:
             keep = {frames[j] for i in changed for j in range(max(0, i - SUGGEST_REPLACE), min(len(frames), i + SUGGEST_REPLACE + 1))}
         try:
             found = refine.suggest(source.video, seeds, refine.label_spacing(seeds),
-                                   stop=lambda: self.closing, confirmed=confirmed, only=only)
+                                   stop=lambda: self.closing, confirmed=confirmed, only=only,
+                                   placer=self.current_placer())
         except Exception as error:            # a hint is never worth losing the session over
             print(f"[hint] {source.clip}: no suggestions ({error})")
             return
@@ -2152,6 +2158,17 @@ class Tool:
             trusted = sum(1 for hint in found.values() if hint["trusted"])
             print(f"[hint] {source.clip}: suggestions for {len(found)} of {len(source.rows)} frames, "
                   f"{trusted} trusted")
+
+    def current_placer(self):
+        """The current cnn_refiner version, loaded on first use and again after a retrain switches
+        versions; None (the motion centroid alone) when there is none or it cannot load."""
+        model = cnn_refiner.current()
+        if model != self.placer_model:
+            self.placer_model = model
+            self.placer = cnn_refiner.load_current() if model is not None else None
+            if self.placer is not None:
+                print(f"[hint] placing suggestions with {self.placer.name}")
+        return self.placer
 
     def suggestion_for(self, index: int) -> Optional[dict]:
         """The suggestion for a row, or None when there is none worth showing: nothing ball-like moved

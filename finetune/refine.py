@@ -21,7 +21,10 @@ peak; and `ball_here`, which is false where nothing ball-like moved (an invisibl
 the hand-verified clips video13-53, seeded from the detector's drafts: median 0.79 px from the hand
 label; the trusted ones (61%) are more than 3 px off 2% of the time and more than 5 px off 0.1%.
 
-CPU only, no model. Frame coordinates follow the label files: pixel k's centre is at k + 0.5.
+With a `placer` (finetune/cnn_refiner.py, a small network trained on your own clicks) the chosen
+blob is then placed where you would click it; everything else - finding the ball, choosing between
+blobs, trusting - stays this model-free measurement. Without one this runs on the CPU, no model.
+Frame coordinates follow the label files: pixel k's centre is at k + 0.5.
 """
 from __future__ import annotations
 
@@ -45,6 +48,9 @@ TRAJECTORY_PX_1080 = 12.0  # a candidate further than this from the predicted pa
 TRUST_PATH_PX_1080 = 2.0   # "trusted": this close to the path through the neighbours' suggestions
 TRUST_PEAK_SHARE = 0.9     # ... its own peak this share of the brightest change in the window
 BALL_CONTRAST = 20.0       # peak over the window's median: below this nothing ball-like moved
+PLACE_REACH_1080 = 16.0    # the placer sees this far around the point it was cut at
+TRUST_PLACE_PX_1080 = 2.0  # a placed suggestion further than this from its measurement is not trusted:
+                           # keeps 97% of the trusted frames, and those over 5 px off 0.19% -> 0.08%
 AGREE_PX_1080 = 3.0        # a label this close to a trusted suggestion agrees with it
 
 
@@ -173,7 +179,7 @@ def label_spacing(frames: Iterable[int]) -> int:
 
 def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Optional[int] = None,
             stop=lambda: False, confirmed: Optional[Iterable[int]] = None,
-            only: Optional[Iterable[int]] = None) -> Dict[int, dict]:
+            only: Optional[Iterable[int]] = None, placer=None) -> Dict[int, dict]:
     """A suggestion for every label frame, reading the video once from the start.
 
     `seeds` maps every label frame to its current label, or None where the label says there is no
@@ -188,7 +194,9 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
     only those decide where the path puts the ball, so a run of wrong drafts cannot vouch for
     itself (elsewhere every label does). `only` limits the measuring to those label frames - after
     an edit, a stretch around it - while every label still informs the path. Frames where
-    nothing moved are left out. `stop` is polled so a caller can abandon the pass.
+    nothing moved are left out. `stop` is polled so a caller can abandon the pass. A `placer`
+    (cnn_refiner.Placer) moves each chosen point to where you would click it; "centroid" keeps
+    where the measurement itself put it.
     """
     order = sorted(seeds)
     if not order:
@@ -222,6 +230,7 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
         wanted = {frame + o for frame in centres for o in [0] + offsets}
         pad = reach + radius * (ITERATIONS + 1) + 4
         options: Dict[int, List[dict]] = {}
+        crops: Dict[int, List[tuple]] = {}           # frame -> [(centre, crop for the placer)]
         base: Dict[int, Tuple[float, float]] = {}
         kept: Dict[int, np.ndarray] = {}
         pending = sorted(centres)
@@ -247,6 +256,9 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
                         base[frame] = p          # the label's own centroid first, else the path's
             if found:
                 options[frame] = found
+                if placer is not None:
+                    images = [kept.get(frame - step, kept[frame]), kept[frame], kept.get(frame + step, kept[frame])]
+                    crops[frame] = [(centre, placer.cut(images, centre, height)) for _, centre in centres[frame]]
 
         while index <= last and not stop():
             if index not in wanted:
@@ -289,8 +301,21 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
             picked[frame] = (best["x"], best["y"]) if near else fallback
         chosen = {f: p for f, p in picked.items() if p is not None}
 
+    placed = {}
+    if placer is not None and chosen:
+        reach_px = PLACE_REACH_1080 * height / 1080.0
+        items, frames = [], []
+        for frame, point in chosen.items():
+            centre, crop = min(crops.get(frame, []), key=lambda c: math.hypot(c[0][0] - point[0], c[0][1] - point[1]),
+                               default=(None, None))
+            if centre is not None and math.hypot(centre[0] - point[0], centre[1] - point[1]) <= reach_px:
+                items.append((crop, centre, point))
+                frames.append(frame)
+        placed = dict(zip(frames, placer.place(items, height)))
     out = {}
     for frame, point in chosen.items():
+        centroid_point = point
+        point = placed.get(frame, point)
         entry = min(options[frame], key=lambda o: math.hypot(o["x"] - point[0], o["y"] - point[1]))
         guess = (predict(chosen if anchors is None else {f: p for f, p in chosen.items() if f in anchors},
                          frame, order) or predict(chosen, frame, order))
@@ -299,11 +324,14 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
         move = None if seed is None else math.hypot(point[0] - seed[0], point[1] - seed[1]) * to_1080
         ball_here = entry["contrast"] >= BALL_CONTRAST
         trusted = (ball_here and path is not None and path <= TRUST_PATH_PX_1080 and entry["blobs"] <= 1
-                   and entry["ratio"] >= TRUST_PEAK_SHARE)
+                   and entry["ratio"] >= TRUST_PEAK_SHARE
+                   and math.hypot(point[0] - centroid_point[0], point[1] - centroid_point[1]) * to_1080
+                   <= TRUST_PLACE_PX_1080)
         out[frame] = {"x": round(point[0], 3), "y": round(point[1], 3), "seed": seed, "from": entry["from"],
                       "move": None if move is None else round(move, 3),
                       "path": None if path is None else round(path, 3),
                       "blobs": entry["blobs"], "ratio": round(entry["ratio"], 3),
                       "contrast": round(entry["contrast"], 2), "trusted": bool(trusted),
-                      "ball_here": bool(ball_here)}
+                      "ball_here": bool(ball_here),
+                      "centroid": (round(centroid_point[0], 3), round(centroid_point[1], 3))}
     return out

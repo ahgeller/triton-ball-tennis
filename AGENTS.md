@@ -23,6 +23,10 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   player contacts and schematic rally legs.
 - `finetune/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
+- `finetune/cnn_refiner.py`: small CNN, trained only on frames the user checked, that places
+  those suggestions where the user clicks (what `y` takes). Versions live in
+  `finetune/models/refiner/` (all kept, `current.txt` names the active one); retrain with
+  `ft.py hints train` or menu option 10. refine.py still decides ball/no ball and trust.
 - `finetune/ft.py`: workflow front door; `train_gridtracknet.py`: training;
   `pretrack.py`: drafts; `label_tool.py`: manual edits; `import_data.py` and
   `realign.py`: source conversion and temporal realignment.

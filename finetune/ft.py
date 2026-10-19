@@ -11,6 +11,8 @@ interactive menu that walks through everything below. The commands remain for sc
     python finetune/ft.py eval                       score the current detector on the own-camera clips
     python finetune/ft.py train --val-clips video10  fine-tune; keeps the better of new vs start
     python finetune/ft.py promote                    make the winner the tracker's model (backs up the old one)
+    python finetune/ft.py hints train                retrain the network that places the label tool's suggestions
+    python finetune/ft.py hints list | use <version> its versions (all kept) and which one the tool uses
 
 Runs itself under the training venv automatically, so plain ``python`` works from any shell
 (``.\\finetune.ps1 <command>`` does the same from PowerShell). Sub-commands pass unknown
@@ -783,6 +785,10 @@ def cmd_train(args: argparse.Namespace) -> int:
     return run_script("train_gridtracknet.py", args.rest)
 
 
+def cmd_hints(args: argparse.Namespace) -> int:
+    return run_script("cnn_refiner.py", args.rest or ["list"])
+
+
 def cmd_promote(args: argparse.Namespace) -> int:
     source = Path(args.weights) if args.weights else BEST_WEIGHTS
     if not source.is_file():
@@ -1104,6 +1110,26 @@ def _menu_promote() -> None:
         run_cli(["promote"])
 
 
+def _menu_hints() -> None:
+    print("the label tool's suggestions (what y places) are put where you would click by a small")
+    print("network trained on the frames you have checked. Retrain it after labelling more; every")
+    print("version is kept and the new one is used from the label tool's next start.")
+    print()
+    run_script("cnn_refiner.py", ["list"])
+    print()
+    print("  t) train a new version now (about 15 minutes on the GPU)")
+    print("  u <version>) go back to an older version, e.g. u 20261019")
+    answer = _ask("pick, or Enter for the menu: ")
+    if not answer:
+        return
+    if answer.lower() in ("t", "train"):
+        run_script("cnn_refiner.py", ["train"])
+    elif answer.lower().startswith("u "):
+        run_script("cnn_refiner.py", ["use", answer[2:].strip()])
+    else:
+        print(f"  '{answer}' is not an option")
+
+
 def _menu_import() -> None:
     confirm = _ask("copy every labelled tennis clip on this PC into finetune/ (~85 clips)? [y/N] ")
     if confirm and confirm.lower().startswith("y"):
@@ -1120,6 +1146,7 @@ MENU = [
     ("7", "promote", "make the last training winner the tracker's model", _menu_promote),
     ("8", "import", "pull every labelled clip on this PC into the workspace", _menu_import),
     ("9", "camera tags", "mark each clip fixed/moving camera (train --cameras fixed uses it)", lambda: run_cli(["camera"])),
+    ("10", "hint model", "retrain what places the label tool's suggestions; switch versions", _menu_hints),
 ]
 
 
@@ -1191,6 +1218,7 @@ def run_cli(argv: List[str]) -> int:
     p.add_argument("--all", action="store_true", help="every clip in the workspace, not just own footage")
     p.set_defaults(func=cmd_eval)
     subparsers.add_parser("train", help="train_gridtracknet.py (all its options pass through)").set_defaults(func=cmd_train)
+    subparsers.add_parser("hints", help="cnn_refiner.py: train | list | use <version>").set_defaults(func=cmd_hints)
     p = subparsers.add_parser("promote", help="copy the winning weights over the tracker's model (with backup)")
     p.add_argument("--weights", help="which .npz to promote (default: finetune/models/gridtracknet_best.npz)")
     p.set_defaults(func=cmd_promote)
