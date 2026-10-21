@@ -23,7 +23,7 @@ from .court_events import PlayerBoxes
 from .frame_window import FrameWindow
 from .motion import BackgroundModel, build_court_side_protect_mask, preprocess_frame_cuda
 from .run_context import RunContext
-from .tracking import ROIMotionTracker
+from .roi_tracking import ROIMotionTracker
 from .video_io import ThreadedFrameReader, VideoWriter
 
 Box = Tuple[int, int, int, int]

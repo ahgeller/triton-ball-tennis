@@ -21,7 +21,7 @@ from .core import (
 from .models import SCORE_BREAKDOWN_DEFAULTS, Detection, FrameResult, Source, Track
 from .physics import BallKalmanFilter, predict_projectile, predict_projectile_velocity
 from .scoring import select_timeline_chain
-from .tracking import build_tracks
+from .association import build_tracks
 from .utils import PackedMask, ensure_mask_u8
 
 __all__ = [

@@ -1,6 +1,6 @@
 """ROI motion tracker scheduling (from ``clean_tracker.py --self-test``)."""
 from tennis_tracker.config import Config
-from tennis_tracker.tracking import _FULL_FRAME_AREA_FRAC, ROIMotionTracker
+from tennis_tracker.roi_tracking import _FULL_FRAME_AREA_FRAC, ROIMotionTracker
 
 
 def test_periodic_full_frame_scan_belongs_to_lost_ball_recovery():

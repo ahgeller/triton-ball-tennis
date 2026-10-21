@@ -35,7 +35,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `summaries.py`: the console track table and timing report.
 - `ball_in_play_selector/`: candidate association, Kalman state, track scoring,
   timeline selection, bounded recovery, trajectory refit.
-- `tennis_tracker/motion.py`, `tracking.py`: CUDA motion masks and ROI tracking.
+- `tennis_tracker/motion.py`, `roi_tracking.py`: CUDA motion masks and ROI tracking.
 - `tennis_tracker/court_events.py`: CatBoost/kinematic bounce candidates,
   player contacts and schematic rally legs.
 - `finetune/refiner/refine.py`: model-free sub-pixel ball suggestions for the label tool

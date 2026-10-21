@@ -1,3 +1,5 @@
+"""Candidate association: per-frame detector candidates become ``Detection`` rows, and the
+rows become tracks by greedy assignment with stale reconnect and anti-jump trail guards."""
 import math
 from typing import List, Optional, Sequence, Tuple
 

@@ -17,7 +17,7 @@ from .config import REFERENCE_DIAG_PX, SelectorConfig
 from .models import Detection, FrameResult, Source, Track
 from .physics import predict_projectile
 from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
-from .tracking import build_detections, build_tracks
+from .association import build_detections, build_tracks
 from .utils import MaskLike, PlayerBoxesByFrame, ensure_mask_u8, pxpf_at_fps
 
 # -- Tuned constants (30 FPS, 1080p reference unless stated) ----------------

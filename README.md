@@ -162,7 +162,7 @@ tennis_tracker/pass2.py                  Render the tracking and debug videos
 tennis_tracker/export.py                 Tracking JSON export
 tennis_tracker/motion.py                 CUDA background model and motion masks
 tennis_tracker/motion_debug.py           Motion-debug video drawing
-tennis_tracker/tracking.py               ROI tracking for motion search
+tennis_tracker/roi_tracking.py           ROI tracking for motion search
 tennis_tracker/ball_detectors.py         GridTrackNet prepass and the TensorRT ball engine
 tennis_tracker/engine_session.py         TensorRT session shared by the engine backends
 tennis_tracker/engine_files.py           Engine files on disk: metadata, class names, I/O tensors
