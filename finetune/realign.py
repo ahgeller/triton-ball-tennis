@@ -366,15 +366,37 @@ def print_segments(runs: List[List[int]], rate: float) -> None:
               f"{int(round(lo * rate)) + offset:5d}-{int(round(hi * rate)) + offset:<5d}  (offset {offset:+d})")
 
 
+def own_frame_size(label_clip: str, video_clip: str, meta: VideoMeta) -> Tuple[int, int]:
+    """The frame size the labels were made at: their own clip's video, or the target's."""
+    if label_clip == video_clip:
+        return meta.width, meta.height
+    own = video_meta(require_video(label_clip))
+    return own.width, own.height
+
+
+def pinned_rows(fixed_by_hand: Set[int], tracks: Tracks) -> np.ndarray:
+    """Which visible rows a person has reviewed in the label tool (``reviewed_frames``).
+
+    Clicking the ball says "it is here on this frame" and SPACE says "it is right where it is",
+    so either way that row stays put and the solve works around it."""
+    pinned = np.array([f in fixed_by_hand for f in tracks.frames.tolist()], bool)
+    if pinned.any():
+        print(f"  {int(pinned.sum())} frame(s) you corrected by hand are pinned and will not move")
+    return pinned
+
+
+def report_alignment(best: Alignment, now: Tuple[float, int, float], runs: List[List[int]]) -> bool:
+    """Print the solve's answer; True when it is no better than leaving the labels as they are."""
+    print(f"  best: rate {best.rate:g}, agree {best.result[0]:.2f} on {best.result[1]} judged, median {best.result[2]:.1f} px")
+    print_segments(runs, best.rate)
+    return best.result[0] <= now[0] + 0.01 and len(runs) == 1 and best.rate == 1.0 and runs[0][2] == 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     label_clip, video_clip = args.label_clip, args.video_clip
     evidence, meta = detections(video_clip)
-    own_size = (meta.width, meta.height)
-    if label_clip != video_clip:
-        own = video_meta(require_video(label_clip))
-        own_size = (own.width, own.height)
-
+    own_size = own_frame_size(label_clip, video_clip, meta)
     entries = label_rows_of(label_clip)
     tracks = visible_tracks(entries, own_size, meta)
     if not len(tracks.frames):
@@ -385,26 +407,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     now = agreement(tracks, evidence, 0)
     print(f"  as it stands:  agree {now[0]:.2f} on {now[1]} judged, median {now[2]:.1f} px")
 
-    # Frames a person has reviewed in the label tool are pinned: clicking the ball says "it is here
-    # on this frame" and SPACE says "it is right where it is", so either way that row stays put and
-    # the solve works around it. A damaged review file is an error: no alignment.
-    fixed_by_hand = reviewed_frames(label_clip)
+    fixed_by_hand = reviewed_frames(label_clip)          # a damaged review file is an error: no alignment
     if fixed_by_hand and label_clip != video_clip:
         print("Cannot replace the video under reviewed labels; resolve the source mapping manually first")
         return 1
-    pinned = np.array([f in fixed_by_hand for f in tracks.frames.tolist()], bool)
-    if pinned.any():
-        print(f"  {int(pinned.sum())} frame(s) you corrected by hand are pinned and will not move")
-
+    pinned = pinned_rows(fixed_by_hand, tracks)
     chunks = int(min(60, max(8, len(entries) // 60)))
     best = solve_alignment(tracks, evidence, fixed_by_hand, pinned, chunks)
     if best is None:
         print("  nothing in this video puts the labels on the ball - not salvageable this way")
         return 1
     runs = segments(tracks.frames, best.chosen)
-    print(f"  best: rate {best.rate:g}, agree {best.result[0]:.2f} on {best.result[1]} judged, median {best.result[2]:.1f} px")
-    print_segments(runs, best.rate)
-    if best.result[0] <= now[0] + 0.01 and len(runs) == 1 and best.rate == 1.0 and runs[0][2] == 0:
+    if report_alignment(best, now, runs):
         print("\n  already aligned - nothing to do")
         return 0
 

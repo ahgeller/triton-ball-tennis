@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from finetune.fileio import write_atomic
 from finetune.labels import (Flags, answered_point, format_point, frame_list, is_visible, read_flags, read_label_rows,
@@ -14,6 +14,7 @@ from finetune.labels import (Flags, answered_point, format_point, frame_list, is
 
 CONFIDENT_CONF = 0.70       # a draft at or above this confidence is not "uncertain"
 SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: filter, inset, trail
+FLAG_KINDS = ("unplaceable", "check")                  # the two kinds of frame flag an audit raises
 
 
 class Row:
@@ -87,18 +88,24 @@ def save_flags(path: Path, rows: List[Row]) -> None:
     if not path.is_file():
         return
     flags: Flags = read_flags(path)
-    by_frame = {row.frame: row for row in rows}
-    open_now = {row.frame for row in rows if row.suspect}
-    kept = {kind: [f for f in flags[kind] if f in open_now or f not in by_frame] for kind in ("unplaceable", "check")}
-    answered = dict(flags["answered"])
-    for kind in ("unplaceable", "check"):
-        for frame in flags[kind]:
-            if frame in by_frame and frame not in open_now:
-                row = by_frame[frame]
-                answered[str(frame)] = answered_point((row.x, row.y) if row.visible else None)
+    kept, answered = _answered_flags(flags, rows)
     if kept["unplaceable"] == flags["unplaceable"] and kept["check"] == flags["check"] and answered == flags["answered"]:
         return
     write_flags(path, {**flags, "unplaceable": kept["unplaceable"], "check": kept["check"], "answered": answered})
+
+
+def _answered_flags(flags: Flags, rows: List[Row]) -> Tuple[Dict[str, List[int]], Dict[str, Optional[List[float]]]]:
+    """(the flags of each kind still open on these rows, the answers so far plus the ones the
+    rows give). A flag on a frame the rows do not hold stays open."""
+    by_frame = {row.frame: row for row in rows}
+    open_now = {row.frame for row in rows if row.suspect}
+    kept = {kind: [f for f in flags[kind] if f in open_now or f not in by_frame] for kind in FLAG_KINDS}
+    answered = dict(flags["answered"])
+    flagged = {frame for kind in FLAG_KINDS for frame in flags[kind]}
+    for frame in sorted(flagged & (set(by_frame) - open_now)):      # flagged, held, and no longer open: answered
+        row = by_frame[frame]
+        answered[str(frame)] = answered_point((row.x, row.y) if row.visible else None)
+    return kept, answered
 
 
 def save_review(path: Path, rows: List[Row], cursor: int, zoom: float) -> None:
