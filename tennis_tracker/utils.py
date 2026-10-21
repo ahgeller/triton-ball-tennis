@@ -27,6 +27,13 @@ FFMPEG_ENCODER_NAMES = {ENCODER_NVENC: "h264_nvenc", ENCODER_LIBX264: "libx264"}
 # ``ffmpeg -encoders`` only lists capabilities; it never hangs for long.
 _FFMPEG_PROBE_TIMEOUT_S = 5.0
 _FFMPEG_ENCODER_CACHE: Dict[Tuple[str, str], bool] = {}
+# An encoder that is listed may still fail to open: NVENC needs a driver FFmpeg can load, a
+# capable device and a free session, none of which ``-encoders`` checks and all of which FFmpeg
+# only finds out at the first frame. One frame of a test pattern through the encoder (about a
+# second, once per process) settles it before any run starts.
+_FFMPEG_DRY_RUN_TIMEOUT_S = 30.0
+_FFMPEG_DRY_RUN_SIZE = "320x180"      # NVENC rejects frames below its minimum size
+_FFMPEG_DRY_RUN_CACHE: Dict[Tuple[str, str], Optional[str]] = {}
 
 
 def ffmpeg_has_encoder(ffmpeg: Optional[str], encoder: str) -> bool:
@@ -60,6 +67,28 @@ def ffmpeg_has_encoder(ffmpeg: Optional[str], encoder: str) -> bool:
     return bool(ok)
 
 
+def ffmpeg_encoder_failure(ffmpeg: str, encoder: str) -> Optional[str]:
+    """Why ``encoder`` cannot encode on this machine right now, or None when it can: one frame of
+    a test pattern is pushed through it to nowhere. FFmpeg opens an encoder at its first frame, so
+    this is the only way to learn before a run that NVENC will refuse (no loadable CUDA driver, no
+    capable device, every session taken); the answer is kept for the process."""
+    key = (str(ffmpeg), str(encoder))
+    if key in _FFMPEG_DRY_RUN_CACHE:
+        return _FFMPEG_DRY_RUN_CACHE[key]
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+               "-i", f"color=size={_FFMPEG_DRY_RUN_SIZE}:rate=30", "-frames:v", "1",
+               "-c:v", str(encoder), "-f", "null", "-"]
+    try:
+        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              timeout=_FFMPEG_DRY_RUN_TIMEOUT_S, shell=False, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        failure: Optional[str] = f"could not run ffmpeg ({error})"
+    else:
+        failure = None if proc.returncode == 0 else ((proc.stderr or "").strip().splitlines() or ["ffmpeg exited"])[-1]
+    _FFMPEG_DRY_RUN_CACHE[key] = failure
+    return failure
+
+
 def detect_device(requested: str) -> Tuple[str, str]:
     """Resolve ``Config.device``: an explicit value is returned as given, ``auto``
     picks CUDA device 0 when there is one.  The tracking runtime rejects
@@ -77,11 +106,14 @@ class EncoderChoice:
 
     ``ffmpeg`` is the FFmpeg binary (None when none was found); ``chain`` holds
     ``ENCODER_NVENC`` / ``ENCODER_LIBX264`` / ``ENCODER_OPENCV`` and always ends
-    with OpenCV, which needs no external process.
+    with OpenCV, which needs no external process.  ``nvenc_failure`` is what the
+    NVENC dry run reported when FFmpeg lists ``h264_nvenc`` but cannot encode
+    with it here, for the platform report.
     """
 
     ffmpeg: Optional[str]
     chain: Tuple[str, ...]
+    nvenc_failure: Optional[str] = None
 
     @property
     def preferred(self) -> str:
@@ -101,21 +133,26 @@ class EncoderSettings(Protocol):
 def choose_encoder(cfg: EncoderSettings, is_cuda: bool = True) -> EncoderChoice:
     """Decide the encoder fallback order from ``cfg.use_nvenc`` and the FFmpeg build.
 
-    NVENC needs a CUDA device and an FFmpeg with ``h264_nvenc``; libx264 needs
-    an FFmpeg with ``libx264``; OpenCV is always last.  ``use_nvenc=False``
-    means "no FFmpeg at all", as it always has.
+    NVENC needs a CUDA device, an FFmpeg with ``h264_nvenc`` and a dry run that
+    encodes (``ffmpeg_encoder_failure``: the driver, device and session problems
+    FFmpeg only reports at the first frame); libx264 needs an FFmpeg with
+    ``libx264``; OpenCV is always last.  ``use_nvenc=False`` means "no FFmpeg at
+    all", as it always has.
     """
     if not cfg.use_nvenc:
         return EncoderChoice(None, (ENCODER_OPENCV,))
     ffmpeg = find_ffmpeg()
     chain: List[str] = []
+    nvenc_failure = None
     if ffmpeg:
         if is_cuda and ffmpeg_has_encoder(ffmpeg, FFMPEG_ENCODER_NAMES[ENCODER_NVENC]):
-            chain.append(ENCODER_NVENC)
+            nvenc_failure = ffmpeg_encoder_failure(ffmpeg, FFMPEG_ENCODER_NAMES[ENCODER_NVENC])
+            if nvenc_failure is None:
+                chain.append(ENCODER_NVENC)
         if ffmpeg_has_encoder(ffmpeg, FFMPEG_ENCODER_NAMES[ENCODER_LIBX264]):
             chain.append(ENCODER_LIBX264)
     chain.append(ENCODER_OPENCV)
-    return EncoderChoice(ffmpeg, tuple(chain))
+    return EncoderChoice(ffmpeg, tuple(chain), nvenc_failure)
 
 
 def resolve_runtime(cfg: Config, device: str) -> Tuple[Config, EncoderChoice]:
@@ -142,6 +179,8 @@ def print_platform_report(cfg: Config, encoder: EncoderChoice) -> None:
             reason = "ffmpeg not found"
         elif not is_cuda:
             reason = "requires NVIDIA GPU"
+        elif encoder.nvenc_failure is not None:
+            reason = f"h264_nvenc cannot encode here: {encoder.nvenc_failure}"
         else:
             reason = "ffmpeg lacks h264_nvenc"
         print(f"[info] NVENC disabled ({reason}), using {fallback}")
