@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 from finetune.workspace import VideoMeta
 
 if TYPE_CHECKING:
-    from tennis_tracker.detectors import GridTrackNetBallDetector
+    from tennis_tracker.ball_detectors import GridTrackNetBallDetector
 
 BallPoint = Tuple[float, float, float]     # x, y (native pixels) and confidence
 
@@ -20,7 +20,7 @@ def ball_detector(weights: Path, conf: float = 0.0, device: str = "0",
     tracker's. `source_stride` forces the frame spacing fed to the model (None: the training
     cadence, 2 at 60 FPS and 1 at 30)."""
     from tennis_tracker.config import Config
-    from tennis_tracker import detectors as backends
+    from tennis_tracker import ball_detectors as backends
     cfg = Config(conf=conf, device=device, gridtracknet_prepass_background=False,
                  gridtracknet_source_stride=source_stride)
     return backends.GridTrackNetBallDetector(str(weights), cfg)

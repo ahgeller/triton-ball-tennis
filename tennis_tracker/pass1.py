@@ -18,7 +18,7 @@ import torch
 from ball_in_play_selector import PackedMask
 
 from .court_geometry import court_keypoints_key
-from .detectors import Detection
+from .ball_detectors import Detection
 from .frame_window import FrameWindow
 from .motion import BackgroundModel, build_court_side_protect_mask, preprocess_frame_cuda
 from .run_context import RunContext

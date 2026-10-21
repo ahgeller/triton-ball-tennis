@@ -1,7 +1,7 @@
 """The court detector without an engine: keypoint remapping, line pairs and the disabled state."""
 import numpy as np
 
-from tennis_tracker import court_geometry, detectors
+from tennis_tracker import court_geometry
 from tennis_tracker.config import Config
 from tennis_tracker.court_detector import CourtDetector
 
@@ -36,7 +36,3 @@ def test_detector_without_an_engine_is_disabled(capsys):
     assert detector.detect(frame, 0) is None
     drawn = detector.draw(frame)
     assert drawn is frame and not frame.any()
-
-
-def test_detectors_facade_re_exports_the_court_detector():
-    assert detectors.CourtDetector is CourtDetector

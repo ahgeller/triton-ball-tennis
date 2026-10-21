@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 import torch
 
-from tennis_tracker import detectors
 from tennis_tracker.config import Config
 from tennis_tracker.player_detector import PlayerDetector, PlayerPending, _load_bytetrack
 
@@ -85,8 +84,3 @@ def test_decode_thresholds_and_suppresses_a_raw_head_in_either_layout(channel_ma
 def test_pending_defaults_to_a_coasting_frame():
     pending = PlayerPending(np.zeros((2, 2, 3), np.uint8), 3, 2, 2, None)
     assert pending.outputs is None and pending.input_tensor is None
-
-
-def test_detectors_facade_re_exports_the_player_names():
-    assert detectors.PlayerDetector is PlayerDetector
-    assert detectors.PlayerPending is PlayerPending

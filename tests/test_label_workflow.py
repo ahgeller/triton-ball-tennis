@@ -744,7 +744,7 @@ class DraftTests(unittest.TestCase):
     def test_drafts_use_the_unshifted_detector_point(self):
         from finetune import pretrack
         from finetune.workspace import VideoMeta
-        from tennis_tracker import detectors
+        from tennis_tracker import ball_detectors
         seen = {}
 
         class Detector:
@@ -755,7 +755,7 @@ class DraftTests(unittest.TestCase):
             def detect_clip(self, video, fps, width, height, total):
                 seen["clip"] = (video, fps, width, height, total)
                 return [[([10, 20, 14, 24], .9)], []]
-        with patch.object(detectors, "GridTrackNetBallDetector", Detector):
+        with patch.object(ball_detectors, "GridTrackNetBallDetector", Detector):
             rows = pretrack.raw_rows(Path("clip.mp4"), Path("w.npz"), .5, "cpu", VideoMeta(30, 1280, 720, 2))
         self.assertEqual(seen["offset"], 0.0)
         self.assertEqual(seen["conf"], .5)

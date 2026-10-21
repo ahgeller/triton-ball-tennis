@@ -15,7 +15,7 @@ from tests._helpers import Capture, metric_probe
 from finetune.train_gridtracknet import better
 from tennis_tracker import ball_detectors
 from tennis_tracker.config import Config
-from tennis_tracker.detectors import GridTrackNetBallDetector
+from tennis_tracker.ball_detectors import GridTrackNetBallDetector
 from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
 from tennis_tracker.video_io import VideoWriter
 from tennis_tracker.frame_window import FrameWindow
