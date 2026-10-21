@@ -130,7 +130,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -212,6 +212,54 @@ def enhance(display: np.ndarray, mode: str, previous: Optional[np.ndarray] = Non
 def hit(box, x: int, y: int) -> bool:
     """Did a click at (x, y) land on this HUD button? Boxes are in display pixels."""
     return bool(box) and box[0] <= x <= box[2] and box[1] <= y <= box[3]
+
+
+Colour = Tuple[int, int, int]
+Point = Tuple[float, float]
+
+
+def hint_colour(hint: Suggestion) -> Colour:
+    """Orange when the suggestion is trusted, dull when it is only a guess."""
+    return HINT_TRUSTED if hint["trusted"] else HINT_UNSURE
+
+
+def label_mark_colour(row: Row) -> Colour:
+    """The label's mark in the single-frame view: magenta flagged, red edited, green reviewed, yellow unreviewed."""
+    return ((255, 0, 255) if row.suspect else (0, 0, 255) if row.edited
+            else (0, 220, 0) if row.reviewed else (0, 255, 255))
+
+
+class MarkPlan(NamedTuple):
+    """What a row's frame is marked with, in frame coordinates: the mark (None on a no-ball row
+    without an offer), its colour, and the ticked points drawn beside it first."""
+    mark: Optional[Point]
+    colour: Optional[Colour]
+    ticks: List[Tuple[Point, Colour]]
+
+
+def mark_plan(row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion], label_colour: Colour) -> MarkPlan:
+    """The mark is the suggestion on offer - in orange, the draft label it replaces ticked grey - or
+    else the label in `label_colour`, with a suggestion that differs from it ticked orange beside
+    it. Both renderers draw from this; only the mapping to their pixels is their own."""
+    if offer is not None:
+        ticks = [((row.x, row.y), DRAFT_MARK)] if row.visible else []
+        return MarkPlan((offer["x"], offer["y"]), hint_colour(offer), ticks)
+    if not row.visible:
+        return MarkPlan(None, None, [])
+    ticks = []
+    if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= OFFER_MIN_PX:
+        ticks.append(((hint["x"], hint["y"]), hint_colour(hint)))
+    return MarkPlan((row.x, row.y), label_colour, ticks)
+
+
+def draw_ticks(image: np.ndarray, hx: int, hy: int, colour: Colour, ui: float) -> None:
+    """Four short ticks on the diagonals around image pixel (hx, hy), leaving the centre itself clear."""
+    near, far = int(round(3 * ui)), int(round(7 * ui))
+    thin = max(1, int(round(ui)))
+    for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+        start, end = (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far)
+        cv2.line(image, start, end, (0, 0, 0), thin + 2, cv2.LINE_AA)
+        cv2.line(image, start, end, colour, thin, cv2.LINE_AA)
 
 
 def fit_text(text: str, width: int, scale: float, thin: int) -> str:
@@ -723,83 +771,62 @@ class Tool:
         canvas = np.zeros((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
         tiles = []
         offers: Dict[int, tuple] = {}
-        selected = self.cursor
         ui = self.ui
         band = int(round(28 * ui))                       # title strip above each tile
-        try:
-            for slot, index in enumerate(self.grid_indices):
-                self.cursor = index
-                row = self.rows[index]
-                image = self.frame(row.frame)
-                rows_of = max(1, self.grid_size // 4)
-                left, right = slot % 4 * self.view_w // 4, (slot % 4 + 1) * self.view_w // 4
-                top, bottom = slot // 4 * self.view_h // rows_of, (slot // 4 + 1) * self.view_h // rows_of
-                y0 = top + band
-                width, height = right - left, bottom - y0
-                scale = width / 96.0 * self.grid_zoom if row.visible else min(width / self.width, height / self.height)
-                cx, cy = self.grid_centers[index] if row.visible else (self.width / 2, self.height / 2)
-                ox, oy = cx - width / (2 * scale), cy - height / (2 * scale)
-                # Pixel centres sit at k + 0.5 in frame coordinates, as in render (see to_view).
-                matrix = np.array([[scale, 0, scale * (0.5 - ox) - 0.5],
-                                   [0, scale, scale * (0.5 - oy) - 0.5]], np.float64)
-                tile = cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_NEAREST)
-                if FILTERS[self.filter] not in ("off", "motion"):    # motion needs the frame before
-                    tile = enhance(tile, FILTERS[self.filter])
-                color = (70, 210, 70) if row.settled else (0, 210, 255)
-                hint = self.suggestion_for(index)
-                offer = self.offer_for(index)
-                if offer is not None:
-                    offers[index] = (offer["x"], offer["y"])
-
-                def ticks(point, colour) -> None:
-                    hx, hy = math.floor((point[0] - ox) * scale), math.floor((point[1] - oy) * scale)
-                    near, far = int(round(3 * ui)), int(round(7 * ui))
-                    for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
-                        start, end = (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far)
-                        cv2.line(tile, start, end, (0, 0, 0), max(1, int(round(ui))) + 2, cv2.LINE_AA)
-                        cv2.line(tile, start, end, colour, max(1, int(round(ui))), cv2.LINE_AA)
-
-                # As in render: the mark is the offer (orange cross, the draft ticked grey) or the
-                # label (white cross, the suggestion ticked orange beside it)
-                if offer is not None:
-                    if row.visible:
-                        ticks((row.x, row.y), DRAFT_MARK)
-                    mark, cross = (offer["x"], offer["y"]), HINT_TRUSTED if offer["trusted"] else HINT_UNSURE
-                elif row.visible:
-                    mark, cross = (row.x, row.y), (255, 255, 255)
-                    if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= OFFER_MIN_PX:
-                        ticks((hint["x"], hint["y"]), HINT_TRUSTED if hint["trusted"] else HINT_UNSURE)
-                else:
-                    mark = None
-                if mark is not None:
-                    px = math.floor((mark[0] - ox) * scale)     # the tile pixel holding the ball
-                    py = math.floor((mark[1] - oy) * scale)
-                    inner, outer = int(round(8 * ui)), int(round(17 * ui))
-                    # Drawn on the tile, so a mark near its edge cannot spill onto a neighbour, and
-                    # leaving the actual ball center unobstructed, including at high zoom.
-                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        start, end = (px + dx * inner, py + dy * inner), (px + dx * outer, py + dy * outer)
-                        cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
-                        cv2.line(tile, start, end, cross, max(1, int(round(ui))))
-                canvas[y0:bottom, left:right] = tile
-                title = (f"{slot + 1}  " if slot < 9 else "") + \
-                    f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
-                if not row.visible:
-                    title += "  absent"
-                if offer is not None:
-                    title += "  HINT sure" if offer["trusted"] else "  HINT unsure"
-                else:
-                    verdict = self.hint_verdict(index)
-                    if verdict is not None:
-                        title += "  hint ok" if verdict == "agrees" else "  hint differs"
-                cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
-                            (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
-                            color, max(1, int(ui)))
-                cv2.rectangle(canvas, (left, top), (right-1, bottom-1), (255, 180, 50) if index == selected else (65, 65, 65), 2)
-                tiles.append((index, (left, y0, right-1, bottom-1), ox, oy, scale))
-        finally:
-            self.cursor = selected
-        caption = (f"{self.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}"
+        # A page is one clip (prepare_grid stops at a clip's end) and the cursor is on it, so
+        # self.frame reads every tile from the right clip without touching the cursor.
+        for slot, index in enumerate(self.grid_indices):
+            row = self.rows[index]
+            image = self.frame(row.frame)
+            rows_of = max(1, self.grid_size // 4)
+            left, right = slot % 4 * self.view_w // 4, (slot % 4 + 1) * self.view_w // 4
+            top, bottom = slot // 4 * self.view_h // rows_of, (slot // 4 + 1) * self.view_h // rows_of
+            y0 = top + band
+            width, height = right - left, bottom - y0
+            scale = width / 96.0 * self.grid_zoom if row.visible else min(width / self.width, height / self.height)
+            cx, cy = self.grid_centers[index] if row.visible else (self.width / 2, self.height / 2)
+            ox, oy = cx - width / (2 * scale), cy - height / (2 * scale)
+            # Pixel centres sit at k + 0.5 in frame coordinates, as in render (see to_view).
+            matrix = np.array([[scale, 0, scale * (0.5 - ox) - 0.5],
+                               [0, scale, scale * (0.5 - oy) - 0.5]], np.float64)
+            tile = cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_NEAREST)
+            if FILTERS[self.filter] not in ("off", "motion"):    # motion needs the frame before
+                tile = enhance(tile, FILTERS[self.filter])
+            color = (70, 210, 70) if row.settled else (0, 210, 255)
+            hint = self.suggestion_for(index)
+            offer = self.offer_for(index)
+            if offer is not None:
+                offers[index] = (offer["x"], offer["y"])
+            to_tile = lambda point: (math.floor((point[0] - ox) * scale), math.floor((point[1] - oy) * scale))
+            plan = mark_plan(row, hint, offer, (255, 255, 255))
+            for point, colour in plan.ticks:
+                draw_ticks(tile, *to_tile(point), colour, ui)
+            if plan.mark is not None:
+                px, py = to_tile(plan.mark)                 # the tile pixel holding the ball
+                inner, outer = int(round(8 * ui)), int(round(17 * ui))
+                # Drawn on the tile, so a mark near its edge cannot spill onto a neighbour, and
+                # leaving the actual ball center unobstructed, including at high zoom.
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    start, end = (px + dx * inner, py + dy * inner), (px + dx * outer, py + dy * outer)
+                    cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
+                    cv2.line(tile, start, end, plan.colour, max(1, int(round(ui))))
+            canvas[y0:bottom, left:right] = tile
+            title = (f"{slot + 1}  " if slot < 9 else "") + \
+                f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
+            if not row.visible:
+                title += "  absent"
+            if offer is not None:
+                title += "  HINT sure" if offer["trusted"] else "  HINT unsure"
+            else:
+                verdict = self.hint_verdict(index)
+                if verdict is not None:
+                    title += "  hint ok" if verdict == "agrees" else "  hint differs"
+            cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
+                        (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
+                        color, max(1, int(ui)))
+            cv2.rectangle(canvas, (left, top), (right-1, bottom-1), (255, 180, 50) if index == self.cursor else (65, 65, 65), 2)
+            tiles.append((index, (left, y0, right-1, bottom-1), ox, oy, scale))
+        caption =(f"{self.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}"
                    f"{' (orange crosses are hints on offer)' if offers else ''}  a/d=page  TAB=single")
         thin = max(1, int(ui))
         cv2.putText(canvas, fit_text(caption, self.view_w - 12, .48 * ui, thin),
@@ -984,37 +1011,17 @@ class Tool:
         hint = self.suggestion_for(self.cursor)
         offer = self.offer_for(self.cursor)
         self.shown_offers = {} if offer is None else {self.cursor: (offer["x"], offer["y"])}
-
-        def ticks(point, colour) -> None:
-            # Four short ticks on the diagonals, leaving the centre itself clear
-            hx, hy = self.to_view(*point)
-            near, far = int(round(3 * ui)), int(round(7 * ui))
-            for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
-                cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
-                         (0, 0, 0), thin + 2, cv2.LINE_AA)
-                cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
-                         colour, thin, cv2.LINE_AA)
-
-        if offer is not None:
-            # The suggestion is the mark SPACE takes, drawn as the label would be, in orange - bright
-            # when it is sure, dull when only a guess; the draft label it replaces is ticked in grey
-            if row.visible:
-                ticks((row.x, row.y), DRAFT_MARK)
-            mark, colour = (offer["x"], offer["y"]), HINT_TRUSTED if offer["trusted"] else HINT_UNSURE
-        elif row.visible:
-            mark = (row.x, row.y)
-            colour = ((255, 0, 255) if row.suspect else (0, 0, 255) if row.edited
-                      else (0, 220, 0) if row.reviewed else (0, 255, 255))
-            if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= OFFER_MIN_PX:
-                ticks((hint["x"], hint["y"]), HINT_TRUSTED if hint["trusted"] else HINT_UNSURE)
-        else:
-            mark = None
-        if mark is not None:
-            cx, cy = self.to_view(*mark)
-            cv2.circle(display, (cx, cy), radius, colour, thin, cv2.LINE_AA)
+        # The suggestion on offer is the mark SPACE takes, drawn as the label would be, in orange -
+        # bright when it is sure, dull when only a guess; the draft it replaces is ticked in grey.
+        plan = mark_plan(row, hint, offer, label_mark_colour(row))
+        for point, colour in plan.ticks:
+            draw_ticks(display, *self.to_view(*point), colour, ui)
+        if plan.mark is not None:
+            cx, cy = self.to_view(*plan.mark)
+            cv2.circle(display, (cx, cy), radius, plan.colour, thin, cv2.LINE_AA)
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 cv2.line(display, (cx + dx * (radius - int(3 * ui)), cy + dy * (radius - int(3 * ui))),
-                         (cx + dx * (radius + int(8 * ui)), cy + dy * (radius + int(8 * ui))), colour, thin)
+                         (cx + dx * (radius + int(8 * ui)), cy + dy * (radius + int(8 * ui))), plan.colour, thin)
         elif self.ghost is not None:
             # Dashed, so it cannot be mistaken for a label: the neighbours' idea of where the ball is
             gx, gy = self.to_view(*self.ghost)

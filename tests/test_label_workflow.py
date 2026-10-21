@@ -114,6 +114,19 @@ class LabelWorkflowTests(unittest.TestCase):
         self.assertEqual((tool.clip, tool.width, tool.height), ("large", 1920, 1080))
         self.assertEqual(tool.grid_indices, [2, 3])
 
+    def test_grid_tiles_read_their_own_clip_without_moving_the_cursor(self):
+        tool = self.tool(source("small", 3, 640, 360), source("large", 3, 1920, 1080))
+        read = []
+        tool.frame = lambda index: read.append((tool.source.clip, index)) or np.zeros(
+            (tool.source.height, tool.source.width, 3), np.uint8)
+        tool.toggle_grid()
+        tool.grid_page(1)                                  # the page of clip "large": rows 3..5
+        tool.grid_select(1)
+        tool.render_grid()
+        self.assertEqual(sorted(read), [("large", 0), ("large", 1), ("large", 2)])
+        self.assertEqual(tool.cursor, 4)                   # rendering leaves the selection alone
+        self.assertEqual([tile[0] for tile in tool.grid_tiles], [3, 4, 5])
+
     def test_undo_restores_review_flags(self):
         tool = self.tool()
         row = tool.rows[0]
