@@ -39,7 +39,7 @@ from __future__ import annotations
 import shutil
 import sys
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -233,8 +233,9 @@ def unplaceable_at_cuts(bases: np.ndarray, chosen: np.ndarray, xs: np.ndarray, y
     return drop
 
 
-def remapped_rows(entries: List[LabelRow], frames, chosen, dropped: Set[int], fixed_by_hand: Set[int],
-                  rate: float, total: int, own_size: Tuple[int, int], video_size: Tuple[int, int]):
+def remapped_rows(entries: List[LabelRow], frames: np.ndarray, chosen: np.ndarray, dropped: Set[int],
+                  fixed_by_hand: Set[int], rate: float, total: int, own_size: Tuple[int, int],
+                  video_size: Tuple[int, int]) -> List[Tuple[int, str, str]]:
     """The label file's rows re-timed onto the video: ``(video frame, x cell, y cell)`` for every row
     that lands inside the video and outside a cut, scaled from the labels' own frame size to the
     video's. Raises ValueError rather than touch a row a person has settled."""
@@ -292,11 +293,85 @@ def write_preview(video: Path, frames, xs, ys, bases, chosen, out: Path) -> Path
     return out
 
 
-def main() -> int:
-    if len(sys.argv) < 3:
+def parse_args(argv: Sequence[str]) -> Optional[Tuple[str, str, bool, bool]]:
+    """(label clip, video clip, --preview, --apply) from a script argv; None without two clips."""
+    if len(argv) < 3:
+        return None
+    return argv[1], argv[2], "--preview" in argv, "--apply" in argv
+
+
+def solve_alignment(frames: np.ndarray, xs: np.ndarray, ys: np.ndarray, fast: np.ndarray, lut_x: np.ndarray,
+                    lut_y: np.ndarray, total: int, scale: float, fixed_by_hand: Set[int], pinned: np.ndarray,
+                    chunks: int) -> Optional[Tuple[Tuple[float, int, float], float, np.ndarray, np.ndarray]]:
+    """The best ``(agreement, rate, bases, chosen offsets)`` over RATES, reporting each rate tried;
+    None when no rate puts the labels on the ball. Reviewed rows allow rate 1 only and keep offset 0."""
+    best = None
+    for rate in RATES:
+        if fixed_by_hand and rate != 1.0:
+            continue  # a reviewed source-frame index is an exact temporal anchor
+        bases = np.rint(frames * rate).astype(np.int64)
+        offsets = candidates(bases, xs, ys, fast, lut_x, lut_y, total, scale, chunks)
+        if pinned.any() and rate == 1.0:
+            offsets = np.array(sorted(set(offsets.tolist()) | {0}), np.int64)
+        if offsets.size == 0:
+            continue
+        chosen = solve(bases, xs, ys, lut_x, lut_y, total, scale, offsets,
+                       pinned if rate == 1.0 else None)
+        # Invisible reviewed rows are not in the visual solve, but are equally
+        # authoritative. Reject any candidate that would shift their segment.
+        if any(int(chosen[max(0, int(np.searchsorted(frames, f, side="right")) - 1)]) != 0
+               for f in fixed_by_hand):
+            continue
+        result = agreement(bases, xs, ys, chosen, lut_x, lut_y, total, scale, fast)
+        print(f"  rate {rate:g}: {offsets.size} candidate offsets in {offsets.min():+d}..{offsets.max():+d}"
+              f"  -> agree {result[0]:.2f}, median {result[2]:.1f} px")
+        if best is None or result[0] > best[0][0]:
+            best = (result, rate, bases, chosen)
+    return best
+
+
+def segments(frames: np.ndarray, chosen: np.ndarray) -> List[List[int]]:
+    """``[first label frame, last label frame, offset]`` for each run of one offset along the clip."""
+    runs: List[List[int]] = []
+    for frame, offset in zip(frames, chosen):
+        if not runs or runs[-1][2] != offset:
+            runs.append([frame, frame, offset])
+        else:
+            runs[-1][1] = frame
+    return runs
+
+
+def apply_alignment(entries: List[LabelRow], frames: np.ndarray, chosen: np.ndarray, dropped: Set[int],
+                    fixed_by_hand: Set[int], rate: float, total: int, own_size: Tuple[int, int],
+                    video_size: Tuple[int, int], label_clip: str, video_clip: str) -> int:
+    """Rewrite the label file (backed up first, once) and, when the labels belong to a different
+    video, swap that video in under them. Nothing is written if a reviewed row would move."""
+    written = remapped_rows(entries, frames, chosen, dropped, fixed_by_hand, rate, total, own_size, video_size)
+    path = label_csv(label_clip)
+    backup = path.with_suffix(".csv.premisaligned")
+    if not backup.exists():
+        shutil.copyfile(path, backup)
+    write_label_cells(path, written)
+    print(f"\n  [write] {path.name}: {len(written)} of {len(entries)} rows kept")
+
+    if video_clip != label_clip:
+        media = WS / "videos" / f"{label_clip}.mp4"
+        orphan = WS / "videos" / f"{label_clip}_wrong_video.mp4.bak"
+        if media.exists() and not orphan.exists():
+            media.rename(orphan)
+            print(f"  [keep ] the video these labels did NOT belong to -> {orphan.name}")
+        shutil.copyfile(WS / "videos" / f"{video_clip}.mp4", media)
+        print(f"  [media] {label_clip}.mp4 is now a copy of {video_clip}.mp4")
+    print("  next:  python finetune/ft.py check --audit --mark " + label_clip)
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parsed = parse_args(sys.argv if argv is None else argv)
+    if parsed is None:
         print(__doc__)
         return 2
-    label_clip, video_clip = sys.argv[1], sys.argv[2]
+    label_clip, video_clip, preview, apply = parsed
     det_frames, det_x, det_y, meta = detections(video_clip)
     width, height, total = int(meta[0]), int(meta[1]), int(meta[2])
     own_w, own_h = frame_size(label_clip) if label_clip != video_clip else (width, height)
@@ -329,39 +404,13 @@ def main() -> int:
         print(f"  {int(pinned.sum())} frame(s) you corrected by hand are pinned and will not move")
 
     chunks = int(min(60, max(8, len(entries) // 60)))
-    best = None
-    for rate in RATES:
-        if fixed_by_hand and rate != 1.0:
-            continue  # a reviewed source-frame index is an exact temporal anchor
-        bases = np.rint(frames * rate).astype(np.int64)
-        offsets = candidates(bases, xs, ys, fast, lut_x, lut_y, total, scale, chunks)
-        if pinned.any() and rate == 1.0:
-            offsets = np.array(sorted(set(offsets.tolist()) | {0}), np.int64)
-        if offsets.size == 0:
-            continue
-        chosen = solve(bases, xs, ys, lut_x, lut_y, total, scale, offsets,
-                       pinned if rate == 1.0 else None)
-        # Invisible reviewed rows are not in the visual solve, but are equally
-        # authoritative. Reject any candidate that would shift their segment.
-        if any(int(chosen[max(0, int(np.searchsorted(frames, f, side="right")) - 1)]) != 0
-               for f in fixed_by_hand):
-            continue
-        result = agreement(bases, xs, ys, chosen, lut_x, lut_y, total, scale, fast)
-        print(f"  rate {rate:g}: {offsets.size} candidate offsets in {offsets.min():+d}..{offsets.max():+d}"
-              f"  -> agree {result[0]:.2f}, median {result[2]:.1f} px")
-        if best is None or result[0] > best[0][0]:
-            best = (result, rate, bases, chosen)
+    best = solve_alignment(frames, xs, ys, fast, lut_x, lut_y, total, scale, fixed_by_hand, pinned, chunks)
     if best is None:
         print("  nothing in this video puts the labels on the ball - not salvageable this way")
         return 1
     result, rate, bases, chosen = best
 
-    runs = []
-    for frame, offset in zip(frames, chosen):
-        if not runs or runs[-1][2] != offset:
-            runs.append([frame, frame, offset])
-        else:
-            runs[-1][1] = frame
+    runs = segments(frames, chosen)
     print(f"  best: rate {rate:g}, agree {result[0]:.2f} on {result[1]} judged, median {result[2]:.1f} px")
     print(f"  {len(runs)} segment(s):")
     for lo, hi, offset in runs:
@@ -375,33 +424,15 @@ def main() -> int:
     if dropped:
         print(f"  {len(dropped)} visible row(s) sit inside a cut the detector cannot place - dropped, not guessed")
 
-    if "--preview" in sys.argv:
+    if preview:
         out = write_preview(WS / "videos" / f"{video_clip}.mp4", frames, xs, ys, bases, chosen, WS / f"realign_{label_clip}.png")
         print(f"  preview -> {out}")
 
-    if "--apply" not in sys.argv:
+    if not apply:
         print("\n  (dry run - pass --apply to write it)")
         return 0
-
-    written = remapped_rows(entries, frames, chosen, dropped, fixed_by_hand, rate, total,
-                            (own_w, own_h), (width, height))
-    path = label_csv(label_clip)
-    backup = path.with_suffix(".csv.premisaligned")
-    if not backup.exists():
-        shutil.copyfile(path, backup)
-    write_label_cells(path, written)
-    print(f"\n  [write] {path.name}: {len(written)} of {len(entries)} rows kept")
-
-    if video_clip != label_clip:
-        media = WS / "videos" / f"{label_clip}.mp4"
-        orphan = WS / "videos" / f"{label_clip}_wrong_video.mp4.bak"
-        if media.exists() and not orphan.exists():
-            media.rename(orphan)
-            print(f"  [keep ] the video these labels did NOT belong to -> {orphan.name}")
-        shutil.copyfile(WS / "videos" / f"{video_clip}.mp4", media)
-        print(f"  [media] {label_clip}.mp4 is now a copy of {video_clip}.mp4")
-    print("  next:  python finetune/ft.py check --audit --mark " + label_clip)
-    return 0
+    return apply_alignment(entries, frames, chosen, dropped, fixed_by_hand, rate, total,
+                           (own_w, own_h), (width, height), label_clip, video_clip)
 
 
 if __name__ == "__main__":
