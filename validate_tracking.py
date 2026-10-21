@@ -7,7 +7,6 @@ import argparse
 import json
 import math
 import statistics
-import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -219,7 +218,7 @@ def _fmt_optional(value: Optional[float], digits: int = 2) -> str:
     return f"{value:.{digits}f}"
 
 
-def main() -> int:
+def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Validate tracking JSON against labels.")
     parser.add_argument("--predictions", required=True, help="Path from now_main.py --tracking-json")
     parser.add_argument("--annotations", required=True, help="Hand-labeled annotation JSON")
@@ -230,7 +229,7 @@ def main() -> int:
     parser.add_argument("--max-p90-error", type=float, default=None, help="Fail if p90 error exceeds this")
     parser.add_argument("--min-recall", type=float, default=None, help="Fail if localization recall within 10px is below this 0..1 value")
     parser.add_argument("--min-presence-recall", type=float, default=None, help="Optional presence-only gate (does not check localization)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     predictions = _load_json(Path(args.predictions))
     annotations = _load_json(Path(args.annotations))
@@ -283,4 +282,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
