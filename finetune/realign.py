@@ -49,7 +49,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 from finetune.detect import ball_detector, detect_points
 from finetune.labels import LabelRow, format_point, is_visible, read_label_rows, reviewed_frames, write_label_cells
 from finetune.scoring import scale_for_width
-from finetune.workspace import REPO_WEIGHTS, WORKSPACE as WS, label_csv, review_json, video_meta
+from finetune.workspace import REPO_WEIGHTS, WORKSPACE as WS, label_csv, video_meta
 
 PREVIEW_TILES = 8            # frames shown on the --preview sheet ...
 PREVIEW_CROP = 70            # ... each a crop this many pixels either side of the label ...
@@ -87,7 +87,7 @@ def anchors(clip: str) -> Set[int]:
     settled it, so the row is pinned where it is and the solve works around it: every frame you
     deal with pushes the cut past itself, and the ones you have not reached follow.
     """
-    return reviewed_frames(review_json(clip))      # a damaged review file is an error: no alignment
+    return reviewed_frames(clip)      # a damaged review file is an error: no alignment
 
 
 def read_labels(clip: str) -> List[LabelRow]:

@@ -60,7 +60,8 @@ def test_read_label_rows_keeps_file_order_and_draft_columns(tmp_path):
 
 
 @pytest.mark.parametrize("content", ["frame,x,y\nframe_001,1,2\n", "frame,ball_x,ball_y\n7,1,2\n",
-                                     "frame,ball_x,ball_y\nframe_001,one,2\n"])
+                                     "frame,ball_x,ball_y\nframe_001,one,2\n",
+                                     "frame,ball_x,ball_y,source,conf\nframe_001,1,2,det,nan?\n"])
 def test_a_malformed_label_file_is_an_error_naming_the_file(tmp_path, content):
     path = tmp_path / "bad_ball.csv"
     path.write_text(content, encoding="utf-8")
@@ -74,9 +75,9 @@ def test_a_malformed_label_file_is_an_error_naming_the_file(tmp_path, content):
 def test_review_sidecar_missing_is_none_and_damaged_is_an_error(tmp_path):
     path = tmp_path / "clip_ball.review.json"
     assert labels.read_review(path) is None
-    assert labels.reviewed_frames(path) == set()
+    assert labels.reviewed_frames("clip", tmp_path) == set()
     path.write_text(json.dumps({"reviewed": [1, "3"], "edited": [5], "cursor": 2}), encoding="utf-8")
-    assert labels.reviewed_frames(path) == {1, 3, 5}
+    assert labels.reviewed_frames("clip", tmp_path) == {1, 3, 5}
     for broken in ("[1, 2]", "{nope", ""):
         path.write_text(broken, encoding="utf-8")
         with pytest.raises(labels.LabelFormatError) as caught:
@@ -85,17 +86,58 @@ def test_review_sidecar_missing_is_none_and_damaged_is_an_error(tmp_path):
         assert path.read_text(encoding="utf-8") == broken      # never replaced
 
 
-def test_suspect_sidecar_reads_the_legacy_frames_list_as_check(tmp_path):
+def test_review_frame_lists_are_validated_once_for_every_reader(tmp_path):
+    """reviewed_frames and label_store.apply_review share frame_list, so a sidecar whose frame
+    list is not one is the same LabelFormatError naming the file for both; null lists are empty."""
+    from finetune.label_store import Row, apply_review
+
+    path = tmp_path / "clip_ball.review.json"
+    path.write_text(json.dumps({"reviewed": None, "edited": None}), encoding="utf-8")
+    assert labels.reviewed_frames("clip", tmp_path) == set()
+    rows = [Row(1, 1.0, 1.0, True, "csv", 0.0)]
+    apply_review(path, rows)
+    assert not rows[0].reviewed
+    path.write_text(json.dumps({"reviewed": ["x"]}), encoding="utf-8")
+    for read in (lambda: labels.reviewed_frames("clip", tmp_path), lambda: apply_review(path, rows)):
+        with pytest.raises(labels.LabelFormatError) as caught:
+            read()
+        assert path.name in str(caught.value) and "'reviewed'" in str(caught.value)
+    path.write_text(json.dumps({"reviewed": [1]}), encoding="utf-8")
+    apply_review(path, rows)
+    assert rows[0].reviewed and labels.reviewed_frames("clip", tmp_path) == {1}
+
+
+def test_flag_sidecar_reads_the_legacy_frames_list_as_check(tmp_path):
     path = tmp_path / "clip_ball.suspect.json"
-    assert labels.read_suspects(path) == {"unplaceable": [], "check": [], "answered": {}, "notes": {}}
+    assert labels.read_flags(path) == {"generated": "", "notes": {}, "unplaceable": [], "check": [], "answered": {}}
     path.write_text(json.dumps({"frames": [1, 3]}), encoding="utf-8")
-    assert labels.read_suspects(path)["check"] == [1, 3]
-    path.write_text(json.dumps({"unplaceable": [2], "check": [4], "answered": {"4": [1.5, 2.5]}, "notes": {"check": "n"}}),
-                    encoding="utf-8")
-    assert labels.read_suspects(path) == {"unplaceable": [2], "check": [4], "answered": {"4": [1.5, 2.5]}, "notes": {"check": "n"}}
+    assert labels.read_flags(path)["check"] == [1, 3]
+    path.write_text(json.dumps({"unplaceable": [2], "check": [4], "answered": {"4": [1.5, 2.5]}, "notes": {"check": "n"},
+                                "generated": "2026-10-01"}), encoding="utf-8")
+    assert labels.read_flags(path) == {"generated": "2026-10-01", "notes": {"check": "n"}, "unplaceable": [2], "check": [4],
+                                       "answered": {"4": [1.5, 2.5]}}
     path.write_text("not json", encoding="utf-8")
     with pytest.raises(labels.LabelFormatError):
-        labels.read_suspects(path)
+        labels.read_flags(path)
+    path.write_text(json.dumps({"check": "3"}), encoding="utf-8")
+    with pytest.raises(labels.LabelFormatError) as caught:
+        labels.read_flags(path)
+    assert path.name in str(caught.value)
+
+
+def test_flag_sidecar_has_one_writer_and_one_shape(tmp_path):
+    """write_flags owns the on-disk shape: provenance only when there is some, frames sorted and
+    unique, and what it wrote reads back as it was given."""
+    path = tmp_path / "clip_ball.suspect.json"
+    flags = {"generated": "", "notes": {}, "unplaceable": [5, 3, 3], "check": [], "answered": {"1": None}}
+    labels.write_flags(path, flags)
+    assert json.loads(path.read_text(encoding="utf-8")) == {"unplaceable": [3, 5], "check": [], "answered": {"1": None}}
+    full = {"generated": "2026-10-21", "notes": {"check": "look"}, "unplaceable": [], "check": [2], "answered": {}}
+    labels.write_flags(path, full)
+    assert json.loads(path.read_text(encoding="utf-8")) == full
+    assert labels.read_flags(path) == full
+    assert labels.answered_point((1.234, 5.678)) == [1.23, 5.68] and labels.answered_point(None) is None
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 # --------------------------------------------------------------------------- atomic writes

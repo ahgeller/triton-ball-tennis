@@ -51,7 +51,7 @@ from finetune.fileio import backup_copy
 from finetune.labels import LabelPoint, read_labels, reviewed_frames, write_labels
 from finetune import workspace as ws
 from finetune.workspace import (DEFAULT_SOURCES, MANIFEST_COLUMNS, VIDEO_SUFFIXES, clip_of, label_csv, natural_key,
-                                read_manifest, review_json, video_meta, write_manifest)
+                                read_manifest, video_meta, write_manifest)
 from tennis_tracker.frame_rate import require_phase_stride
 
 ENCODE_TIMEOUT_S = 3600          # an ffmpeg encode of one clip that takes longer than this is stuck
@@ -77,9 +77,9 @@ def protect_existing(dst_csv: Path) -> None:
     beside itself first, as ft.py and realign.py do."""
     if not dst_csv.is_file():
         return
-    settled = reviewed_frames(review_json(clip_of(dst_csv), dst_csv.parent))
-    if settled:
-        raise ReviewedLabelsError(f"{dst_csv.name} has {len(settled)} hand-reviewed row(s); not overwriting it "
+    reviewed = reviewed_frames(clip_of(dst_csv), dst_csv.parent)
+    if reviewed:
+        raise ReviewedLabelsError(f"{dst_csv.name} has {len(reviewed)} hand-reviewed row(s); not overwriting it "
                                   f"(move its review sidecar aside first if you really mean to)")
     backup = backup_copy(dst_csv, "import")
     print(f"[backup] {dst_csv.name} -> {backup.name}")

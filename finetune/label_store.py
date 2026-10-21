@@ -1,6 +1,7 @@
 """What the label tool reads and writes: a clip's rows, the review and flag sidecars, and the
 settings file. The on-disk formats are those of ``finetune.labels``; this module turns them into
-``Row`` objects and back."""
+``Row`` objects and back. ``load_*`` functions read and return; ``apply_*`` functions write
+what a sidecar says onto the rows they are given."""
 from __future__ import annotations
 
 import json
@@ -8,8 +9,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from finetune.fileio import write_atomic
-from finetune.labels import (Suspects, format_point, is_visible, read_label_rows, read_review, read_suspects,
-                             write_label_cells)
+from finetune.labels import (Flags, answered_point, format_point, frame_list, is_visible, read_flags, read_label_rows,
+                             read_review, write_flags, write_label_cells)
 
 CONFIDENT_CONF = 0.70       # a draft at or above this confidence is not "uncertain"
 SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: filter, inset, trail
@@ -73,38 +74,31 @@ def save_rows(csv_path: Path, rows: List[Row], width: int, height: int) -> None:
                                  for row in rows])
 
 
-def save_suspects(path: Path, rows: List[Row]) -> None:
+def save_flags(path: Path, rows: List[Row]) -> None:
     """Drop the flags you have answered from the flag file, and remember each answer.
 
     A flag is a question, and confirming the label (SPACE) answers it just as well as changing it
     does. A flag on a frame you had reviewed before the audit stays open until you look at it
     again: catching mistakes in reviewed frames is what an audit is for. Answered frames go in an
     "answered" map with the label they were answered at, so a later audit does not raise the same
-    question about the same label again (ft.py write_suspects reads it).
+    question about the same label again (label_audit.flag_frames reads it). A damaged file is its
+    LabelFormatError, naming the file; an older audit's ``frames`` list reads as ``check``.
     """
     if not path.is_file():
         return
-    # Older audits wrote their check list as "frames"; read_suspects reads it as "check", so it has
-    # to be carried over here too, or the first save would throw those flags away. A damaged file
-    # is its LabelFormatError, naming the file; only then is the raw object read for the rewrite.
-    flags = read_suspects(path)
-    blob = json.loads(path.read_text(encoding="utf-8"))
-    flagged = {"unplaceable": flags["unplaceable"], "check": flags["check"]}
+    flags: Flags = read_flags(path)
     by_frame = {row.frame: row for row in rows}
     open_now = {row.frame for row in rows if row.suspect}
-    kept = {kind: [f for f in frames if f in open_now or f not in by_frame] for kind, frames in flagged.items()}
+    kept = {kind: [f for f in flags[kind] if f in open_now or f not in by_frame] for kind in ("unplaceable", "check")}
     answered = dict(flags["answered"])
-    for frames in flagged.values():
-        for frame in frames:
+    for kind in ("unplaceable", "check"):
+        for frame in flags[kind]:
             if frame in by_frame and frame not in open_now:
                 row = by_frame[frame]
-                answered[str(frame)] = [round(row.x, 2), round(row.y, 2)] if row.visible else None
-    if kept == flagged and "frames" not in blob and answered == blob.get("answered", {}):
+                answered[str(frame)] = answered_point((row.x, row.y) if row.visible else None)
+    if kept["unplaceable"] == flags["unplaceable"] and kept["check"] == flags["check"] and answered == flags["answered"]:
         return
-    blob.pop("frames", None)
-    blob.update(kept)
-    blob["answered"] = answered
-    write_atomic(path, json.dumps(blob, indent=1))
+    write_flags(path, {**flags, "unplaceable": kept["unplaceable"], "check": kept["check"], "answered": answered})
 
 
 def save_review(path: Path, rows: List[Row], cursor: int, zoom: float) -> None:
@@ -118,24 +112,27 @@ def save_review(path: Path, rows: List[Row], cursor: int, zoom: float) -> None:
     }))
 
 
-def load_suspects(path: Path, rows: List[Row]) -> int:
-    """Mark the frames a previous audit flagged. They are the ones worth your time first. A flag
-    file that cannot be read is an error naming it (LabelFormatError), not an empty answer."""
-    flags: Suspects = read_suspects(path)
+def apply_flags(path: Path, rows: List[Row]) -> int:
+    """Mark the frames a previous audit flagged on the rows; returns how many. They are the ones
+    worth your time first. A flag file that cannot be read is an error naming it
+    (LabelFormatError), not an empty answer."""
+    flags: Flags = read_flags(path)
     frames = set(flags["unplaceable"]) | set(flags["check"])
     for row in rows:
         row.suspect = row.frame in frames
     return sum(row.suspect for row in rows)
 
 
-def load_review(path: Path, rows: List[Row]) -> Optional[dict]:
-    """Apply the review sidecar to the rows and return it; None when there is none yet. A damaged
-    file is an error naming it (LabelFormatError): the tool never starts afresh over somebody's
-    record of what they checked. Odd shapes inside a parseable file are tolerated field by field."""
+def apply_review(path: Path, rows: List[Row]) -> Optional[dict]:
+    """Mark the rows the review sidecar says are reviewed or edited (and restore their evidence),
+    and return the sidecar; None when there is none yet. A damaged file, or a frame list that is
+    not one, is an error naming it (LabelFormatError): the tool never starts afresh over
+    somebody's record of what they checked. Odd evidence inside a parseable file is tolerated
+    frame by frame."""
     state = read_review(path)
     if state is None:
         return None
-    reviewed, edited = set(state.get("reviewed") or []), set(state.get("edited") or [])
+    reviewed, edited = set(frame_list(state, "reviewed", path)), set(frame_list(state, "edited", path))
     evidence_of = state.get("evidence") if isinstance(state.get("evidence"), dict) else {}
     for row in rows:
         row.reviewed = row.frame in reviewed
@@ -147,6 +144,12 @@ def load_review(path: Path, rows: List[Row]) -> Optional[dict]:
             except (TypeError, ValueError):
                 print(f"[warn] {path.name}: frame {row.frame} has unreadable evidence {evidence!r}; ignored")
     return state
+
+
+# The names label_tool.py and label_source.py still import; one release of grace, then gone.
+load_review = apply_review
+load_suspects = apply_flags
+save_suspects = save_flags
 
 
 def load_settings(path: Path) -> dict:

@@ -10,7 +10,7 @@ import pytest
 
 from finetune import label_audit
 from finetune.label_audit import (AUDIT_MIN_COVERAGE, AUDIT_MIN_FAST, ClipAudit, audit_labels, check_label_file,
-                                  outstanding_suspects, read_suspects, shift_labels, write_suspects)
+                                  outstanding_flags, open_flags, shift_labels, flag_frames)
 from finetune.labels import read_labels
 from finetune.workspace import VideoMeta
 
@@ -82,33 +82,33 @@ class CheckLabelFileTests(Workspace):
         self.assertIn("only 3 of 21 frames", issues)
 
 
-class SuspectSidecarTests(Workspace):
+class FlagSidecarTests(Workspace):
     def test_write_and_read_round_trip_keeps_the_other_kind(self):
-        write_suspects("clip", "unplaceable", [5, 3, 3], "cut here")
-        write_suspects("clip", "check", [8], "disputed")
-        self.assertEqual(read_suspects("clip"), {"unplaceable": [3, 5], "check": [8]})
+        flag_frames("clip", "unplaceable", [5, 3, 3], "cut here")
+        flag_frames("clip", "check", [8], "disputed")
+        self.assertEqual(open_flags("clip"), {"unplaceable": [3, 5], "check": [8]})
         blob = json.loads((self.folder / "clip_ball.suspect.json").read_text())
         self.assertEqual(blob["notes"], {"unplaceable": "cut here", "check": "disputed"})
-        write_suspects("clip", "unplaceable", [], "")
-        write_suspects("clip", "check", [], "")
+        flag_frames("clip", "unplaceable", [], "")
+        flag_frames("clip", "check", [], "")
         self.assertFalse((self.folder / "clip_ball.suspect.json").exists())   # nothing left to ask
 
     def test_a_later_audit_does_not_reask_an_answered_frame(self):
         self.label_file("clip", [(1, 41.25, 27.75), (3, 50, 30)])
         (self.folder / "clip_ball.suspect.json").write_text(json.dumps(
             {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
-        write_suspects("clip", "check", [1, 3], "audit")
-        self.assertEqual(read_suspects("clip")["check"], [3])   # 3's label moved since
-        self.assertEqual(outstanding_suspects("clip")["check"], [3])
+        flag_frames("clip", "check", [1, 3], "audit")
+        self.assertEqual(open_flags("clip")["check"], [3])   # 3's label moved since
+        self.assertEqual(outstanding_flags("clip")["check"], [3])
 
     def test_outstanding_drops_an_unplaceable_frame_with_no_ball(self):
         self.label_file("clip", [(1, WIDTH - 1, 0), (3, 50, 30)])     # frame 1 is the sentinel
-        write_suspects("clip", "unplaceable", [1, 3], "cut")
-        self.assertEqual(read_suspects("clip")["unplaceable"], [1, 3])
-        self.assertEqual(outstanding_suspects("clip"), {"unplaceable": [3], "check": []})
+        flag_frames("clip", "unplaceable", [1, 3], "cut")
+        self.assertEqual(open_flags("clip")["unplaceable"], [1, 3])
+        self.assertEqual(outstanding_flags("clip"), {"unplaceable": [3], "check": []})
 
     def test_nothing_flagged_reads_as_empty(self):
-        self.assertEqual(outstanding_suspects("absent"), {"unplaceable": [], "check": []})
+        self.assertEqual(outstanding_flags("absent"), {"unplaceable": [], "check": []})
 
 
 class ClipAuditTests(unittest.TestCase):
@@ -119,15 +119,15 @@ class ClipAuditTests(unittest.TestCase):
         self.assertEqual(audit.agree0, 1.0)
         self.assertEqual(audit.best_shift, 0)
         self.assertEqual(audit.verdict(False), ("ok", False))
-        self.assertEqual(audit.doubtful_frames(), [])
+        self.assertEqual(audit.disputed_frames(), [])
 
-    def test_one_contradicted_frame_is_doubtful_not_a_suspect(self):
+    def test_one_contradicted_frame_is_disputed_the_clip_still_agrees(self):
         visible = moving_ball(range(30), 10)
         confident = dict(visible)
         confident[12] = (confident[12][0], confident[12][1] + 30)
         audit = ClipAudit(visible, confident, 1, 1.0, 30)
         self.assertEqual(audit.verdict(False)[1], False)
-        self.assertEqual(audit.doubtful_frames(), [12])
+        self.assertEqual(audit.disputed_frames(), [12])
 
     def test_detector_two_label_frames_ahead_is_fixable(self):
         visible = moving_ball(range(40), 20)                     # fast enough that +1 and +3 miss
@@ -155,7 +155,7 @@ class ClipAuditTests(unittest.TestCase):
         self.assertLess(audit.coverage, AUDIT_MIN_COVERAGE)
         self.assertEqual(audit.verdict(False), ("detector rarely fires here; cannot judge", False))
 
-    def test_hopeless_labels_are_a_suspect_to_exclude(self):
+    def test_hopeless_labels_disagree_and_are_excluded(self):
         visible = moving_ball(range(40), 20)
         confident = {frame: (1500.0, 900.0) for frame in range(40)}
         audit = ClipAudit(visible, confident, 1, 1.0, 40)
@@ -212,7 +212,7 @@ class AuditLabelsTests(Workspace):
         suspects, output = self.run_audit(confident, fix=False, mark=True)
         self.assertEqual(suspects, 0)
         self.assertIn("ok; 1 frame(s) to eyeball", output)
-        self.assertEqual(read_suspects("clip")["check"], [12])
+        self.assertEqual(open_flags("clip")["check"], [12])
 
     def test_fix_shifts_a_clip_the_detector_sees_two_frames_later(self):
         visible = moving_ball(range(30), 20)

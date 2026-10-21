@@ -7,23 +7,25 @@ that disagree with it as they stand but agree once renumbered were made on a dif
 the video, and ``shift_labels`` renumbers them (``ft.py check --audit --fix``); labels that
 agree with nothing go into ``exclude.txt`` (``add_exclusion``).
 
-The flag sidecar (``<clip>_ball.suspect.json``, see ``finetune.labels``) is written here and read
-by the label tool: ``write_suspects`` records the frames an audit wants a person to look at, and
-``outstanding_suspects`` is what is still open. Only ``audit_labels`` needs the detector; it
-imports it when called, so ``ft.py`` stays importable without cv2 or torch.
+Two things are "suspect" in different senses, so they are named apart: a *clip* whose labels
+disagree with the detector (``ClipAudit.verdict``, ``audit_labels`` counts them), and a *frame*
+an audit flagged for a person to look at. The flags live in the flag sidecar
+(``<clip>_ball.suspect.json``, see ``finetune.labels``) and are read by the label tool:
+``flag_frames`` records them, ``open_flags`` reads them and ``outstanding_flags`` is what is
+still worth a look. Only ``audit_labels`` needs the detector; it imports it when called, so
+``ft.py`` stays importable without cv2 or torch.
 """
 from __future__ import annotations
 
 import datetime as dt
-import json
 import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from finetune.fileio import backup_copy, write_atomic
-from finetune.labels import (LabelFormatError, Labels, Suspects, read_label_rows, read_labels,
-                             read_suspects as read_suspect_file, write_labels)
+from finetune.fileio import backup_copy
+from finetune.labels import (FLAG_ANSWER_DECIMALS, FlagKind, Flags, LabelFormatError, Labels, read_flags, read_label_rows,
+                             read_labels, write_flags, write_labels)
 from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
 from finetune import workspace as ws
 from finetune.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, suspect_json,
@@ -41,7 +43,7 @@ AUDIT_MIN_FAST = 20          # fewer fast labels than this and the whole clip is
 AUDIT_CONF = 0.5             # detections at or above this confidence count as the detector's answer
 AUDIT_MIN_COVERAGE = 0.3     # the detector must fire on this share of the judged labels to judge a clip
 AUDIT_MIN_SHARE = 0.5        # a shifted alignment must cover this share of the unshifted one's frames
-SAME_POINT_PX = 0.01         # an answered flag's label and the current one agree within this
+SAME_POINT_PX = 10.0 ** -FLAG_ANSWER_DECIMALS   # an answered flag's label and the current one agree within this
 
 
 # --------------------------------------------------------------------------- the label file itself
@@ -101,12 +103,12 @@ def check_label_file(csv_path: Path, fps: float, width: int, height: int, total:
 
 # --------------------------------------------------------------------------- the flag sidecar
 
-def frame_size(row: Dict[str, str]) -> Tuple[float, float]:
+def manifest_frame_size(row: Dict[str, str]) -> Tuple[float, float]:
     """A clip's frame size from its clips.csv row, 1080p when the row does not say."""
     return float(row.get("width") or REFERENCE_WIDTH), float(row.get("height") or REFERENCE_HEIGHT)
 
 
-def read_suspects(clip: str) -> Dict[str, List[int]]:
+def open_flags(clip: str) -> Dict[str, List[int]]:
     """Frames of this clip somebody still has to look at, in two kinds.
 
     unplaceable  we could not work out which video frame this label belongs to - the clip is only
@@ -114,38 +116,37 @@ def read_suspects(clip: str) -> Dict[str, List[int]]:
     check        the detector disagrees with the label here. Usually that is the detector losing a
                  ball at the racket rather than a bad label, so it is a prompt, not a defect
     """
-    flags = read_suspect_file(suspect_json(clip))
+    flags = read_flags(suspect_json(clip))
     return {"unplaceable": flags["unplaceable"], "check": flags["check"]}
 
 
-def write_suspects(clip: str, kind: str, frames: List[int], note: str) -> None:
+def flag_frames(clip: str, kind: FlagKind, frames: List[int], note: str) -> None:
     """Record (or clear) one kind of flag, leaving the other kind alone."""
     path = suspect_json(clip)
-    flags: Suspects = read_suspect_file(path)
+    flags: Flags = read_flags(path)
     flags[kind] = sorted(set(int(f) for f in frames))
     flags["notes"][kind] = note
+    flags["generated"] = str(dt.date.today())
     answered = flags["answered"]
     if answered:
         # A frame you already answered (SPACE or a fix in the label tool) is not asked about again
         # while its label is still the one you answered at; move the label and it can be flagged anew.
-        labels = read_label_points(clip)
+        labels = clip_labels(clip)
         flags[kind] = [f for f in flags[kind]
                        if not (str(f) in answered and same_point(answered[str(f)], labels.get(f, "missing")))]
     if not (flags["unplaceable"] or flags["check"] or answered):
         path.unlink(missing_ok=True)
         return
-    write_atomic(path, json.dumps({"generated": str(dt.date.today()), "notes": flags["notes"],
-                                   "unplaceable": flags["unplaceable"], "check": flags["check"],
-                                   "answered": answered}, indent=1))
+    write_flags(path, flags)
 
 
-def read_label_points(clip: str) -> Labels:
+def clip_labels(clip: str) -> Labels:
     """frame -> (x, y), or None where the label says no ball, from the clip's label file (the
     frame size taken from clips.csv, 1080p when the clip is not listed)."""
     path = label_csv(clip)
     if not path.is_file():
         return {}
-    width, height = frame_size(read_manifest().get(clip, {}))
+    width, height = manifest_frame_size(read_manifest().get(clip, {}))
     return read_labels(path, int(width), int(height))
 
 
@@ -155,7 +156,7 @@ def same_point(answered: Optional[List[float]], label) -> bool:
     return label != "missing" and abs(answered[0] - label[0]) < SAME_POINT_PX and abs(answered[1] - label[1]) < SAME_POINT_PX
 
 
-def outstanding_suspects(clip: str) -> Dict[str, List[int]]:
+def outstanding_flags(clip: str) -> Dict[str, List[int]]:
     """The flagged frames still to deal with.
 
     The label tool takes a flag out of the file once you answer it - SPACE answers it as fully as
@@ -163,10 +164,10 @@ def outstanding_suspects(clip: str) -> Dict[str, List[int]]:
     audit raised it. A frame with no ball on it is dropped from 'unplaceable' too - there is no
     position to put in the wrong place, so which side of a cut it lands on cannot hurt anything.
     """
-    flagged = read_suspects(clip)
+    flagged = open_flags(clip)
     if not (flagged["unplaceable"] or flagged["check"]):
         return flagged
-    blind = {frame for frame, point in read_label_points(clip).items() if point is None} if flagged["unplaceable"] else set()
+    blind = {frame for frame, point in clip_labels(clip).items() if point is None} if flagged["unplaceable"] else set()
     return {"unplaceable": [f for f in flagged["unplaceable"] if f not in blind],
             "check": list(flagged["check"])}
 
@@ -221,7 +222,7 @@ class ClipAudit:
     def fixable(self) -> bool:
         return self.best_shift != 0 and self.best[0] >= AUDIT_FIXABLE and not self.at_edge
 
-    def doubtful_frames(self) -> List[int]:
+    def disputed_frames(self) -> List[int]:
         """Labels the detector confidently contradicts on a clip that lines up: about that frame, not
         the alignment. Flagged for a human; never rewritten from the detector."""
         return [f for f in sorted(self.visible)
@@ -230,7 +231,7 @@ class ClipAudit:
                 * self.scale > AUDIT_AGREE_PX]
 
     def verdict(self, fix: bool) -> Tuple[str, bool]:
-        """(what to print, whether the clip is a suspect)."""
+        """(what to print, whether the clip's labels disagree with the detector)."""
         if self.coverage < AUDIT_MIN_COVERAGE:
             return "detector rarely fires here; cannot judge", False
         if self.agree0 >= AUDIT_SUSPECT:
@@ -262,13 +263,13 @@ def _audit_stride(clip: str, fps: float) -> int:
     return stride
 
 
-def _mark_doubtful(clip: str, audit: ClipAudit) -> str:
+def _flag_disputed(clip: str, audit: ClipAudit) -> str:
     """Flag the frames the detector disputes on a clip that lines up; the verdict's suffix."""
-    doubtful = audit.doubtful_frames()
-    write_suspects(clip, "check", doubtful,
-                   f"detector disagrees by more than {AUDIT_AGREE_PX:.0f} px - often it simply lost "
-                   f"the ball at the racket, so confirm before changing anything")
-    return f"; {len(doubtful)} frame(s) to eyeball" if doubtful else ""
+    disputed = audit.disputed_frames()
+    flag_frames(clip, "check", disputed,
+                f"detector disagrees by more than {AUDIT_AGREE_PX:.0f} px - often it simply lost "
+                f"the ball at the racket, so confirm before changing anything")
+    return f"; {len(disputed)} frame(s) to eyeball" if disputed else ""
 
 
 def _fix_clip(clip: str, audit: ClipAudit, stride: int, meta: VideoMeta) -> None:
@@ -281,7 +282,7 @@ def _fix_clip(clip: str, audit: ClipAudit, stride: int, meta: VideoMeta) -> None
 
 
 def _audit_one(clip: str, video: Path, detector, fix: bool, mark: bool) -> bool:
-    """Audit one clip against the detector and print its row; True when the clip is a suspect."""
+    """Audit one clip against the detector and print its row; True when its labels disagree with it."""
     from finetune.detect import detect_points
 
     meta = video_meta(video)
@@ -290,19 +291,20 @@ def _audit_one(clip: str, video: Path, detector, fix: bool, mark: bool) -> bool:
     visible = {f: p for f, p in labels.items() if p is not None}
     confident = {f: (x, y) for f, (x, y, conf) in detect_points(detector, video, meta).items() if conf >= AUDIT_CONF}
     audit = ClipAudit(visible, confident, stride, scale_for_width(meta.width), meta.total)
-    verdict, suspect = audit.verdict(fix)
+    verdict, disagrees = audit.verdict(fix)
     if mark and audit.agree0 >= AUDIT_SUSPECT:
-        verdict += _mark_doubtful(clip, audit)
+        verdict += _flag_disputed(clip, audit)
     print(f"  {clip:36s} {len(visible):7d} {len(audit.fast):5d} {audit.coverage:7.2f} {audit.agree0:6.2f} {audit.best[0]:6.2f} "
           f"{audit.best_shift:+5d} {audit.best[2]:7.1f}  {verdict}", flush=True)
     if fix and audit.coverage >= AUDIT_MIN_COVERAGE and audit.agree0 < AUDIT_SUSPECT:
         _fix_clip(clip, audit, stride, meta)
-    return suspect
+    return disagrees
 
 
 def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: bool, mark: bool = False) -> int:
     """Cross-check every label file against the raw detector: agreement at offset 0, and the best temporal
-    shift. Catches public clips whose labels were made on a different cut of the video."""
+    shift. Catches public clips whose labels were made on a different cut of the video. Returns how
+    many clips disagree."""
     from finetune.detect import ball_detector   # the lazy GPU import: ft.py must load without torch
 
     videos = videos_in()
@@ -313,12 +315,12 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
           f"(agree = detector within {AUDIT_AGREE_PX:.0f} px of the label, measured on the fast labels; "
           f"shift = label frames)")
     print(f"  {'clip':36s} {'visible':>7s} {'fast':>5s} {'covered':>7s} {'agree':>6s} {'best':>6s} {'shift':>5s} {'med px':>7s}  verdict")
-    suspects = sum(_audit_one(clip, videos[clip], detector, fix, mark) for clip in clips if clip in videos)
-    if suspects:
-        print(f"audit: {suspects} clip(s) flagged" + ("" if fix else "; re-run with --fix to shift or exclude them"))
+    disagreeing = sum(_audit_one(clip, videos[clip], detector, fix, mark) for clip in clips if clip in videos)
+    if disagreeing:
+        print(f"audit: {disagreeing} clip(s) flagged" + ("" if fix else "; re-run with --fix to shift or exclude them"))
     else:
         print("audit: every clip agrees with the detector")
-    return suspects
+    return disagreeing
 
 
 # --------------------------------------------------------------------------- repairs

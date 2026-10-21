@@ -64,7 +64,7 @@ def bound_to(root: Path) -> Iterator[None]:
     with patch.object(realign, "detections", lambda clip: detections), \
          patch.object(realign, "frame_size", lambda clip: (WIDTH, HEIGHT)), \
          patch.object(realign, "label_csv", lambda clip: root / "labels" / f"{clip}_ball.csv"), \
-         patch.object(realign, "review_json", lambda clip: root / "labels" / f"{clip}_ball.review.json"), \
+         patch("finetune.workspace.LABELS", root / "labels"), \
          patch.object(realign, "WS", root):
         yield
 

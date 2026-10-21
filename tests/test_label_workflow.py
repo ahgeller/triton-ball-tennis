@@ -419,9 +419,9 @@ class LabelWorkflowTests(unittest.TestCase):
             (labels / "clip_ball.suspect.json").write_text(json.dumps(
                 {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
             with patch.multiple("finetune.workspace", LABELS=labels, MANIFEST=labels / "clips.csv"):
-                label_audit.write_suspects("clip", "check", [1, 3], "audit")
-                self.assertEqual(label_audit.read_suspects("clip")["check"], [3])   # 3's label moved since
-                self.assertEqual(label_audit.outstanding_suspects("clip")["check"], [3])
+                label_audit.flag_frames("clip", "check", [1, 3], "audit")
+                self.assertEqual(label_audit.open_flags("clip")["check"], [3])   # 3's label moved since
+                self.assertEqual(label_audit.outstanding_flags("clip")["check"], [3])
 
     def test_damaged_review_file_is_an_error_that_names_it_and_is_never_replaced(self):
         from finetune.label_tool import LabelFormatError, build_source

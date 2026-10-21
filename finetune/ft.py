@@ -42,8 +42,8 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 # ensure_interpreter can hand over to an interpreter that has them.
 from finetune.data_policy import OWN_SOURCES, evaluation_clips, read_review_status
 from finetune.fileio import write_atomic
-from finetune.label_audit import audit_labels, check_label_file, matches_any, outstanding_suspects, read_suspects
-from finetune.labels import LabelFormatError, read_labels, read_review, settled_frames
+from finetune.label_audit import audit_labels, check_label_file, matches_any, open_flags, outstanding_flags
+from finetune.labels import LabelFormatError, read_labels, reviewed_frames
 from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
 from finetune import workspace as ws
 from finetune.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_csv, label_csv, label_files, natural_key,
@@ -191,14 +191,14 @@ def label_stats(csv_path: Path, width: int, height: int) -> Tuple[int, int]:
 
 
 def review_progress(clip: str, rows: int) -> str:
+    """How many of a clip's frames a person has reviewed (confirmed or corrected), for status."""
     try:
-        state = read_review(review_json(clip))
+        reviewed = len(reviewed_frames(clip))
     except LabelFormatError as error:
         print(f"[warn] {error}")
         return "review file unreadable"
-    if state is None:
+    if not reviewed and not review_json(clip).is_file():
         return ""
-    reviewed = len(state.get("reviewed") or [])
     return f"{reviewed}/{rows} reviewed" if rows else f"{reviewed} reviewed"
 
 
@@ -385,34 +385,28 @@ def cmd_label(args: argparse.Namespace) -> int:
         code = run_script("pretrack.py", ["--clips", clip])
         if code:
             return code
-    before = set(read_review_frames(clip))
+    before = reviewed_frames(clip)       # a damaged review file is an error naming it, never an empty answer
     code = run_script("label_tool.py", [clip, *args.rest])
     offer_realign(clip, before)
     return code
 
 
-def read_review_frames(clip: str) -> List[int]:
-    """Frames you have settled in the click tool, by looking at them: confirmed or corrected. A
-    damaged review file is an error naming it, never an empty answer."""
-    return sorted(settled_frames(read_review(review_json(clip))))
-
-
-def offer_realign(clip: str, settled_before: Set[int]) -> None:
-    """A clip with unplaceable frames gets better every time you settle one of them.
+def offer_realign(clip: str, reviewed_before: Set[int]) -> None:
+    """A clip with unplaceable frames gets better every time you review one of them.
 
     Each frame you deal with pins that row, which tells realign.py which side of the cut it is on,
     so the frames you have not reached can be re-timed to agree. Only worth raising when you have
-    actually settled something inside a doubtful stretch.
+    actually reviewed something inside a doubtful stretch.
     """
-    unplaceable = set(outstanding_suspects(clip)["unplaceable"]) | set(read_suspects(clip)["unplaceable"])
+    unplaceable = set(outstanding_flags(clip)["unplaceable"]) | set(open_flags(clip)["unplaceable"])
     if not unplaceable:
         return
-    settled_now = set(read_review_frames(clip))
-    fresh = (settled_now - settled_before) & unplaceable
+    reviewed_now = reviewed_frames(clip)
+    fresh = (reviewed_now - reviewed_before) & unplaceable
     if not fresh:
         return
-    left = len(unplaceable - settled_now)
-    print(f"\n[auto] you settled {len(fresh)} of the {len(unplaceable)} frames that could not be placed "
+    left = len(unplaceable - reviewed_now)
+    print(f"\n[auto] you reviewed {len(fresh)} of the {len(unplaceable)} frames that could not be placed "
           f"in {clip}; {left} still unplaced.")
     print(f"       realign.py can now re-time those {left} to agree with what you decided - your own "
           f"frames stay exactly where you put them.")
@@ -701,7 +695,7 @@ def _label_menu_rows(manifest: Dict[str, dict], videos: Dict[str, Path], finals:
     pending = sorted(set(videos) - finals, key=natural_key)
     labelled = sorted((c for c in finals if c in videos), key=natural_key)
     choices = pending + labelled
-    suspects = {clip: outstanding_suspects(clip) for clip in choices}
+    suspects = {clip: outstanding_flags(clip) for clip in choices}
     tags = {clip: "BAD" if clip in excluded else "BAD*" if suspects[clip]["unplaceable"]
             else _label_origin(clip, manifest, drafts, finals) for clip in choices}
     return choices, pending, labelled, tags, suspects

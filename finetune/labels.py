@@ -10,9 +10,11 @@ frames; the readers here never change that.
 
 Two sidecars sit beside a label file. ``<clip>_ball.review.json`` records which frames a person
 has confirmed (``reviewed``) or changed (``edited``) in the label tool, with a cursor to resume
-from; ``<clip>_ball.suspect.json`` holds the frames an audit flagged (``unplaceable``,
-``check``) and the answers already given. A sidecar that cannot be parsed is an error that
-names the file: nothing here guesses at it or writes over it.
+from; together those are the clip's *reviewed frames* (``reviewed_frames``). The flag sidecar
+``<clip>_ball.suspect.json`` holds the frames an audit flagged for a person to look at
+(``unplaceable``, ``check``), the answers already given and a note per kind; ``read_flags`` and
+``write_flags`` are its only reader and writer. A sidecar that cannot be parsed is an error
+that names the file: nothing here guesses at it or writes over it.
 """
 from __future__ import annotations
 
@@ -20,26 +22,30 @@ import csv
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict
+from typing import Dict, Iterable, List, Literal, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict
 
-from finetune.fileio import atomic_csv
+from finetune.fileio import atomic_csv, write_atomic
+from finetune.workspace import review_json
 
 COLUMNS = ("frame", "ball_x", "ball_y")
 FRAME_PATTERN = re.compile(r"frame_(\d+)")
 SENTINEL_X_SHARE = 0.95      # x at or beyond this share of the width ...
 SENTINEL_Y_SHARE = 0.05      # ... and y at or below this share of the height means "no ball"
 COORDINATE_DECIMALS = 2      # how the writers format a visible point
+FLAG_ANSWER_DECIMALS = 2     # how an answered flag's label is recorded; same_point compares at this precision
 
 LabelPoint = Optional[Tuple[float, float]]
 Labels = Dict[int, LabelPoint]
+FlagKind = Literal["unplaceable", "check"]
 
 
-class Suspects(TypedDict):
-    """The flag sidecar as ``read_suspects`` returns it."""
+class Flags(TypedDict):
+    """The flag sidecar as ``read_flags`` returns it and ``write_flags`` takes it."""
+    generated: str                                  # the date of the audit that wrote it ("" if unknown)
+    notes: Dict[str, str]                           # kind -> what the audit wants looked at
     unplaceable: List[int]
     check: List[int]
-    answered: Dict[str, Optional[List[float]]]
-    notes: Dict[str, str]
+    answered: Dict[str, Optional[List[float]]]      # frame as text -> the label it was answered at
 
 
 class LabelFormatError(ValueError):
@@ -93,8 +99,16 @@ def format_point(point: LabelPoint, width: int, height: int) -> Tuple[str, str]:
 
 # --------------------------------------------------------------------------- label files
 
+def _label_row(record: Dict[str, str]) -> LabelRow:
+    conf = record.get("conf")
+    return LabelRow(frame_index(record["frame"]), float(record["ball_x"]), float(record["ball_y"]),
+                    record.get("source") or None, float(conf) if conf not in (None, "") else None)
+
+
 def read_label_rows(path: Path) -> List[LabelRow]:
-    """Every row of a label file (or a pretrack draft), in file order, sentinel rows included."""
+    """Every row of a label file (or a pretrack draft), in file order, sentinel rows included.
+    Any cell that does not parse - the frame, a coordinate or a draft's conf - is a
+    LabelFormatError naming the file."""
     rows: List[LabelRow] = []
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
@@ -102,13 +116,9 @@ def read_label_rows(path: Path) -> List[LabelRow]:
             raise LabelFormatError(f"{path}: columns are {reader.fieldnames}, expected {','.join(COLUMNS)}")
         for record in reader:
             try:
-                frame = frame_index(record["frame"])
-                x, y = float(record["ball_x"]), float(record["ball_y"])
+                rows.append(_label_row(record))
             except (LabelFormatError, TypeError, ValueError) as error:
                 raise LabelFormatError(f"{path}: {error}") from error
-            conf = record.get("conf")
-            rows.append(LabelRow(frame, x, y, record.get("source") or None,
-                                 float(conf) if conf not in (None, "") else None))
     return rows
 
 
@@ -149,11 +159,17 @@ def _read_json_object(path: Path, what: str) -> Optional[dict]:
     return blob
 
 
-def _frame_list(blob: dict, key: str) -> List[int]:
+def frame_list(state: Mapping, key: str, path: Path) -> List[int]:
+    """The frame numbers under `key` in a sidecar's object (missing or null: none). Anything that
+    is not a list of frame numbers is a LabelFormatError naming `path`: the one validation every
+    reader of the review and flag sidecars applies."""
+    value = state.get(key) or []
+    if not isinstance(value, list):
+        raise LabelFormatError(f"{path}: {key!r} is not a list of frame numbers (got {type(value).__name__})")
     try:
-        return [int(frame) for frame in (blob.get(key) or [])]
+        return [int(frame) for frame in value]
     except (TypeError, ValueError) as error:
-        raise LabelFormatError(f"{key!r} is not a list of frame numbers ({error})") from error
+        raise LabelFormatError(f"{path}: {key!r} is not a list of frame numbers ({error})") from error
 
 
 def read_review(path: Path) -> Optional[dict]:
@@ -163,32 +179,45 @@ def read_review(path: Path) -> Optional[dict]:
     return _read_json_object(path, "review file")
 
 
-def settled_frames(state: Optional[dict]) -> Set[int]:
-    """The frames a review sidecar says a person has confirmed or changed."""
+def reviewed_frames(clip: str, labels: Optional[Path] = None) -> Set[int]:
+    """The frames of `clip` a person has dealt with in the label tool - confirmed (SPACE) or
+    changed (a click), both count - from its review sidecar; empty when there is none."""
+    path = review_json(clip, labels)
+    state = read_review(path)
     if state is None:
         return set()
-    return set(_frame_list(state, "reviewed")) | set(_frame_list(state, "edited"))
+    return set(frame_list(state, "reviewed", path)) | set(frame_list(state, "edited", path))
 
 
-def reviewed_frames(path: Path) -> Set[int]:
-    """``settled_frames`` of the sidecar at `path` (empty when there is none)."""
-    return settled_frames(read_review(path))
-
-
-def read_suspects(path: Path) -> Suspects:
-    """The flag sidecar, normalised: ``unplaceable`` and ``check`` frame lists (an older audit's
-    ``frames`` list counts as ``check``), the ``answered`` map (frame as text -> [x, y] or None)
-    and the ``notes`` map. All empty when there is no file."""
+def read_flags(path: Path) -> Flags:
+    """The flag sidecar, normalised: the ``unplaceable`` and ``check`` frame lists (an older
+    audit's ``frames`` list counts as ``check``), the ``answered`` map, the ``notes`` map and the
+    audit date. All empty when there is no file."""
     blob = _read_json_object(path, "flag file")
     if blob is None:
-        return {"unplaceable": [], "check": [], "answered": {}, "notes": {}}
-    try:
-        flags = {"unplaceable": _frame_list(blob, "unplaceable"),
-                 "check": _frame_list(blob, "check" if "check" in blob else "frames")}
-    except LabelFormatError as error:
-        raise LabelFormatError(f"{path}: {error}") from error
+        return {"generated": "", "notes": {}, "unplaceable": [], "check": [], "answered": {}}
     answered = blob.get("answered")
     notes = blob.get("notes")
-    flags["answered"] = dict(answered) if isinstance(answered, dict) else {}
-    flags["notes"] = dict(notes) if isinstance(notes, dict) else {}
-    return flags
+    return {"generated": str(blob.get("generated") or ""),
+            "notes": dict(notes) if isinstance(notes, dict) else {},
+            "unplaceable": frame_list(blob, "unplaceable", path),
+            "check": frame_list(blob, "check" if "check" in blob else "frames", path),
+            "answered": dict(answered) if isinstance(answered, dict) else {}}
+
+
+def write_flags(path: Path, flags: Flags) -> None:
+    """Write the flag sidecar atomically in its one shape: ``generated`` and ``notes`` only when
+    there is something to say, then ``unplaceable``, ``check`` and ``answered``."""
+    blob: Dict[str, object] = {}
+    if flags["generated"]:
+        blob["generated"] = flags["generated"]
+    if flags["notes"]:
+        blob["notes"] = flags["notes"]
+    blob.update(unplaceable=sorted(set(int(f) for f in flags["unplaceable"])),
+                check=sorted(set(int(f) for f in flags["check"])), answered=flags["answered"])
+    write_atomic(path, json.dumps(blob, indent=1))
+
+
+def answered_point(point: LabelPoint) -> Optional[List[float]]:
+    """How an answered flag records the label it was answered at."""
+    return None if point is None else [round(point[0], FLAG_ANSWER_DECIMALS), round(point[1], FLAG_ANSWER_DECIMALS)]

@@ -253,7 +253,7 @@ def load_current() -> Optional[Placer]:
 # ------------------------------------------------------------------------------------ training
 def checked_frames(clip: str) -> Set[int]:
     """Frames you have reviewed or edited in the label tool (a damaged review file is an error)."""
-    return reviewed_frames(review_json(clip))
+    return reviewed_frames(clip)
 
 
 def clip_crops(clip: str) -> Optional[np.ndarray]:
