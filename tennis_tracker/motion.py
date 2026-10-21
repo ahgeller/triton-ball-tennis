@@ -102,82 +102,45 @@ def filter_boost_mask(raw_motion: np.ndarray, min_area: int, max_area: int, cfg:
     Components outside ``[min_area, max_area]`` px are dropped; ball-sized ones
     bypass the aspect test (small balls blur into short streaks), larger ones
     must pass ``cfg.blob_max_aspect``.  One connected-components pass; with
-    ``buffers`` the result is written into ``buffers.boost_mask_u8``.
+    ``buffers`` the result is written into ``buffers.boost_mask_u8``.  The
+    result is all zero when nothing survives.
     """
     img_h, img_w = raw_motion.shape[:2]
-
-    if not np.any(raw_motion):
-        if buffers is not None:
-            buffers.boost_mask_u8.fill(0)
-            return buffers.boost_mask_u8  # Return pre-allocated empty buffer
-        return np.zeros((img_h, img_w), dtype=np.uint8)
-
-    preserve_tiny = cfg.blob_preserve_tiny
-    tiny_max_area = cfg.blob_tiny_max_area
-
-    img_diag = math.hypot(float(img_w), float(img_h))
-    ball_bypass_max_area = max(_BALL_BYPASS_AREA_MIN_PX,
-                               min(_BALL_BYPASS_AREA_MAX_PX, int(round(_BALL_BYPASS_AREA_DIAG_FRAC * img_diag))))
-    if preserve_tiny:
-        ball_bypass_max_area = max(ball_bypass_max_area, tiny_max_area)
-
-    # Single CC call - the major bottleneck
-    num, labels, stats, centroids = cv2.connectedComponentsWithStats(raw_motion, connectivity=8)
-
-    if num <= 1:
-        if buffers is not None:
-            buffers.boost_mask_u8.fill(0)
-            return buffers.boost_mask_u8
-        return np.zeros((img_h, img_w), dtype=np.uint8)
-
     if buffers is not None:
         result = buffers.boost_mask_u8
         result.fill(0)
     else:
         result = np.zeros((img_h, img_w), dtype=np.uint8)
+    if not np.any(raw_motion):
+        return result
 
-    drawn_any = False
+    img_diag = math.hypot(float(img_w), float(img_h))
+    ball_bypass_max_area = max(_BALL_BYPASS_AREA_MIN_PX,
+                               min(_BALL_BYPASS_AREA_MAX_PX, int(round(_BALL_BYPASS_AREA_DIAG_FRAC * img_diag))))
+    if cfg.blob_preserve_tiny:
+        ball_bypass_max_area = max(ball_bypass_max_area, cfg.blob_tiny_max_area)
 
+    # Single CC call - the major bottleneck
+    num, _labels, stats, centroids = cv2.connectedComponentsWithStats(raw_motion, connectivity=8)
     for i in range(1, num):
         area = int(stats[i, cv2.CC_STAT_AREA])
-        if area <= 0:
-            continue
-
-        # Area check
         if area < min_area or area > max_area:
             continue
-
-        # Small ball blobs bypass aspect check
-        survived = False
+        bw = stats[i, cv2.CC_STAT_WIDTH]
+        bh = stats[i, cv2.CC_STAT_HEIGHT]
+        aspect = max(bw, bh) / max(min(bw, bh), 1)
         if area <= ball_bypass_max_area:
-            bw = stats[i, cv2.CC_STAT_WIDTH]
-            bh = stats[i, cv2.CC_STAT_HEIGHT]
-            aspect = max(bw, bh) / max(min(bw, bh), 1)
-            aspect_thresh = _TINY_BLOB_MAX_ASPECT if area < _TINY_BLOB_AREA_PX else _SMALL_BLOB_MAX_ASPECT
-            if aspect <= aspect_thresh:
-                survived = True
-        else:
-            # Larger blobs: aspect check only
-            survived = True
-            if cfg.blob_shape_filter:
-                bw = stats[i, cv2.CC_STAT_WIDTH]
-                bh = stats[i, cv2.CC_STAT_HEIGHT]
-                aspect = max(bw, bh) / max(min(bw, bh), 1)
-                if aspect > cfg.blob_max_aspect:
-                    survived = False
-
-        if survived:
-            # A disc at the centroid; its radius is capped so motion blur and
-            # shadows cannot balloon the boost far beyond the ball.
-            cx = int(centroids[i][0] + 0.5)
-            cy = int(centroids[i][1] + 0.5)
-            radius = min(int(math.sqrt(area / math.pi) + 0.5), _BOOST_DISC_MAX_RADIUS_PX)
-            cv2.circle(result, (cx, cy), max(radius, 1), 255, -1)
-            drawn_any = True
-
-    if not drawn_any:
-        return np.zeros((img_h, img_w), dtype=np.uint8) if buffers is None else result
-
+            # Small ball blobs get the loosest aspect test.
+            if aspect > (_TINY_BLOB_MAX_ASPECT if area < _TINY_BLOB_AREA_PX else _SMALL_BLOB_MAX_ASPECT):
+                continue
+        elif cfg.blob_shape_filter and aspect > cfg.blob_max_aspect:
+            continue
+        # A disc at the centroid; its radius is capped so motion blur and
+        # shadows cannot balloon the boost far beyond the ball.
+        cx = int(centroids[i][0] + 0.5)
+        cy = int(centroids[i][1] + 0.5)
+        radius = min(int(math.sqrt(area / math.pi) + 0.5), _BOOST_DISC_MAX_RADIUS_PX)
+        cv2.circle(result, (cx, cy), max(radius, 1), 255, -1)
     return result
 
 
@@ -517,9 +480,14 @@ def _raw_motion_cuda(window: FrameWindow, background: BackgroundModel, cfg: Conf
 
 class _BoostMasks(NamedTuple):
     raw_u8: Optional[np.ndarray]
-    selector_boost_u8: Optional[np.ndarray]    # narrow, from the gated mask
-    detector_boost_u8: Optional[np.ndarray]    # wide, from the ungated mask (or the narrow one)
+    selector_boost_u8: Optional[np.ndarray]    # narrow, from the gated mask; None when empty
+    detector_boost_u8: Optional[np.ndarray]    # wide, from the ungated mask (or the narrow one); None when empty
     has_blobs: bool
+
+
+def _nonempty(mask_u8: np.ndarray) -> Optional[np.ndarray]:
+    """``mask_u8`` when it has a set pixel, else None."""
+    return mask_u8 if mask_u8.any() else None
 
 
 def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optional[torch.Tensor],
@@ -566,27 +534,17 @@ def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optiona
             if raw_roi.max() > 0:
                 np.maximum(narrow_u8[ry1:ry2, rx1:rx2], components(raw_roi, timed=True),
                            out=narrow_u8[ry1:ry2, rx1:rx2])
-            if wide_distinct and wide_roi is not None and wide_roi.max() > 0:
+            if wide_distinct and wide_roi.max() > 0:
                 np.maximum(wide_u8[ry1:ry2, rx1:rx2], components(wide_roi, timed=False),
                            out=wide_u8[ry1:ry2, rx1:rx2])
-        narrow = narrow_u8 if narrow_u8.max() > 0 else None
-        if not wide_distinct:
-            wide = narrow
-        else:
-            wide = wide_u8 if wide_u8.max() > 0 else None
-        return _BoostMasks(raw_u8, narrow, wide, bool(wide is not None or narrow is not None))
-
-    raw_u8 = _clean_raw_motion_mask(download(raw_motion), cfg)
-    wide_src = download(boost_source) if wide_distinct else None
-    narrow = components(raw_u8, timed=True)
-    if wide_distinct and wide_src is not None:
-        wide = components(wide_src, timed=False)
-        if wide is not None and wide.max() == 0:
-            wide = None
+        narrow = _nonempty(narrow_u8)
+        wide = _nonempty(wide_u8) if wide_distinct else narrow
     else:
-        wide = narrow
-    has_blobs = bool((narrow is not None and narrow.max() > 0) or (wide is not None and wide.max() > 0))
-    return _BoostMasks(raw_u8, narrow, wide, has_blobs)
+        raw_u8 = _clean_raw_motion_mask(download(raw_motion), cfg)
+        wide_src = download(boost_source) if wide_distinct else None
+        narrow = _nonempty(components(raw_u8, timed=True))
+        wide = _nonempty(components(wide_src, timed=False)) if wide_distinct else narrow
+    return _BoostMasks(raw_u8, narrow, wide, narrow is not None or wide is not None)
 
 
 def _bgr_u8_hwc(t_chw: torch.Tensor) -> torch.Tensor:
