@@ -4,6 +4,7 @@ These were the court half of ``clean_tracker.py --self-test``; keep the fixtures
 and expected values as they are.
 """
 import numpy as np
+import pytest
 
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court.court_minimap import _visible_completed_legs, draw_court_minimap
@@ -84,15 +85,19 @@ def test_kinematic_bounce_is_found_at_a_downward_turn_but_not_at_an_apex():
     assert not infer_kinematic_bounces(CourtScene(apex_motion, [{}] * 5, 30.0, HD_WIDTH, HD_HEIGHT))
 
 
-def test_kinematic_bounce_is_found_across_a_detection_gap():
+@pytest.mark.parametrize("fps", [30.0, 60.0])
+def test_kinematic_bounce_is_found_across_a_detection_gap(fps):
+    # The gap gates are 60 FPS references scaled to the clip's rate, so the same landing
+    # (240 px/s down into the gap, 120 px/s up out of it) is twice the pixels per frame at 30.
+    step = 240.0 / fps
     gap_bounce = [
         _det(10, 0),
-        _det(11, 4),
+        _det(11, step),
         None, None, None, None,
-        _det(16, 4),
-        _det(17, 2),
+        _det(16, step),
+        _det(17, step / 2),
     ]
-    scene = CourtScene(gap_bounce, [{}] * len(gap_bounce), 30.0, HD_WIDTH, HD_HEIGHT)
+    scene = CourtScene(gap_bounce, [{}] * len(gap_bounce), fps, HD_WIDTH, HD_HEIGHT)
     assert len(infer_kinematic_bounces(scene)) == 1
 
 
