@@ -426,26 +426,6 @@ def predict_bounce_events(
     return BouncePrediction(confirmed, candidates)
 
 
-def predict_bounces(
-    per_frame: BallTrack,
-    fps: float,
-    width: int,
-    height: int,
-    model_path: str,
-    player_boxes_by_frame: Optional[PlayerBoxesByFrame] = None,
-    return_candidates: bool = False,
-) -> Any:
-    """Deprecated: use ``predict_bounce_events``.
-
-    Kept for the old call shape: returns the confirmed list, or the
-    ``(confirmed, candidates)`` pair when ``return_candidates`` is true.
-    """
-    prediction = predict_bounce_events(
-        per_frame, player_boxes_by_frame, fps, width, height, model_path
-    )
-    return prediction if return_candidates else prediction.confirmed
-
-
 def _box_distance(x: float, y: float, box: Box) -> float:
     x1, y1, x2, y2 = map(float, box[:4])
     dx = max(x1 - x, 0.0, x - x2)
@@ -1156,27 +1136,6 @@ def assemble_rally_legs(
         )
         placed_contacts.sort(key=lambda event: event.frame)
     return _link_legs(placed_contacts, placed_bounces, len(court_keypoints_by_frame), fps)
-
-
-def build_rally_legs(
-    contacts: Iterable[Sequence[Any]],
-    confirmed_bounces: Iterable[Sequence[Any]],
-    bounce_candidates: Iterable[Sequence[Any]],
-    kinematic_bounces: Iterable[Sequence[Any]],
-    court_keypoints_by_frame: Sequence[Optional[CourtKeypoints]],
-    fps: float,
-    width: int,
-    height: int,
-    per_frame: Optional[BallTrack] = None,
-    player_boxes_by_frame: Optional[PlayerBoxesByFrame] = None,
-) -> List[RallyLeg]:
-    """Deprecated argument order; use ``assemble_rally_legs``."""
-    return assemble_rally_legs(
-        per_frame, player_boxes_by_frame, fps, width, height,
-        court_keypoints_by_frame, contacts,
-        (confirmed_bounces, bounce_candidates),
-        kinematic_bounces,
-    )
 
 
 class _PanelRect(NamedTuple):

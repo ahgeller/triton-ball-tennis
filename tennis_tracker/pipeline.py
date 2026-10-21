@@ -15,7 +15,7 @@ from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetec
 from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
 from .tracking import ROIMotionTracker
 from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _court_axis_spans, _build_court_polygon, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _build_ground_projection_model, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
-from .court_overlay import build_rally_legs, detect_player_contacts, draw_court_minimap, infer_kinematic_bounces, predict_bounces
+from .court_overlay import assemble_rally_legs, court_keypoints_key, detect_player_contacts, draw_court_minimap, infer_kinematic_bounces, predict_bounce_events
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
 
 
@@ -686,12 +686,6 @@ def run(cfg):
 
     pending_det = None
 
-    def _protect_mask_key(court_kps_local):
-        return tuple(
-            int(round(float(v) * 4.0))
-            for v in (court_kps_local or [])
-        )
-
     def _commit_frame(record, dets):
         if info_timing:
             store_t0 = time.perf_counter()
@@ -847,13 +841,7 @@ def run(cfg):
             if info_timing:
                 pre_mask_t0 = time.perf_counter()
             # Build court-side protect mask once via cache and reuse everywhere.
-            if court_kps is not None and len(court_kps) >= 16:
-                try:
-                    side_key = tuple(int(round(float(court_kps[i]) * 4.0)) for i in range(16))
-                except Exception:
-                    side_key = None
-            else:
-                side_key = None
+            side_key = court_keypoints_key(court_kps)
             if side_key != side_mask_cache_key:
                 side_mask_cache = build_court_side_protect_mask(
                     frame_curr.shape[0], frame_curr.shape[1], court_kps
@@ -867,10 +855,9 @@ def run(cfg):
             if use_cuda:
                 protect_mask_cuda = None
                 if protect_mask is not None:
-                    protect_key = _protect_mask_key(court_kps)
-                    if (protect_mask_cuda_cache is None) or (protect_key != protect_mask_cuda_cache_key):
+                    if (protect_mask_cuda_cache is None) or (side_key != protect_mask_cuda_cache_key):
                         protect_mask_cuda_cache = torch.from_numpy(protect_mask).to(cuda_device)
-                        protect_mask_cuda_cache_key = protect_key
+                        protect_mask_cuda_cache_key = side_key
                     protect_mask_cuda = protect_mask_cuda_cache
                 else:
                     protect_mask_cuda_cache = None
@@ -1242,32 +1229,13 @@ def run(cfg):
         if not cfg.bounce_model_path:
             raise RuntimeError("--court requires Config.bounce_model_path")
         bounce_t0 = time.perf_counter()
-        bounce_events, bounce_candidates = predict_bounces(
-            per_frame,
-            fps,
-            w,
-            h,
-            cfg.bounce_model_path,
-            player_boxes_by_frame=all_player_boxes,
-            return_candidates=True,
-        )
-        contact_events = detect_player_contacts(
-            per_frame, all_player_boxes, fps, w, h
-        )
-        kinematic_bounces = infer_kinematic_bounces(
-            per_frame, all_player_boxes, fps, w, h
-        )
-        rally_legs = build_rally_legs(
-            contact_events,
-            bounce_events,
-            bounce_candidates,
-            kinematic_bounces,
-            all_court_kps,
-            fps,
-            w,
-            h,
-            per_frame=per_frame,
-            player_boxes_by_frame=all_player_boxes,
+        bounces = predict_bounce_events(per_frame, all_player_boxes, fps, w, h, cfg.bounce_model_path)
+        bounce_events = bounces.confirmed
+        contact_events = detect_player_contacts(per_frame, all_player_boxes, fps, w, h)
+        kinematic_bounces = infer_kinematic_bounces(per_frame, all_player_boxes, fps, w, h)
+        rally_legs = assemble_rally_legs(
+            per_frame, all_player_boxes, fps, w, h, all_court_kps,
+            contact_events, bounces, kinematic_bounces,
         )
         inferred_legs = sum(leg["quality"] == "inferred" for leg in rally_legs)
         volleys = sum(leg["outcome"] == "volley" for leg in rally_legs)
@@ -1412,13 +1380,7 @@ def run(cfg):
         court_kps = all_court_kps[fi]
         if court_kps and len(court_kps) >= 16:
             trail_kps = court_kps
-        if trail_kps is not None and len(trail_kps) >= 16:
-            try:
-                kps_key = tuple(int(round(float(trail_kps[i]) * 4.0)) for i in range(16))
-            except Exception:
-                kps_key = None
-        else:
-            kps_key = None
+        kps_key = court_keypoints_key(trail_kps)
         if kps_key != ground_model_kps_key:
             ground_model = _build_ground_projection_model(trail_kps, w, h)
             ground_model_kps_key = kps_key
@@ -1910,7 +1872,7 @@ def run(cfg):
             pboxes = all_player_boxes_preproc[fi] if fi < len(all_player_boxes_preproc) else []
             # Cache the protect mask to avoid recomputing build_court_side_protect_mask
             # every frame - court keypoints rarely change.
-            _dbg_protect_key = tuple(int(round(float(v)*4.0)) for v in (court_kps or [])) if court_kps else None
+            _dbg_protect_key = court_keypoints_key(court_kps)
             if fi == 0 or _dbg_protect_key != _dbg_protect_cache_key:
                 _dbg_protect_cache = build_protect_mask(
                     h, w, player_bboxes=pboxes, court_keypoints=court_kps,

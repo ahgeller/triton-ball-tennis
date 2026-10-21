@@ -12,7 +12,7 @@ from tennis_tracker.court_overlay import (
     _inside_player,
     _is_service_leg,
     _visible_completed_legs,
-    build_rally_legs,
+    assemble_rally_legs,
     draw_court_minimap,
     infer_kinematic_bounces,
 )
@@ -101,18 +101,14 @@ def test_kinematic_bounce_is_found_across_a_detection_gap():
 
 def test_two_kinks_without_contacts_or_bounces_make_no_inferred_leg():
     test_kps = [10, 10, 110, 10, 10, 210, 110, 210] + [0] * 20
-    inferred_leg = build_rally_legs(
+    inferred_leg = assemble_rally_legs(
+        None, None, 30.0, 120, 220, [test_kps] * 80,
         [
             (0, 90, 210, 1, 10.0, "kink"),
             (50, 35, 10, 2, 10.0, "kink"),
         ],
+        ([], []),
         [],
-        [],
-        [],
-        [test_kps] * 80,
-        30.0,
-        120,
-        220,
     )
     assert inferred_leg == []
 
