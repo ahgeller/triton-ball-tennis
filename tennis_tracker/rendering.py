@@ -190,8 +190,8 @@ class SearchCentreSmoother:
         self._last: Optional[Point] = None
         self._last_frame = -1
 
-    def smooth(self, frame_idx: int, scx: int, scy: int) -> Point:
-        if self._last is not None and self._last_frame == frame_idx - 1:
+    def smooth(self, frame_index: int, scx: int, scy: int) -> Point:
+        if self._last is not None and self._last_frame == frame_index - 1:
             pscx, pscy = self._last
             dx, dy = scx - pscx, scy - pscy
             d = float((dx * dx + dy * dy) ** 0.5)
@@ -200,7 +200,7 @@ class SearchCentreSmoother:
                 scx = int(round(pscx + dx * s))
                 scy = int(round(pscy + dy * s))
         self._last = (scx, scy)
-        self._last_frame = frame_idx
+        self._last_frame = frame_index
         return scx, scy
 
     def reset(self) -> None:
@@ -208,7 +208,7 @@ class SearchCentreSmoother:
         self._last_frame = -1
 
 
-def draw_selected_result(canvas: Canvas, result: FrameResult, frame_idx: int, sizer: MarkerSizer,
+def draw_selected_result(canvas: Canvas, result: FrameResult, frame_index: int, sizer: MarkerSizer,
                          search_smoother: SearchCentreSmoother, draw_search_regions: bool) -> None:
     """The chosen position, colour-coded by source, with its search region on the debug frame
     (and on the main frame when ``draw_search_regions``)."""
@@ -234,7 +234,7 @@ def draw_selected_result(canvas: Canvas, result: FrameResult, frame_idx: int, si
         circle(both, (rcx, rcy), radius, COLOR_MOTION, -1)
         text(both, "MOT", label_at, 0.4, COLOR_MOTION)
         if result.search_radius > 0:
-            scx, scy = search_smoother.smooth(frame_idx, int(result.search_cx), int(result.search_cy))
+            scx, scy = search_smoother.smooth(frame_index, int(result.search_cx), int(result.search_cy))
             targets = canvas.select(main=draw_search_regions)
             circle(targets, (scx, scy), int(result.search_radius), COLOR_SEARCH, 1)
             line(targets, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
@@ -258,11 +258,11 @@ def draw_selected_result(canvas: Canvas, result: FrameResult, frame_idx: int, si
         circle(targets, (scx, scy), sr, scol, 1, cv2.LINE_AA)
 
 
-def draw_hud(canvas: Canvas, frame_idx: int, result: Optional[FrameResult],
+def draw_hud(canvas: Canvas, frame_index: int, result: Optional[FrameResult],
              chosen_track: Optional[Track]) -> None:
     """Frame number on both frames; source/confidence on both when there is a result;
     the chosen track id on the debug frame."""
-    frame_label = f"F{frame_idx}"
+    frame_label = f"F{frame_index}"
     text(canvas.both, frame_label, _HUD_FRAME_POS, _HUD_FONT_SCALE, COLOR_WHITE)
     if result is not None:
         chosen_id = int(chosen_track.track_id) if chosen_track else -1

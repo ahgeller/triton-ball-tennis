@@ -59,6 +59,8 @@ class CourtDetector:
             }))
 
     def _report_miss(self, frame_index: int) -> Optional[List[float]]:
+        """The cached keypoints after a frame without a usable court, reported
+        when raw results are being printed.  Every miss path returns through here."""
         if self.cfg.print_court_raw:
             msg = "miss, using cached court" if self.keypoints else "no court detected"
             print(f"[court] frame={frame_index}: {msg}")
@@ -82,7 +84,7 @@ class CourtDetector:
         out = outputs[0].detach().float()
         rows = out[0].cpu().numpy() if out.dim() == 3 else np.empty((0, 0), dtype=np.float32)
         if rows.size == 0:
-            return self.keypoints
+            return self._report_miss(frame_index)
         if self.cfg.print_court_raw:
             self._print_raw_result(rows, frame_index)
 
@@ -92,12 +94,10 @@ class CourtDetector:
             return self._report_miss(frame_index)
 
         flat = self._keypoints_of(rows[best_i], scale)
-        if flat is None:
-            return self.keypoints
-        if len(flat) >= 2 * self._MIN_KEYPOINTS:
-            self.keypoints = flat
-            return self.keypoints
-        return self._report_miss(frame_index)
+        if flat is None or len(flat) < 2 * self._MIN_KEYPOINTS:
+            return self._report_miss(frame_index)
+        self.keypoints = flat
+        return self.keypoints
 
     def _keypoints_of(self, row: np.ndarray, scale: Tuple[float, float]) -> Optional[List[float]]:
         """The row's keypoints as a flat [x0, y0, x1, y1, ...] in frame pixels, remapped to the

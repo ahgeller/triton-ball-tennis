@@ -34,7 +34,7 @@ def test_detector_without_an_engine_is_disabled_and_returns_no_boxes(capsys):
     assert detector.detect_async_start(frame, 0) is None
     assert detector.detect_async_finish(None) == []
     assert detector.detect(frame, 0) == []
-    assert detector.get_player_dict() == {}
+    assert detector.player_boxes_by_slot() == {}
 
 
 def test_keep_nearest_to_court_keeps_num_players_closest_boxes():

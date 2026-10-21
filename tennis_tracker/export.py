@@ -39,8 +39,8 @@ def json_safe(value: Any) -> Any:
     return str(value)
 
 
-def frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict[str, Any]:
-    row: Dict[str, Any] = {"frame": int(frame_idx), "present": False}
+def frame_result_to_json(frame_index: int, result: Optional[FrameResult]) -> Dict[str, Any]:
+    row: Dict[str, Any] = {"frame": int(frame_index), "present": False}
     if result is None:
         return row
     row.update({
@@ -101,7 +101,7 @@ def track_to_json(track: Optional[Track]) -> Optional[Dict[str, Any]]:
 def _extract_motion_candidates(
     mask: Optional[PackedMask],
     mask_source: str,
-    frame_idx: int,
+    frame_index: int,
     search_x: Optional[float],
     search_y: Optional[float],
     selected_x: Optional[float],
@@ -144,7 +144,7 @@ def _extract_motion_candidates(
         score -= max(0.0, aspect_ratio - 1.0) * _SCORE_ASPECT_PENALTY
 
         candidates.append({
-            "frame": int(frame_idx),
+            "frame": int(frame_index),
             "mask": str(mask_source),
             "x": cx,
             "y": cy,
@@ -247,8 +247,8 @@ def build_motion_diagnostics(
     detector_gap_frames = 0
     candidate_gap_frames = 0
 
-    for frame_idx in range(total_frames):
-        result = per_frame[frame_idx] if frame_idx < len(per_frame) else None
+    for frame_index in range(total_frames):
+        result = per_frame[frame_index] if frame_index < len(per_frame) else None
         selected_x, selected_y = _result_position(result)
         selected_source = None
         if result is not None:
@@ -256,19 +256,19 @@ def build_motion_diagnostics(
             if selected_source:
                 selected_source_counts[selected_source] = selected_source_counts.get(selected_source, 0) + 1
 
-        dets = detections_by_frame[frame_idx] if frame_idx < len(detections_by_frame) else []
+        dets = detections_by_frame[frame_index] if frame_index < len(detections_by_frame) else []
         has_detections = bool(dets)
         if not has_detections:
             detector_gap_frames += 1
 
-        boost = boost_masks[frame_idx] if frame_idx < len(boost_masks) else None
-        raw = raw_motions[frame_idx] if frame_idx < len(raw_motions) else None
+        boost = boost_masks[frame_index] if frame_index < len(boost_masks) else None
+        raw = raw_motions[frame_index] if frame_index < len(raw_motions) else None
         chosen_mask, mask_source = _choose_motion_mask(boost, raw)
         mask_counts[mask_source] = mask_counts.get(mask_source, 0) + 1
 
         search_x, search_y, search_radius, search_source = _result_search(result, prev_pos, diag)
         candidates = _extract_motion_candidates(
-            chosen_mask, mask_source, frame_idx, search_x, search_y, selected_x, selected_y,
+            chosen_mask, mask_source, frame_index, search_x, search_y, selected_x, selected_y,
             max_candidates=max_candidates_per_frame,
         )
         if candidates and not has_detections and selected_source != "motion":
@@ -280,7 +280,7 @@ def build_motion_diagnostics(
 
         if selected_source == "motion" or not has_detections:
             diagnostic_frames.append({
-                "frame": int(frame_idx),
+                "frame": int(frame_index),
                 "selected_source": selected_source,
                 "reason": reason,
                 "has_detections": bool(has_detections),

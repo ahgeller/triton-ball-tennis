@@ -9,17 +9,19 @@ to source pixels.
 """
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple
+from typing import Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 
 POSTPROCESSED_COLUMNS = 6  # x1, y1, x2, y2, conf, cls rows from an NMS-exporting engine
-OUTPUT_MODE_POSTPROCESSED = "postprocessed"
-OUTPUT_MODE_RAW = "raw_nms"
+# How an engine's output tensor is laid out: NMS'd rows, or a raw detection head.
+OutputMode = Literal["postprocessed", "raw_nms"]
+OUTPUT_MODE_POSTPROCESSED: OutputMode = "postprocessed"
+OUTPUT_MODE_RAW: OutputMode = "raw_nms"
 
 
-def engine_output_mode(pred: torch.Tensor) -> str:
+def engine_output_mode(pred: torch.Tensor) -> OutputMode:
     """``OUTPUT_MODE_POSTPROCESSED`` for engines that export NMS'd
     ``[x1, y1, x2, y2, conf, cls]`` rows, ``OUTPUT_MODE_RAW`` for raw heads."""
     if pred.dim() == 3 and pred.shape[-1] == POSTPROCESSED_COLUMNS:
@@ -113,7 +115,7 @@ def decode_engine_boxes(
     scale: Tuple[float, float],
     conf_threshold: float,
     iou_threshold: float,
-    output_mode: str,
+    output_mode: OutputMode,
     cls_filter: Optional[Sequence[int]] = None,
 ) -> np.ndarray:
     """One engine output tensor as ``[x1, y1, x2, y2, conf, cls]`` rows in source pixels.
@@ -121,12 +123,15 @@ def decode_engine_boxes(
     ``scale`` is ``(sx, sy)`` from engine input pixels back to the source
     frame (what the session's preprocessing returns).  ``iou_threshold`` is
     the NMS threshold for raw heads; postprocessed engines already ran NMS.
+    ``output_mode`` is what ``engine_output_mode`` said about the tensor.
     ``cls_filter`` keeps only those class ids (None keeps every class).
     """
     if output_mode == OUTPUT_MODE_POSTPROCESSED:
         rows = _postprocessed_rows(preds, conf_threshold)
-    else:
+    elif output_mode == OUTPUT_MODE_RAW:
         rows = _raw_head_rows(preds, conf_threshold, iou_threshold)
+    else:
+        raise ValueError(f"unknown engine output mode {output_mode!r}")
     if cls_filter is not None and rows.shape[0]:
         rows = rows[np.isin(rows[:, 5].astype(np.int64), list(cls_filter))]
     if rows.shape[0]:

@@ -288,15 +288,17 @@ def test_session_preprocesses_cuda_layouts(monkeypatch, tmp_path, cuda_available
 def test_ball_output_mode_and_decoding():
     rows = torch.tensor([[[10.0, 20.0, 30.0, 40.0, 0.9, 0.0], [1.0, 1.0, 2.0, 2.0, 0.2, 0.0], [5.0, 5.0, 6.0, 6.0, 0.8, 1.0]]])
     assert engine_output_mode(rows) == "postprocessed"
-    assert decode_ball_predictions(rows, (2.0, 0.5), 0.5, [0], "postprocessed") == [([20.0, 10.0, 60.0, 20.0], pytest.approx(0.9))]
-    assert len(decode_ball_predictions(rows, (1.0, 1.0), 0.5, None, "postprocessed")) == 2
+    assert decode_ball_predictions(rows, (2.0, 0.5), 0.5, "postprocessed", [0]) == [([20.0, 10.0, 60.0, 20.0], pytest.approx(0.9))]
+    assert len(decode_ball_predictions(rows, (1.0, 1.0), 0.5, "postprocessed")) == 2
 
     raw = torch.zeros((1, 5, 8))  # [cx, cy, w, h, score] x 8 anchors, channel-major like a YOLO head
     raw[0, :, 0] = torch.tensor([10.0, 10.0, 4.0, 4.0, 0.9])
     raw[0, :, 1] = torch.tensor([10.0, 10.0, 4.0, 4.0, 0.7])  # suppressed duplicate
     raw[0, :, 2] = torch.tensor([50.0, 50.0, 2.0, 2.0, 0.3])  # below threshold
     assert engine_output_mode(raw) == "raw_nms"
-    assert decode_ball_predictions(raw, (1.0, 1.0), 0.5, None, "raw_nms") == [([8.0, 8.0, 12.0, 12.0], pytest.approx(0.9))]
+    assert decode_ball_predictions(raw, (1.0, 1.0), 0.5, "raw_nms") == [([8.0, 8.0, 12.0, 12.0], pytest.approx(0.9))]
+    with pytest.raises(ValueError, match="output mode"):
+        decode_ball_predictions(raw, (1.0, 1.0), 0.5, "postprocess")
 
 
 def test_ball_engine_backend_runs_through_the_shared_session(monkeypatch, tmp_path, cuda_available):

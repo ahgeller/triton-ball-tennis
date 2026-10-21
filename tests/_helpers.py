@@ -16,6 +16,7 @@ from finetune.training import metrics
 from tennis_tracker import ball_detectors
 from tennis_tracker.ball_detectors import GridTrackNetBallDetector
 from tennis_tracker.config import Config
+from tennis_tracker.motion import _PROBE_S_DIFF_SCALE, _clean_raw_motion_mask
 from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
 from tennis_tracker.video_io import VideoWriter
 
@@ -45,6 +46,47 @@ def ball_frames(positions: Iterable[Tuple[int, int]], size=(360, 640)) -> List[n
         image[row - 1:row + 2, column - 1:column + 2] = (60, 230, 230)
         frames.append(image)
     return frames
+
+
+# --------------------------------------------------------------------------- motion
+
+def motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) -> np.ndarray:
+    """The C++ probe's frame delta on the CPU: max(gray, V, scaled-S) differences, blurred 3x3."""
+    prev_hsv = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2HSV)
+    curr_hsv = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2HSV)
+    prev_gray = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
+    v_diff = cv2.absdiff(curr_hsv[:, :, 2], prev_hsv[:, :, 2])
+    s_diff = cv2.absdiff(curr_hsv[:, :, 1], prev_hsv[:, :, 1])
+    gray_diff = cv2.absdiff(curr_gray, prev_gray)
+    s_scaled = np.minimum(s_diff.astype(np.float32) * _PROBE_S_DIFF_SCALE, 255.0).astype(np.uint8)
+    combined = np.maximum(gray_diff, np.maximum(v_diff, s_scaled))
+    return cv2.GaussianBlur(combined, (3, 3), 0)
+
+
+def refine_raw_motion_temporal_cpu(
+    raw_motion_u8: Optional[np.ndarray],
+    prev_bgr: Optional[np.ndarray],
+    curr_bgr: Optional[np.ndarray],
+    next_bgr: Optional[np.ndarray],
+    cfg: Config,
+) -> Optional[np.ndarray]:
+    """The CPU reference for the temporal gate ``motion._raw_motion_cuda`` applies: the
+    ungated foreground kept where the C++ probe's movement test passes, then the raw-mask
+    morphology.  Only the tests use it; the runtime runs the CUDA path."""
+    if raw_motion_u8 is None:
+        return None
+    refined = raw_motion_u8
+    if cfg.motion_raw_temporal_gate and prev_bgr is not None and curr_bgr is not None:
+        hi, lo, very_hi = cfg.motion_raw_temporal_hi, cfg.motion_raw_temporal_lo, cfg.motion_raw_temporal_very_hi
+        d_prev = motion_probe_delta_from_frames(prev_bgr, curr_bgr)
+        if next_bgr is not None:
+            d_next = motion_probe_delta_from_frames(curr_bgr, next_bgr)
+            temporal = ((d_prev >= hi) & (d_next >= lo)) | ((d_next >= hi) & (d_prev >= lo)) | (d_prev >= very_hi)
+        else:
+            temporal = d_prev >= hi
+        refined = cv2.bitwise_and(refined, temporal.astype(np.uint8) * 255)
+    return _clean_raw_motion_mask(refined, cfg)
 
 
 # --------------------------------------------------------------------------- the label tool

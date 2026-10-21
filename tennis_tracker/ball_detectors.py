@@ -14,7 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -22,7 +22,7 @@ import torch
 from ball_in_play_selector import RawDetection
 
 from .config import Config
-from .engine_boxes import decode_engine_boxes, engine_output_mode
+from .engine_boxes import OutputMode, decode_engine_boxes, engine_output_mode
 from .engine_session import TensorRTRuntimeSession
 from .frame_rate import require_phase_stride
 from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
@@ -323,10 +323,11 @@ def decode_ball_predictions(
     preds: torch.Tensor,
     scale: Tuple[float, float],
     conf_threshold: float,
-    cls_filter: Optional[List[int]],
-    output_mode: str,
+    output_mode: OutputMode,
+    cls_filter: Optional[Sequence[int]] = None,
 ) -> List[RawDetection]:
-    """Turn one engine output tensor into ``(xyxy_box, confidence)`` pairs in source pixels."""
+    """Turn one engine output tensor into ``(xyxy_box, confidence)`` pairs in source pixels
+    (the arguments of ``decode_engine_boxes``, minus the ball's fixed NMS threshold)."""
     rows = decode_engine_boxes(preds, scale, conf_threshold, _BALL_NMS_IOU, output_mode, cls_filter)
     return [([float(row[0]), float(row[1]), float(row[2]), float(row[3])], float(row[4])) for row in rows]
 
@@ -387,7 +388,7 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         )
         outputs = self.session.forward_tensor(probe, out_slot=0)
         self.session.wait()
-        self.output_mode = engine_output_mode(outputs[0])
+        self.output_mode: OutputMode = engine_output_mode(outputs[0])
         print(
             f"[detector] TensorRT ball engine, {self.output_mode} "
             f"(fp16={self.session.fp16}, async={self.use_async}, slots={self.async_slots}, "
@@ -417,6 +418,6 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
     def detect_async_finish(self, pending: TensorRTBallPending) -> List[RawDetection]:
         self.session.wait(pending.event)
         return decode_ball_predictions(
-            pending.outputs[0], pending.scale, self.cfg.conf, self.cls_filter, self.output_mode
+            pending.outputs[0], pending.scale, self.cfg.conf, self.output_mode, self.cls_filter
         )
 

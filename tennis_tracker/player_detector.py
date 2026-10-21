@@ -176,5 +176,6 @@ class PlayerDetector:
     def detect(self, frame: np.ndarray, frame_index: int) -> List[List[float]]:
         return self.detect_async_finish(self.detect_async_start(frame, frame_index))
 
-    def get_player_dict(self) -> Dict[int, List[float]]:
+    def player_boxes_by_slot(self) -> Dict[int, List[float]]:
+        """A copy of ByteTrack's live boxes, keyed by track id."""
         return dict(self.slots)

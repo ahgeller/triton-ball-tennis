@@ -5,7 +5,8 @@ from __future__ import annotations
 import functools
 import math
 import time
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import torch
@@ -32,20 +33,6 @@ def _get_kernel(size: int) -> np.ndarray:
     return np.ones((size, size), np.uint8)
 
 
-def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) -> np.ndarray:
-    """C++ probe-style frame delta: max(gray, V, scaled-S), blurred 3x3."""
-    prev_hsv = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2HSV)
-    curr_hsv = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2HSV)
-    prev_gray = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2GRAY)
-    curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
-    v_diff = cv2.absdiff(curr_hsv[:, :, 2], prev_hsv[:, :, 2])
-    s_diff = cv2.absdiff(curr_hsv[:, :, 1], prev_hsv[:, :, 1])
-    gray_diff = cv2.absdiff(curr_gray, prev_gray)
-    s_scaled = np.minimum(s_diff.astype(np.float32) * _PROBE_S_DIFF_SCALE, 255.0).astype(np.uint8)
-    combined = np.maximum(gray_diff, np.maximum(v_diff, s_scaled))
-    return cv2.GaussianBlur(combined, (3, 3), 0)
-
-
 def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Optional[np.ndarray]:
     """Apply the active raw-mask morphology without appearance or size heuristics."""
     if mask_u8 is None or mask_u8.size == 0:
@@ -63,37 +50,6 @@ def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Option
 
     return out
 
-def refine_raw_motion_temporal_cpu(
-    raw_motion_u8: Optional[np.ndarray],
-    prev_bgr: Optional[np.ndarray],
-    curr_bgr: Optional[np.ndarray],
-    next_bgr: Optional[np.ndarray],
-    cfg: Config,
-) -> Optional[np.ndarray]:
-    """Clean raw foreground with the C++ probe's temporal movement test.
-
-    CPU reference for the CUDA gate in ``preprocess_frame_cuda``; the runtime
-    itself only uses the CUDA path (see tests/test_fixes.py).
-    """
-    if raw_motion_u8 is None:
-        return None
-    refined = raw_motion_u8
-    if cfg.motion_raw_temporal_gate and prev_bgr is not None and curr_bgr is not None:
-        hi = cfg.motion_raw_temporal_hi
-        lo = cfg.motion_raw_temporal_lo
-        very_hi = cfg.motion_raw_temporal_very_hi
-        d_prev = _motion_probe_delta_from_frames(prev_bgr, curr_bgr)
-        if next_bgr is not None:
-            d_next = _motion_probe_delta_from_frames(curr_bgr, next_bgr)
-            temporal = (
-                ((d_prev >= hi) & (d_next >= lo)) |
-                ((d_next >= hi) & (d_prev >= lo)) |
-                (d_prev >= very_hi)
-            )
-        else:
-            temporal = d_prev >= hi
-        refined = cv2.bitwise_and(refined, temporal.astype(np.uint8) * 255)
-    return _clean_raw_motion_mask(refined, cfg)
 
 def filter_boost_mask(raw_motion: np.ndarray, min_area: int, max_area: int, cfg: Config,
                       buffers: Optional[Any] = None) -> np.ndarray:
@@ -374,16 +330,37 @@ class BackgroundModel:
             self._prev_motion = torch.from_numpy(raw_motion_u8).to(self.device, non_blocking=True) > 0
 
 
+@dataclass(frozen=True)
+class DetectorInputRequest:
+    """What ``preprocess_frame_cuda`` should materialise beyond the motion masks.
+
+    ``cpu`` / ``cuda``: the detector input as a host BGR array / an HWC uint8
+    CUDA tensor.  ``dim_static``: when no ball-sized blob was found, still dim
+    the static background (off, the source frame is handed over as it is).
+    ``wide_boost``: brighten the blobs of the ungated motion, which keeps a ball
+    the temporal gate suppressed visible to the detector, instead of the gated
+    motion's.  ``MASKS_ONLY`` asks for nothing but the masks.
+    """
+
+    cpu: bool = False
+    cuda: bool = False
+    dim_static: bool = True
+    wide_boost: bool = True
+
+
+MASKS_ONLY = DetectorInputRequest(cpu=False, cuda=False, dim_static=False, wide_boost=False)
+
+
 class PreprocessResult(NamedTuple):
     """What ``preprocess_frame_cuda`` produces for one frame.
 
-    ``detector_frame`` is the CPU BGR detector input: the enhanced frame when
-    one was built and ``need_cpu_frame`` asked for it, the source frame when
-    nothing was applied, else None.  ``detector_frame_cuda`` is the enhanced
-    frame as an HWC uint8 CUDA tensor when ``return_cuda_frame`` asked for
-    it.  ``raw_motion`` and ``boost_mask`` are full-frame uint8 {0, 255}
-    masks, None when the background model was not ready or no ball-sized
-    blob survived.
+    ``detector_frame``: the CPU BGR detector input when ``request.cpu``: the
+    enhanced frame, or the source frame when nothing was applied to it; None
+    otherwise.  ``detector_frame_cuda``: the enhanced frame as an HWC uint8
+    CUDA tensor when ``request.cuda``, else None.  ``raw_motion``: the gated
+    raw-motion mask (full-frame uint8 {0, 255}); None until the background
+    model is ready.  ``boost_mask``: a disc per ball-sized blob of the gated
+    motion; None when no blob survived.
     """
 
     detector_frame: Optional[np.ndarray]
@@ -511,7 +488,7 @@ class _MaskReader:
 
 
 def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optional[torch.Tensor],
-                 cfg: Config, rois: Optional[List[Roi]], need_detector_boost: bool,
+                 cfg: Config, rois: Optional[List[Roi]], wide_boost: bool,
                  perf: Optional[Dict[str, float]]) -> _BoostMasks:
     """Download the raw mask(s) and keep only ball-sized components.
 
@@ -523,7 +500,7 @@ def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optiona
     """
     if raw_motion is None:
         return _BoostMasks(None, None, None, False)
-    boost_source = raw_motion_ungated if need_detector_boost and raw_motion_ungated is not None else raw_motion
+    boost_source = raw_motion_ungated if wide_boost and raw_motion_ungated is not None else raw_motion
     wide_source = boost_source if boost_source is not raw_motion else None
     reader = _MaskReader(cfg, perf)
     if rois is not None:
@@ -630,38 +607,32 @@ def _enhance_bgr(t_chw: torch.Tensor, curr_v: torch.Tensor, curr_s: torch.Tensor
 
 
 def _enhanced_frame(curr: GpuFrame, raw_motion: Optional[torch.Tensor], masks: _BoostMasks,
-                    protect_mask: Optional[torch.Tensor], cfg: Config, skip_dim: bool,
-                    return_cuda_frame: bool) -> Optional[torch.Tensor]:
+                    protect_mask: Optional[torch.Tensor], cfg: Config,
+                    request: DetectorInputRequest) -> Optional[torch.Tensor]:
     """The detector input as HWC uint8 on CUDA: boosted where a ball-sized blob was found, else at
     most the static background dimmed; None when the source frame is to be used as it is."""
     t = curr.chw
     if not masks.has_blobs:
         # No ball-sized blob: at most dim the static background.
-        if raw_motion is not None and not skip_dim:
+        if raw_motion is not None and request.dim_static:
             return _dim_static_bgr(t, raw_motion, protect_mask, cfg)
-        return _bgr_u8_hwc(t) if return_cuda_frame else None
+        return _bgr_u8_hwc(t) if request.cuda else None
     boost_src = masks.detector_boost_u8 if masks.detector_boost_u8 is not None else masks.selector_boost_u8
     return _enhance_bgr(t, curr.v, curr.s, raw_motion, boost_src, protect_mask, cfg)
 
 
 @torch.no_grad()
 def preprocess_frame_cuda(window: FrameWindow, background: BackgroundModel, cfg: Config, *,
+                          request: DetectorInputRequest = DetectorInputRequest(cpu=True),
                           rois: Optional[List[Roi]] = None,
                           protect_mask: Optional[torch.Tensor] = None,
-                          skip_dim: bool = False,
-                          return_cuda_frame: bool = False,
-                          need_cpu_frame: bool = True,
-                          need_detector_boost: bool = True,
                           perf: Optional[Dict[str, float]] = None) -> PreprocessResult:
-    """Motion masks for the current frame of ``window`` and, if wanted, the enhanced detector input.
+    """Motion masks for the current frame of ``window`` and the detector input ``request`` asks for.
 
     ``rois`` limits the motion computation to those ``(x1, y1, x2, y2)``
     regions (None = the whole frame); ``protect_mask`` is a boolean CUDA mask
-    of pixels that are never dimmed or boosted (the court-side mask).  With
-    ``skip_dim`` the frame is not dimmed when no ball-sized blob was found.
-    ``need_cpu_frame`` / ``return_cuda_frame`` choose which detector inputs to
-    materialise; ``need_detector_boost`` builds the wide boost from ungated
-    motion.  ``perf`` accumulates ``pre_cuda_total`` / ``pre_cuda_raw_d2h`` /
+    of pixels that are never dimmed or boosted (the court-side mask).
+    ``perf`` accumulates ``pre_cuda_total`` / ``pre_cuda_raw_d2h`` /
     ``pre_cuda_cc_filter`` seconds when given.
     """
     perf_t0 = time.perf_counter() if perf is not None else 0.0
@@ -669,17 +640,17 @@ def preprocess_frame_cuda(window: FrameWindow, background: BackgroundModel, cfg:
     curr = window.curr_gpu
 
     raw_motion, raw_motion_ungated = _raw_motion_cuda(window, background, cfg, rois)
-    masks = _boost_masks(raw_motion, raw_motion_ungated, cfg, rois, need_detector_boost, perf)
+    masks = _boost_masks(raw_motion, raw_motion_ungated, cfg, rois, request.wide_boost, perf)
 
     enhanced: Optional[torch.Tensor] = None       # HWC uint8 on CUDA, None = the source frame
-    if not (skip_dim and not need_cpu_frame and not return_cuda_frame):
-        enhanced = _enhanced_frame(curr, raw_motion, masks, protect_mask, cfg, skip_dim, return_cuda_frame)
+    if request.cpu or request.cuda:
+        enhanced = _enhanced_frame(curr, raw_motion, masks, protect_mask, cfg, request)
 
     if enhanced is None:
-        result = PreprocessResult(frame, None, masks.raw_u8, masks.selector_boost_u8)
+        result = PreprocessResult(frame if request.cpu else None, None, masks.raw_u8, masks.selector_boost_u8)
     else:
-        result = PreprocessResult(enhanced.cpu().numpy() if need_cpu_frame else None,
-                                  enhanced if return_cuda_frame else None,
+        result = PreprocessResult(enhanced.cpu().numpy() if request.cpu else None,
+                                  enhanced if request.cuda else None,
                                   masks.raw_u8, masks.selector_boost_u8)
     if perf is not None:
         perf["pre_cuda_total"] = perf.get("pre_cuda_total", 0.0) + (time.perf_counter() - perf_t0)

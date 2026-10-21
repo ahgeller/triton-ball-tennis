@@ -6,8 +6,11 @@ import torch
 
 from tennis_tracker.config import Config
 from tennis_tracker.frame_window import FrameWindow
-from tennis_tracker.motion import (_MaskReader, BackgroundModel, _fullframe_boost_masks, filter_boost_mask,
-                                   preprocess_frame_cuda, refine_raw_motion_temporal_cpu)
+from tennis_tracker.motion import (
+    MASKS_ONLY, _MaskReader, BackgroundModel, DetectorInputRequest, _fullframe_boost_masks, _raw_motion_cuda,
+    filter_boost_mask, preprocess_frame_cuda,
+)
+from tests._helpers import refine_raw_motion_temporal_cpu
 
 
 def test_empty_motion_clears_reused_boost_buffer():
@@ -25,9 +28,7 @@ def test_motion_retains_non_yellow_evidence():
     window = FrameWindow(torch.device("cpu"), True, frame, None)
     background = BackgroundModel(cfg, torch.device("cpu"))
     background.mean_v = background.mean_s = background.var_v = background.var_s = zeros
-    raw = preprocess_frame_cuda(
-        window, background, cfg, protect_mask=zeros.bool(), skip_dim=True,
-        need_cpu_frame=False, need_detector_boost=False).raw_motion
+    raw = preprocess_frame_cuda(window, background, cfg, request=MASKS_ONLY, protect_mask=zeros.bool()).raw_motion
     assert np.count_nonzero(raw) == 100
     expected = refine_raw_motion_temporal_cpu(raw, None, frame, None, cfg)
     np.testing.assert_array_equal(expected, raw)
@@ -76,3 +77,67 @@ def test_fullframe_boost_masks_share_the_narrow_mask_unless_a_wide_source_differ
     assert wide is not narrow and wide.any() and int(wide[1, 1]) == 255 and int(narrow[1, 1]) == 0
     _, narrow, wide = _fullframe_boost_masks(torch.zeros(12, 12, dtype=torch.bool), None, cfg, _MaskReader(cfg, None))
     assert narrow is None and wide is None
+
+
+def _window_frames():
+    """Three 48x64 frames: a ball that moves its own width each frame, a static blob and a blob
+    that is only in the current frame (a flicker: it moves against both neighbours)."""
+    frames = []
+    for index in range(3):
+        frame = np.zeros((48, 64, 3), np.uint8)
+        x = 6 + 10 * index
+        frame[10:16, x:x + 6] = (70, 235, 240)        # the moving ball
+        frame[30:36, 40:46] = (200, 200, 200)          # static: foreground, never moving
+        if index == 1:
+            frame[30:36, 10:16] = (255, 255, 255)      # flicker: appears for one frame only
+        frames.append(frame)
+    return frames
+
+
+def test_temporal_gate_matches_the_cpu_reference_with_the_gate_on():
+    """With the gate on, the CUDA path keeps the moving ball and the one-frame flicker and drops
+    the static blob, exactly as the CPU reference in tests/_helpers.py does."""
+    cfg = Config(motion_raw_temporal_gate=True, motion_raw_close_size=0, motion_thresh=1., motion_v_min=0.)
+    prev, curr, nxt = _window_frames()
+    window = FrameWindow(torch.device("cpu"), True, prev, curr)
+    window.slide(nxt)                                   # prev / curr / next all present
+    assert window.curr is curr and window.prev_gpu is not None and window.next_gpu is not None
+    background = BackgroundModel(cfg, torch.device("cpu"))
+    zeros = torch.zeros(48, 64)
+    background.mean_v = background.mean_s = background.var_v = background.var_s = zeros
+    gated, ungated = _raw_motion_cuda(window, background, cfg, None)
+    ungated_u8 = ungated.numpy().astype(np.uint8) * 255
+    assert ungated_u8[12, 18] and ungated_u8[32, 42] and ungated_u8[32, 12]   # all three are foreground
+    cuda_raw = preprocess_frame_cuda(window, background, cfg, request=MASKS_ONLY).raw_motion
+    np.testing.assert_array_equal(cuda_raw, refine_raw_motion_temporal_cpu(ungated_u8, prev, curr, nxt, cfg))
+    assert cuda_raw[12, 18] and cuda_raw[32, 12] and not cuda_raw[32, 42]
+    assert np.count_nonzero(gated.numpy()) < np.count_nonzero(ungated.numpy())
+
+    # At the end of the clip there is no next frame: the gate is the previous delta alone.
+    window.slide(None)
+    assert window.curr is nxt and window.next_gpu is None
+    gated, ungated = _raw_motion_cuda(window, background, cfg, None)
+    ungated_u8 = ungated.numpy().astype(np.uint8) * 255
+    cuda_raw = preprocess_frame_cuda(window, background, cfg, request=MASKS_ONLY).raw_motion
+    np.testing.assert_array_equal(cuda_raw, refine_raw_motion_temporal_cpu(ungated_u8, curr, nxt, None, cfg))
+    assert cuda_raw[12, 28] and not cuda_raw[32, 42]
+
+
+def test_detector_input_request_decides_what_preprocessing_materialises():
+    frame = np.zeros((32, 32, 3), np.uint8)
+    frame[10:20, 10:20, 2] = 255
+    cfg = Config(motion_raw_temporal_gate=False, motion_raw_close_size=0, motion_thresh=1., motion_v_min=0.)
+    window = FrameWindow(torch.device("cpu"), True, frame, None)
+    background = BackgroundModel(cfg, torch.device("cpu"))
+    zeros = torch.zeros(32, 32)
+    background.mean_v = background.mean_s = background.var_v = background.var_s = zeros
+    masks_only = preprocess_frame_cuda(window, background, cfg, request=MASKS_ONLY)
+    assert masks_only.detector_frame is None and masks_only.detector_frame_cuda is None
+    assert np.count_nonzero(masks_only.raw_motion) == 100
+    both = preprocess_frame_cuda(window, background, cfg, request=DetectorInputRequest(cpu=True, cuda=True))
+    assert both.detector_frame is not None and both.detector_frame.shape == (32, 32, 3)
+    assert both.detector_frame_cuda is not None and tuple(both.detector_frame_cuda.shape) == (32, 32, 3)
+    np.testing.assert_array_equal(both.detector_frame, both.detector_frame_cuda.numpy())
+    cpu_only = preprocess_frame_cuda(window, background, cfg, request=DetectorInputRequest(cpu=True))
+    assert cpu_only.detector_frame_cuda is None and cpu_only.detector_frame is not None
+    np.testing.assert_array_equal(cpu_only.raw_motion, masks_only.raw_motion)

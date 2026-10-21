@@ -54,7 +54,7 @@ from .court_geometry import (
 
 
 # One player's xyxy box, the tracked player id -> box map pass 1 records per
-# frame (``PlayerDetector.get_player_dict``), and that map for every frame.
+# frame (``PlayerDetector.player_boxes_by_slot``), and that map for every frame.
 PlayerBox = Sequence[float]
 PlayerBoxes = Mapping[Hashable, Optional[PlayerBox]]
 PlayerBoxesByFrame = Sequence[Optional[PlayerBoxes]]

@@ -321,10 +321,10 @@ class CandidateTrackTrails:
         cv2.putText(debug, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.38, COLOR_OUTLINE, 2)
         cv2.putText(debug, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
 
-    def advance_and_draw(self, debug: np.ndarray, frame_idx: int) -> None:
+    def advance_and_draw(self, debug: np.ndarray, frame_index: int) -> None:
         for trk in self.tracks:
             tid = int(trk.track_id)
-            pt = self.positions[tid].get(frame_idx)
+            pt = self.positions[tid].get(frame_index)
             trail = self.trails[tid]
             if pt is not None:
                 trail.append((pt[0], pt[1]))

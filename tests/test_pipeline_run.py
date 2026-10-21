@@ -38,6 +38,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -278,7 +279,7 @@ class FakePlayerDetector:
     def detect(self, frame: np.ndarray, frame_index: int) -> List[List[float]]:
         return self.detect_async_finish(self.detect_async_start(frame, frame_index))
 
-    def get_player_dict(self) -> Dict[int, List[float]]:
+    def player_boxes_by_slot(self) -> Dict[int, List[float]]:
         return dict(self.slots)
 
 
@@ -588,3 +589,37 @@ def test_run_is_deterministic_in_process(tmp_path, monkeypatch, fake_cuda, clip)
     second = run_pipeline(tmp_path / "b", monkeypatch, clip, **FULL_OVERRIDES)
     assert first["json"] == second["json"]
     assert first["streams"] == second["streams"]
+
+
+def test_pass2_reports_a_short_second_decode(tmp_path, monkeypatch, fake_cuda, capsys, clip):
+    """Without the frame cache pass 2 decodes the clip again; when that decode ends early the
+    run says so, counts what it rendered, and the tracking JSON still covers every frame."""
+    short = FRAMES - 7
+    real_read = pass2._FrameSource.read
+
+    def read(self, frame_index):
+        return None if frame_index >= short else real_read(self, frame_index)
+
+    monkeypatch.setattr(pass2._FrameSource, "read", read)
+    result = run_pipeline(tmp_path, monkeypatch, clip, **FULL_OVERRIDES, cache_input_frames_pass2=False)
+    out = capsys.readouterr().out
+    assert f"[pass 2] Warning: the second decode gave {short} of the {FRAMES} frames pass 1 saw" in out
+    assert result["raw_json"]["summary"]["pass2_frames_rendered"] == short
+    assert len(result["json"]["frames"]) == FRAMES
+    assert len(result["streams"]["detector_input"]) == FRAMES          # written by pass 1
+    assert all(len(result["streams"][role]) == short for role in ("tracking", "motion_debug", "track_debug"))
+
+
+def test_pass2_refuses_a_clip_it_cannot_reopen(tmp_path, monkeypatch, fake_cuda, clip):
+    class Unopenable:
+        def __init__(self, path):
+            pass
+
+        def isOpened(self):  # noqa: N802 - mirrors cv2.VideoCapture
+            return False
+
+    install_fakes(monkeypatch)
+    cfg = make_config(tmp_path, clip, **FULL_OVERRIDES, cache_input_frames_pass2=False)
+    monkeypatch.setattr(pass2, "cv2", SimpleNamespace(VideoCapture=Unopenable))   # pass 1 keeps the real one
+    with pytest.raises(RuntimeError, match="reopen the input video for pass 2"):
+        pipeline.run(cfg)

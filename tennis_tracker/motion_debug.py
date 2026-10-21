@@ -192,27 +192,40 @@ def _aged_color_and_thickness(age: float) -> Tuple[Color, int]:
     return color, max(1, int(_TRAIL_THICKNESS * ratio))
 
 
-def _draw_straight_trail(vis: np.ndarray, frame_idx: int, points: Sequence[TrailSample]) -> None:
+def _draw_straight_trail(vis: np.ndarray, frame_index: int, points: Sequence[TrailSample]) -> None:
     for i in range(1, len(points)):
-        color, th = _aged_color_and_thickness(frame_idx - points[i][0])
+        color, th = _aged_color_and_thickness(frame_index - points[i][0])
         pt1 = (int(points[i - 1][1]), int(points[i - 1][2]))
         pt2 = (int(points[i][1]), int(points[i][2]))
         if math.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1]) < _STRAIGHT_SEGMENT_MAX_PX:
             cv2.line(vis, pt1, pt2, color, th, cv2.LINE_AA)
 
 
-def _draw_spline_trail(vis: np.ndarray, frame_idx: int, points: Sequence[TrailSample]) -> None:
-    """A smoothed B-spline through the samples; raises when scipy cannot fit one."""
+# A spline fitted through trail samples: x, y and age (frames) at each fine sample.
+SplineTrail = Tuple[np.ndarray, np.ndarray, np.ndarray]
+
+
+def _fit_spline_trail(frame_index: int, points: Sequence[TrailSample]) -> Optional[SplineTrail]:
+    """A smoothed B-spline through the samples, or None when scipy cannot fit one
+    (too few distinct points, or a degenerate set)."""
     pts_arr = np.array([[pt[1], pt[2]] for pt in points])
     # A 1D Gaussian smooth removes the pixel jitter that makes the spline wave.
     x_smooth = scipy.ndimage.gaussian_filter1d(pts_arr[:, 0], sigma=_SPLINE_SMOOTH_SIGMA)
     y_smooth = scipy.ndimage.gaussian_filter1d(pts_arr[:, 1], sigma=_SPLINE_SMOOTH_SIGMA)
-    # s > 0 lets the spline relax instead of forcing it through every point.
-    tck, u = scipy.interpolate.splprep([x_smooth, y_smooth], s=len(x_smooth))
+    try:
+        # s > 0 lets the spline relax instead of forcing it through every point.
+        tck, u = scipy.interpolate.splprep([x_smooth, y_smooth], s=len(x_smooth))
+    except (TypeError, ValueError):      # splprep: "m > k must hold", "Error on input data"
+        return None
     num_samples = max(_SPLINE_MIN_SAMPLES, len(points) * _SPLINE_SAMPLES_PER_POINT)
     u_fine = np.linspace(0, 1.0, num_samples)
     x_fine, y_fine = scipy.interpolate.splev(u_fine, tck)
-    ages_fine = np.interp(u_fine, u, [frame_idx - pt[0] for pt in points])
+    ages_fine = np.interp(u_fine, u, [frame_index - pt[0] for pt in points])
+    return x_fine, y_fine, ages_fine
+
+
+def _draw_spline_trail(vis: np.ndarray, spline: SplineTrail) -> None:
+    x_fine, y_fine, ages_fine = spline
     for i in range(1, len(x_fine)):
         color, th = _aged_color_and_thickness(ages_fine[i])
         pt1 = (int(x_fine[i - 1]), int(y_fine[i - 1]))
@@ -260,12 +273,12 @@ class RawMotionTrails:
                 blobs.append((float((rx1 + rx2) / 2.0), float((ry1 + ry2) / 2.0), float(radius)))
         return blobs
 
-    def advance(self, frame_idx: int, rois: Optional[Sequence[Sequence[int]]],
+    def advance(self, frame_index: int, rois: Optional[Sequence[Sequence[int]]],
                 boost_mask: Optional[np.ndarray]) -> None:
         unmatched = self._blobs(rois, boost_mask)
         for trail in self.trails:
             last_frame, last_x, last_y, _ = trail[-1]
-            if frame_idx - last_frame > _MATCH_MAX_GAP_FRAMES:
+            if frame_index - last_frame > _MATCH_MAX_GAP_FRAMES:
                 continue
             best_dist, best = self.max_match_dist, None
             for blob in unmatched:
@@ -273,12 +286,12 @@ class RawMotionTrails:
                 if dist < best_dist:
                     best_dist, best = dist, blob
             if best is not None:
-                trail.append((frame_idx, best[0], best[1], best[2]))
+                trail.append((frame_index, best[0], best[1], best[2]))
                 unmatched.remove(best)
         for blob in unmatched:
-            self.trails.append([(frame_idx, blob[0], blob[1], blob[2])])
-        if frame_idx % _TRAIL_PRUNE_EVERY == 0:
-            self.trails = [t for t in self.trails if frame_idx - t[-1][0] <= _TRAIL_MAX_AGE_FRAMES]
+            self.trails.append([(frame_index, blob[0], blob[1], blob[2])])
+        if frame_index % _TRAIL_PRUNE_EVERY == 0:
+            self.trails = [t for t in self.trails if frame_index - t[-1][0] <= _TRAIL_MAX_AGE_FRAMES]
 
     @staticmethod
     def _spline_points(valid: Sequence[TrailSample]) -> List[TrailSample]:
@@ -291,18 +304,18 @@ class RawMotionTrails:
             unique.append(valid[-1])
         return unique
 
-    def _draw_trail(self, vis: np.ndarray, frame_idx: int, unique: Sequence[TrailSample]) -> None:
+    def _draw_trail(self, vis: np.ndarray, frame_index: int, unique: Sequence[TrailSample]) -> None:
         """A spline through the samples when scipy can fit one, else straight segments."""
-        if len(unique) < _SPLINE_MIN_POINTS or scipy is None:
-            if scipy is None and not self._warned_no_scipy:
-                print("[debug] scipy not installed: raw-motion trails are drawn as straight segments")
-                self._warned_no_scipy = True
-            _draw_straight_trail(vis, frame_idx, unique)
-            return
-        try:
-            _draw_spline_trail(vis, frame_idx, unique)
-        except Exception:
-            _draw_straight_trail(vis, frame_idx, unique)      # the fit failed
+        if scipy is None and not self._warned_no_scipy:
+            print("[debug] scipy not installed: raw-motion trails are drawn as straight segments")
+            self._warned_no_scipy = True
+        spline = None
+        if scipy is not None and len(unique) >= _SPLINE_MIN_POINTS:
+            spline = _fit_spline_trail(frame_index, unique)
+        if spline is None:
+            _draw_straight_trail(vis, frame_index, unique)
+        else:
+            _draw_spline_trail(vis, spline)
 
     @staticmethod
     def _draw_head(vis: np.ndarray, valid: Sequence[TrailSample]) -> None:
@@ -313,11 +326,11 @@ class RawMotionTrails:
         head = (int(valid[-1][1]), int(valid[-1][2]))
         cv2.circle(vis, head, max(2, int(radius)), COLOR_TRAIL, -1)
 
-    def draw(self, vis: np.ndarray, frame_idx: int) -> None:
+    def draw(self, vis: np.ndarray, frame_index: int) -> None:
         for trail in self.trails:
-            valid = [pt for pt in trail if frame_idx - pt[0] <= _TRAIL_MAX_AGE_FRAMES]
+            valid = [pt for pt in trail if frame_index - pt[0] <= _TRAIL_MAX_AGE_FRAMES]
             if len(valid) < _TRAIL_MIN_SAMPLES:
                 continue       # isolated dots and very short noise trails
-            self._draw_trail(vis, frame_idx, self._spline_points(valid))
-            if frame_idx - valid[-1][0] == 0:
+            self._draw_trail(vis, frame_index, self._spline_points(valid))
+            if frame_index - valid[-1][0] == 0:
                 self._draw_head(vis, valid)

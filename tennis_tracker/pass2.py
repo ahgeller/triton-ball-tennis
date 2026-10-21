@@ -47,12 +47,14 @@ class _FrameSource:
             print(f"[pass 2] Using RAM frame cache ({len(self._cached)} frames)")
         else:
             self._capture = cv2.VideoCapture(str(ctx.video.path))
+            if not self._capture.isOpened():
+                raise RuntimeError(f"Could not reopen the input video for pass 2: {ctx.video.path}")
             if cached is not None:
                 print("[pass 2] RAM frame cache incomplete; falling back to video decode")
 
-    def read(self, frame_idx: int) -> Optional[np.ndarray]:
+    def read(self, frame_index: int) -> Optional[np.ndarray]:
         if self._cached is not None:
-            return self._cached[frame_idx]
+            return self._cached[frame_index]
         ok, frame = self._capture.read()
         return frame if ok else None
 
@@ -245,5 +247,8 @@ def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, even
     finally:
         source.release()
         writers.close()
+    if rendered < n:
+        print(f"[pass 2] Warning: the second decode gave {rendered} of the {n} frames pass 1 saw; "
+              f"the last {n - rendered} frame(s) are missing from the video output(s)")
     timing.add("pass2_total", pass2_t0)
     return rendered
