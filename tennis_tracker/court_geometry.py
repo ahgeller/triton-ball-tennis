@@ -35,6 +35,17 @@ KP_NEAR_RIGHT_SINGLES = 7
 # The four corners that bound the court polygon: top-left, bottom-left,
 # bottom-right, top-right.
 CORNER_ORDER = (KP_FAR_LEFT, KP_NEAR_LEFT, KP_NEAR_RIGHT, KP_FAR_RIGHT)
+# Keypoint index pairs that form the court lines, in the semantic order above.
+LINE_PAIRS_14: Tuple[Tuple[int, int], ...] = (
+    (0, 4), (4, 6), (6, 1),
+    (0, 2), (1, 3),
+    (2, 5), (5, 7), (7, 3),
+    (4, 8), (8, 10), (10, 5),
+    (6, 9), (9, 11), (11, 7),
+    (8, 12), (12, 9),
+    (10, 13), (13, 11),
+    (12, 13),
+)
 # Values needed for the eight corner/singles points every geometry helper reads.
 MIN_KEYPOINT_VALUES = 16
 # Court keypoints are cached at this resolution: a quarter of a pixel.

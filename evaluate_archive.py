@@ -33,6 +33,7 @@ from finetune.detect import ball_detector, detect_points
 from finetune.labels import read_labels
 from finetune.scoring import HIT_PX, WRONG_PX, score, scale_for_width
 from finetune.workspace import VIDEO_SUFFIXES, clip_of, natural_key, video_meta
+from tennis_tracker.court_geometry import LINE_PAIRS_14
 
 if TYPE_CHECKING:
     from tennis_tracker.config import Config
@@ -80,12 +81,6 @@ def list_clips(names: Optional[List[str]], archive: Path) -> List[ClipPair]:
     return clips
 
 
-LINE_PAIRS_14 = (
-    (0, 4), (4, 6), (6, 1), (0, 2), (1, 3),
-    (2, 5), (5, 7), (7, 3), (4, 8), (8, 10), (10, 5),
-    (6, 9), (9, 11), (11, 7), (8, 12), (12, 9),
-    (10, 13), (13, 11), (12, 13),
-)
 LINE_PX = 10.0  # "on a court line" if within this many 1080p pixels of one
 
 

@@ -59,7 +59,7 @@ _ESTIMATE_MARKER_MIN_RADIUS, _ESTIMATE_MARKER_MAX_RADIUS = 4, 12
 _LABEL_OFFSET: Point = (10, -5)
 _ANCHOR_RADIUS_EMA_KEEP, _ANCHOR_RADIUS_EMA_NEW = 0.80, 0.20   # running ball-radius estimate weights
 _ANCHOR_RADIUS_CAP_SCALE = 3               # cap = ball_marker_max_radius * this
-_SEARCH_MARKER_SIZE = 12
+SEARCH_MARKER_SIZE = 12
 _SEARCH_CENTRE_MAX_STEP_PX = 64.0          # display smoothing of the motion-search centre
 # Trail geometry.
 TRAIL_SECONDS = 0.25
@@ -339,7 +339,7 @@ def draw_selected_result(canvas: Canvas, result: FrameResult, frame_idx: int, si
             targets = canvas.select(main=draw_search_regions)
             circle(targets, (scx, scy), int(result.search_radius), COLOR_SEARCH, 1)
             line(targets, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
-            cross(targets, (scx, scy), COLOR_SEARCH, _SEARCH_MARKER_SIZE)
+            cross(targets, (scx, scy), COLOR_SEARCH, SEARCH_MARKER_SIZE)
         else:
             search_smoother.reset()
     elif result.source == "interp":

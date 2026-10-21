@@ -12,7 +12,7 @@ import numpy as np
 from ball_in_play_selector import FrameResult
 
 from .config import Config
-from .rendering import MOTION_DEBUG_SOURCE_COLOR, draw_court_side_guides
+from .rendering import MOTION_DEBUG_SOURCE_COLOR, SEARCH_MARKER_SIZE, draw_court_side_guides
 
 try:
     import scipy.interpolate
@@ -44,7 +44,6 @@ _COMPONENT_BOX_LIMIT = 100
 # Ball overlay.
 _ESTIMATED_BOX_MIN_RADIUS = 6
 _SEARCH_RADIUS_FALLBACK_SCALE, _SEARCH_RADIUS_FALLBACK_MIN = 2.5, 20
-_SEARCH_MARKER_SIZE = 12
 # Raw-motion trails.
 _BLOB_MIN_AREA = 1.0
 _BLOB_RADIUS_MIN, _BLOB_RADIUS_MAX = 4.0, 10.0
@@ -178,7 +177,7 @@ def draw_selected_ball(vis: np.ndarray, result: FrameResult, anchor_radius: floa
         draw_scx = int(round(scx)) if scx > 0 else cx_i
         draw_scy = int(round(scy)) if scy > 0 else cy_i
         cv2.circle(vis, (draw_scx, draw_scy), draw_sr, COLOR_SEARCH, 1, cv2.LINE_AA)
-        cv2.drawMarker(vis, (draw_scx, draw_scy), COLOR_SEARCH, cv2.MARKER_CROSS, _SEARCH_MARKER_SIZE, 1)
+        cv2.drawMarker(vis, (draw_scx, draw_scy), COLOR_SEARCH, cv2.MARKER_CROSS, SEARCH_MARKER_SIZE, 1)
         cv2.putText(vis, f"r={draw_sr}", (draw_scx + draw_sr + 3, draw_scy),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_SEARCH, 1)
 

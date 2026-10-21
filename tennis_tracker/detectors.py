@@ -31,6 +31,7 @@ import torch
 import torch.nn.functional as F
 
 from .config import Config
+from .court_geometry import LINE_PAIRS_14
 from .frame_rate import require_phase_stride
 from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
 from .utils import resolve_engine_path, engine_is_trt10, iter_engine_io, read_engine_header
@@ -986,16 +987,7 @@ class CourtDetector:
     returns None and ``draw`` leaves the frame alone.
     """
     _MODEL_TO_SEMANTIC_14 = (0, 4, 6, 1, 2, 5, 7, 3, 8, 12, 9, 11, 13, 10)
-    _LINE_PAIRS_14 = (
-        (0, 4), (4, 6), (6, 1),
-        (0, 2), (1, 3),
-        (2, 5), (5, 7), (7, 3),
-        (4, 8), (8, 10), (10, 5),
-        (6, 9), (9, 11), (11, 7),
-        (8, 12), (12, 9),
-        (10, 13), (13, 11),
-        (12, 13),
-    )
+    _LINE_PAIRS_14 = LINE_PAIRS_14
     # Rows are [x1, y1, x2, y2, conf, cls, kx, ky, kconf, ...].
     _KEYPOINT_COLUMN = 6
     _MIN_KEYPOINTS = 4
