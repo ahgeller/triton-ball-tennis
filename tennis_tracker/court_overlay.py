@@ -41,7 +41,16 @@ import numpy as np
 
 from ball_in_play_selector import FrameResult
 
-from .rendering import _build_ground_projection_model, _homography_apply
+from .court_geometry import (
+    COURT_LENGTH_M,
+    DOUBLES_WIDTH_M,
+    NET_V,
+    SERVICE_DEPTH,
+    SINGLES_INSET,
+    build_ground_projection_model,
+    court_keypoints_key,
+    homography_apply,
+)
 
 
 Box = Sequence[float]
@@ -87,7 +96,6 @@ _RALLY_RESET_S = 2.50  # pause after which the next leg may be a serve
 _CONTACT_BOUNCE_COLLISION_S = 0.12  # a contact this close to a bounce is the bounce
 _SAME_SIDE_BOUNCE_S = 1.20  # second same-side bounce within this is not a new leg
 _RESCUE_RADIUS_DIAGONAL = 0.10  # ball-to-player reach for a rescued contact
-_NET_V = 0.5
 _SIDE_DEAD_ZONE = 0.03  # court v within this of the net has no side (0.47..0.53)
 _VOLLEY_MAX_NET_DISTANCE = 0.27  # a volley is struck inside the service boxes
 # Court-plane margins (unit court) for accepting projected events.
@@ -95,13 +103,7 @@ _CONFIRMED_BOUNCE_BOUNDS = (-0.08, 1.08)
 _INFERRED_BOUNCE_BOUNDS = (-0.05, 1.05)
 _CONTACT_BOUNDS = (-0.12, 1.12)
 
-# --- Court geometry (ITF dimensions, metres) ----------------------------------
-_COURT_LENGTH_M = 23.77
-_DOUBLES_WIDTH_M = 10.97
-_SINGLES_WIDTH_M = 8.23
-_SERVICE_LINE_FROM_NET_M = 6.40
-_SINGLES_INSET = (_DOUBLES_WIDTH_M - _SINGLES_WIDTH_M) / (2.0 * _DOUBLES_WIDTH_M)
-_SERVICE_DEPTH = _SERVICE_LINE_FROM_NET_M / _COURT_LENGTH_M
+# --- Court geometry (unit-court fractions come from court_geometry) ------------
 _SERVE_BASELINE_BAND = 0.15  # a serve starts within this of a baseline
 
 # --- Minimap drawing ----------------------------------------------------------
@@ -792,32 +794,11 @@ def infer_kinematic_bounces(
     return [max(group, key=lambda item: item.score) for group in clustered]
 
 
-def court_keypoints_key(keypoints: Optional[CourtKeypoints]) -> Optional[Tuple[int, ...]]:
-    """Quarter-pixel cache key of the first eight court keypoints.
-
-    None when fewer than 16 values are present or any is missing/non-finite,
-    so callers need no try/except around the conversion.
-    """
-    if keypoints is None or len(keypoints) < 16:
-        return None
-    values = np.asarray(keypoints[:16], dtype=np.float64)
-    if not np.isfinite(values).all():
-        return None
-    return tuple(int(round(float(value) * 4.0)) for value in values)
-
-
 class _CourtProjector:
     """Image-to-court projection per frame, caching one homography per keypoint set."""
 
-    def __init__(
-        self,
-        court_keypoints_by_frame: Sequence[Optional[CourtKeypoints]],
-        width: int,
-        height: int,
-    ) -> None:
+    def __init__(self, court_keypoints_by_frame: Sequence[Optional[CourtKeypoints]]) -> None:
         self._keypoints = court_keypoints_by_frame
-        self._width = width
-        self._height = height
         self._models: Dict[Tuple[int, ...], Optional[Dict[str, np.ndarray]]] = {}
 
     def __call__(self, frame: int, x: float, y: float) -> Optional[CourtPoint]:
@@ -828,11 +809,9 @@ class _CourtProjector:
         if key is None:
             return None
         if key not in self._models:
-            self._models[key] = _build_ground_projection_model(
-                keypoints, self._width, self._height
-            )
+            self._models[key] = build_ground_projection_model(keypoints)
         model = self._models[key]
-        return None if model is None else _homography_apply(model["H_i2c"], x, y)
+        return None if model is None else homography_apply(model["H_i2c"], x, y)
 
 
 def _within(point: CourtPoint, bounds: Tuple[float, float]) -> bool:
@@ -842,9 +821,9 @@ def _within(point: CourtPoint, bounds: Tuple[float, float]) -> bool:
 
 def _court_side(point: CourtPoint) -> int:
     """-1 for the far half, 1 for the near half, 0 on the net band."""
-    if point[1] < _NET_V - _SIDE_DEAD_ZONE:
+    if point[1] < NET_V - _SIDE_DEAD_ZONE:
         return -1
-    if point[1] > _NET_V + _SIDE_DEAD_ZONE:
+    if point[1] > NET_V + _SIDE_DEAD_ZONE:
         return 1
     return 0
 
@@ -852,14 +831,14 @@ def _court_side(point: CourtPoint) -> int:
 def _is_service_leg(start: CourtPoint, end: CourtPoint, first_after_reset: bool) -> bool:
     if not first_after_reset:
         return False
-    if not (_SINGLES_INSET <= end[0] <= 1.0 - _SINGLES_INSET):
+    if not (SINGLES_INSET <= end[0] <= 1.0 - SINGLES_INSET):
         return False
     if (start[0] - 0.5) * (end[0] - 0.5) >= 0.0:
         return False  # a serve crosses diagonally
     if start[1] <= _SERVE_BASELINE_BAND:
-        return _NET_V <= end[1] <= _NET_V + _SERVICE_DEPTH
+        return NET_V <= end[1] <= NET_V + SERVICE_DEPTH
     if start[1] >= 1.0 - _SERVE_BASELINE_BAND:
-        return _NET_V - _SERVICE_DEPTH <= end[1] <= _NET_V
+        return NET_V - SERVICE_DEPTH <= end[1] <= NET_V
     return False
 
 
@@ -1041,7 +1020,7 @@ def _find_landing(
     end_side = _court_side(next_contact.point)
     if start_side == 0 or end_side == 0 or start_side == end_side:
         return None
-    if abs(next_contact.point[1] - _NET_V) > _VOLLEY_MAX_NET_DISTANCE:
+    if abs(next_contact.point[1] - NET_V) > _VOLLEY_MAX_NET_DISTANCE:
         return None
     return _PlacedBounce(next_contact.frame, next_contact.point, None, next_contact.score), "volley"
 
@@ -1117,7 +1096,7 @@ def assemble_rally_legs(
     ``per_frame`` and ``player_boxes_by_frame`` may be None; contacts are then
     not rescued for confirmed landings that have none.
     """
-    project = _CourtProjector(court_keypoints_by_frame, width, height)
+    project = _CourtProjector(court_keypoints_by_frame)
     collision = max(1, _frames(_CONTACT_BOUNCE_COLLISION_S, fps))
     confirmed, candidates = bounces
     placed_bounces = _place_bounces(
@@ -1231,7 +1210,7 @@ def _minimap_layout(frame_shape: Tuple[int, ...]) -> Optional[Tuple[int, int, in
     if x0 < 0 or y0 + panel_h > frame_h:
         return None
     court_w = panel_w - 36
-    court_h = int(round(court_w * _COURT_LENGTH_M / _DOUBLES_WIDTH_M))
+    court_h = int(round(court_w * COURT_LENGTH_M / DOUBLES_WIDTH_M))
     left = (panel_w - court_w) // 2
     top = (panel_h - court_h) // 2
     return x0, y0, panel_w, panel_h, _PanelRect(left, top, left + court_w, top + court_h)
@@ -1245,12 +1224,12 @@ def _draw_court_lines(panel: np.ndarray, rect: _PanelRect) -> None:
     corners = (rect.left, rect.top), (rect.right, rect.bottom)
     cv2.rectangle(panel, *corners, _PANEL_COURT, -1)
     cv2.rectangle(panel, *corners, _PANEL_LINE, 1, cv2.LINE_AA)
-    for u in (_SINGLES_INSET, 1.0 - _SINGLES_INSET):
+    for u in (SINGLES_INSET, 1.0 - SINGLES_INSET):
         line((u, 0.0), (u, 1.0), _PANEL_LINE, 1)
-    line((0.0, _NET_V), (1.0, _NET_V), _PANEL_NET, 2)
-    for v in (_NET_V - _SERVICE_DEPTH, _NET_V + _SERVICE_DEPTH):
-        line((_SINGLES_INSET, v), (1.0 - _SINGLES_INSET, v), _PANEL_LINE, 1)
-    line((0.5, _NET_V - _SERVICE_DEPTH), (0.5, _NET_V + _SERVICE_DEPTH), _PANEL_LINE, 1)
+    line((0.0, NET_V), (1.0, NET_V), _PANEL_NET, 2)
+    for v in (NET_V - SERVICE_DEPTH, NET_V + SERVICE_DEPTH):
+        line((SINGLES_INSET, v), (1.0 - SINGLES_INSET, v), _PANEL_LINE, 1)
+    line((0.5, NET_V - SERVICE_DEPTH), (0.5, NET_V + SERVICE_DEPTH), _PANEL_LINE, 1)
     cv2.putText(panel, "COURT", (7, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.38,
                 _PANEL_LINE, 1, cv2.LINE_AA)
 
@@ -1319,7 +1298,7 @@ def _draw_player_dots(
         if box is None or len(box) < 4:
             continue
         x1, _, x2, y2 = map(float, box[:4])
-        projected = _homography_apply(H, 0.5 * (x1 + x2), y2)
+        projected = homography_apply(H, 0.5 * (x1 + x2), y2)
         if projected is None:
             continue
         center = _panel_point(projected, *rect)

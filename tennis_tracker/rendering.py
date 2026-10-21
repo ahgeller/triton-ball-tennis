@@ -1,8 +1,8 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
-from ball_in_play_selector import FrameResult
 from .config import Config
+from .court_geometry import build_court_side_guides, clip_infinite_line_to_frame, homography_apply
 
 # Trail rendering constants
 COLOR_DET = (0, 255, 0)
@@ -28,72 +28,9 @@ _SOURCE_BASE_COLOR: Dict[str, Tuple[int, int, int]] = {
 }
 
 
-def _court_kpt_xy(court_keypoints, idx):
-    if court_keypoints is None:
-        return None
-    bi = idx * 2
-    if len(court_keypoints) <= bi + 1:
-        return None
-    x = float(court_keypoints[bi])
-    y = float(court_keypoints[bi + 1])
-    if not np.isfinite(x) or not np.isfinite(y):
-        return None
-    if x <= 0.0 and y <= 0.0:
-        return None
-    return np.array([x, y], dtype=np.float32)
-
-
-def _build_court_side_guides(court_keypoints):
-    p0 = _court_kpt_xy(court_keypoints, 0)
-    p1 = _court_kpt_xy(court_keypoints, 1)
-    p2 = _court_kpt_xy(court_keypoints, 2)
-    p3 = _court_kpt_xy(court_keypoints, 3)
-    p5 = _court_kpt_xy(court_keypoints, 5)
-    p7 = _court_kpt_xy(court_keypoints, 7)
-    if any(p is None for p in (p0, p1, p2, p3, p5, p7)):
-        return None
-
-    guides = {}
-
-    # Left: use the near-side alley width, parallel to the outer sideline.
-    d_left = float(np.hypot(*(p5 - p2)))
-    v_left = p0 - p2
-    if d_left >= 1.0 and float(np.hypot(v_left[0], v_left[1])) >= 1e-6:
-        guides["left"] = {
-            "base": p2,
-            "anchor": p2 + np.array([-d_left, 0.0], dtype=np.float32),
-            "dir": v_left,
-        }
-
-    # Right: use the near-side alley width, parallel to the outer sideline.
-    d_right = float(np.hypot(*(p7 - p3)))
-    v_right = p1 - p3
-    if d_right >= 1.0 and float(np.hypot(v_right[0], v_right[1])) >= 1e-6:
-        guides["right"] = {
-            "base": p3,
-            "anchor": p3 + np.array([d_right, 0.0], dtype=np.float32),
-            "dir": v_right,
-        }
-
-    return guides or None
-
-def _clip_infinite_line_to_frame(anchor, direction, w, h):
-    n = float(np.hypot(direction[0], direction[1]))
-    if n < 1e-6:
-        return None
-    L = float(max(w, h) * 4.0 + 1000.0)
-    p1 = (int(round(anchor[0] - direction[0] * L)),
-          int(round(anchor[1] - direction[1] * L)))
-    p2 = (int(round(anchor[0] + direction[0] * L)),
-          int(round(anchor[1] + direction[1] * L)))
-    ok, q1, q2 = cv2.clipLine((0, 0, int(w), int(h)), p1, p2)
-    if not ok:
-        return None
-    return q1, q2
-
 def draw_court_side_guides(frame, court_keypoints, color=(0, 0, 255), thickness=2):
     """Draw offset side guides: base horizontal offsets + extended side lines."""
-    guides = _build_court_side_guides(court_keypoints)
+    guides = build_court_side_guides(court_keypoints)
     if not guides:
         return frame
 
@@ -105,7 +42,7 @@ def draw_court_side_guides(frame, court_keypoints, color=(0, 0, 255), thickness=
         base = tuple(np.round(g["base"]).astype(int))
         anchor = tuple(np.round(g["anchor"]).astype(int))
         cv2.line(frame, base, anchor, color, max(1, thickness), cv2.LINE_AA)
-        clipped = _clip_infinite_line_to_frame(g["anchor"], g["dir"], w, h)
+        clipped = clip_infinite_line_to_frame(g["anchor"], g["dir"], w, h)
         if clipped is not None:
             cv2.line(frame, clipped[0], clipped[1], color, thickness, cv2.LINE_AA)
     return frame
@@ -286,90 +223,6 @@ def _trail_direction_break(prev2, prev, curr_xy):
         return True
     return False
 
-def _court_axis_spans(kps, w, h):
-    # x span uses the near baseline 2->3, y span uses the left sideline 0->2.
-    if kps is None or len(kps) < 16:
-        return float(w), float(h)
-    try:
-        x0, y0 = float(kps[0]), float(kps[1])
-        x2, y2 = float(kps[4]), float(kps[5])
-        x3 = float(kps[6])
-        x_span = abs(x3 - x2)
-        y_span = abs(y2 - y0)
-        if x_span < 1.0:
-            x_span = float(w)
-        if y_span < 1.0:
-            y_span = float(h)
-        x_span = float(np.clip(x_span, 0.35 * w, w))
-        y_span = float(np.clip(y_span, 0.25 * h, h))
-        return x_span, y_span
-    except Exception:
-        return float(w), float(h)
-
-def _kpt_xy(kps, idx):
-    base = int(idx) * 2
-    if kps is None or base + 1 >= len(kps):
-        return None
-    x = float(kps[base])
-    y = float(kps[base + 1])
-    if x <= 0 and y <= 0:
-        return None
-    return x, y
-
-def _homography_apply(H: np.ndarray, x: float, y: float) -> Optional[Tuple[float, float]]:
-    """Apply a 3x3 homography to a 2D point."""
-    den = float(H[2, 0] * x + H[2, 1] * y + H[2, 2])
-    if abs(den) < 1e-8:
-        return None
-    ox = float(H[0, 0] * x + H[0, 1] * y + H[0, 2]) / den
-    oy = float(H[1, 0] * x + H[1, 1] * y + H[1, 2]) / den
-    return ox, oy
-
-def _build_ordered_court_polygon(kps, w, h):
-    # Explicit corner order: top-left -> bottom-left -> bottom-right -> top-right.
-    corner_ids = (0, 2, 3, 1)
-
-    def _poly_from_flat(flat_kps):
-        pts = []
-        for corner_idx in corner_ids:
-            p = _kpt_xy(flat_kps, corner_idx)
-            if p is None:
-                return None
-            pts.append(p)
-        poly = np.array(pts, dtype=np.float32).reshape(-1, 1, 2)
-        if abs(cv2.contourArea(poly)) < 10.0:
-            return None
-        return poly
-
-    return _poly_from_flat(kps)
-
-def _build_ground_projection_model(kps, w, h):
-    """Build court-plane homography from ordered court corners."""
-    ordered_poly = _build_ordered_court_polygon(kps, w, h)
-    if ordered_poly is None:
-        return None
-    c = ordered_poly[:, 0, :]
-    tl = (float(c[0][0]), float(c[0][1]))
-    bl = (float(c[1][0]), float(c[1][1]))
-    br = (float(c[2][0]), float(c[2][1]))
-    tr = (float(c[3][0]), float(c[3][1]))
-
-    src = np.array([tl, tr, br, bl], dtype=np.float32)  # TL, TR, BR, BL
-    dst = np.array(
-        [[0.0, 0.0],
-         [1.0, 0.0],
-         [1.0, 1.0],
-         [0.0, 1.0]],
-        dtype=np.float32,
-    )
-    try:
-        H_img_to_court = cv2.getPerspectiveTransform(src, dst).astype(np.float64)
-        H_court_to_img = cv2.getPerspectiveTransform(dst, src).astype(np.float64)
-    except Exception:
-        return None
-
-    return {"H_i2c": H_img_to_court, "H_c2i": H_court_to_img}
-
 def _draw_homography_net_line(frame, ground_model):
     """Draw net-bottom line using court-plane homography (v = 0.5)."""
     if frame is None or ground_model is None:
@@ -377,8 +230,8 @@ def _draw_homography_net_line(frame, ground_model):
     H = ground_model.get("H_c2i")
     if H is None:
         return
-    p_l = _homography_apply(H, 0.0, 0.5)
-    p_r = _homography_apply(H, 1.0, 0.5)
+    p_l = homography_apply(H, 0.0, 0.5)
+    p_r = homography_apply(H, 1.0, 0.5)
     if p_l is None or p_r is None:
         return
 
@@ -393,53 +246,6 @@ def _draw_homography_net_line(frame, ground_model):
     # Dark outline + bright green line for visibility.
     cv2.line(frame, (x1, y1), (x2, y2), (15, 15, 15), 4, cv2.LINE_AA)
     cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2, cv2.LINE_AA)
-
-def _build_court_polygon(all_court_kps, w, h):
-    """Find last valid keypoints and build an ordered court polygon."""
-    last_kps = None
-    for kps in reversed(all_court_kps):
-        if kps and len(kps) >= 8:
-            last_kps = kps
-            break
-    if not last_kps:
-        print("[court polygon] No court keypoints found")
-        return None, last_kps
-
-    ordered_poly = _build_ordered_court_polygon(last_kps, w, h)
-    if ordered_poly is not None:
-        court_poly = ordered_poly
-        p0 = court_poly[0, 0].tolist()
-        p1 = court_poly[1, 0].tolist()
-        p2 = court_poly[2, 0].tolist()
-        p3 = court_poly[3, 0].tolist()
-        print(
-            f"[court polygon] Ordered corners [0,2,3,1]: "
-            f"TL={p0}, BL={p1}, BR={p2}, TR={p3}"
-        )
-        bx, by, bw, bh = cv2.boundingRect(court_poly)
-        print(f"[court polygon] bbox=({bx},{by},{bw}x{bh})")
-        test_cx = bx + bw / 2.0
-        test_cy = by + bh / 2.0
-        test_dist = cv2.pointPolygonTest(court_poly, (test_cx, test_cy), True)
-        print(
-            f"[court polygon] Center ({test_cx:.0f},{test_cy:.0f}) dist={test_dist:.1f} "
-            "(positive=inside)"
-        )
-        return court_poly, last_kps
-
-    pts = [
-        (last_kps[i], last_kps[i + 1])
-        for i in range(0, len(last_kps) - 1, 2)
-        if last_kps[i] > 0 or last_kps[i + 1] > 0
-    ]
-    if len(pts) >= 4:
-        court_poly = cv2.convexHull(np.array(pts, dtype=np.float32).reshape(-1, 1, 2))
-        bx, by, bw, bh = cv2.boundingRect(court_poly)
-        print(f"[court polygon] Fallback hull ({len(pts)} points), bbox=({bx},{by},{bw}x{bh})")
-        return court_poly, last_kps
-
-    print(f"[court polygon] Not enough valid points ({len(pts)}), skipping")
-    return None, last_kps
 
 def _print_selector_track_summary(all_tracks, chosen_track, total_frames: int, limit: int = 0):
     """Print all selector tracks and clearly indicate which one was chosen."""

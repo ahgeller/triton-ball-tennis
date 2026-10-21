@@ -13,7 +13,8 @@ except Exception:
     F = None
 
 from .config import Config
-from .rendering import _build_court_side_guides, draw_court_side_guides
+from .court_geometry import build_court_side_guides
+from .rendering import draw_court_side_guides
 
 
 def _torch_no_grad():
@@ -265,20 +266,6 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
     return result
 
 
-def _court_kpt_xy(court_keypoints, idx):
-    if court_keypoints is None:
-        return None
-    bi = idx * 2
-    if len(court_keypoints) <= bi + 1:
-        return None
-    x = float(court_keypoints[bi])
-    y = float(court_keypoints[bi + 1])
-    if not np.isfinite(x) or not np.isfinite(y):
-        return None
-    if x <= 0.0 and y <= 0.0:
-        return None
-    return np.array([x, y], dtype=np.float32)
-
 def _line_side_value(a: np.ndarray, v: np.ndarray, p: np.ndarray) -> float:
     d = p - a
     return float(v[0] * d[1] - v[1] * d[0])
@@ -363,7 +350,7 @@ def build_court_side_protect_mask(h, w, court_keypoints):
       offset from kp3 to image-right by |kp7-kp3|, line parallel to kp3->kp1.
       Pixels right of this line are protected.
     """
-    guides = _build_court_side_guides(court_keypoints)
+    guides = build_court_side_guides(court_keypoints)
     if not guides:
         return None
 

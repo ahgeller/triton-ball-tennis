@@ -5,12 +5,12 @@ import numpy as np
 import pytest
 
 from ball_in_play_selector import FrameResult
+from tennis_tracker.court_geometry import court_keypoints_key
 from tennis_tracker.court_overlay import (
     BounceEvent,
     BouncePrediction,
     ContactEvent,
     assemble_rally_legs,
-    court_keypoints_key,
     detect_player_contacts,
     infer_kinematic_bounces,
     predict_bounce_events,

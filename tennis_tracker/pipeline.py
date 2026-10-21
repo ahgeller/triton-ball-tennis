@@ -14,8 +14,9 @@ from .utils import _detect_device, check_capabilities, _resolve_engine_path, fin
 from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
 from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
 from .tracking import ROIMotionTracker
-from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _court_axis_spans, _build_court_polygon, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _build_ground_projection_model, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
-from .court_overlay import assemble_rally_legs, court_keypoints_key, detect_player_contacts, draw_court_minimap, infer_kinematic_bounces, predict_bounce_events
+from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
+from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
+from .court_overlay import assemble_rally_legs, detect_player_contacts, draw_court_minimap, infer_kinematic_bounces, predict_bounce_events
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
 
 
@@ -1209,7 +1210,7 @@ def run(cfg):
     # ==============================================================
     selector_perf_t0 = time.perf_counter() if info_timing else 0.0
     selector_poly_t0 = time.perf_counter() if info_timing else 0.0
-    court_poly, last_kps = _build_court_polygon(all_court_kps, w, h)
+    court_poly, last_kps = build_court_polygon(all_court_kps)
     if info_timing:
         timing["selector_build_poly"] = timing.get("selector_build_poly", 0.0) + (time.perf_counter() - selector_poly_t0)
 
@@ -1382,7 +1383,7 @@ def run(cfg):
             trail_kps = court_kps
         kps_key = court_keypoints_key(trail_kps)
         if kps_key != ground_model_kps_key:
-            ground_model = _build_ground_projection_model(trail_kps, w, h)
+            ground_model = build_ground_projection_model(trail_kps)
             ground_model_kps_key = kps_key
 
         # Draw court
@@ -1635,7 +1636,7 @@ def run(cfg):
 
             if prev is not None:
                 if not pending_lost_gap:
-                    x_span, y_span = _court_axis_spans(trail_kps, w, h)
+                    x_span, y_span = court_axis_spans(trail_kps, w, h)
                     dx = abs(trail_cx - prev[0])
                     dy = abs(trail_cy - prev[1])
                     jx_c, jy_c = _trail_jump_fracs(src, cfg)
