@@ -152,7 +152,8 @@ tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
 tennis_tracker/court_geometry.py         Court keypoints, side guides, polygon, homography
 tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs
 tennis_tracker/court_minimap.py          Court minimap drawing
-tennis_tracker/rendering.py              Frame drawing and console summaries
+tennis_tracker/rendering.py              Frame drawing
+tennis_tracker/summaries.py              Console summaries printed at the end of a run
 tennis_tracker/video_io.py               Frame reader, video writer, CUDA uploads
 tennis_tracker/                          Also config, frame-rate rules, host-side helpers
 ball_in_play_selector/                   Track construction, scoring, and recovery
