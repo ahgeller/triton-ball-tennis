@@ -170,6 +170,25 @@ def test_prepare_clip_caches_the_needed_frames_and_describes_the_units(tmp_path)
     assert sorted(p.name for p in (data / "frames" / "c").iterdir()) == [f"{i:06d}.png" for i in range(7)]
 
 
+def test_prepare_data_splits_the_units_and_needs_training_units_only(tmp_path, capsys):
+    """The trainer decides whether an empty validation split is an error (--all-clips holds
+    nothing out); the cache only insists on something to train on."""
+    from finetune.training.frame_cache import prepare_data
+    clips = []
+    for name in ("a", "b"):
+        video = write_clip(tmp_path / f"{name}.avi", 8, SIZE, 30.0)
+        csv_path = tmp_path / f"{name}_ball.csv"
+        write_labels(csv_path, {f: (1.0, 1.0) for f in range(7)}, *SIZE)
+        clips.append((name, video, csv_path, "custom"))
+    manifest = prepare_data(clips, tmp_path / "data", ["b"], rebuild=False, workers=1)
+    assert [unit["clip"] for unit in manifest["train"]] == ["a", "a"] and [unit["clip"] for unit in manifest["val"]] == ["b", "b"]
+    assert manifest["validation_clips"] == ["b"] and "2 clips ready" in capsys.readouterr().out
+    everything = prepare_data(clips, tmp_path / "data", [], rebuild=False, workers=1)
+    assert len(everything["train"]) == 4 and everything["val"] == []
+    with pytest.raises(ValueError, match="training split"):
+        prepare_data(clips, tmp_path / "data", ["a", "b"], rebuild=False, workers=1)
+
+
 def test_prepare_clip_refuses_a_video_that_ends_before_its_labels(tmp_path):
     video = write_clip(tmp_path / "short.avi", 4, SIZE, 30.0)
     csv_path = tmp_path / "short_ball.csv"
@@ -356,9 +375,10 @@ def test_new_augmentations_draw_after_the_old_ones_so_old_runs_reproduce(tmp_pat
 
 # --------------------------------------------------------------------------- the metric and the winner
 
-def scripted_run(tmp_path, argv, train_losses, val_losses, scored):
+def scripted_run(tmp_path, argv, train_losses, val_losses, scored, scoring=True, validate=True):
     """``fit`` on a fresh CPU model with the epoch losses scripted and the held-out metric answered
-    from `scored` (recall per scored call, wrong 0); returns (args, selection, the metric calls)."""
+    from `scored` (recall per scored call, wrong 0); returns (args, selection, the metric calls).
+    `scoring` False runs without scoring and `validate` False without a validation loader."""
     model = fresh_model(torch.device("cpu"))
     with torch.no_grad():
         model.convs[0].bias.zero_()
@@ -379,7 +399,8 @@ def scripted_run(tmp_path, argv, train_losses, val_losses, scored):
     scaler = torch.amp.GradScaler("cuda", enabled=False)
     with patch.object(training, "train_epoch", side_effect=train_epoch), \
             patch.object(training, "evaluate_loss", side_effect=val_losses):
-        selection = training.fit(args, model, None, None, optimizer, scaler, torch.device("cpu"), score)
+        selection = training.fit(args, model, None, object() if validate else None, optimizer, scaler, torch.device("cpu"),
+                                 score if scoring else None)
     return args, selection, calls
 
 
@@ -446,6 +467,47 @@ def test_pick_winner_reuses_the_best_epochs_metrics_and_records_how_it_chose(tmp
     with patch.object(training, "score_weights") as never:
         training.pick_winner(args, clips, ["video10"], selection, torch.device("cpu"))
     assert not never.called and "starting_weights" not in json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+
+
+def test_all_clips_runs_every_epoch_unscored_and_records_the_recipe(tmp_path, capsys):
+    """Nothing held out: no validation loss, no scoring, last.npz is the result, and winner.json
+    says so (selected_by recipe) with the selection run's details copied in; --epochs defaults
+    to that run's best epoch."""
+    selection_dir = tmp_path / "selection"
+    selection_dir.mkdir()
+    (selection_dir / "winner.json").write_text(json.dumps({"winner": "best.npz", "selected_by": "detector_metric", "best_epoch": 2,
+                                                           "metrics": {"recall": 0.9}, "starting_weights": {"metrics": {"recall": 0.8}}}))
+    (selection_dir / "config.json").write_text(json.dumps({"augment": ["basic", "translate"], "oversample": {}, "oversample_absent": 3.0,
+                                                           "oversample_false_alarms": 1.0, "epoch_units": None, "batch_size": 2,
+                                                           "lr": 1.0, "seed": 7, "holdout": "mixed_v1", "validation_clips": ["video1"]}))
+    selection_run = training.read_selection_run(selection_dir)
+    assert selection_run["best_epoch"] == 2 and selection_run["metrics"] == {"recall": 0.9}
+    assert selection_run["recipe"]["augment"] == ["basic", "translate"] and selection_run["recipe"]["holdout"] == "mixed_v1"
+    with pytest.raises(ValueError, match="no readable winner.json"):
+        training.read_selection_run(tmp_path / "nowhere")
+
+    args, selection, calls = scripted_run(tmp_path, ["--epochs", "2", "--all-clips", "--save", str(tmp_path / "save.npz")],
+                                          [0.6, 0.4], [], [], scoring=False, validate=False)
+    assert calls == [] and selection.best_metrics is None and selection.best_epoch == 2
+    assert selection.best_path == args.run_dir / "last.npz" and not (args.run_dir / "best.npz").exists()
+    assert not (args.run_dir / "best_loss.npz").exists() and epoch_of(args.run_dir / "last.npz") == 2
+    rows = results_of(args.run_dir)
+    assert [row["val_loss"] for row in rows] == ["", ""] and [row["recall"] for row in rows] == ["", ""]
+    assert "val=" not in capsys.readouterr().out
+    training.record_recipe_result(args, selection, selection_run)
+    winner = json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+    assert winner["selected_by"] == "recipe" and winner["epochs"] == 2 and winner["metrics"] is None
+    assert Path(winner["winner"]) == args.run_dir / "last.npz" and winner["selection_run"] == selection_run
+    assert epoch_of(tmp_path / "save.npz") == 2 and "nothing was held out" in capsys.readouterr().out
+
+    parser = training.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--all-clips", "--holdout", "mixed_v1"])
+    assert parser.parse_args([]).epochs is None and training.DEFAULT_EPOCHS == 10
+    args = parser.parse_args(["--all-clips", "--selection-run", str(selection_dir)])
+    assert training.run_config(args, [], [], {})["all_clips"] and training.run_config(args, [], [], {})["selection_run"] == str(selection_dir)
+    assert training.main(["--selection-run", str(selection_dir)]) == 1
+    assert "goes with --all-clips" in capsys.readouterr().err
 
 
 def test_the_seed_is_recorded_and_defaults_to_the_fixed_one():

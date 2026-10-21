@@ -198,6 +198,6 @@ def prepare_data(clips: List[Clip], data_dir: Path, val_clips: List[str], rebuil
           f"({len(manifest['train'])} train / {len(manifest['val'])} val units)")
     for source, bucket in sorted(per_source.items()):
         print(f"[data]   {source:20s} clips={bucket['clips']:4d} train units={bucket['train']:6d} val units={bucket['val']:6d}")
-    if not manifest["train"] or not manifest["val"]:
-        raise ValueError("Need labelled clips in both the training and validation split")
+    if not manifest["train"]:
+        raise ValueError("Need labelled clips in the training split")
     return manifest

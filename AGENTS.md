@@ -93,6 +93,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   facts, and the one place `clips.csv` and `exclude.txt` are read and written
   (`TENNIS_WORKSPACE` relocates the workspace); `detector_metrics.py`, the detector metric (`DetectorMetrics`);
   `data_policy.py`, which clips may be trained, validated or scored on;
+  `holdouts.py`, the named held-out sets of whole recordings in `finetune/holdouts.json`
+  (`mixed_v1`: prof games 4 and 7, video1 to 10 and three grid matches, 24 clips), which
+  the trainer's `--holdout NAME` holds out and the evaluator's `--holdout NAME` scores;
   `fileio.py`, atomic workspace writes; `alignment.py`, the one label-vs-detector
   agreement the audit and `realign.py` share; `import_data.py` (its importers;
   `import_sources.py` holds what they share) and `realign.py` (with the pure
@@ -101,15 +104,23 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   the winner; `finetune/train_gridtracknet.py` at the old path only hands over
   to it, for the command below), `loop.py` (the loss, one epoch, the validation
   loss and saving weights), `metrics.py` (the detector metric a run is judged
-  by and the winner rule), `clips.py` (which clips
-  it trains on and holds out), `frame_cache.py` (the per-clip cache of frames
-  and training units), `dataset.py` (targets, augmentation, the Dataset and
-  the sampler) and `pretrack.py` (drafts).
+  by and the winner rule: `best.npz` is the epoch the metric prefers, scored after
+  every `--score-every` epoch, and `false_alarm_units`, the hard negatives), `clips.py`
+  (which clips it trains on and holds out: `--val-clips`, `--holdout NAME`, or nothing
+  with `--all-clips`), `frame_cache.py` (the per-clip cache of frames and training
+  units: lossless 768x432 PNGs through `gridtracknet.resize_to_model`, the tracker's
+  own resize, keyed on the video, about 12 GB for the workspace), `dataset.py`
+  (targets, the named augmentations behind `--augment`, the Dataset and the sampler
+  with `--oversample-absent` and `--oversample-false-alarms`) and `pretrack.py` (drafts).
+  `audit/records/gridtracknet_recipe_2026-10.md` is the ledger of the recipe runs.
 - `evaluation/`: `validate.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
   the pipeline on workspace clips with `finetune/data/detector_metrics.py` (`pipeline_score.py`
-  scores one pipeline run's clip), `parity.py` is the Pomona gate. `validate_tracking.py`, `evaluate_archive.py` and `check_parity.py`
-  at the root are thin entry points to them.
+  scores one pipeline run's clip; raw mode also prints a `macro` per-clip-mean line, one
+  `source=<name>` line per source, the count beside each false-alarm rate and, with
+  `--cell-histogram`, recall by position within the grid cell), `parity.py` is the Pomona
+  gate, `compare_eval_logs.py` sets two evaluator logs side by side. `validate_tracking.py`,
+  `evaluate_archive.py` and `check_parity.py` at the root are thin entry points to them.
 
 ## Environment and commands
 

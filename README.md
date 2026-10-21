@@ -110,7 +110,7 @@ scoring the detector, training and promoting the winner:
 .\finetune.ps1 status                       what is labelled and which model is current
 .\finetune.ps1 add C:\clips\rally7.mp4      copy a video in and pre-label it
 .\finetune.ps1 label rally7                 click-correct the labels
-.\finetune.ps1 train --val-clips video10    fine-tune; keeps the better of new vs start
+.\finetune.ps1 train --holdout mixed_v1     fine-tune; keeps the epoch and the model the held-out clips prefer
 ```
 
 The videos and caches the workspace builds are regenerable and stay untracked;
