@@ -4,122 +4,29 @@
 of one game together) and scores them on those: that sets how sure is sure enough (at most
 SURE_FAR_SHARE of the "sure" frames more than FAR_PX off) and is the check a version must pass.
 Then it trains on everything, saves the version in ``cnn_refiner.models_dir()`` and makes it
-current when it passes. ``python finetune/refiner/hints.py train`` runs it."""
+current when it passes. ``python finetune/refiner/hints.py train`` runs it. The crops come from
+``refiner_crops``; fitting and scoring one network is ``refiner_fitting``."""
 from __future__ import annotations
 
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Optional, Sequence
 
-import cv2
 import numpy as np
 
 from finetune.data import workspace as ws
 from finetune.data.fileio import write_atomic
-from finetune.data.labels import Labels, read_labels, reviewed_frames
-from finetune.data.workspace import (find_video, label_csv, labelled_clips, read_exclusions, read_manifest, review_json,
-                                     video_meta)
-from finetune.refiner import cnn_refiner, refine
-from finetune.refiner.cnn_refiner import BACKWARDS, CROP, SURE_PX, WINDOW, build_network, cut_crop
-
-if TYPE_CHECKING:
-    import torch
-    from torch import nn
+from finetune.data.workspace import read_manifest
+from finetune.refiner import cnn_refiner
+from finetune.refiner.refiner_crops import gather_crops
+from finetune.refiner.refiner_fitting import fold_errors, to_device, train_network
 
 EPOCHS = 40
 CHECK_MEDIAN_PX, CHECK_FAR_SHARE = 1.0, 0.05   # a new version must beat these on clips it never saw
 SURE_FAR_SHARE = 0.001   # "sure" is set so at most this share of sure frames is over 5 px off
 FOLDS = 3
-SCORE_BATCH = 1024         # windows scored per network call
 FAR_PX = 5.0               # a placement this far off (1080p px) counts as a miss in the self-check
-
-
-def clip_crops(clip: str) -> Optional[np.ndarray]:
-    """Crops around every reviewed, visible label of a clip; cached until its labels or review change."""
-    labels_csv, review = label_csv(clip), review_json(clip)
-    video = find_video(clip)
-    if video is None or not review.is_file():
-        return None
-    cached = cnn_refiner.cache_dir() / f"{clip}.npz"
-    stamp = max(labels_csv.stat().st_mtime, review.stat().st_mtime, video.stat().st_mtime)
-    if cached.is_file() and cached.stat().st_mtime >= stamp:
-        crops = np.load(cached)["crops"]
-        if crops.shape[1:] == (CROP, CROP, 9):      # not cut for an older crop size
-            return crops
-    meta = video_meta(video)
-    labels: Labels = read_labels(labels_csv, meta.width, meta.height)
-    step = refine.label_spacing(labels)
-    points = {f: labels[f] for f in reviewed_frames(clip) if labels.get(f)}   # a damaged review file is an error
-    if not points:
-        return None
-    crops = crops_from_video(video, points, step, meta.height)
-    cached.parent.mkdir(parents=True, exist_ok=True)
-    out = np.stack(crops) if crops else np.zeros((0, CROP, CROP, 9), np.uint8)
-    np.savez(cached, crops=out)
-    return out
-
-
-def frame_users(points: Dict[int, Tuple[float, float]], step: int) -> Dict[int, int]:
-    """frame -> how many labels (the frame itself and the ones `step` either side) still need it."""
-    users: Dict[int, int] = {}
-    for f in points:
-        for g in (f - step, f, f + step):
-            users[g] = users.get(g, 0) + 1
-    return users
-
-
-def cut_label(f: int, kept: Dict[int, np.ndarray], users: Dict[int, int], point: Tuple[float, float], step: int,
-              height: int) -> Optional[np.ndarray]:
-    """The crop for label frame `f` from the frames kept so far (None when the video never showed
-    it), letting go of every frame that no later label needs."""
-    crop = cut_crop([kept.get(g, kept[f]) for g in (f - step, f, f + step)], point, height) if f in kept else None
-    for g in (f - step, f, f + step):
-        users[g] -= 1
-        if users[g] == 0:
-            kept.pop(g, None)
-    return crop
-
-
-def crops_from_video(video: Path, points: Dict[int, Tuple[float, float]], step: int, height: int) -> List[np.ndarray]:
-    """One crop per labelled frame in `points`, in one pass over the video: each frame is kept
-    only while a label `step` frames either side still needs it."""
-    capture = cv2.VideoCapture(str(video))
-    users = frame_users(points, step)
-    pending, kept, crops, index = sorted(points), {}, [], 0
-    while pending:
-        ok, image = capture.read()
-        if ok and index in users:
-            kept[index] = image
-        index += 1
-        while pending and (not ok or index > pending[0] + step):
-            f = pending.pop(0)
-            crop = cut_label(f, kept, users, points[f], step, height)
-            if crop is not None:
-                crops.append(crop)
-        if not ok:
-            break
-    capture.release()
-    return crops
-
-
-def gather_crops(log: Callable[..., None] = lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
-    """{clip: crops} for every clip with reviewed frames that the workspace's exclude.txt does not
-    list. This is the clip set the folds, the "sure" threshold, the self-check and the final network
-    all use. The trust signal is the per-frame review sidecar on top of that exclusion list; the
-    trainable/scorable rules of ``finetune.data.data_policy`` are not consulted, since nothing here
-    selects clips by source."""
-    excluded = set(read_exclusions())
-    out = {}
-    for clip in labelled_clips():
-        if clip in excluded:
-            log(f"  {clip}: skipped (listed in exclude.txt)")
-            continue
-        crops = clip_crops(clip)
-        if crops is not None and len(crops):
-            out[clip] = crops
-            log(f"  {clip}: {len(crops)} reviewed frames")
-    return out
 
 
 def folds(clips: Sequence[str], sizes: Dict[str, int]) -> Dict[str, int]:
@@ -139,89 +46,6 @@ def folds(clips: Sequence[str], sizes: Dict[str, int]) -> Dict[str, int]:
         fold_of_group[group] = k
         load[k] += totals[group]
     return {clip: fold_of_group[group] for clip, group in group_of.items()}
-
-
-def to_device(parts: Sequence[np.ndarray], device: str) -> "torch.Tensor":
-    import torch
-    out = torch.empty((sum(len(p) for p in parts), CROP, CROP, 9), dtype=torch.uint8, device=device)
-    i = 0
-    for p in parts:
-        out[i:i + len(p)] = torch.from_numpy(p).to(device)
-        i += len(p)
-    return out
-
-
-def sample_batch(data, device: str, rng: np.random.Generator, size: int, flip: bool = True,
-                 in_order: bool = False) -> Tuple["torch.Tensor", "torch.Tensor"]:
-    """One batch of `size` random windows of random crops on the GPU: (inputs, targets in window
-    pixels). `in_order` takes the first `size` crops in order instead of drawing them at random
-    (scoring)."""
-    import torch
-    count = data.shape[0]
-    span, mid = CROP - WINDOW, (CROP - 1) / 2.0
-    ar = torch.arange(WINDOW, device=device)
-    idx = torch.arange(size, device=device) if in_order else torch.from_numpy(rng.integers(0, count, size)).to(device)
-    ox = torch.from_numpy(rng.integers(0, span + 1, size)).to(device)
-    oy = torch.from_numpy(rng.integers(0, span + 1, size)).to(device)
-    rows, cols = (oy[:, None] + ar)[:, :, None], (ox[:, None] + ar)[:, None, :]
-    win = data[idx[:, None, None], rows, cols]                       # size x 64 x 64 x 9
-    tx, ty = mid - ox.float(), mid - oy.float()
-    if flip:
-        mirror = torch.from_numpy(rng.random(size) < 0.5).to(device)
-        win = torch.where(mirror[:, None, None, None], win.flip(2), win)
-        tx = torch.where(mirror, WINDOW - 1 - tx, tx)
-        back = torch.from_numpy(rng.random(size) < 0.5).to(device)   # the three frames played backwards
-        win = torch.where(back[:, None, None, None], win[..., BACKWARDS], win)
-    x = win.permute(0, 3, 1, 2).float().div_(255.0).sub_(0.5)
-    if flip:
-        x = x * torch.empty(size, 1, 1, 1, device=device).uniform_(0.7, 1.3)
-    return x.contiguous(memory_format=torch.channels_last), torch.stack([tx, ty], 1)
-
-
-def train_network(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[..., None],
-        label: str) -> "nn.Module":
-    """One network trained on `data` (crops already on the device)."""
-    import torch
-    net = build_network().to(device).to(memory_format=torch.channels_last)
-    batch = 256
-    per_epoch = max(1, len(data) // batch)
-    opt = torch.optim.AdamW(net.parameters(), 2e-3, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, 2e-3, total_steps=epochs * per_epoch)
-    bce = torch.nn.BCEWithLogitsLoss()
-    start = time.time()
-    for epoch in range(epochs):
-        net.train()
-        total = 0.0
-        for _ in range(per_epoch):
-            x, target = sample_batch(data, device, rng, batch)
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                xy, logit = net(x)
-            hit = ((xy.detach() - target).norm(dim=1) <= SURE_PX).float()
-            loss = torch.nn.functional.smooth_l1_loss(xy, target, beta=0.5) + bce(logit.float(), hit)
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            sched.step()
-            total += loss.item()
-        if epoch % 10 == 9 or epoch == epochs - 1:
-            log(f"  {label}: epoch {epoch + 1}/{epochs}  loss {total / per_epoch:.3f}  ({time.time() - start:.0f}s)")
-    return net.eval()
-
-
-def fold_errors(net, data, device: str, rng: np.random.Generator, repeats: int = 2) -> Tuple[np.ndarray, np.ndarray]:
-    """Errors (window px = 1080p px) and confidences of every frame, `repeats` times each from a
-    random start up to 16 px off."""
-    import torch
-    errors, confs = [], []
-    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-        for _ in range(repeats):
-            for i in range(0, len(data), SCORE_BATCH):
-                part = data[i:i + SCORE_BATCH]
-                x, target = sample_batch(part, device, rng, len(part), flip=False, in_order=True)
-                xy, logit = net(x)
-                errors.append((xy.float() - target).norm(dim=1).cpu().numpy())
-                confs.append(torch.sigmoid(logit.float()).cpu().numpy())
-    return np.concatenate(errors), np.concatenate(confs)
 
 
 def sure_threshold(errors: np.ndarray, confs: np.ndarray) -> float:

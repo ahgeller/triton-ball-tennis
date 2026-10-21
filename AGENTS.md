@@ -48,7 +48,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `finetune/refiner/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
 - `finetune/refiner/cnn_refiner.py`: small CNN, trained only on frames the user reviewed, that places
-  those suggestions where the user clicks (`refiner_training.py` does the training; `hints.py`
+  those suggestions where the user clicks (`refiner_training.py` runs the training: the folds,
+  the "sure" threshold and the promotion check, on crops `refiner_crops.py` gathers and networks
+  `refiner_fitting.py` fits and scores; `hints.py`
   is their command line, the script `ft.py hints` runs). Versions live in
   `finetune/models/refiner/` (all kept, `current.txt` names the active one); retrain with
   `ft.py hints train` or menu option 10. Its self-check decides "trusted" (threshold set on
@@ -77,7 +79,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   picture and keys), `label_draw.py` (the filters, marks and text every view
   draws with) and `label_hints.py` (the suggestions). `finetune/refiner/`: the
   suggestion model above (`refine.py`, `cnn_refiner.py` with its torch network class in
-  `refiner_network.py`, `refiner_training.py`, `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
+  `refiner_network.py`, `refiner_training.py` with `refiner_crops.py` and `refiner_fitting.py`,
+  `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
   file format; `label_check.py`, checks a label file against its video's facts;
   `label_audit.py`, checks labels against the raw detector; `label_flags.py`, the frames an
   audit flagged for a person (the flag sidecar the label tool and the menu read); `detect.py`,

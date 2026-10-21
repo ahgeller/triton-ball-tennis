@@ -206,6 +206,7 @@ finetune/labeling/label_tool.py          Manual label editing (label_session hol
 finetune/refiner/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
 finetune/refiner/refiner_sheet.py        A zoomed sheet of where two versions of that CNN disagree
 finetune/refiner/refiner_training.py     Training that CNN on the frames you have reviewed
+finetune/refiner/refiner_crops.py        The crops of those frames; refiner_fitting.py fits and scores one network
 finetune/refiner/hints.py                Their command line (ft.py hints: train, list, use, sheet)
 finetune/data/labels.py                  Label file format; label_check.py checks a file, label_audit.py
                                          audits labels against the detector, label_flags.py keeps the

@@ -1,6 +1,6 @@
-"""finetune/refiner/refiner_training.py on synthetic clips and arrays: the one-pass crop walk, the
-training batches, the self-check threshold and which clips it gathers. No real workspace file
-(``workspace_dir`` is a temporary one), no GPU."""
+"""finetune/refiner/refiner_crops.py, refiner_fitting.py and refiner_training.py on synthetic clips
+and arrays: the one-pass crop walk, the training batches, the self-check threshold and which clips
+it gathers. No real workspace file (``workspace_dir`` is a temporary one), no GPU."""
 import json
 
 import numpy as np
@@ -10,8 +10,9 @@ import torch
 from finetune.data.labels import write_labels
 from finetune.data.workspace import add_exclusion, label_csv, review_json
 from finetune.refiner.cnn_refiner import CROP, WINDOW
-from finetune.refiner.refiner_training import (FAR_PX, SURE_FAR_SHARE, crops_from_video, cut_label, frame_users,
-                                                gather_crops, sample_batch, sure_threshold, to_device)
+from finetune.refiner.refiner_crops import crops_from_video, cut_label, frame_users, gather_crops
+from finetune.refiner.refiner_fitting import sample_batch, to_device
+from finetune.refiner.refiner_training import FAR_PX, SURE_FAR_SHARE, sure_threshold
 from tests._helpers import write_clip
 
 SIZE = (160, 90)
