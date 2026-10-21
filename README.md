@@ -176,6 +176,7 @@ finetune/ft.py                           Front door for the labelling and traini
 finetune/labeling/label_tool.py          Manual label editing (label_store, label_source, label_window,
                                          label_views, label_draw and label_hints hold its pieces)
 finetune/labeling/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
+finetune/labeling/refiner_training.py    Training that CNN on the frames you have checked
 finetune/data/labels.py                  Label file format; label_audit.py checks labels
 finetune/data/workspace.py, fileio.py    Workspace layout, clip facts, atomic writes
 finetune/data/data_policy.py             Which clips may be trained, validated or scored on

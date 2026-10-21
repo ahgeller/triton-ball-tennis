@@ -1,4 +1,4 @@
-"""Checkpoints written by cnn_refiner.train still load under weights_only=True.
+"""Checkpoints written by refiner_training.train still load under weights_only=True.
 
 Both shapes the trainer has ever written are rebuilt in tmp_path with the exact
 writer keys; the workspace models under finetune/models/refiner/ are never read.

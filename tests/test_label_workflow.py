@@ -597,12 +597,12 @@ def test_cut_centres_the_point_and_place_maps_window_pixels_back():
 
 
 def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(tmp_path):
-    from finetune.labeling import cnn_refiner
+    from finetune.labeling import refiner_training
     confs = np.linspace(1.0, 0.0, 3000)
     errors = np.where(np.arange(3000) >= 2000, 9.0, 0.5)       # the least confident third is wrong
-    threshold = cnn_refiner.sure_threshold(errors, confs)
+    threshold = refiner_training.sure_threshold(errors, confs)
     sure = confs >= threshold
-    assert np.mean(errors[sure] > 5) <= cnn_refiner.SURE_FAR_SHARE
+    assert np.mean(errors[sure] > 5) <= refiner_training.SURE_FAR_SHARE
     assert sure.sum() > 1990                                     # ... and nearly all the good ones are sure
     manifest = tmp_path / "clips.csv"
     manifest.write_text("clip,origin\n"
@@ -610,8 +610,8 @@ def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(tmp
                         "video14,C:\\prof\\Dataset\\game2\\Clip2\n"
                         "video1,C:\\archive\\video1.mp4\n", encoding="utf-8")
     with patch("finetune.data.workspace.MANIFEST", manifest):
-        fold_of = cnn_refiner.folds(["video13", "video14", "video1", "grid_match4"],
-                                    {"video13": 300, "video14": 200, "video1": 400, "grid_match4": 600})
+        fold_of = refiner_training.folds(["video13", "video14", "video1", "grid_match4"],
+                                         {"video13": 300, "video14": 200, "video1": 400, "grid_match4": 600})
     assert fold_of["video13"] == fold_of["video14"]
     assert len(set(fold_of.values())) == 3
 

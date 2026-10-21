@@ -39,7 +39,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `finetune/labeling/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
 - `finetune/labeling/cnn_refiner.py`: small CNN, trained only on frames the user checked, that places
-  those suggestions where the user clicks. Versions live in
+  those suggestions where the user clicks (`refiner_training.py` does the training). Versions live in
   `finetune/models/refiner/` (all kept, `current.txt` names the active one); retrain with
   `ft.py hints train` or menu option 10. Its self-check decides "trusted" (threshold set on
   folds of clips it never saw); refine.py still finds the ball and decides ball/no ball.
