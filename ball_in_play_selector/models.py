@@ -1,8 +1,13 @@
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Sequence, Tuple, Dict, Literal
 from dataclasses import dataclass, field
 
 from .config import SelectorConfig
 from .physics import BallKalmanFilter
+
+# One ball candidate as the detector hands it over: an xyxy box in source
+# pixels and its confidence.  ``association.build_detections`` turns the
+# per-frame lists of these into ``Detection`` rows.
+RawDetection = Tuple[Sequence[float], float]
 
 
 @dataclass
@@ -18,27 +23,42 @@ class Detection:
     area: float
     on_motion: bool = False  # overlaps boost/motion mask
 
-@dataclass
-class MotionTrack:
-    """A continuous trajectory built purely from motion blobs over time."""
-    track_id: int
-    points: List[Tuple[int, float, float]] = field(default_factory=list)  # (frame, cx, cy)
-    smoothed: List[Tuple[float, float]] = field(default_factory=list) # EMA smoothed (cx, cy)
-    
-    @property
-    def start_frame(self) -> int:
-        return self.points[0][0] if self.points else -1
-        
-    @property
-    def end_frame(self) -> int:
-        return self.points[-1][0] if self.points else -1
 
-    def get_position_at(self, frame_idx: int) -> Optional[Tuple[float, float]]:
-        """Return the smoothed position at exactly `frame_idx`, or None if no data."""
-        for i, (f, _, _) in enumerate(self.points):
-            if f == frame_idx and i < len(self.smoothed):
-                return self.smoothed[i]
-        return None
+# Every key scoring.score_tracks writes into Track.score_breakdown, with the
+# value a reader gets when the track has not been scored (test fixtures build
+# tracks by hand).  Read through Track.score_value so a typo is a KeyError
+# instead of a silent default.
+SCORE_BREAKDOWN_DEFAULTS: Dict[str, float] = {
+    "total": 0.0,                   # final track score
+    "num_obs": 0.0,
+    "span": 0.0,                    # frames from first to last observation
+    "inside_frac": 0.0,             # near-court: inside polygon or within court_expand_px
+    "inside_strict_frac": 0.0,      # strictly inside the court polygon
+    "motion_overlap": 0.0,          # observations on the boost/motion mask
+    "motion_kin_frac": 0.0,         # physics.kinematic_motion_frac estimate
+    "motion_evidence": 0.0,         # max(motion_overlap, motion_kin_frac)
+    "avg_speed_pxpf": 0.0,
+    "peak_speed_pxpf": 0.0,
+    "extent_px": 0.0,               # diagonal of the box around all observations
+    "jump_penalty": 0.0,
+    "near_player_frac": 0.0,
+    "near_player_court_frac": 0.0,
+    "coverage_frac": 0.0,           # observations / total frames
+    "span_frac": 0.0,               # span / total frames
+    "start_frame": 0.0,
+    "end_frame": 0.0,
+    "start_frac": 0.0,              # first observation as a fraction of the clip
+    "end_frac": 0.0,                # last observation as a fraction of the clip
+    "obs_add": 0.0,                 # w_len * num_obs
+    "span_add": 0.0,                # w_span * span_frac
+    "additive_core": 0.0,           # obs_add + span_add
+    "motion_mult": 0.0,
+    "inside_mult": 0.0,
+    "near_player_mult": 0.0,
+    "movement_quality": 0.0,        # scoring._motion_consistency
+    "timeline_tracks": 0.0,         # stitched chains only: tracks joined
+}
+
 
 @dataclass
 class Track:
@@ -48,67 +68,72 @@ class Track:
     # Prediction state
     last_pos: Tuple[float, float] = (0.0, 0.0)
     last_vel: Tuple[float, float] = (0.0, 0.0)
-    last_frame: int = -1
     misses: int = 0
     alive: bool = True
-    # FilterPy Kalman Filter
-    kf: Optional['BallKalmanFilter'] = None
+    # Created on the first observation; None only while the track is empty.
+    kf: Optional[BallKalmanFilter] = None
     # Scoring
     score: float = 0.0
     score_breakdown: Dict[str, float] = field(default_factory=dict)
-    # Area Tracking for stable ROI search
-    historical_areas: List[float] = field(default_factory=list)
     # Cached kinematics for repeated scoring passes
-    _kin_cache_key: Optional[Tuple[Any, ...]] = field(default=None, init=False, repr=False)
+    # (num_obs, first frame, last frame, last cx, last cy); see scoring._track_kinematics
+    _kin_cache_key: Optional[Tuple[int, int, int, float, float]] = field(default=None, init=False, repr=False)
     _cached_velocities: List[Tuple[float, float]] = field(default_factory=list, init=False, repr=False)
     _cached_speeds: List[float] = field(default_factory=list, init=False, repr=False)
     _cached_speed_stats: Tuple[float, float] = field(default=(0.0, 0.0), init=False, repr=False)
 
-    def __post_init__(self):
-        # We need cfg explicitly passed to initialize KF properly in update().
-        # Due to dataclass ordering, we'll initialize KF on first update. 
-        pass
-
     @property
-    def num_obs(self):
+    def num_obs(self) -> int:
         return len(self.observations)
 
     @property
-    def span(self):
+    def span(self) -> int:
         if len(self.observations) < 2:
             return 0
         return self.observations[-1].frame - self.observations[0].frame + 1
 
     @property
-    def first_frame(self):
+    def first_frame(self) -> int:
         return self.observations[0].frame if self.observations else 0
 
     @property
-    def last_obs_frame(self):
+    def last_obs_frame(self) -> int:
         return self.observations[-1].frame if self.observations else 0
+
+    def score_value(self, key: str) -> float:
+        """A score_breakdown entry, or its documented default when unscored."""
+        return float(self.score_breakdown.get(key, SCORE_BREAKDOWN_DEFAULTS[key]))
 
     def predict(self, t: int) -> Tuple[float, float]:
         """Predict to frame t using Kalman Filter prediction."""
-        dt = t - self.last_frame
+        dt = t - self.last_obs_frame
         if dt <= 0:
             return self.last_pos
-            
+
         if self.kf is not None:
             return self.kf.predict_dt(dt)
         return (self.last_pos[0], self.last_pos[1])
 
-    def update(self, det: Detection):
+    def update(self, det: Detection) -> None:
         """Add observation, update KF."""
         if not self.observations:
             # First observation
             self.kf = BallKalmanFilter(det.cx, det.cy, self.cfg)
             self.last_vel = (0.0, 0.0)
         else:
-            dt = det.frame - self.last_frame
+            if self.kf is None:
+                # update() creates the filter with the first observation; a track whose
+                # observations were assigned directly (a stitched timeline chain, a test
+                # fixture) has none to step, and is not meant to grow.
+                raise ValueError(
+                    f"track {self.track_id} has {len(self.observations)} observations but no Kalman "
+                    "filter: only a track built through update() can be updated"
+                )
+            dt = det.frame - self.last_obs_frame
             if dt > 0:
                 # Bootstrap velocity from the first two observations so the filter
                 # doesn't spend the early frames predicting with vx=vy=0.
-                if len(self.observations) == 1 and self.kf is not None:
+                if len(self.observations) == 1:
                     prev = self.observations[-1]
                     vx0 = (float(det.cx) - float(prev.cx)) / float(dt)
                     vy0 = (float(det.cy) - float(prev.cy)) / float(dt)
@@ -121,61 +146,42 @@ class Track:
                 # Step the KF forward `dt` times before updating
                 for _ in range(dt - 1):
                     self.kf.predict()
-                
+
                 # Predict to current frame, then update with measurement
                 self.kf.predict()
-                self.kf.update(det.cx, det.cy, conf=getattr(det, "conf", None))
+                self.kf.update(det.cx, det.cy, conf=det.conf)
                 self.last_vel = self.kf.get_velocity()
-                
-            # Update historical area for stable rolling average (keep last 5)
-            # Only add to history if it's a solid detection, not a spawned proxy
-            if getattr(det, "conf", 0.0) > 0.1:
-                self.historical_areas.append(det.area)
-                if len(self.historical_areas) > 5:
-                    self.historical_areas.pop(0)
-                    
+
         self.last_pos = (det.cx, det.cy)
-        self.last_frame = det.frame
         self.observations.append(det)
         self.misses = 0
         self._kin_cache_key = None
-        
-    def get_recent_average_area(self) -> float:
-        """Return the mean area of the last up to 5 actual detections."""
-        if not self.historical_areas:
-            # Fallback to last known observation if history isn't populated
-            return self.observations[-1].area if self.observations else 0.0
-        return sum(self.historical_areas) / len(self.historical_areas)
+
+
+# What decided a frame's position:
+#   'det'    = a detector observation on the selected track
+#   'motion' = a motion blob near the predicted path (bounded correction)
+#   'interp' = a fitted position: bounded fill between anchors, or a detector
+#              point the trajectory refit relocated too far to still call raw
+Source = Literal["det", "motion", "interp"]
+
 
 @dataclass
 class FrameResult:
-    cx: Optional[float] = None
-    cy: Optional[float] = None
+    """One frame's selected ball position; a frame without one is ``None``, not a row."""
+
+    cx: float
+    cy: float
     conf: float = 0.0
     interpolated: bool = False
     bbox: Optional[Tuple[float, float, float, float]] = None
-    # Debug-only placeholder entries may carry guide-circle metadata without
-    # representing a selected ball output for that frame.
-    debug_only: bool = False
-    # Debug: what decided this frame's position
-    # 'det' = YOLO detection, 'motion' = motion blob tracking,
-    # 'interp' = interpolation between detections,
-    # 'carry' = predicted continuation during short loss,
-    # 'guide' = chosen-track guide fallback
-    source: str = 'det'
-    # Debug: search region used for motion tracking
+    source: Source = "det"
+    # Search region the selector used to look for a motion blob this frame
+    # (centre = predicted point, radius 0 when no search happened).
     search_cx: float = 0.0
     search_cy: float = 0.0
     search_radius: float = 0.0
-    # Debug: guide-side detection gate/search circle used this frame (if any)
-    guide_search_cx: float = 0.0
-    guide_search_cy: float = 0.0
-    guide_search_radius: float = 0.0
-    guide_search_exact: bool = False
-    guide_search_frozen: bool = False
-    guide_search_hold: bool = False
-    # Debug: normalized selector explanation for this frame.
+    # Short machine-readable explanation of `source` for the JSON export.
     source_reason: str = ""
-    source_reasons: List[str] = field(default_factory=list)
-    source_rejects: Dict[str, int] = field(default_factory=dict)
-    source_policy: Dict[str, Any] = field(default_factory=dict)
+    # Immutable detector location, separate from the selected/refitted coordinates.
+    measurement: Optional[Tuple[float, float]] = None

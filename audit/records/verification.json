@@ -1,0 +1,41 @@
+{
+  "checked_source_model_manifest_and_benchmark_hashes": 37,
+  "changed_since_snapshot": [],
+  "reproduced_findings": 13,
+  "benchmark": {
+    "prediction_file_summary": {
+      "filled_frames": 1110,
+      "filled_percent": 54.896142433234424,
+      "elapsed_sec": 42.22552418708801,
+      "effective_fps": 47.88572880803455,
+      "pass2_frames_rendered": 0,
+      "chosen_track_id": 1,
+      "track_count": 28
+    },
+    "labeled_visible_frames": 76,
+    "matched_visible_frames": 74,
+    "missed_visible_frames": 2,
+    "recall": 0.9736842105263158,
+    "labeled_absent_frames": 4,
+    "false_positive_absent_frames": 3,
+    "absence_precision": 0.25,
+    "prediction_present_frames": 1110,
+    "prediction_total_frames": 2022,
+    "prediction_filled_ratio": 0.5489614243323442,
+    "mean_error_px": 2.6050555769036685,
+    "median_error_px": 1.8877963853258066,
+    "p90_error_px": 4.925792258140657,
+    "max_error_px": 20.33932609172027,
+    "within_5px": 67,
+    "within_10px": 72,
+    "within_20px": 73,
+    "source_counts": {
+      "det": 1086,
+      "interp": 15,
+      "motion": 9
+    },
+    "large_jump_count": 0
+  },
+  "user_exclusions_recorded": true,
+  "report_exists": true
+}

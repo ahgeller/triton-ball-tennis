@@ -1,5 +1,2 @@
 # clips the trainer skips by default (ft.py check --audit --fix writes these; edit freely)
-grid_match26  # audit 2026-08-31: detector agrees on 25% of frames (best shift +26: 80%)
-grid_match49  # audit 2026-08-31: detector agrees on 0% of frames (best shift +693: 4%)
-grid_match50  # audit 2026-08-31: detector agrees on 0% of frames (best shift +2174: 3%)
-grid_match55  # audit 2026-08-31: detector agrees on 1% of frames (best shift +505: 39%)
+# 2026-09-03: match26, 49, 50 and 55 were re-timed against the right video and taken off this list

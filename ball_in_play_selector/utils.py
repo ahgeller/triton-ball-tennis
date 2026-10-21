@@ -1,122 +1,98 @@
-import math
+from typing import Dict, Hashable, NamedTuple, Optional, Sequence, Tuple, Union
+
 import numpy as np
-import cv2
-from typing import Optional, Tuple
 
-from .config import SelectorConfig
+from .config import REFERENCE_FPS, fps_scale
 
 
-def _cfg_diag(cfg: SelectorConfig) -> float:
-    if cfg.diag > 0.0:
-        return cfg.diag
-    return math.sqrt(cfg.width ** 2 + cfg.height ** 2)
+def pxpf_at_fps(base_pxpf_30fps: float, fps: float, *, clamp: bool) -> float:
+    """A 30 FPS px/frame speed converted to ``fps``.
 
-def _fps_norm_pxpf(base_pxpf_30fps: float, cfg: SelectorConfig) -> float:
-    """Convert a 30fps px/frame threshold to the current fps domain."""
-    fps_scale = 30.0 / max(cfg.fps, 1.0)
-    fps_scale = max(0.35, min(3.0, fps_scale))
-    return base_pxpf_30fps * fps_scale
+    With ``clamp`` the frame-rate ratio is bounded by ``config.fps_scale``
+    (0.35 to 3.0), which the association and scoring thresholds want so an odd
+    clip cannot scale them away; without it the ratio is exact, which the
+    fill-speed floors in ``core`` want.
+    """
+    if clamp:
+        return base_pxpf_30fps * fps_scale(fps)
+    return base_pxpf_30fps * REFERENCE_FPS / max(float(fps), 1.0)
 
-def _clamp01(v: float) -> float:
+def clamp01(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
 
-def _ensure_mask_u8(mask_obj):
-    """Return uint8 mask {0,255}; supports packed (np.packbits) tuples."""
+
+class PackedMask(NamedTuple):
+    """A binary frame mask stored as the packed bits of one rectangle.
+
+    The tracker keeps one raw-motion and one boost mask per frame for the
+    whole clip; packing the ``(x1, y1, x2, y2)`` rectangle that holds the
+    set pixels (or the ROI the motion was computed in) keeps that affordable.
+    ``unpack`` restores the full ``height`` x ``width`` uint8 {0, 255} mask.
+    A mask with no set pixels is never packed: ``pack`` returns None for it.
+    """
+
+    bits: np.ndarray
+    height: int
+    width: int
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+    @property
+    def roi(self) -> Tuple[int, int, int, int]:
+        """The packed rectangle as ``(x1, y1, x2, y2)``, exclusive on the far side."""
+        return self.x1, self.y1, self.x2, self.y2
+
+    @classmethod
+    def pack(cls, mask_u8: Optional[np.ndarray],
+             roi: Optional[Tuple[int, int, int, int]] = None) -> Optional["PackedMask"]:
+        """Pack ``mask_u8`` (uint8 or bool, 2D); None when it is None or empty.
+
+        ``roi`` is the rectangle to store; it is clipped to the frame.  When it
+        is None or clips to nothing, the bounding box of the set pixels is used.
+        """
+        if mask_u8 is None:
+            return None
+        height, width = mask_u8.shape[:2]
+        set_pixels = np.flatnonzero(mask_u8)
+        if set_pixels.size == 0:
+            return None
+        rect = None
+        if roi is not None and len(roi) == 4:
+            x1, y1, x2, y2 = (int(v) for v in roi)
+            x1, x2 = max(0, min(x1, width)), max(0, min(x2, width))
+            y1, y2 = max(0, min(y1, height)), max(0, min(y2, height))
+            if x2 > x1 and y2 > y1:
+                rect = (x1, y1, x2, y2)
+        if rect is None:
+            rows, cols = np.divmod(set_pixels, width)
+            rect = (int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1)
+        x1, y1, x2, y2 = rect
+        flat = (mask_u8[y1:y2, x1:x2].reshape(-1) > 0).astype(np.uint8)
+        return cls(np.packbits(flat), int(height), int(width), x1, y1, x2, y2)
+
+    def unpack(self) -> np.ndarray:
+        """The full-frame uint8 {0, 255} mask."""
+        out = np.zeros((self.height, self.width), dtype=np.uint8)
+        rh, rw = self.y2 - self.y1, self.x2 - self.x1
+        if rh > 0 and rw > 0:
+            flat = np.unpackbits(self.bits, count=rh * rw)
+            out[self.y1:self.y2, self.x1:self.x2] = flat.reshape(rh, rw).astype(np.uint8) * 255
+        return out
+
+
+# A per-frame motion mask as the selector accepts it.
+MaskLike = Union[PackedMask, np.ndarray]
+# One frame's player boxes (xyxy): tracked player id -> box, or a plain list.
+FramePlayerBoxes = Union[Dict[Hashable, Optional[Sequence[float]]], Sequence[Optional[Sequence[float]]]]
+PlayerBoxesByFrame = Sequence[Optional[FramePlayerBoxes]]
+
+
+def ensure_mask_u8(mask_obj: Optional[MaskLike]) -> Optional[np.ndarray]:
+    """Return uint8 mask {0,255}: None, a ``PackedMask`` unpacked, or the array as given."""
     if mask_obj is None:
         return None
-    if isinstance(mask_obj, tuple) and len(mask_obj) == 8 and mask_obj[0] == "roi":
-        _, packed, h, w, x1, y1, x2, y2 = mask_obj
-        h = int(h)
-        w = int(w)
-        x1 = int(x1)
-        y1 = int(y1)
-        x2 = int(x2)
-        y2 = int(y2)
-        out = np.zeros((h, w), dtype=np.uint8)
-        rh = max(0, y2 - y1)
-        rw = max(0, x2 - x1)
-        if rh > 0 and rw > 0:
-            flat = np.unpackbits(packed, count=rh * rw)
-            out[y1:y2, x1:x2] = flat.reshape(rh, rw).astype(np.uint8) * 255
-        return out
-    if isinstance(mask_obj, tuple) and len(mask_obj) == 3:
-        packed, h, w = mask_obj
-        flat = np.unpackbits(packed, count=int(h) * int(w))
-        return (flat.reshape(int(h), int(w)).astype(np.uint8) * 255)
+    if isinstance(mask_obj, PackedMask):
+        return mask_obj.unpack()
     return mask_obj
-
-def _mask_has_motion_near(
-    mask: Optional[np.ndarray],
-    x: float,
-    y: float,
-    radius_px: int = 2
-) -> bool:
-    """True if mask has any active pixel near (x, y)."""
-    if mask is None:
-        return False
-    h, w = mask.shape[:2]
-    cx = int(round(float(x)))
-    cy = int(round(float(y)))
-    r = max(int(radius_px), 0)
-    x1 = max(0, cx - r)
-    y1 = max(0, cy - r)
-    x2 = min(w - 1, cx + r)
-    y2 = min(h - 1, cy + r)
-    if x2 < x1 or y2 < y1:
-        return False
-    return bool(np.any(mask[y1:y2 + 1, x1:x2 + 1] > 0))
-
-def build_court_homography(
-    court_keypoints,
-    court_w_m: float = 10.97,
-    court_h_m: float = 23.77,
-) -> Optional[Tuple[np.ndarray, np.ndarray, float, float]]:
-    """
-    Build a perspective homography from 4 court corners (pixels) to a
-    normalized [0,1]^2 court canvas.  Returns (H, H_inv, court_w_m, court_h_m)
-    or None when keypoints are unavailable.
-    """
-    if court_keypoints is None or len(court_keypoints) < 16:
-        return None
-    def _kp(kps, idx):
-        i = idx * 2
-        if i + 1 < len(kps):
-            x, y = float(kps[i]), float(kps[i + 1])
-            if x > 0 or y > 0:
-                return np.float32([x, y])
-        return None
-    p0 = _kp(court_keypoints, 0)  # TL
-    p3 = _kp(court_keypoints, 3)  # TR
-    p4 = _kp(court_keypoints, 4)  # BL
-    p7 = _kp(court_keypoints, 7)  # BR
-    if any(p is None for p in (p0, p3, p4, p7)):
-        return None
-    src = np.float32([p0, p3, p4, p7])             # TL TR BL BR in pixels
-    dst = np.float32([[0, 0], [1, 0], [0, 1], [1, 1]])  # normalised court
-    H = cv2.getPerspectiveTransform(src, dst)
-    H_inv = np.linalg.inv(H)
-    return H, H_inv, float(court_w_m), float(court_h_m)
-
-def court_px_per_meter(
-    ball_cx: float,
-    ball_cy: float,
-    H: np.ndarray,
-    H_inv: np.ndarray,
-    court_w_m: float = 10.97,
-) -> Optional[float]:
-    """
-    Estimate the pixel scale (px per real meter) at a given ball position
-    by displacing 1 m sideways in court space and measuring the pixel shift.
-    Returns None when the projection is unstable.
-    """
-    try:
-        pt = np.float32([[[ball_cx, ball_cy]]])
-        court_pt = cv2.perspectiveTransform(pt, H)[0, 0]          # (cx_n, cy_n)
-        dx_norm = 1.0 / court_w_m                                  # 1 real m in normalised units
-        shifted = np.float32([[[court_pt[0] + dx_norm, court_pt[1]]]])
-        px_shifted = cv2.perspectiveTransform(shifted, H_inv)[0, 0]
-        scale = float(np.linalg.norm(px_shifted - np.array([ball_cx, ball_cy])))
-        return scale if np.isfinite(scale) and scale > 0.5 else None
-    except Exception:
-        return None
-

@@ -1,12 +1,31 @@
+"""Export the YOLO checkpoints to ONNX and build TensorRT engines from them.
+
+Example:
+    python build_trt_engines.py --ball-pt models/ball.pt --player-pt models/player.pt \
+        --court-pt models/courtdetection.pt --half --require-fp16 --force-onnx --force-engine \
+        --device 0 --workspace-mb 4096 --include-court
+
+Ultralytics is imported only when an ONNX export is actually needed, so
+``--help`` and engine verification work without it.
+"""
+from __future__ import annotations
+
 import argparse
-import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
-from ultralytics import YOLO
+from tennis_tracker.engines.engine_files import iter_engine_io, read_engine_header
 
-# python 3DtrackingV1/archived_tools/build_trt_engines.py --ball-pt models/ball.pt --player-pt models/player.pt --court-pt models/courtdetection.pt --half --require-fp16 --force-onnx --force-engine --device 0 --workspace-mb 4096 --include-court
+_MIB = 1024 * 1024
+_MIN_WORKSPACE_MB = 256
+# Dynamic ONNX inputs are pinned to one NCHW shape; these fill the unknown dims.
+_DEFAULT_BATCH = 1
+_DEFAULT_CHANNELS = 3
+_DEFAULT_SIDE_PX = 640
+_MAX_PARSE_ERRORS_SHOWN = 25
+
 
 @dataclass
 class ExportTarget:
@@ -23,22 +42,25 @@ class ExportTarget:
         return self.pt_path.with_suffix(".engine")
 
 
-def _strip_ultralytics_engine_header(raw: bytes) -> bytes:
+def _import_tensorrt(purpose: str) -> Any:
     try:
-        meta_len = int.from_bytes(raw[:4], byteorder="little")
-        _ = json.loads(raw[4:4 + meta_len].decode("utf-8"))
-        return raw[4 + meta_len:]
-    except Exception:
-        return raw
+        import tensorrt as trt  # type: ignore
+    except ImportError as e:
+        raise RuntimeError(f"TensorRT package not importable for {purpose}: {e}") from e
+    return trt
+
+
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Write through a sibling temp file so a crash never leaves a truncated engine."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 def _inspect_engine_io_dtypes(engine_path: Path) -> Tuple[Dict[str, str], Dict[str, str]]:
-    try:
-        import tensorrt as trt  # type: ignore
-    except Exception as e:
-        raise RuntimeError(f"TensorRT package not importable for verification: {e}") from e
-
-    raw = _strip_ultralytics_engine_header(engine_path.read_bytes())
+    trt = _import_tensorrt("verification")
+    _, raw = read_engine_header(engine_path)
     logger = trt.Logger(trt.Logger.ERROR)
     with trt.Runtime(logger) as runtime:
         engine = runtime.deserialize_cuda_engine(raw)
@@ -47,25 +69,14 @@ def _inspect_engine_io_dtypes(engine_path: Path) -> Tuple[Dict[str, str], Dict[s
 
     inputs: Dict[str, str] = {}
     outputs: Dict[str, str] = {}
-    is_trt10 = not hasattr(engine, "num_bindings")
-    if is_trt10:
-        for i in range(engine.num_io_tensors):
-            name = engine.get_tensor_name(i)
-            dtype = str(engine.get_tensor_dtype(name))
-            mode = engine.get_tensor_mode(name)
-            if mode == trt.TensorIOMode.INPUT:
-                inputs[name] = dtype
-            else:
-                outputs[name] = dtype
-    else:
-        for i in range(engine.num_bindings):
-            name = engine.get_binding_name(i)
-            dtype = str(engine.get_binding_dtype(i))
-            if engine.binding_is_input(i):
-                inputs[name] = dtype
-            else:
-                outputs[name] = dtype
+    for io in iter_engine_io(engine, trt):
+        (inputs if io.is_input else outputs)[io.name] = str(io.dtype)
     return inputs, outputs
+
+
+def _is_fp16_dtype(dtype_name: str) -> bool:
+    s = dtype_name.upper()
+    return ("FLOAT16" in s) or ("HALF" in s)
 
 
 def _verify_engine_precision(
@@ -83,23 +94,47 @@ def _verify_engine_precision(
     if not require_fp16:
         return
 
-    def _is_fp16_dtype(dt_obj) -> bool:
-        s = str(dt_obj).upper()
-        return ("FLOAT16" in s) or ("HALF" in s)
-
     has_fp16_input = any(_is_fp16_dtype(dt) for dt in inputs.values())
     has_fp16_output = any(_is_fp16_dtype(dt) for dt in outputs.values())
-    has_any_fp16_io = has_fp16_input or has_fp16_output
 
     if strict_fp16_io and not (has_fp16_input and has_fp16_output):
         raise RuntimeError(
             f"[{label}] Engine IO is not fully FP16 (strict-fp16-io enabled): {engine_path}"
         )
-    if not strict_fp16_io and not has_any_fp16_io:
+    if not strict_fp16_io and not (has_fp16_input or has_fp16_output):
         print(
             f"[{label}] Note: engine IO bindings are FP32. "
             "Internal kernels may still use FP16 tactics."
         )
+
+
+def _parse_onnx(trt: Any, logger: Any, builder: Any, onnx_path: Path, label: str) -> Any:
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    parser = trt.OnnxParser(network, logger)
+    if not parser.parse(onnx_path.read_bytes()):
+        errs = [str(parser.get_error(i)) for i in range(parser.num_errors)]
+        raise RuntimeError(
+            f"[{label}] ONNX parse failed for {onnx_path}:\n" + "\n".join(errs[:_MAX_PARSE_ERRORS_SHOWN])
+        )
+    return network
+
+
+def _pin_dynamic_inputs(builder: Any, network: Any, config: Any, label: str) -> None:
+    """Give every dynamic NCHW input one fixed optimisation profile shape."""
+    inputs = [network.get_input(i) for i in range(network.num_inputs)]
+    if not any(int(d) < 0 for inp in inputs for d in inp.shape):
+        return
+    profile = builder.create_optimization_profile()
+    defaults = (_DEFAULT_BATCH, _DEFAULT_CHANNELS, _DEFAULT_SIDE_PX, _DEFAULT_SIDE_PX)
+    for inp in inputs:
+        shape = tuple(int(d) for d in inp.shape)
+        if len(shape) != 4:
+            raise RuntimeError(
+                f"[{label}] Dynamic input '{inp.name}' rank {len(shape)} unsupported (need NCHW rank-4)."
+            )
+        fixed = tuple(d if d > 0 else default for d, default in zip(shape, defaults))
+        profile.set_shape(inp.name, fixed, fixed, fixed)
+    config.add_optimization_profile(profile)
 
 
 def _build_engine_from_onnx(
@@ -107,78 +142,64 @@ def _build_engine_from_onnx(
     engine_path: Path,
     *,
     fp16: bool,
-    strict_fp16_io: bool,
     workspace_mb: int,
     label: str,
 ) -> None:
-    try:
-        import tensorrt as trt  # type: ignore
-    except Exception as e:
-        raise RuntimeError(f"TensorRT package not importable for build: {e}") from e
-
+    """Build ``engine_path`` from ``onnx_path``; FP16 I/O is checked afterwards
+    by ``_verify_engine_precision``, not enforced here."""
+    trt = _import_tensorrt("build")
     if not onnx_path.exists():
         raise FileNotFoundError(f"[{label}] ONNX not found for TRT build: {onnx_path}")
 
     logger = trt.Logger(trt.Logger.INFO)
     builder = trt.Builder(logger)
-    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-    parser = trt.OnnxParser(network, logger)
-
-    raw = onnx_path.read_bytes()
-    if not parser.parse(raw):
-        errs = [str(parser.get_error(i)) for i in range(parser.num_errors)]
-        raise RuntimeError(
-            f"[{label}] ONNX parse failed for {onnx_path}:\n" + "\n".join(errs[:25])
-        )
+    network = _parse_onnx(trt, logger, builder, onnx_path, label)
 
     config = builder.create_builder_config()
-    if hasattr(config, "set_memory_pool_limit"):
-        config.set_memory_pool_limit(
-            trt.MemoryPoolType.WORKSPACE, int(workspace_mb) * 1024 * 1024
-        )
-    else:
-        config.max_workspace_size = int(workspace_mb) * 1024 * 1024
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(workspace_mb) * _MIB)
 
     if fp16:
         if not builder.platform_has_fast_fp16:
             raise RuntimeError(f"[{label}] FP16 requested but platform_has_fast_fp16=False")
         config.set_flag(trt.BuilderFlag.FP16)
 
-    dynamic = False
-    for i in range(network.num_inputs):
-        inp = network.get_input(i)
-        if any(int(d) < 0 for d in inp.shape):
-            dynamic = True
-            break
-
-    if dynamic:
-        profile = builder.create_optimization_profile()
-        for i in range(network.num_inputs):
-            inp = network.get_input(i)
-            name = inp.name
-            shape = tuple(int(d) for d in inp.shape)
-            if len(shape) != 4:
-                raise RuntimeError(
-                    f"[{label}] Dynamic input '{name}' rank {len(shape)} unsupported (need NCHW rank-4)."
-                )
-            n = shape[0] if shape[0] > 0 else 1
-            c = shape[1] if shape[1] > 0 else 3
-            h = shape[2] if shape[2] > 0 else 640
-            w = shape[3] if shape[3] > 0 else 640
-            fixed = (int(n), int(c), int(h), int(w))
-            profile.set_shape(name, fixed, fixed, fixed)
-        config.add_optimization_profile(profile)
+    _pin_dynamic_inputs(builder, network, config, label)
 
     serialized = builder.build_serialized_network(network, config)
     if serialized is None:
         raise RuntimeError(f"[{label}] TensorRT build returned None for {onnx_path}")
 
-    engine_path.parent.mkdir(parents=True, exist_ok=True)
-    engine_path.write_bytes(bytes(serialized))
+    _write_bytes_atomic(engine_path, bytes(serialized))
     print(
         f"[{label}] Built TensorRT engine from ONNX: {engine_path} "
         f"(fp16={bool(fp16)}, workspace={int(workspace_mb)}MB)"
     )
+
+
+def _export_onnx(target: ExportTarget, *, device: str, half: bool) -> None:
+    try:
+        from ultralytics import YOLO
+    except ImportError as e:
+        raise RuntimeError(f"[{target.label}] ultralytics is needed to export ONNX: {e}") from e
+    print(
+        f"[{target.label}] Export ONNX -> {target.onnx_path} "
+        f"(imgsz={target.imgsz}, device={device}, half={bool(half)})"
+    )
+    model = YOLO(str(target.pt_path))
+    out = model.export(
+        format="onnx",
+        imgsz=int(target.imgsz),
+        device=device,
+        half=bool(half),
+        simplify=True,
+    )
+    # Ultralytics may return a different object/path; ensure expected ONNX path exists.
+    if isinstance(out, (str, Path)):
+        out_path = Path(out)
+        if out_path.exists() and out_path.resolve() != target.onnx_path.resolve():
+            _write_bytes_atomic(target.onnx_path, out_path.read_bytes())
+    if not target.onnx_path.exists():
+        raise RuntimeError(f"[{target.label}] ONNX export did not produce {target.onnx_path}")
 
 
 def _ensure_target(
@@ -192,6 +213,7 @@ def _ensure_target(
     strict_fp16_io: bool,
     workspace_mb: int,
 ) -> Tuple[bool, bool, bool]:
+    """Returns ``(built_onnx, built_engine, skipped_missing)``."""
     if not target.pt_path.exists():
         print(f"[{target.label}] Skip: missing {target.pt_path}")
         return False, False, True
@@ -209,42 +231,17 @@ def _ensure_target(
         )
         return False, False, False
 
-    built_onnx = False
-    built_engine = False
-
     if need_onnx:
-        print(
-            f"[{target.label}] Export ONNX -> {target.onnx_path} "
-            f"(imgsz={target.imgsz}, device={device}, half={bool(half)})"
-        )
-        model = YOLO(str(target.pt_path))
-        out = model.export(
-            format="onnx",
-            imgsz=int(target.imgsz),
-            device=device,
-            half=bool(half),
-            simplify=True,
-        )
-        # Ultralytics may return a different object/path; ensure expected ONNX path exists.
-        if isinstance(out, (str, Path)):
-            out_path = Path(out)
-            if out_path.exists() and out_path.resolve() != target.onnx_path.resolve():
-                target.onnx_path.parent.mkdir(parents=True, exist_ok=True)
-                target.onnx_path.write_bytes(out_path.read_bytes())
-        if not target.onnx_path.exists():
-            raise RuntimeError(f"[{target.label}] ONNX export did not produce {target.onnx_path}")
-        built_onnx = True
+        _export_onnx(target, device=device, half=half)
 
     if need_engine:
         _build_engine_from_onnx(
             target.onnx_path,
             target.engine_path,
             fp16=bool(half),
-            strict_fp16_io=bool(strict_fp16_io),
             workspace_mb=int(workspace_mb),
             label=target.label,
         )
-        built_engine = True
         _verify_engine_precision(
             target.engine_path,
             require_fp16=require_fp16,
@@ -252,10 +249,10 @@ def _ensure_target(
             label=target.label,
         )
 
-    return built_onnx, built_engine, False
+    return need_onnx, need_engine, False
 
 
-def main():
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Build ONNX + TensorRT engines with enforced FP16 options."
     )
@@ -291,7 +288,11 @@ def main():
         help="Skip court ONNX/engine build",
     )
     p.set_defaults(half=True, require_fp16=True, strict_fp16_io=False, include_court=True)
-    args = p.parse_args()
+    return p
+
+
+def main() -> int:
+    args = _parser().parse_args()
 
     targets = [
         ExportTarget("ball", Path(args.ball_pt), int(args.imgsz_ball)),
@@ -310,7 +311,7 @@ def main():
             force_engine=bool(args.force_engine),
             require_fp16=bool(args.require_fp16),
             strict_fp16_io=bool(args.strict_fp16_io),
-            workspace_mb=max(256, int(args.workspace_mb)),
+            workspace_mb=max(_MIN_WORKSPACE_MB, int(args.workspace_mb)),
         )
         summary["built_onnx"] += int(built_onnx)
         summary["built_engine"] += int(built_engine)
@@ -321,7 +322,8 @@ def main():
             **summary
         )
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -13,8 +13,23 @@ finetune/runs/
 finetune/models/
 finetune/labels/*.draft
 finetune/labels/*.review.json
+finetune/labels/label_tool.settings.json
 finetune/labels/*.tmp
 finetune/labels/tnv2_*
 finetune/labels/grid_*
+# the prof set (public TrackNet tennis) imports as video13..video53 to sit under video12 in the
+# clip lists, so the own-labels rule cannot tell it apart by name: spell the range out instead.
+finetune/labels/video1[3-9]_ball.csv
+finetune/labels/video[2-5][0-9]_ball.csv
 models/*_prev_*.npz
+models/*.before_promote_*
 finetune/.training-python
+
+# Local source media and label safety copies; already tracked samples stay tracked.
+/sample/*.mp4
+/finetune/labels/*.before_*
+/finetune/labels/*.premisaligned
+.desloppify/
+scorecard.png
+.claude/worktrees/
+.claude/skills/desloppify/

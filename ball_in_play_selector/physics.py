@@ -1,16 +1,12 @@
 import math
 import numpy as np
 from typing import Optional, Tuple
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
 
 from .config import SelectorConfig
-from .utils import _fps_norm_pxpf, _clamp01, court_px_per_meter
+from .utils import clamp01, pxpf_at_fps
 
 
-def _kinematic_motion_frac(
+def kinematic_motion_frac(
     avg_speed: float,
     peak_speed: float,
     extent_px: float,
@@ -19,24 +15,41 @@ def _kinematic_motion_frac(
     diag: float
 ) -> float:
     """Estimate motion evidence from kinematics when mask overlap is weak/noisy."""
-    weak = _fps_norm_pxpf(1.6, cfg)
-    strong = _fps_norm_pxpf(4.6, cfg)
-    peak_ref = _fps_norm_pxpf(8.0, cfg)
+    weak = pxpf_at_fps(1.6, cfg.fps, clamp=True)
+    strong = pxpf_at_fps(4.6, cfg.fps, clamp=True)
+    peak_ref = pxpf_at_fps(8.0, cfg.fps, clamp=True)
     extent_ref = max(0.08 * diag, 1.0)
 
-    avg_term = _clamp01((avg_speed - weak) / max(strong - weak, 1e-6))
-    peak_term = _clamp01((peak_speed - (1.6 * weak)) / max(peak_ref - (1.6 * weak), 1e-6))
-    extent_term = _clamp01(extent_px / extent_ref)
+    avg_term = clamp01((avg_speed - weak) / max(strong - weak, 1e-6))
+    peak_term = clamp01((peak_speed - (1.6 * weak)) / max(peak_ref - (1.6 * weak), 1e-6))
+    extent_term = clamp01(extent_px / extent_ref)
 
     kin = max(avg_term, 0.80 * peak_term, 0.60 * extent_term)
     if near_player_frac >= 0.10 and avg_speed >= 0.85 * weak:
         kin = max(kin, 0.30)
-    return _clamp01(kin)
+    return clamp01(kin)
 
-def _xy_dist(ax: float, ay: float, bx: float, by: float) -> float:
+def xy_dist(ax: float, ay: float, bx: float, by: float) -> float:
     return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
 
-def _predict_projectile(
+def _projectile_matrices(cfg: SelectorConfig, dt: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
+    """Exact linear-drag transition in source-frame units; drag is a 30 FPS reference."""
+    drag = cfg.gravity_drag_factor if cfg.gravity_enabled else 1.0
+    if not 0.0 < drag <= 1.0:
+        raise ValueError("gravity_drag_factor must be in (0, 1]")
+    rate = -math.log(drag) * 30.0 / max(cfg.fps, 1.0)
+    if rate < 1e-8:
+        decay, travel, fall = 1.0, float(dt), 0.5 * dt * dt
+    else:
+        decay = math.exp(-rate * dt)
+        travel = -math.expm1(-rate * dt) / rate
+        fall = (dt - travel) / rate
+    F = np.array([[1., 0., travel, 0.], [0., 1., 0., travel],
+                  [0., 0., decay, 0.], [0., 0., 0., decay]])
+    B = np.array([[0.], [fall], [0.], [travel]])
+    return F, B
+
+def predict_projectile(
     pos: Tuple[float, float],
     vel: Tuple[float, float],
     dt: int,
@@ -52,19 +65,11 @@ def _predict_projectile(
     if not cfg.gravity_enabled or dt <= 0:
         return (pos[0] + vel[0] * dt, pos[1] + vel[1] * dt)
 
-    g = cfg.gravity_px_per_frame2
-    drag = cfg.gravity_drag_factor
-    x, y = pos
-    vx, vy = vel
+    F, B = _projectile_matrices(cfg, dt)
+    state = F @ np.array([*pos, *vel]) + B[:, 0] * cfg.gravity_px_per_frame2
+    return float(state[0]), float(state[1])
 
-    for _ in range(dt):
-        x += vx
-        y += vy
-        vx *= drag
-        vy = vy * drag + g
-    return (x, y)
-
-def _predict_projectile_vel(
+def predict_projectile_velocity(
     vel: Tuple[float, float],
     dt: int,
     cfg: SelectorConfig,
@@ -72,54 +77,76 @@ def _predict_projectile_vel(
     """Predict velocity after dt frames under projectile physics."""
     if not cfg.gravity_enabled or dt <= 0:
         return vel
-    g = cfg.gravity_px_per_frame2
-    drag = cfg.gravity_drag_factor
-    vx, vy = vel
-    for _ in range(dt):
-        vx *= drag
-        vy = vy * drag + g
-    return (vx, vy)
+    F, B = _projectile_matrices(cfg, dt)
+    state = F @ np.array([0., 0., *vel]) + B[:, 0] * cfg.gravity_px_per_frame2
+    return float(state[2]), float(state[3])
+
+class LinearKalman:
+    """A linear Kalman filter over a column-vector state, in plain numpy.
+
+    ``x`` is the ``(dim_x, 1)`` state, ``P`` its covariance; ``F``/``B`` the
+    transition and control matrices, ``Q`` the process noise, ``H`` the
+    measurement matrix and ``R`` the measurement noise.  The caller may set
+    any of them between steps (the ball filter swaps ``F``/``B`` for the
+    projectile transition and ``R`` per detection confidence).
+
+    The equations, their operation order and the column-vector shapes are
+    exactly those of filterpy 1.4.5's ``KalmanFilter.predict``/``update``,
+    which this replaced, so the two produce bit-identical states.
+    """
+
+    def __init__(self, x: np.ndarray, P: np.ndarray, F: np.ndarray, B: np.ndarray,
+                 Q: np.ndarray, H: np.ndarray, R: np.ndarray) -> None:
+        self.x = np.asarray(x, dtype=float)
+        self.P = np.asarray(P, dtype=float)
+        self.F = np.asarray(F, dtype=float)
+        self.B = np.asarray(B, dtype=float)
+        self.Q = np.asarray(Q, dtype=float)
+        self.H = np.asarray(H, dtype=float)
+        self.R = np.asarray(R, dtype=float)
+        self._identity = np.eye(self.x.shape[0])
+
+    def predict(self, u: np.ndarray) -> None:
+        """x = F x + B u;  P = F P F' + Q."""
+        self.x = np.dot(self.F, self.x) + np.dot(self.B, u)
+        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
+
+    def update(self, z: np.ndarray) -> None:
+        """Fold in the ``(dim_z, 1)`` measurement ``z`` with the Joseph-form covariance update."""
+        y = z - np.dot(self.H, self.x)
+        PHT = np.dot(self.P, self.H.T)
+        S = np.dot(self.H, PHT) + self.R
+        K = np.dot(PHT, np.linalg.inv(S))
+        self.x = self.x + np.dot(K, y)
+        I_KH = self._identity - np.dot(K, self.H)
+        self.P = np.dot(np.dot(I_KH, self.P), I_KH.T) + np.dot(np.dot(K, self.R), K.T)
+
 
 class BallKalmanFilter:
-    def __init__(self, x0: float, y0: float, cfg: SelectorConfig):
-        if KalmanFilter is None:
-            raise RuntimeError("filterpy is required for BallKalmanFilter. Install filterpy==1.4.5.")
+    """Constant-velocity (x, y, vx, vy) filter with the projectile transition and adaptive gating."""
+
+    def __init__(self, x0: float, y0: float, cfg: SelectorConfig) -> None:
         self.cfg = cfg
-        self.kf = KalmanFilter(dim_x=4, dim_z=2)
-        
-        # State: [x, y, vx, vy] as column vector (shape 4,1) as filterpy expects
-        self.kf.x = np.array([[x0], [y0], [0.0], [0.0]])
-        
-        # Transition Matrix
-        self.kf.F = np.array([[1., 0., 1., 0.],
-                              [0., 1., 0., 1.],
-                              [0., 0., 1., 0.],
-                              [0., 0., 0., 1.]])
-                              
-        # Measurement Matrix (we only observe x and y)
-        self.kf.H = np.array([[1., 0., 0., 0.],
-                              [0., 1., 0., 0.]])
-                              
-        # Covariance Matrix
-        # High uncertainty for unobserved initial velocity
-        self.kf.P = np.diag([10.0, 10.0, 100.0, 100.0])
-        
-        # Measurement Noise
-        # Measurement noise is adapted per-update (based on det confidence).
-        # Initialize with a reasonable default (~2px std).
-        self.kf.R = np.diag([4.0, 4.0])
-        
-        # Process Noise
-        self.kf.Q = np.diag([0.1, 0.1, 2.0, 2.0])
-        
-        # Control Input Matrix (for gravity and drag)
-        self.kf.B = np.array([[0.], [0.], [0.], [1.]])
-        # Court homography for depth-aware gravity (set after construction)
-        self._court_H: Optional[np.ndarray] = None
-        self._court_H_inv: Optional[np.ndarray] = None
-        self._court_w_m: float = 10.97
-        # Cached reference px/m scale (updated each predict call)
-        self._ref_px_per_m: Optional[float] = None
+        self.kf = LinearKalman(
+            # State [x, y, vx, vy] as a column vector.
+            x=np.array([[x0], [y0], [0.0], [0.0]]),
+            # High uncertainty for the unobserved initial velocity.
+            P=np.diag([10.0, 10.0, 100.0, 100.0]),
+            # Constant-velocity transition; predict() swaps in the projectile one.
+            F=np.array([[1., 0., 1., 0.],
+                        [0., 1., 0., 1.],
+                        [0., 0., 1., 0.],
+                        [0., 0., 0., 1.]]),
+            # Control input (gravity acts on vy); predict() swaps in the projectile one.
+            B=np.array([[0.], [0.], [0.], [1.]]),
+            Q=np.diag([0.1, 0.1, 2.0, 2.0]),
+            # Only x and y are observed.
+            H=np.array([[1., 0., 0., 0.],
+                        [0., 1., 0., 0.]]),
+            # Measurement noise is set per update from the detection confidence;
+            # this default is ~2 px std.
+            R=np.diag([4.0, 4.0]),
+        )
 
     def _meas_sigma_px(self, conf: Optional[float]) -> float:
         """Map detection confidence -> measurement std-dev in pixels."""
@@ -148,78 +175,29 @@ class BallKalmanFilter:
         d2 = float((y.T @ Sinv @ y).item())
         return d2
 
-    def set_homography(
-        self,
-        H: np.ndarray,
-        H_inv: np.ndarray,
-        court_w_m: float = 10.97,
-    ) -> None:
-        """Attach a court homography for depth-aware gravity scaling."""
-        self._court_H = H
-        self._court_H_inv = H_inv
-        self._court_w_m = court_w_m
 
     def _x(self) -> np.ndarray:
-        """Always return a 1D view of the state (handles both (4,) and (4,1) shapes)."""
+        """The (4, 1) column state flattened to a 1D copy."""
         return self.kf.x.flatten()
 
+
     def predict(self) -> Tuple[float, float]:
-        """Predict the next state, scaling gravity by local pixel depth."""
-        x = self._x()
-        # Depth-aware gravity: compute local px/meter at current ball position,
-        # then scale gravity so 1 real-world g maps correctly regardless of depth.
-        base_g = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
-        if base_g != 0.0 and self._court_H is not None:
-            local_scale = court_px_per_meter(
-                float(x[0]), float(x[1]),
-                self._court_H, self._court_H_inv, self._court_w_m
-            )
-            if local_scale is not None and self._ref_px_per_m is not None and self._ref_px_per_m > 0:
-                # Scale gravity so that near/far balls both feel the same real g
-                depth_scale = local_scale / self._ref_px_per_m
-                base_g *= depth_scale
-            elif local_scale is not None:
-                # First valid measurement: store as reference
-                self._ref_px_per_m = local_scale
-        u = np.array([[base_g]])
-
-        # Apply drag to velocity before prediction
-        if self.cfg.gravity_enabled:
-            self.kf.x[2, 0] = x[2] * self.cfg.gravity_drag_factor
-            self.kf.x[3, 0] = x[3] * self.cfg.gravity_drag_factor
-
-        self.kf.predict(u=u)
+        """Use the same transition for ROI, filter state and covariance."""
+        gravity = self.cfg.gravity_px_per_frame2 if self.cfg.gravity_enabled else 0.0
+        self.kf.F, self.kf.B = _projectile_matrices(self.cfg)
+        self.kf.predict(np.array([[gravity]]))
         x = self._x()
         return float(x[0]), float(x[1])
 
     def predict_dt(self, dt: int) -> Tuple[float, float]:
         """Predict the state an arbitrary number of frames ahead WITHOUT changing the true state."""
         x_pred = self._x().copy()
-        
+        gravity = self.cfg.gravity_px_per_frame2 if self.cfg.gravity_enabled else 0.0
+        F, B = _projectile_matrices(self.cfg)
         for _ in range(dt):
-            # Apply drag to predictions
-            if self.cfg.gravity_enabled:
-                x_pred[2] *= self.cfg.gravity_drag_factor
-                x_pred[3] *= self.cfg.gravity_drag_factor
-                
-            x_pred = np.dot(self.kf.F, x_pred)
-            x_pred = np.asarray(x_pred).flatten()
-            
-            # Apply gravity to predictions
-            if self.cfg.gravity_enabled:
-                x_pred[3] += self.cfg.gravity_px_per_frame2
+            x_pred = F @ x_pred + B[:, 0] * gravity
                 
         return float(x_pred[0]), float(x_pred[1])
-
-    def get_search_radius(self, scale_mult: float = 3.0) -> float:
-        """Extract search radius based on position uncertainty."""
-        # Max of variance in X or Y
-        var_pos = max(self.kf.P[0, 0], self.kf.P[1, 1])
-        std_pos = math.sqrt(var_pos)
-        
-        # Ensure it doesn't get ridiculously small or large
-        radius = np.clip(std_pos * scale_mult, 10.0, 100.0)
-        return float(radius)
 
     def update(self, z_x: float, z_y: float, conf: Optional[float] = None) -> float:
         """Update filter with a measurement.
@@ -258,7 +236,7 @@ class BallKalmanFilter:
         residual = np.array([z_x, z_y], dtype=float) - hx
         pred_vy = float(x[3])
         if pred_vy > 2.0 and float(residual[1]) < -10.0:
-            self.kf.x[3, 0] = -abs(pred_vy) * max(0.0, float(self.cfg.bounce_restitution))
+            self.kf.x[3, 0] = -abs(pred_vy) * self.cfg.bounce_restitution
             self.kf.P[3, 3] += 80.0
 
         self.kf.update(z)

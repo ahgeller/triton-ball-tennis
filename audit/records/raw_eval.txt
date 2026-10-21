@@ -1,0 +1,13 @@
+[archive] finetune  (1 clips)
+[detector] GridTrackNet FP16 (confidence=0.00, device=cuda:0)
+[detector] GridTrackNet prepass: 226 source frames, 226 detections, 12 batched calls across 1 phase(s) in 2.4s (92.7 source fps)
+[gridtracknet] video10: 227 frames in 2.5s
+
+=== gridtracknet: threshold sweep (all clips pooled) ===
+conf>=0.30     vis= 215 recall=0.907 wrong=0.051 miss=0.009 | invis= 11 falseAlarm=0.818 | med=2.9px p90=7.8px
+conf>=0.50     vis= 215 recall=0.884 wrong=0.028 miss=0.070 | invis= 11 falseAlarm=0.455 | med=2.7px p90=6.8px
+conf>=0.70     vis= 215 recall=0.795 wrong=0.009 miss=0.186 | invis= 11 falseAlarm=0.364 | med=2.5px p90=5.5px
+
+=== gridtracknet: per clip at conf>=0.50 ===
+video10        vis= 215 recall=0.884 wrong=0.028 miss=0.070 | invis= 11 falseAlarm=0.455 | med=2.7px p90=6.8px
+gridtracknet: mean offset on hits dx=-0.24px dy=+1.56px (n=190)

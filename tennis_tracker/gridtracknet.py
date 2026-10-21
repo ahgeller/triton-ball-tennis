@@ -1,4 +1,10 @@
+"""PyTorch port of GridTrackNet and the loader for its exported NPZ weights.
+
+Input: five consecutive RGB frames at 768x432, stacked into 15 channels, in
+[0, 1].  Output: per frame a confidence grid and x/y offset grids at 48x27.
+"""
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -12,10 +18,18 @@ FRAMES_PER_UNIT = 5
 GRID_COLS = 48
 GRID_ROWS = 27
 POOL_AFTER = {1, 3, 5, 8}
+# Keras BatchNormalization default epsilon, baked into the exported statistics.
+BN_EPSILON = 0.001
+
+GridPoint = Tuple[Optional[Tuple[float, float]], float]
 
 
 class WidthBatchNorm(nn.Module):
-    """Reproduce GridTrackNet's BatchNormalization(axis=-1) in NCHW."""
+    """Reproduce GridTrackNet's BatchNormalization(axis=-1) in NCHW.
+
+    The upstream export normalises along the width axis; these statistics are
+    buffers from that export, not trainable parameters.
+    """
 
     def __init__(self, width: int):
         super().__init__()
@@ -24,11 +38,11 @@ class WidthBatchNorm(nn.Module):
         self.register_buffer("mean", torch.zeros(width))
         self.register_buffer("variance", torch.ones(width))
 
-    def forward(self, value):
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
         shape = (1, 1, 1, -1)
         return (
             (value - self.mean.view(shape))
-            * torch.rsqrt(self.variance.view(shape) + 0.001)
+            * torch.rsqrt(self.variance.view(shape) + BN_EPSILON)
             * self.gamma.view(shape)
             + self.beta.view(shape)
         )
@@ -45,7 +59,7 @@ class GridTrackNet(nn.Module):
         )
         self.batch_norms = nn.ModuleList(WidthBatchNorm(width) for width in widths)
 
-    def forward(self, value):
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
         for index, conv in enumerate(self.convs):
             value = conv(value)
             if index == len(self.convs) - 1:
@@ -57,6 +71,8 @@ class GridTrackNet(nn.Module):
 
 
 def load_model(weights: Path, device: torch.device) -> GridTrackNet:
+    """Build the network from the upstream NPZ export (Keras layer names, HWIO
+    kernels) as an FP16 eval model on ``device``."""
     model = GridTrackNet()
     with np.load(weights) as source, torch.no_grad():
         for index, conv in enumerate(model.convs):
@@ -74,13 +90,17 @@ def load_model(weights: Path, device: torch.device) -> GridTrackNet:
     return model.eval().to(device).half()
 
 
-def frame_tensor(frame, device: torch.device):
+def frame_tensor(frame: np.ndarray, device: torch.device) -> torch.Tensor:
+    """One BGR uint8 frame -> (3, HEIGHT, WIDTH) RGB float16 in [0, 1] on ``device``."""
     rgb = cv2.cvtColor(cv2.resize(frame, (WIDTH, HEIGHT)), cv2.COLOR_BGR2RGB)
     chw = np.moveaxis(rgb, -1, 0).astype(np.float32) / 255.0
     return torch.from_numpy(chw).to(device, dtype=torch.float16)
 
 
-def decode_predictions(output, output_width: int, output_height: int, threshold: float):
+def decode_predictions(output: torch.Tensor, output_width: int, output_height: int,
+                       threshold: float) -> List[GridPoint]:
+    """Per input frame, the most confident grid cell as a point in ``output_width`` x
+    ``output_height`` pixels (None below ``threshold``) and its confidence."""
     units = output.float().cpu().numpy().reshape(-1, FRAMES_PER_UNIT, 3, GRID_ROWS, GRID_COLS)
     decoded = []
     for unit in units:
@@ -101,4 +121,6 @@ def self_test() -> None:
     output[0, 0, 4, 6] = 0.9
     output[0, 1, 4, 6] = 0.5
     output[0, 2, 4, 6] = 0.25
-    assert decode_predictions(output, 1920, 1080, 0.5)[0][0] == (260.0, 170.0)
+    point = decode_predictions(output, 1920, 1080, 0.5)[0][0]
+    if point != (260.0, 170.0):
+        raise AssertionError(f"decode_predictions placed the cell at {point}, expected (260.0, 170.0)")

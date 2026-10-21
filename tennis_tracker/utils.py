@@ -1,21 +1,31 @@
+"""Host-side platform probing: FFmpeg discovery, encoder choice and the CUDA device.
+
+Nothing here touches CUDA; ``torch`` is imported only to ask whether a CUDA
+device exists.  TensorRT engine files are ``engine_files``'s business.
+"""
+from __future__ import annotations
+
 import copy
 import glob
-import json
 import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-try:
-    import torch
-    HAS_TORCH = True
-except Exception:
-    torch = None
-    HAS_TORCH = False
+from typing import Dict, List, Optional, Protocol, Tuple
+
+import torch
 
 from .config import Config
 
+ENCODER_NVENC = "nvenc"
+ENCODER_LIBX264 = "libx264"
+ENCODER_OPENCV = "opencv"
+FFMPEG_ENCODER_NAMES = {ENCODER_NVENC: "h264_nvenc", ENCODER_LIBX264: "libx264"}
+
+# ``ffmpeg -encoders`` only lists capabilities; it never hangs for long.
+_FFMPEG_PROBE_TIMEOUT_S = 5.0
 _FFMPEG_ENCODER_CACHE: Dict[Tuple[str, str], bool] = {}
 
 
@@ -33,64 +43,118 @@ def ffmpeg_has_encoder(ffmpeg: Optional[str], encoder: str) -> bool:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=5,
+            timeout=_FFMPEG_PROBE_TIMEOUT_S,
+            shell=False,
+            check=False,
         )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"[info] Could not probe FFmpeg encoders ({error}); assuming '{encoder}' is unavailable")
+        ok = False
+    else:
         output = (proc.stdout or "") + (proc.stderr or "")
         ok = proc.returncode == 0 and any(
             len(line.split()) >= 2 and line.split()[1] == str(encoder)
             for line in output.splitlines()
         )
-    except Exception:
-        ok = False
     _FFMPEG_ENCODER_CACHE[key] = bool(ok)
     return bool(ok)
 
 
-def _detect_device(requested: str) -> Tuple[str, str]:
-    HAS_CUDA = HAS_TORCH and torch.cuda.is_available()
-    HAS_MPS = HAS_TORCH and hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+def detect_device(requested: str) -> Tuple[str, str]:
+    """Resolve ``Config.device``: an explicit value is returned as given, ``auto``
+    picks CUDA device 0 when there is one.  The tracking runtime rejects
+    anything that is not a CUDA index, so there is no CPU/MPS fallback."""
     if requested != "auto":
         return requested, f"user-specified ({requested})"
-    if HAS_CUDA:
+    if torch.cuda.is_available():
         return "0", f"CUDA ({torch.cuda.get_device_name(0)})"
-    if HAS_MPS:
-        return "mps", "Apple MPS"
-    return "cpu", "CPU"
+    return "cpu", "no CUDA device"
 
-def _check_capabilities(cfg: Config, device_str: str) -> Config:
+
+@dataclass(frozen=True)
+class EncoderChoice:
+    """Which encoders ``VideoWriter`` may use, in the order it tries them.
+
+    ``ffmpeg`` is the FFmpeg binary (None when none was found); ``chain`` holds
+    ``ENCODER_NVENC`` / ``ENCODER_LIBX264`` / ``ENCODER_OPENCV`` and always ends
+    with OpenCV, which needs no external process.
+    """
+
+    ffmpeg: Optional[str]
+    chain: Tuple[str, ...]
+
+    @property
+    def preferred(self) -> str:
+        return self.chain[0]
+
+    @property
+    def ffmpeg_encoders(self) -> Tuple[str, ...]:
+        return tuple(name for name in self.chain if name != ENCODER_OPENCV)
+
+
+class EncoderSettings(Protocol):
+    """The slice of ``Config`` the encoder choice reads."""
+
+    use_nvenc: bool
+
+
+def choose_encoder(cfg: EncoderSettings, is_cuda: bool = True) -> EncoderChoice:
+    """Decide the encoder fallback order from ``cfg.use_nvenc`` and the FFmpeg build.
+
+    NVENC needs a CUDA device and an FFmpeg with ``h264_nvenc``; libx264 needs
+    an FFmpeg with ``libx264``; OpenCV is always last.  ``use_nvenc=False``
+    means "no FFmpeg at all", as it always has.
+    """
+    if not cfg.use_nvenc:
+        return EncoderChoice(None, (ENCODER_OPENCV,))
+    ffmpeg = find_ffmpeg()
+    chain: List[str] = []
+    if ffmpeg:
+        if is_cuda and ffmpeg_has_encoder(ffmpeg, FFMPEG_ENCODER_NAMES[ENCODER_NVENC]):
+            chain.append(ENCODER_NVENC)
+        if ffmpeg_has_encoder(ffmpeg, FFMPEG_ENCODER_NAMES[ENCODER_LIBX264]):
+            chain.append(ENCODER_LIBX264)
+    chain.append(ENCODER_OPENCV)
+    return EncoderChoice(ffmpeg, tuple(chain))
+
+
+def resolve_runtime(cfg: Config, device: str) -> Tuple[Config, EncoderChoice]:
+    """A copy of ``cfg`` with ``device`` set, and the encoder choice for it.
+
+    ``device`` is the resolved device (see ``detect_device``); the caller's
+    ``cfg`` is left untouched and nothing undeclared is attached to the copy.
+    Pass the ``EncoderChoice`` to ``VideoWriter(..., encoder=...)`` so the
+    writer does not have to probe FFmpeg again.
+    """
     cfg = copy.copy(cfg)
-    is_cuda = device_str not in ("cpu", "mps")
+    cfg.device = str(device)
+    encoder = choose_encoder(cfg, is_cuda=str(device).isdigit())
+    return cfg, encoder
 
-    if cfg.use_nvenc:
-        ffmpeg = find_ffmpeg()
-        if not ffmpeg:
-            cfg.use_nvenc = False
-            cfg._use_libx264 = False
-            print("[info] Hardware encoding disabled (ffmpeg not found)")
+
+def print_platform_report(cfg: Config, encoder: EncoderChoice) -> None:
+    """The ``[platform]`` lines for a resolved config: device, why NVENC is
+    off when it is, and the accelerations in use."""
+    is_cuda = str(cfg.device).isdigit()
+    if cfg.use_nvenc and encoder.preferred != ENCODER_NVENC:
+        fallback = "libx264" if encoder.preferred == ENCODER_LIBX264 else "OpenCV"
+        if encoder.ffmpeg is None:
+            reason = "ffmpeg not found"
         elif not is_cuda:
-            cfg.use_nvenc = False
-            cfg._use_libx264 = ffmpeg_has_encoder(ffmpeg, "libx264")
-            msg = "using libx264" if cfg._use_libx264 else "using OpenCV"
-            print(f"[info] NVENC disabled (requires NVIDIA GPU), {msg}")
-        elif not ffmpeg_has_encoder(ffmpeg, "h264_nvenc"):
-            cfg.use_nvenc = False
-            cfg._use_libx264 = ffmpeg_has_encoder(ffmpeg, "libx264")
-            msg = "using libx264" if cfg._use_libx264 else "using OpenCV"
-            print(f"[info] NVENC disabled (ffmpeg lacks h264_nvenc), {msg}")
-    if not hasattr(cfg, "_use_libx264"):
-        cfg._use_libx264 = False
+            reason = "requires NVIDIA GPU"
+        else:
+            reason = "ffmpeg lacks h264_nvenc"
+        print(f"[info] NVENC disabled ({reason}), using {fallback}")
     accel = ["TensorRT"]
-    if cfg.use_nvenc:
-        accel.append("NVENC encoding")
-    elif cfg._use_libx264:
-        accel.append("libx264 encoding")
-    else:
-        accel.append("OpenCV encoding")
-    accel.append("CUDA preprocessing" if is_cuda and cfg.enable_preprocess
-                 else "CPU preprocessing" if cfg.enable_preprocess else "no preprocessing")
-    print(f"[platform] Device: {device_str}")
+    accel.append({
+        ENCODER_NVENC: "NVENC encoding",
+        ENCODER_LIBX264: "libx264 encoding",
+    }.get(encoder.preferred, "OpenCV encoding"))
+    # Preprocessing has no CPU path; a non-CUDA device fails at detector setup.
+    accel.append("CUDA preprocessing" if cfg.enable_preprocess else "no preprocessing")
+    print(f"[platform] Device: {cfg.device}")
     print(f"[platform] Accelerations: {', '.join(accel)}")
-    return cfg
+
 
 def _ffmpeg_candidates() -> List[str]:
     candidates: List[str] = []
@@ -100,7 +164,7 @@ def _ffmpeg_candidates() -> List[str]:
             return
         try:
             resolved = str(Path(path).resolve())
-        except Exception:
+        except OSError:
             resolved = str(path)
         if os.path.exists(resolved) and resolved not in candidates:
             candidates.append(resolved)
@@ -125,6 +189,7 @@ def _ffmpeg_candidates() -> List[str]:
                     add(match)
     return candidates
 
+
 def find_ffmpeg(prefer_encoder: Optional[str] = "h264_nvenc") -> Optional[str]:
     candidates = _ffmpeg_candidates()
     if prefer_encoder:
@@ -132,69 +197,3 @@ def find_ffmpeg(prefer_encoder: Optional[str] = "h264_nvenc") -> Optional[str]:
             if ffmpeg_has_encoder(path, prefer_encoder):
                 return path
     return candidates[0] if candidates else None
-
-def _normalize_class_name(name: Optional[str]) -> str:
-    if name is None:
-        return ""
-    return str(name).strip().lower().replace("_", " ").replace("-", " ")
-
-def _get_name_from_id(names, cls_id: int) -> str:
-    if isinstance(names, dict):
-        return str(names.get(cls_id, ""))
-    if isinstance(names, (list, tuple)) and 0 <= cls_id < len(names):
-        return str(names[cls_id])
-    return ""
-
-def find_ball_class_id_from_names(names, override: Optional[str] = None):
-    if isinstance(names, list):
-        names = dict(enumerate(names))
-    if not isinstance(names, dict) or not names:
-        names = {0: "ball"}
-    names = {int(k): str(v) for k, v in names.items()}
-    if len(names) == 1:
-        cid = list(names.keys())[0]
-        return cid, names[cid]
-    if override:
-        for cid, name in names.items():
-            if name.lower() == override.lower():
-                return cid, name
-        print(f"[WARN] class_name='{override}' not in {names}")
-    for candidate in ["ball", "sports ball", "tennis ball", "sports_ball", "tennis_ball"]:
-        for cid, name in names.items():
-            if name.lower() == candidate:
-                print(f"[info] Auto-detected ball class: {cid} -> '{name}'")
-                return cid, name
-    print(f"[WARN] Could not find ball class in {names}. All classes used!")
-    return None, None
-
-def _resolve_engine_path_for_ball(cfg: Config) -> Optional[Path]:
-    base = Path(cfg.model_path)
-    if base.suffix.lower() == ".engine":
-        return base if base.exists() else None
-    engine = base.with_suffix(".engine")
-    return engine if engine.exists() else None
-
-def _resolve_engine_path(model_path: Optional[str]) -> Optional[Path]:
-    if not model_path:
-        return None
-    base = Path(model_path)
-    if base.suffix.lower() == ".engine":
-        return base if base.exists() else None
-    engine = base.with_suffix(".engine")
-    return engine if engine.exists() else None
-
-def _read_engine_names(engine_path: Path) -> Dict[int, str]:
-    if engine_path is None or not engine_path.exists():
-        return {0: "ball"}
-    try:
-        with open(engine_path, "rb") as f:
-            meta_len = int.from_bytes(f.read(4), byteorder="little")
-            meta = json.loads(f.read(meta_len).decode("utf-8"))
-        names = meta.get("names")
-        if isinstance(names, list):
-            return {i: str(n) for i, n in enumerate(names)}
-        if isinstance(names, dict):
-            return {int(k): str(v) for k, v in names.items()}
-    except Exception:
-        pass
-    return {0: "ball"}

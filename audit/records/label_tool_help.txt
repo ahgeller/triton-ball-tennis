@@ -1,0 +1,97 @@
+usage: label_tool.py [-h] [--videos VIDEOS] [--labels LABELS] [--zoom ZOOM]
+                     [--grid] [--uncertain]
+                     clips [clips ...]
+
+Correct the detector's draft labels as fast as possible.
+
+    python finetune/label_tool.py <clip>                 # videos/<clip>.mp4 + labels/<clip>_ball.csv
+    python finetune/label_tool.py video22..video53      # a whole run, one clip after another
+    python finetune/label_tool.py video22..video53 --uncertain   # only the frames worth a look
+
+Several clips run as one session: the last frame of one leads straight into the first of the next,
+n and p cross the join, zoom carries over, and every edit is written back to the clip the frame
+came from. The HUD names the clip you are in.
+
+Every label frame (every 2nd frame of a 60 FPS clip, every frame at 30 FPS)
+comes up with the detector's guess drawn and — on Windows — the mouse cursor
+already sitting on it.  If it is right, press SPACE (or ENTER / c).  If it is
+wrong, click where the ball is.  Both move to the next frame.  The view keeps
+the ball in the middle and the mouse goes with it, so the pointer is always
+sitting on the next guess.  The guess is dead centre on every frame, even one
+at the very edge of the picture — the view runs off the frame there and that
+strip is drawn black; zoom stays where you set it.  The window is
+resizable — drag it, maximise it, or press m for full screen — and the picture
+is redrawn at whatever size you give it.
+
+Controls:
+  TAB                      toggle eight-crop precision review (or launch with --grid)
+                           click a crop to correct it without moving the crop; right click opens
+                           the full frame; SPACE confirms the displayed group; a/d change pages
+  SHIFT + i / j / k / l    nudge the selected point by 0.25 native pixels (normal keys: 1 pixel)
+  left click               ball is here -> save and go to next frame
+  SPACE / ENTER / c        guess is good -> next frame
+  v                        ball not visible on this frame -> next frame
+  r                        accept the whole run of confident guesses up to the next iffy one
+  mouse wheel, + / -       smooth zoom in / out about the mouse / the ball (kept across frames)
+  right click              re-centre the view here
+  i / j / k / l            nudge the point one pixel up / left / down / right (stays on frame);
+                           with SHIFT held, a quarter of a pixel
+  n / d / right arrow      next frame        p / a / left arrow   previous frame
+  1 / 2 / 4 / 6 / 8        how many frames those four move at a time - the x1..x8 buttons on the
+                           bar do the same. Holding d or a at x8 covers ground eight times as
+                           fast; SPACE, v and a click always move exactly one frame
+  f / b                    jump to next / previous unreviewed uncertain frame - that includes any
+                           frame flagged by ft.py check --audit --mark, drawn in magenta. SPACE
+                           clears a flag as well as a click does: it is good where it is
+  u                        undo last change on this frame
+  g / click the badge      auto-centre on / off. On (the default) every frame puts the guess in
+                           the middle of the screen with the mouse on it; off leaves the view and
+                           the mouse alone, for looking round a frame
+  h / click the badge      cycle the view filter: OFF -> DIM WHITE (court lines, white kit and sky
+                           pulled down to a dull blue-grey so a yellow ball stops hiding on them)
+                           -> BALL POP (only tennis-ball yellows keep their colour) -> MOTION (what
+                           moved since the previous label frame lights up magenta). Remembered
+                           between sessions in labels/label_tool.settings.json
+  o / click the badge      overview inset on / off: while zoomed in, a small copy of the whole frame
+                           sits bottom-right with the part on screen boxed and the ball dotted.
+                           Click anywhere in it to bring that spot into the zoomed view - the quick
+                           way to reach a ball the detector put somewhere else entirely
+  m                        full screen on / off (the window also maximises normally)
+  t                        toggle trail       s   save        q / ESC   save and quit
+
+A frame with no guess at all (the detector missed) gets a dashed "guess" ring where the labels
+either side say the ball should be; the view centres there and the mouse is parked on it, so if
+it is right a click is all it takes. Nothing is written until you do click.
+
+The window is OpenCV's Qt one, and that window zooms itself on every wheel notch as well - which
+is what used to leave the ball in a corner of the screen after zooming in: the tool had centred
+it, the window was showing a cropped, shifted part of the picture. Every notch is now paid back
+to the window straight away, the toolbar that could also zoom it is gone, and a check runs every
+few seconds; if the window's zoom has crept in anyway it is rebuilt in place.
+
+--uncertain walks only the frames that want attention - no confident guess, or flagged by
+ft.py check --audit --mark - and skips confident predictions, which may still be wrong. n/p/SPACE step
+between those frames; the rest of the labels are untouched and still saved.
+Imported CSVs without confidence are treated as unknown, not as perfect detections.
+Use the regular or --grid view to check small centering errors in every imported label.
+
+Output: labels/<clip>_ball.csv (frame,ball_x,ball_y).  Review progress lives
+in labels/<clip>_ball.review.json so you can quit and resume.  Everything is
+autosaved every few seconds and on any exit; a frame you already dealt with
+shows a REVIEWED (space) or EDITED (click / v / nudge) badge in the top-right
+corner when you come back to it, and the top-left corner counts how many
+frames are left to do.
+
+positional arguments:
+  clips            Clip stem(s), or a range like video22..video53
+
+options:
+  -h, --help       show this help message and exit
+  --videos VIDEOS
+  --labels LABELS
+  --zoom ZOOM      Starting zoom (default: last used, else 2)
+  --grid           Review eight enlarged ball crops together; TAB toggles this
+                   view
+  --uncertain      Only stop on frames that want attention: no confident
+                   guess, or flagged by ft.py check --audit --mark. Every
+                   other label is left alone.
