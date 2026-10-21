@@ -46,8 +46,12 @@ class Config:
     player_iou: float = 0.10
     draw_players: bool = True
     draw_court: bool = True
+    # Court events: ball landings, racket contacts and rally legs from the selected track
+    # (``tennis_tracker/court``), exported as the tracking JSON's ``court_events`` block.
+    # Drawing the minimap implies computing them; --court turns both on.
+    court_events: bool = False
     draw_court_minimap: bool = False
-    bounce_model_path: Optional[str] = None
+    bounce_model_path: Optional[str] = None       # the CatBoost bounce model, needed when they are computed
     num_players: int = 4
 
     # Detector-input preprocessing (HSV boost of motion blobs, dimming of static

@@ -1,11 +1,12 @@
 """What a run produces: ``RunResult``, which ``pipeline.run`` returns, and the tracking JSON
-written from it (per-frame results, tracks, court/player data and optional motion diagnostics).
-``RunResult`` lives here because its ``frame_rows`` are the JSON's ``frames`` table."""
+written from it (per-frame results, tracks, court/player data, the court events when they were
+computed, and optional motion diagnostics). ``RunResult`` lives here because its ``frame_rows``
+are the JSON's ``frames`` table."""
 from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, overload
 
@@ -13,15 +14,20 @@ import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult, PackedMask, RawDetection, Track
 
-from .court.court_scene import PlayerBoxes
+from .court.court_scene import BallPoint, BounceEvent, ContactEvent, PlayerBoxes
 from .pass1 import Pass1Result
-from .run_context import RunContext
+from .run_context import CourtEvents, RunContext
 from .tracking_schema import (
+    BallPointJson,
+    BounceEventJson,
+    ContactEventJson,
+    CourtEventsJson,
     FrameRow,
     MotionCandidate,
     MotionDiagnosticFrame,
     MotionDiagnostics,
     ObservationJson,
+    RallyLegJson,
     TrackingJson,
     TrackJson,
 )
@@ -38,7 +44,8 @@ _MAX_CANDIDATES_PER_FRAME = 5
 # its keys change. Version 2 of both: the detector stopped being YOLO, so ``yolo_gap_frames``
 # became ``detector_gap_frames``, the reason ``yolo_detection_available`` became
 # ``detection_available``, and the chosen track's ``score_breakdown`` keys were renamed.
-_TRACKING_SCHEMA_VERSION = 2
+# Tracking version 3: the ``court_events`` block (``court_events_to_json``) was added.
+_TRACKING_SCHEMA_VERSION = 3
 _MOTION_DIAGNOSTICS_SCHEMA_VERSION = 2
 
 
@@ -103,6 +110,7 @@ class RunResult:
     timing: Dict[str, float]                         # per-stage seconds, filled when cfg.info_timing is on
     pass2_frames_rendered: int
     outputs: Dict[str, Path]                         # files written, by role: tracking_json, tracking_video, ...
+    court_events: CourtEvents = field(default_factory=CourtEvents)   # what the court-event stages found, if run
 
     @property
     def filled_frames(self) -> int:
@@ -148,6 +156,54 @@ def track_to_json(track: Optional[Track]) -> Optional[TrackJson]:
         "last_obs_frame": int(track.last_obs_frame),
         "score_breakdown": json_safe(track.score_breakdown),
         "observations": observations,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Court events (computed with --court; evaluation.court_events_score reads them)
+# ---------------------------------------------------------------------------
+
+def _ball_point_to_json(point: Optional[BallPoint]) -> Optional[BallPointJson]:
+    if point is None:
+        return None
+    return {"x": float(point.x), "y": float(point.y), "position": point.position}
+
+
+def bounce_event_to_json(event: BounceEvent) -> BounceEventJson:
+    return {
+        "frame": int(event.frame),
+        "x": float(event.x),
+        "y": float(event.y),
+        "score": float(event.score),
+        "origin": event.origin,
+        "position": event.position,
+    }
+
+
+def contact_event_to_json(event: ContactEvent) -> ContactEventJson:
+    return {
+        "frame": int(event.frame),
+        "x": float(event.x),
+        "y": float(event.y),
+        "player_id": json_safe(event.player_id),
+        "score": float(event.score),
+        "source": event.source,
+        "ball": _ball_point_to_json(event.ball),
+    }
+
+
+def court_events_to_json(events: CourtEvents) -> CourtEventsJson:
+    """The ``court_events`` block: ``{}`` when the run did not compute them (as the motion
+    diagnostics are), else every list the stages produced, in native pixels and unit court."""
+    if not events.computed:
+        return {}
+    legs: List[RallyLegJson] = [json_safe(dict(leg)) for leg in events.rally_legs]
+    return {
+        "bounces": [bounce_event_to_json(event) for event in events.bounces],
+        "bounce_candidates": [bounce_event_to_json(event) for event in events.bounce_candidates],
+        "kinematic_bounces": [bounce_event_to_json(event) for event in events.kinematic_bounces],
+        "contacts": [contact_event_to_json(event) for event in events.contacts],
+        "rally_legs": legs,
     }
 
 
@@ -416,6 +472,7 @@ def write_tracking_json(ctx: RunContext, pass1: Pass1Result, result: RunResult) 
             )
             if cfg.motion_diagnostics else {}
         ),
+        "court_events": court_events_to_json(result.court_events),
         "frames": result.frame_rows(),
     }
     with out_path.open("w", encoding="utf-8") as f:

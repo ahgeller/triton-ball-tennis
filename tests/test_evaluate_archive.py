@@ -48,6 +48,37 @@ def test_list_clips_trusts_an_archive_without_a_review_policy(tmp_path):
     assert [video.stem for video, _ in list_clips(None, archive)] == ["video1", "video2"]
 
 
+def test_pipeline_mode_forwards_the_court_flag_to_each_headless_run(tmp_path, monkeypatch, capsys):
+    """``--court`` reaches ``run_headless`` as ``court_events`` (off without it); the tracker
+    itself is replaced by a run that finds nothing."""
+    from evaluation import archive
+    from tennis_tracker import headless
+    from tennis_tracker.export import RunResult
+    from tests._helpers import write_clip
+
+    (tmp_path / "labels").mkdir()
+    (tmp_path / "videos").mkdir()
+    video = write_clip(tmp_path / "videos" / "video1.avi", 3)
+    (tmp_path / "labels" / "video1_ball.csv").write_text("frame,ball_x,ball_y\nframe_000,10,10\n", encoding="utf-8")
+    seen = []
+
+    def run_headless(video_path, **kwargs):
+        seen.append((video_path, kwargs))
+        return RunResult(per_frame=[None] * 3, chosen_track=None, all_tracks=[], frame_count=3, court_keypoints=[],
+                         player_boxes=[], last_valid_court_keypoints=None, elapsed_sec=0.0, timing={},
+                         pass2_frames_rendered=0, outputs={})
+
+    monkeypatch.setattr(headless, "run_headless", run_headless)
+    common = ["--mode", "pipeline", "--archive", str(tmp_path), "--out-dir", str(tmp_path / "out")]
+    assert archive.main([*common, "--court"]) == 0
+    assert archive.main(common) == 0
+    (with_court, without) = seen
+    assert with_court[0] == video and with_court[1]["court_events"] is True
+    assert with_court[1]["tracking_json"] == tmp_path / "out" / "video1_gridtracknet.json"
+    assert without[1]["court_events"] is False
+    assert "=== pipeline [gridtracknet] per clip ===" in capsys.readouterr().out
+
+
 def test_segment_distance():
     assert _segment_distance(0, 5, 0, 0, 10, 0) == 5
     assert _segment_distance(15, 0, 0, 0, 10, 0) == 5       # beyond the end: to the endpoint

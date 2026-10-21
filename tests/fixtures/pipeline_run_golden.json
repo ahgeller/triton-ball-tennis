@@ -515,6 +515,7 @@
    "span": 40,
    "track_id": 0
   },
+  "court_events": {},
   "frames": [
    {
     "bbox": [
@@ -3883,7 +3884,7 @@
     }
    }
   },
-  "schema_version": 2,
+  "schema_version": 3,
   "summary": {
    "chosen_track_id": 0,
    "filled_frames": 40,
@@ -4931,6 +4932,7 @@
    "span": 40,
    "track_id": 0
   },
+  "court_events": {},
   "frames": [
    {
     "bbox": [
@@ -8221,7 +8223,7 @@
     }
    }
   },
-  "schema_version": 2,
+  "schema_version": 3,
   "summary": {
    "chosen_track_id": 0,
    "filled_frames": 40,

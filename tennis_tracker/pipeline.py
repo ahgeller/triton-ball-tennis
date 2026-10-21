@@ -202,9 +202,10 @@ def _select(ctx: RunContext, pass1: Pass1Result) -> Selection:
 
 
 def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> CourtEvents:
-    """Bounces, contacts and rally legs for the court minimap; empty when it is off."""
+    """Bounces, contacts and rally legs for the minimap and the tracking JSON; not computed
+    when neither ``cfg.court_events`` nor ``cfg.draw_court_minimap`` asks for them."""
     cfg, video = ctx.cfg, ctx.video
-    if not cfg.draw_court_minimap:
+    if not (cfg.court_events or cfg.draw_court_minimap):
         return CourtEvents()
     if not cfg.bounce_model_path:
         raise RuntimeError("--court requires Config.bounce_model_path")
@@ -217,15 +218,18 @@ def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> 
     inferred_legs = sum(leg["quality"] == "inferred" for leg in rally_legs)
     volleys = sum(leg["outcome"] == "volley" for leg in rally_legs)
     print(
-        f"[court minimap] {len(bounces.confirmed)} confirmed bounce(s), "
+        f"[court events] {len(bounces.confirmed)} confirmed bounce(s) "
+        f"({len(bounces.candidates)} candidate, {len(kinematic_bounces)} kinematic), "
         f"{len(contacts)} player contact(s), {len(rally_legs)} leg(s) "
         f"({inferred_legs} inferred, {volleys} volley) "
         f"in {time.perf_counter() - t0:.3f}s"
     )
-    return CourtEvents(list(bounces.confirmed), list(contacts), list(rally_legs))
+    return CourtEvents(True, list(bounces.confirmed), list(bounces.candidates), list(kinematic_bounces),
+                       list(contacts), list(rally_legs))
 
 
-def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered: int) -> RunResult:
+def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, events: CourtEvents,
+            rendered: int) -> RunResult:
     """Assemble the result, write it as the tracking JSON and report what was produced."""
     cfg = ctx.cfg
     n = pass1.frame_count
@@ -242,6 +246,7 @@ def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered:
         timing=dict(ctx.timing.values),
         pass2_frames_rendered=rendered,
         outputs=_written_outputs(cfg),
+        court_events=events,
     )
     if cfg.tracking_json:
         write_tracking_json(ctx, pass1, result)
@@ -264,4 +269,4 @@ def run(cfg: Config) -> RunResult:
     selection = _select(ctx, pass1)
     events = _court_events(ctx, pass1, selection)
     rendered = render_pass2(ctx, pass1, selection, events)
-    return _finish(ctx, pass1, selection, rendered)
+    return _finish(ctx, pass1, selection, events, rendered)

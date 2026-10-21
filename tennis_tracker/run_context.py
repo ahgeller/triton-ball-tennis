@@ -110,8 +110,14 @@ class Selection:
 
 @dataclass
 class CourtEvents:
-    """Bounces, player contacts and rally legs for the court minimap (empty when it is off)."""
+    """What the court-event stages found, for the minimap and the tracking JSON: the confirmed
+    bounces, the model's low-score candidates, the kinematic bounces, the player contacts and
+    the rally legs. ``computed`` is False, and every list empty, when the run did not ask for
+    them (``Config.court_events`` or ``draw_court_minimap``)."""
 
+    computed: bool = False
     bounces: List[BounceEvent] = field(default_factory=list)
+    bounce_candidates: List[BounceEvent] = field(default_factory=list)
+    kinematic_bounces: List[BounceEvent] = field(default_factory=list)
     contacts: List[ContactEvent] = field(default_factory=list)
     rally_legs: List[RallyLeg] = field(default_factory=list)

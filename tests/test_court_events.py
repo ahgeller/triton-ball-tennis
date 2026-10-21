@@ -1,5 +1,7 @@
 """Court-event API contracts: named events, the shared ``CourtScene``, the cache key, and the
-``--court`` flow run end to end against a fake CatBoost model."""
+``--court`` flow run end to end against a fake CatBoost model, its events exported."""
+import copy
+import json
 import math
 from typing import List
 
@@ -9,7 +11,7 @@ import pytest
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court.court_geometry import court_keypoints_key
 from tests.test_pipeline_run import (  # noqa: F401
-    FULL_OVERRIDES, assert_json_close, clip, load_golden, render_env, run_pipeline,
+    FULL_OVERRIDES, JSON_ONLY_OVERRIDES, assert_json_close, clip, load_golden, render_env, run_pipeline,
 )
 from tennis_tracker.court import bounce_events
 from tennis_tracker.court.bounce_events import infer_kinematic_bounces, predict_bounce_events
@@ -257,32 +259,90 @@ def test_court_event_stage_runs_the_model_contacts_and_legs(bounce_model, capsys
     selection = SimpleNamespace(per_frame=track)
     events = pipeline._court_events(ctx, pass1, selection)
     out = capsys.readouterr().out
-    assert isinstance(events, CourtEvents)
+    assert isinstance(events, CourtEvents) and events.computed
     assert [bounce.frame for bounce in events.bounces] == [15] and events.contacts == []
+    assert events.bounce_candidates == events.bounces                # nothing scored between 0.2 and 0.45
+    assert [bounce.origin for bounce in events.kinematic_bounces] == ["kink"]   # the same landing, seen as a kink
     (leg,) = events.rally_legs
     assert (leg["start_frame"], leg["end_frame"], leg["phase"], leg["outcome"]) == (0, 15, "rally", "bounce")
     assert (leg["quality"], leg["start_quality"]) == ("confirmed", "inferred")
-    assert out.startswith("[court minimap] 1 confirmed bounce(s), 0 player contact(s), 1 leg(s) (0 inferred, 0 volley)")
-    # Off, the stage neither loads the model nor prints.
+    assert out.startswith("[court events] 1 confirmed bounce(s) (1 candidate, 1 kinematic), "
+                          "0 player contact(s), 1 leg(s) (0 inferred, 0 volley)")
+    # Off, the stage neither loads the model nor prints; either flag alone turns it on.
     FakeBounceModel.loaded = []
     ctx.cfg.draw_court_minimap = False
     assert pipeline._court_events(ctx, pass1, selection) == CourtEvents()
     assert FakeBounceModel.loaded == [] and capsys.readouterr().out == ""
-    ctx.cfg.draw_court_minimap, ctx.cfg.bounce_model_path = True, None
+    ctx.cfg.court_events = True
+    assert pipeline._court_events(ctx, pass1, selection) == events
+    ctx.cfg.bounce_model_path = None
     with pytest.raises(RuntimeError, match="bounce_model_path"):
         pipeline._court_events(ctx, pass1, selection)
 
 
-def test_court_flag_draws_the_minimap_on_the_golden_clip(tmp_path, monkeypatch, fake_cuda, capsys, clip, bounce_model):
-    """``--court`` on the golden run: the bounce model is loaded, the minimap is drawn on
-    the tracking video and the tracking JSON is unchanged (events are not exported)."""
+# What ``--court`` adds to the golden clip's tracking JSON: the stages run and find nothing.
+EMPTY_COURT_EVENTS = {"bounces": [], "bounce_candidates": [], "kinematic_bounces": [], "contacts": [], "rally_legs": []}
+
+
+def test_court_flag_adds_an_empty_court_events_block_and_changes_nothing_else(
+        tmp_path, monkeypatch, fake_cuda, capsys, clip, bounce_model):
+    """``--court`` on the golden run: the bounce model is loaded, the minimap is drawn on the
+    tracking video, and the tracking JSON gains only the (empty) ``court_events`` block."""
     plain = load_golden()
     result = run_pipeline(tmp_path, monkeypatch, clip, **FULL_OVERRIDES,
                           draw_court_minimap=True, bounce_model_path=str(bounce_model))
     out = capsys.readouterr().out
     assert FakeBounceModel.loaded == [str(bounce_model.resolve())]
-    assert "[court minimap]" in out
-    assert_json_close(result["json"], plain["json"], "--court changed the tracking JSON")
+    assert ("[court events] 0 confirmed bounce(s) (0 candidate, 0 kinematic), 0 player contact(s), "
+            "0 leg(s) (0 inferred, 0 volley)") in out
+    assert result["json"]["court_events"] == EMPTY_COURT_EVENTS
+    expected = copy.deepcopy(plain["json"])
+    expected["court_events"] = EMPTY_COURT_EVENTS
+    assert_json_close(result["json"], expected, "--court changed more than the court_events block")
     if plain.get("render_env") == render_env():
         assert result["streams"]["detector_input"] == plain["streams"]["detector_input"]
         assert result["streams"]["tracking"] != plain["streams"]["tracking"]
+
+
+def test_court_events_are_computed_and_exported_without_any_video(
+        tmp_path, monkeypatch, fake_cuda, capsys, clip, bounce_model):
+    """``Config.court_events`` alone: pass 2 is skipped, the stages still run and the JSON
+    carries the block."""
+    result = run_pipeline(tmp_path, monkeypatch, clip, **JSON_ONLY_OVERRIDES,
+                          court_events=True, bounce_model_path=str(bounce_model))
+    out = capsys.readouterr().out
+    assert "[pass 2] Skipped (no video outputs selected)" in out and "[court events] 0 confirmed" in out
+    assert result["streams"] == {} and result["result"].court_events.computed
+    expected = copy.deepcopy(load_golden()["json"])
+    expected["summary"]["pass2_frames_rendered"] = 0
+    expected["court_events"] = EMPTY_COURT_EVENTS
+    assert_json_close(result["json"], expected, "the JSON-only --court run differs from the golden")
+
+
+def test_a_model_bounce_is_exported_with_its_provenance_and_its_leg(tmp_path, monkeypatch, fake_cuda, clip, bounce_model):
+    """One confirmed landing on the golden clip (the bounce model replaced): the JSON's bounce
+    row carries the frame's position and kind, the leg that ends in it says where its landing
+    and its (rescued) contact came from, and ``RunResult.court_events`` is what the file holds."""
+    from tennis_tracker import pipeline
+    from tennis_tracker.export import court_events_to_json
+
+    def one_landing(scene, model_path):
+        point = ball_point(scene.per_frame[35])
+        return BouncePrediction([BounceEvent(35, point.x, point.y, 0.9, "model", point.position)], [])
+
+    monkeypatch.setattr(pipeline, "predict_bounce_events", one_landing)
+    result = run_pipeline(tmp_path, monkeypatch, clip, **JSON_ONLY_OVERRIDES,
+                          court_events=True, bounce_model_path=str(bounce_model))
+    block, row = result["raw_json"]["court_events"], result["raw_json"]["frames"][35]
+    assert row["present"] and row["position_kind"] == "filtered"            # the refit moved every detected row
+    assert block["bounces"] == [{"frame": 35, "x": row["x"], "y": row["y"], "score": 0.9,
+                                 "origin": "model", "position": "filtered"}]
+    assert block["bounce_candidates"] == [] and block["contacts"] == []
+    (leg,) = block["rally_legs"]
+    assert leg["end_frame"] == 35 and leg["outcome"] == "bounce" and leg["start_frame"] < 35
+    assert (leg["quality"], leg["start_quality"], leg["start_source"]) == ("confirmed", "inferred", "inferred")
+    assert (leg["landing_origin"], leg["landing_position"]) == ("model", "filtered")
+    assert all(isinstance(leg[key], list) and len(leg[key]) == 2 for key in ("start", "end"))
+    events = result["result"].court_events
+    assert events.computed and [bounce.frame for bounce in events.bounces] == [35]
+    assert json.loads(json.dumps(court_events_to_json(events))) == block

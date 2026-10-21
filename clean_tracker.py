@@ -24,7 +24,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--conf", type=float, default=0.50)
     parser.add_argument("--device", default="0")
     parser.add_argument("--no-video", action="store_true")
-    parser.add_argument("--court", action="store_true", help="Draw the top-right 2D court minimap")
+    parser.add_argument("--court", action="store_true",
+                        help="Compute the court events (landings, contacts, rally legs), export them "
+                             "in the tracking JSON and draw the top-right 2D court minimap")
     parser.add_argument("--info", action="store_true")
     parser.add_argument("--motion-diagnostics", action="store_true",
                         help="Add per-frame motion diagnostics to the tracking JSON "
@@ -76,6 +78,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         conf=float(args.conf),
         device=str(args.device),
         save_tracking_video=not args.no_video,
+        court_events=bool(args.court),
         draw_court_minimap=bool(args.court),
         bounce_model_path=str(BOUNCE_MODEL),
         print_selector_tracks=False,

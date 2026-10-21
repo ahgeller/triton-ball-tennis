@@ -24,13 +24,17 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   defaults, scripts, the workspace) spells once. `headless.py`: the one Config
   and run for a caller that wants the tracker's answer and no video
   (`evaluation/archive.py`, `pretrack.py`).
-- `tennis_tracker/pipeline.py`: orders the stages, calls the selector and court
-  events, reports. `run_context.py`: data the stages pass each other. `pass1.py`
+- `tennis_tracker/pipeline.py`: orders the stages, calls the selector and, with
+  `--court` (`Config.court_events`, implied by the minimap), the court events,
+  reports. `run_context.py`: data the stages pass each other (`CourtEvents`:
+  the bounces, candidates, kinematic bounces, contacts and legs found). `pass1.py`
   (with `frame_window.py`): decoding, background/motion state, ROI collection,
   detector calls. `pass2.py`: rendering pass. `export.py`: `RunResult`, what a
-  run returns, and the tracking JSON writer. `tracking_schema.py`: the tracking
-  JSON's shape (TypedDicts, typing only), which the writer and the scorers
-  share. `motion.py`, `roi_tracking.py`: CUDA motion masks and ROI tracking.
+  run returns, and the tracking JSON writer, whose `court_events` block carries
+  every event with its provenance (`{}` when they were not computed).
+  `tracking_schema.py`: the tracking JSON's shape (TypedDicts, typing only),
+  which the writer and the scorers share. `motion.py`, `roi_tracking.py`: CUDA
+  motion masks and ROI tracking.
 - `tennis_tracker/court/`: `court_geometry.py`, keypoints, side guides, polygon,
   homography; the court-event stages, each reading one `CourtScene`:
   `court_scene.py` (`CourtScene`, the event types and the player-box queries),
@@ -133,6 +137,7 @@ locked installation manifest. TensorRT engines may be GPU/version specific.
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' clean_tracker.py --self-test
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' finetune/train_gridtracknet.py --self-test
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' clean_tracker.py --no-video --tracking-json output/new_review_tracking.json
+& 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' clean_tracker.py --court --no-video --tracking-json output/new_review_court_events.json
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' evaluate_archive.py --archive finetune --mode raw --clips video13
 ```
 

@@ -1,6 +1,7 @@
 """The tracking JSON's shape.  ``export.write_tracking_json`` writes a ``TrackingJson``; the
 scorers (``evaluation.validate``, ``evaluation.pipeline_score``) and ``finetune.training.pretrack``
-read its ``frames`` table of ``FrameRow``s.  Keys are listed in the order they are written.
+read its ``frames`` table of ``FrameRow``s, and ``evaluation.court_events_score`` its
+``court_events`` block.  Keys are listed in the order they are written.
 
 Only ``typing`` is imported, so a reader can use these types at runtime without loading the
 tracker's OpenCV, CUDA and TensorRT stack.
@@ -147,6 +148,73 @@ class MotionDiagnostics(TypedDict, total=False):
     frames: List[MotionDiagnosticFrame]
 
 
+# ``tennis_tracker.court.court_scene``'s EventOrigin and EventPosition, spelled again here for
+# the same reason as PositionKind; ``tests/test_export.py`` pins them to each other.
+EventOrigin = Literal["model", "kink", "gap"]
+EventPosition = Literal["measurement", "filtered", "recovered", "extrapolated"]
+
+
+class BallPointJson(TypedDict):
+    """A ball position in native pixels and where it came from (``court_scene.BallPoint``)."""
+
+    x: float
+    y: float
+    position: EventPosition
+
+
+class BounceEventJson(TypedDict):
+    """A ball landing in native pixels (``court_scene.BounceEvent``): ``origin`` names the stage
+    that found it, ``position`` where its point came from."""
+
+    frame: int
+    x: float
+    y: float
+    score: float
+    origin: EventOrigin
+    position: EventPosition
+
+
+class ContactEventJson(TypedDict):
+    """A racket contact at the player's feet (``court_scene.ContactEvent``); ``ball`` is the
+    ball sample it was judged at, None when the stage had none."""
+
+    frame: int
+    x: float
+    y: float
+    player_id: JsonValue
+    score: float
+    source: str
+    ball: Optional[BallPointJson]
+
+
+class RallyLegJson(TypedDict):
+    """One contact-to-landing leg in unit court coordinates (``court_scene.RallyLeg``), its
+    points as ``[u, v]`` lists."""
+
+    start_frame: int
+    end_frame: int
+    start: List[float]
+    end: List[float]
+    phase: str
+    outcome: str
+    quality: Optional[str]
+    start_quality: str
+    start_source: str
+    landing_origin: Optional[EventOrigin]
+    landing_position: Optional[EventPosition]
+
+
+class CourtEventsJson(TypedDict, total=False):
+    """``export.court_events_to_json``'s record of the court-event stages' output; empty (``{}``)
+    when the run did not compute them, every key present (lists possibly empty) when it did."""
+
+    bounces: List[BounceEventJson]              # confirmed by the bounce model
+    bounce_candidates: List[BounceEventJson]    # the model's low-score candidates
+    kinematic_bounces: List[BounceEventJson]    # kinks and gap fits the model missed
+    contacts: List[ContactEventJson]
+    rally_legs: List[RallyLegJson]
+
+
 class VideoJson(TypedDict):
     input: str
     output: str
@@ -185,3 +253,4 @@ class TrackingJson(TrackingFrames):
     chosen_track: Optional[TrackJson]
     tracks: List[TrackJson]
     motion_diagnostics: MotionDiagnostics
+    court_events: CourtEventsJson

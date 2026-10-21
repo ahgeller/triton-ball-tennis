@@ -30,7 +30,8 @@ def test_cli_flags_reach_the_config(tmp_path):
     _, cfg = _run_main(tmp_path, FLAGS)
     assert cfg.save_tracking_video is False
     assert cfg.conf == 0.3
-    assert cfg.draw_court_minimap is True
+    assert cfg.draw_court_minimap is True and cfg.court_events is True     # --court computes and draws
+    assert cfg.bounce_model_path.endswith("ctb_regr_bounce.cbm")
     assert cfg.info_timing is True
     assert cfg.print_selector_tracks is False
     assert cfg.motion_diagnostics is False
@@ -43,7 +44,7 @@ def test_cli_defaults(tmp_path):
     cfg = run.call_args.args[0]
     assert cfg.save_tracking_video is True
     assert cfg.conf == 0.5
-    assert cfg.draw_court_minimap is False and cfg.info_timing is False
+    assert cfg.draw_court_minimap is False and cfg.court_events is False and cfg.info_timing is False
     assert cfg.input_video.endswith("pomona.mp4")
 
 

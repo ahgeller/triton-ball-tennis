@@ -425,7 +425,7 @@ def run_pipeline(tmp_path: Path, monkeypatch, clip: Path, **overrides) -> Dict[s
         if writer is not None:
             assert writer.closed, f"{role} writer was not closed"
             streams[role] = list(writer.hashes)
-    return {"json": comparable_json(payload), "raw_json": payload, "streams": streams, "cfg": cfg}
+    return {"json": comparable_json(payload), "raw_json": payload, "streams": streams, "cfg": cfg, "result": result}
 
 
 def render_env() -> Dict[str, str]:
