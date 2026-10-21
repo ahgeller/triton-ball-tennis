@@ -10,7 +10,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
-import unittest
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -58,40 +59,46 @@ def variants():
     }
 
 
-def run_all():
+def run_variant(name: str) -> dict:
+    """One variant's suggestions, in the fixture's shape (frames as text, tuples as lists)."""
     from finetune.labeling import refine
-    out = {}
-    for name, (path, kwargs) in variants().items():
-        with tempfile.TemporaryDirectory() as directory:
-            video = write_clip(Path(directory) / "clip.avi", ball_frames(path))
-            found = refine.suggest(video, **kwargs)
-        out[name] = {str(frame): dict(hint) for frame, hint in sorted(found.items())}
-    return json.loads(json.dumps(out))          # tuples -> lists, as the fixture stores them
+    path, kwargs = variants()[name]
+    with tempfile.TemporaryDirectory() as directory:
+        video = write_clip(Path(directory) / "clip.avi", ball_frames(path))
+        found = refine.suggest(video, **kwargs)
+    return json.loads(json.dumps({str(frame): dict(hint) for frame, hint in sorted(found.items())}))
 
 
-def assert_close(test, expected, actual, where):
+def run_all() -> dict:
+    return {name: run_variant(name) for name in variants()}
+
+
+def assert_close(expected, actual, where):
     if isinstance(expected, float) or isinstance(actual, float):
-        test.assertAlmostEqual(expected, actual, delta=2e-3, msg=where)
+        assert actual == pytest.approx(expected, abs=2e-3), where
     elif isinstance(expected, dict):
-        test.assertEqual(sorted(expected), sorted(actual), where)
+        assert sorted(expected) == sorted(actual), where
         for key in expected:
-            assert_close(test, expected[key], actual[key], f"{where}.{key}")
+            assert_close(expected[key], actual[key], f"{where}.{key}")
     elif isinstance(expected, list):
-        test.assertEqual(len(expected), len(actual), where)
+        assert len(expected) == len(actual), where
         for i, (a, b) in enumerate(zip(expected, actual)):
-            assert_close(test, a, b, f"{where}[{i}]")
+            assert_close(a, b, f"{where}[{i}]")
     else:
-        test.assertEqual(expected, actual, where)
+        assert expected == actual, where
 
 
-class RefineParityTests(unittest.TestCase):
-    def test_every_variant_matches_the_recording(self):
-        expected = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        actual = run_all()
-        self.assertEqual(sorted(expected), sorted(actual))
-        for name in expected:
-            with self.subTest(variant=name):
-                assert_close(self, expected[name], actual[name], name)
+def recorded() -> dict:
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_the_recording_covers_every_variant():
+    assert sorted(recorded()) == sorted(variants())
+
+
+@pytest.mark.parametrize("name", sorted(variants()))
+def test_every_variant_matches_the_recording(name):
+    assert_close(recorded()[name], run_variant(name), name)
 
 
 if __name__ == "__main__":
@@ -99,4 +106,4 @@ if __name__ == "__main__":
         FIXTURE.write_text(json.dumps(run_all(), indent=1, sort_keys=True) + "\n", encoding="utf-8")
         print(f"wrote {FIXTURE}")
     else:
-        unittest.main()
+        raise SystemExit(pytest.main([__file__]))

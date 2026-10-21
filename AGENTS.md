@@ -97,7 +97,8 @@ locked installation manifest. TensorRT engines may be GPU/version specific.
 use synthetic inputs only and need no GPU. `clean_tracker.py --self-test` runs
 the selector, court-overlay, ROI and GridTrackNet modules from `tests/` through
 pytest; `train_gridtracknet.py --self-test` is also run by
-`tests/test_train_gridtracknet.py`. Put new tests in `tests/`, shared synthetic
+`tests/test_train_gridtracknet.py`. Put new tests in `tests/` as plain pytest
+functions (fixtures and `parametrize`, not `unittest.TestCase`), shared synthetic
 fixtures in `tests/_helpers.py`. `audit/` keeps the review's record (reports,
 logs, verification scripts); `audit/review_checks.py` documents the September
 2026 defects and no longer runs.

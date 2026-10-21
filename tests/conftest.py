@@ -1,4 +1,6 @@
-"""Make the repository root importable so tests see ``tennis_tracker`` as the CLI does."""
+"""Make the repository root importable so tests see ``tennis_tracker`` as the CLI does, and the
+fixtures every suite shares. Tests are plain pytest functions with fixtures and ``parametrize``;
+``unittest.TestCase`` is not used."""
 import contextlib
 import sys
 from pathlib import Path
