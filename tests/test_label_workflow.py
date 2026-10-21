@@ -9,7 +9,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from finetune.label_tool import Tool, Row, save_review, load_review, load_rows
+from finetune.label_store import Row, load_review, load_rows, load_suspects, save_review
+from finetune.label_tool import Tool
 
 
 def source(clip, count=10, width=1280, height=720):
@@ -135,6 +136,34 @@ class LabelWorkflowTests(unittest.TestCase):
             resumed = load_rows(csv, 640, 360, "csv")
             load_review(review, resumed)
             self.assertEqual((resumed[0].source, resumed[0].conf), ("det", .43))
+
+    def test_review_evidence_is_applied_per_frame_and_bad_evidence_is_warned_about(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as directory:
+            review = Path(directory) / "clip_ball.review.json"
+            review.write_text(json.dumps({"reviewed": [1], "evidence": {
+                "1": {"source": "det", "conf": 0.4}, "2": {"source": "det", "conf": "bad"}}}))
+            rows = source("clip", 4).rows
+            out = io.StringIO()
+            with redirect_stdout(out):
+                state = load_review(review, rows)
+            self.assertEqual(state["reviewed"], [1])
+            self.assertEqual((rows[1].source, rows[1].conf, rows[1].reviewed), ("det", 0.4, True))
+            self.assertEqual((rows[2].source, rows[2].conf, rows[2].reviewed), ("csv", 0., False))
+            self.assertIn("[warn]", out.getvalue())
+            self.assertIn(review.name, out.getvalue())
+            self.assertIn("frame 2", out.getvalue())
+
+    def test_load_suspects_counts_a_legacy_frames_list_as_check_flags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            flags = Path(directory) / "clip_ball.suspect.json"
+            flags.write_text(json.dumps({"unplaceable": [1], "frames": [3]}))
+            rows = source("clip", 5).rows
+            self.assertEqual(load_suspects(flags, rows), 2)
+            self.assertEqual([row.frame for row in rows if row.suspect], [1, 3])
+            self.assertEqual(load_suspects(flags.with_name("absent.json"), rows), 0)
+            self.assertFalse(any(row.suspect for row in rows))
 
     def test_accept_run_marks_each_clip_dirty_including_last_row(self):
         a, b = source("a", 2), source("b", 2)
