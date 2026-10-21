@@ -43,9 +43,10 @@ def test_events_are_tuple_compatible_named_tuples():
     assert confirmed == [bounce] and candidates == []
 
 
-def test_ball_point_reports_the_track_position_and_its_kind():
+def test_ball_point_is_the_measurement_when_there_is_one():
     assert ball_point(_measured(10.0, 20.0)) == BallPoint(10.0, 20.0, "measurement")
-    assert ball_point(_measured(10.0, 20.0, moved_by=0.5)) == BallPoint(10.0, 20.0, "filtered")
+    # A refitted frame reports the detector's point, not the smoothed one.
+    assert ball_point(_measured(10.0, 20.0, moved_by=0.5)) == BallPoint(9.5, 20.0, "measurement")
     assert ball_point(FrameResult(cx=10.0, cy=20.0, source="interp")) == BallPoint(10.0, 20.0, "recovered")
 
 
@@ -61,7 +62,7 @@ def test_kinematic_bounce_is_a_bounce_event():
 def test_kink_and_gap_bounces_say_where_their_position_came_from():
     kink_track = [_measured(10.0 + frame, y, moved_by=0.5) for frame, y in enumerate((0, 4, 10, 6, 4))]
     (kink,) = infer_kinematic_bounces(CourtScene(kink_track, [{}] * 5, 30.0, 1920, 1080))
-    assert (kink.origin, kink.position) == ("kink", "filtered") and (kink.x, kink.y) == (12.0, 10.0)
+    assert (kink.origin, kink.position) == ("kink", "measurement") and (kink.x, kink.y) == (11.5, 10.0)
     gap_track = _gap_bounce_track(60.0, vx=60.0, descent=240.0, rise=150.0)
     (gap,) = infer_kinematic_bounces(CourtScene(gap_track, [{}] * len(gap_track), 60.0, 1920, 1080))
     assert (gap.origin, gap.position) == ("gap", "extrapolated")
@@ -335,13 +336,13 @@ def test_a_model_bounce_is_exported_with_its_provenance_and_its_leg(tmp_path, mo
                           court_events=True, bounce_model_path=str(bounce_model))
     block, row = result["raw_json"]["court_events"], result["raw_json"]["frames"][35]
     assert row["present"] and row["position_kind"] == "filtered"            # the refit moved every detected row
-    assert block["bounces"] == [{"frame": 35, "x": row["x"], "y": row["y"], "score": 0.9,
-                                 "origin": "model", "position": "filtered"}]
+    assert block["bounces"] == [{"frame": 35, "x": row["measurement"]["x"], "y": row["measurement"]["y"], "score": 0.9,
+                                 "origin": "model", "position": "measurement"}]  # placed at the detector's point
     assert block["bounce_candidates"] == [] and block["contacts"] == []
     (leg,) = block["rally_legs"]
     assert leg["end_frame"] == 35 and leg["outcome"] == "bounce" and leg["start_frame"] < 35
     assert (leg["quality"], leg["start_quality"], leg["start_source"]) == ("confirmed", "inferred", "inferred")
-    assert (leg["landing_origin"], leg["landing_position"]) == ("model", "filtered")
+    assert (leg["landing_origin"], leg["landing_position"]) == ("model", "measurement")
     assert all(isinstance(leg[key], list) and len(leg[key]) == 2 for key in ("start", "end"))
     events = result["result"].court_events
     assert events.computed and [bounce.frame for bounce in events.bounces] == [35]

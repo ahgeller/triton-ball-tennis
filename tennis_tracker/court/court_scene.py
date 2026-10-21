@@ -87,7 +87,12 @@ class BallPoint(NamedTuple):
 
 
 def ball_point(result: FrameResult) -> BallPoint:
-    """The ball track's position at one frame, as an event reports it."""
+    """The ball track's position at one frame, as an event reports it: the detector's own
+    measurement when the frame has one (the trajectory refit moves ``cx, cy`` towards a smooth
+    path, which at a landing or a stroke smooths the very turn being reported), else the
+    selected point with its kind."""
+    if result.measurement is not None:
+        return BallPoint(float(result.measurement[0]), float(result.measurement[1]), "measurement")
     return BallPoint(float(result.cx), float(result.cy), result.position_kind)
 
 
