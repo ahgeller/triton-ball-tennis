@@ -83,10 +83,11 @@ def save_suspects(path: Path, rows: List[Row]) -> None:
     """
     if not path.is_file():
         return
-    blob = json.loads(path.read_text(encoding="utf-8"))     # read_suspects has already proven it parses
     # Older audits wrote their check list as "frames"; read_suspects reads it as "check", so it has
-    # to be carried over here too, or the first save would throw those flags away.
+    # to be carried over here too, or the first save would throw those flags away. A damaged file
+    # is its LabelFormatError, naming the file; only then is the raw object read for the rewrite.
     flags = read_suspects(path)
+    blob = json.loads(path.read_text(encoding="utf-8"))
     flagged = {"unplaceable": flags["unplaceable"], "check": flags["check"]}
     by_frame = {row.frame: row for row in rows}
     open_now = {row.frame for row in rows if row.suspect}
