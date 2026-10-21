@@ -153,7 +153,8 @@ prior; do not present its extrapolations as measured 3D positions or speeds.
 See `audit/PROJECT_REVIEW.md` before modifying evaluation, prepass publication,
 label frame identity, realignment pins, motion masks or physics. The audit's
 `review_checks.py` records how the September 2026 defects were reproduced; it
-exits without running, and `tests/test_fixes.py` asserts the fixes. Convert
+exits without running; the tests that assert the fixes live next to each
+module's tests (`tests/test_<module>.py`). Convert
 relevant checks to desired-behavior regression tests when making fixes. The user has now authorized
 fixing the reviewed defects and running validation. Architecture experiments
 remain separate from the correctness fixes; do not promote a model implicitly.

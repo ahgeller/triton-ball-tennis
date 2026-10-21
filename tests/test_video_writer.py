@@ -1,5 +1,6 @@
 """Encoder choice, the FFmpeg command builder, VideoWriter's fallback chain and the frame reader."""
 import io
+import threading
 
 import numpy as np
 import pytest
@@ -16,7 +17,7 @@ from tennis_tracker.utils import (
     resolve_runtime,
 )
 from tennis_tracker.video_io import ThreadedFrameReader, VideoWriter, ffmpeg_command
-from tests._helpers import Capture
+from tests._helpers import Capture, FailingWriter
 
 
 def _ffmpeg_with(monkeypatch, path, encoders):
@@ -196,3 +197,25 @@ def test_frame_reader_raises_the_decoder_error_instead_of_blocking():
     assert isinstance(info.value.__cause__, MemoryError)
     assert reader.read() is None     # the reader is finished, not stuck
     reader.release()
+
+
+def test_writer_failure_does_not_block_full_queue(tmp_path):
+    writer = FailingWriter(str(tmp_path / "out.avi"), Config(use_async_writer=True, async_queue=1))
+    frame = np.zeros((32, 64, 3), np.uint8)
+    writer.write(frame)                # taken by the drain thread, which then blocks
+    assert writer.entered.wait(1)
+    writer.write(frame)                # fills the one-slot queue
+    writer.release.set()               # the encoder now fails with the queue still full
+    assert writer.drained.wait(1)
+    errors = []
+
+    def close():
+        try:
+            writer.close()
+        except RuntimeError as error:
+            errors.append(str(error))
+    closer = threading.Thread(target=close, daemon=True)
+    closer.start()
+    closer.join(1)
+    assert not closer.is_alive()
+    assert "encoder failed" in errors[0]

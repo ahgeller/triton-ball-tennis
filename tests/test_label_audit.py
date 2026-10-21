@@ -190,6 +190,15 @@ class ShiftLabelsTests(Workspace):
         shift_labels("example", 0, WIDTH, HEIGHT, 10)
         self.assertEqual(list(self.folder.glob("example_ball.csv*")), [path])
 
+    def test_shift_refuses_review_metadata_without_touching_labels(self):
+        path = self.folder / "example_ball.csv"
+        original = "frame,ball_x,ball_y\nframe_001,20,30\n"
+        path.write_text(original)
+        path.with_suffix(".review.json").write_text(json.dumps({"reviewed": [1]}))
+        with self.assertRaises(ValueError):
+            shift_labels("example", 1, 1920, 1080, 10)
+        self.assertEqual(path.read_text(), original)
+
 
 class AuditLabelsTests(Workspace):
     """audit_labels with the detector replaced by a dictionary and no video on disk."""

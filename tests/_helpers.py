@@ -1,4 +1,5 @@
 """Synthetic fixtures shared by the regression tests. No match media or labels."""
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
@@ -9,6 +10,10 @@ import pytest
 import torch
 
 from finetune import train_gridtracknet as training
+from tennis_tracker import ball_detectors
+from tennis_tracker.ball_detectors import GridTrackNetBallDetector
+from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
+from tennis_tracker.video_io import VideoWriter
 
 
 def write_clip(path: Path, count: int, size=(64, 36), fps=30.0) -> Path:
@@ -62,3 +67,46 @@ def metric_probe(count: int, labels: Dict[int, Optional[List[float]]]) -> Dict[s
         return training.detector_metrics(
             Path("unused"), [("probe", Path("unused"), Path("unused"), "custom")], torch.device("cpu")
         )
+
+
+class CpuGridTrackNet(GridTrackNetBallDetector):
+    """The real constructor, run on the CPU with an injected model, decoder and frame encoder.
+
+    The constructor insists on CUDA and loads weights from disk; both are
+    replaced for its duration only. ``on_publish`` sees every prefix the
+    prepass declares final.
+    """
+
+    def __init__(self, cfg, model, decode, frame_tensor, on_publish=None):
+        with patch.object(torch.cuda, "is_available", return_value=True), \
+             patch.object(torch, "device", return_value=torch.device("cpu")), \
+             patch.object(torch.cuda, "synchronize"), \
+             patch.object(ball_detectors, "load_model", return_value=model):
+            super().__init__("unused.npz", cfg)
+        self._decode = decode
+        self._frame_tensor = frame_tensor
+        self._on_publish = on_publish
+
+    def _publish(self, upto):
+        super()._publish(upto)
+        if self._on_publish is not None:
+            self._on_publish(upto)
+
+
+class FailingWriter(VideoWriter):
+    """An OpenCV-backed writer whose encoder blocks on the first frame until released, then fails."""
+
+    def __init__(self, path, cfg):
+        self.entered, self.release, self.drained = threading.Event(), threading.Event(), threading.Event()
+        super().__init__(path, 30.0, 64, 32, cfg, encoder=EncoderChoice(None, (ENCODER_OPENCV,)))
+
+    def _raw_write(self, frame):
+        self.entered.set()
+        self.release.wait(1)
+        raise RuntimeError("encoder failed")
+
+    def _drain(self):
+        try:
+            super()._drain()
+        finally:
+            self.drained.set()

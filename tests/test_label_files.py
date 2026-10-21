@@ -236,3 +236,11 @@ def test_eligibility_policy(tmp_path):
     assert data_policy.evaluation_clips(manifest, status) == ["video13", "grid_match4"]
     assert data_policy.evaluation_clips(manifest, None) == ["video1"]       # no policy: own camera only
     assert data_policy.evaluation_clips({}, None) is None                   # no manifest: the whole folder
+
+
+def test_verified_policy_does_not_clear_grid_matches():
+    policy = {"verified_video_min": 13}
+    for name in ("video3", "video8", "video11", "video12", "grid_match13", "grid_match92"):
+        assert not data_policy.is_verified(name, policy)
+    for name in ("video13", "video53", "video100"):
+        assert data_policy.is_verified(name, policy)

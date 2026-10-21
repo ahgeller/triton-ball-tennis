@@ -1,7 +1,9 @@
 """The ball backends' interface and the GridTrackNet prepass on a fake decoder; no GPU or weights."""
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
+import cv2
 import numpy as np
 import pytest
 import torch
@@ -14,7 +16,7 @@ from tennis_tracker.ball_detectors import (
     TensorRTRuntimeBallDetector,
 )
 from tennis_tracker.config import Config
-from tests._helpers import Capture
+from tests._helpers import Capture, CpuGridTrackNet
 
 
 def test_backend_interface_and_cached_token():
@@ -104,3 +106,41 @@ def test_background_prepass_failure_reaches_the_consumer(monkeypatch, fake_cuda)
     detector.prepare_video(Path("clip.mp4"), 30.0, 1920, 1080, total=7)
     with pytest.raises(RuntimeError, match="prepass failed"):
         detector.detections_at(5)
+
+
+# --- the prepass through the real constructor on the CPU ----------------------
+
+# Frame rates whose phase stride is 1 and 2 (see tennis_tracker.frame_rate).
+_FPS_FOR_STRIDE = {1: 30.0, 2: 60.0}
+
+
+@pytest.mark.parametrize("stride, count", [(1, 23), (2, 47)])
+def test_finalized_misses_are_immutable(stride, count):
+    seen = set()
+
+    def decode(batch, width, height, threshold):
+        decoded = []
+        for unit in batch:
+            for value in unit:
+                index = int(value)
+                decoded.append(((float(index), 20.) if index in seen else None, .9))
+                seen.add(index)
+        return decoded
+    publications = []
+    detector = None
+
+    def publish(upto):
+        for previous in publications:
+            assert detector.precomputed[:len(previous)] == previous
+        publications.append([list(row) for row in detector.precomputed[:upto]])
+    detector = CpuGridTrackNet(
+        Config(device="0"), model=lambda batch: batch, decode=decode,
+        frame_tensor=lambda frame, device: torch.tensor([float(frame[0, 0, 0])]),
+        on_publish=publish,
+    )
+    with patch.object(cv2, "VideoCapture", return_value=Capture(count)), \
+         patch.object(torch.cuda, "synchronize"):
+        results = detector.detect_clip(Path("synthetic.mp4"), _FPS_FOR_STRIDE[stride], 1920, 1080, count)
+    assert len(results) == count
+    assert not any(results)
+    assert [detector.detections_at(index) for index in range(count)] == [[]] * count
