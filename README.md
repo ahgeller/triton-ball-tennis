@@ -37,7 +37,7 @@ unresolved detector gap remains a gap instead of becoming a long predicted path.
 - CUDA-enabled PyTorch (install it from the PyTorch index for your CUDA version)
 - NumPy, OpenCV (the GUI build, for the label tool)
 - TensorRT 10 for the player and court engines
-- BoxMOT for player tracking (without it players are not tracked)
+- BoxMOT for player tracking (required with the player engine; unset the engine path to run without players)
 - CatBoost, only for `--court`
 - SciPy and psutil, optional (motion-debug trail smoothing; automatic frame-cache sizing)
 - Ultralytics, only for exporting new engines with `build_trt_engines.py`

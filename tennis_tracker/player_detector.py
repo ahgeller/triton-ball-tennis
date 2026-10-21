@@ -1,8 +1,9 @@
 """TensorRT player detection with ByteTrack association.
 
-Engine policy: see ``engine_session.open_engine_session``.  boxmot is optional;
-without it the detector is disabled with one message, since the boxes are only
-useful tracked.
+Engine policy: see ``engine_session.open_engine_session``; boxmot follows the
+same rule, since the boxes are only useful tracked: with a player engine
+configured a missing boxmot raises, and only an unset engine path disables
+player tracking.
 """
 from __future__ import annotations
 
@@ -20,15 +21,11 @@ _PLAYER_CLASS = 0  # the player ("person") class of the player engine
 
 
 def _load_bytetrack() -> Tuple[Optional[type], Optional[str]]:
-    """boxmot is optional; player tracking is disabled without it.  Returns
-    ``(ByteTrack, None)`` or ``(None, reason)``."""
+    """Returns ``(ByteTrack, None)``, or ``(None, reason)`` when boxmot is not importable."""
     try:
         from boxmot import ByteTrack
-    except ImportError:
-        try:
-            from boxmot.trackers.bbox.bytetrack import ByteTrack
-        except ImportError as error:
-            return None, str(error)
+    except ImportError as error:
+        return None, str(error)
     return ByteTrack, None
 
 
@@ -52,10 +49,10 @@ class PlayerPending:
 class PlayerDetector:
     """TensorRT player detection with ByteTrack association (no ReID).
 
-    Engine policy: see ``open_engine_session``.  Without boxmot the detector
-    is disabled with one message, since the boxes are only useful tracked.
-    ``detect_async_start`` returns None while disabled and
-    ``detect_async_finish`` then returns no boxes.
+    Engine policy: see ``open_engine_session``; a configured engine without
+    boxmot raises too.  Without an engine the detector is disabled with one
+    message: ``detect_async_start`` returns None and ``detect_async_finish``
+    then returns no boxes.
     """
 
     def __init__(self, cfg: Config, court_keypoints: Optional[List[float]] = None):
@@ -76,8 +73,10 @@ class PlayerDetector:
             return
         bytetrack, reason = _load_bytetrack()
         if bytetrack is None:
-            print(f"[player] boxmot not found ({reason}); player tracking disabled. Run 'pip install boxmot'")
-            return
+            raise RuntimeError(
+                f"[player] player tracking requires boxmot ({reason}): pip install boxmot, "
+                "or unset player_model_path to run without players"
+            )
         self.session = open_engine_session("player", cfg.player_model_path, cfg)
         self.tracker = bytetrack(
             min_conf=0.1,
