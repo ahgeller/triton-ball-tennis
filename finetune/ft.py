@@ -116,11 +116,13 @@ def _copy_video_in(source: Path, name: str, force: bool) -> bool:
     return True
 
 
-def add_videos(sources: List[Path], name: Optional[str] = None, force: bool = False, prelabel: bool = True,
+def add_videos(sources: List[Path], *, name: Optional[str] = None, force: bool = False, prelabel: bool = True,
                pretrack_arguments: Sequence[str] = ()) -> Tuple[List[str], int]:
     """Copy videos into ``videos/`` (``clip_name`` names them; `name` names a single one) and,
     with `prelabel`, draft their labels with pretrack.py. Returns the clips now in the workspace
-    and the exit status (pretrack's when it ran, else 0). The menu and ``ft.py add`` both do this."""
+    and the exit status (pretrack's when it ran, else 0). The menu and ``ft.py add`` both do this.
+    The options are ``ft.py add``'s flags one for one (--name, --force, --no-prelabel and the
+    pretrack.py options passed through), each independent of the others, so they are keywords."""
     ws.current().videos.mkdir(exist_ok=True)
     added = []
     for source in sources:
@@ -134,7 +136,8 @@ def add_videos(sources: List[Path], name: Optional[str] = None, force: bool = Fa
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    return add_videos(args.videos, args.name, args.force, not args.no_prelabel, args.rest)[1]
+    return add_videos(args.videos, name=args.name, force=args.force, prelabel=not args.no_prelabel,
+                      pretrack_arguments=args.rest)[1]
 
 
 def cmd_prelabel(args: argparse.Namespace) -> int:

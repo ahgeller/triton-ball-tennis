@@ -211,6 +211,18 @@ def test_add_videos_names_copies_and_reports_what_it_could_not_add(workspace_dir
     assert sorted(p.name for p in (workspace_dir / "videos").iterdir()) == ["good.avi", "renamed.avi"]
 
 
+@pytest.mark.parametrize("argv, expected", [
+    (["add", "a.mp4"], {"name": None, "force": False, "prelabel": True, "pretrack_arguments": []}),
+    (["add", "a.mp4", "--name", "rally", "--force", "--no-prelabel", "--batch", "4"],
+     {"name": "rally", "force": True, "prelabel": False, "pretrack_arguments": ["--batch", "4"]}),
+])
+def test_add_passes_each_flag_to_its_add_videos_keyword(argv, expected):
+    seen = []
+    with patch.object(ft, "add_videos", lambda sources, **options: seen.append((sources, options)) or (["a"], 3)):
+        assert ft.run_cli(argv) == 3
+    assert seen == [(["a.mp4"], expected)]
+
+
 def test_scripts_run_from_the_package_folder_and_modules_from_the_root():
     ran = []
     with patch.object(ft, "wait_child", lambda command, **kwargs: ran.append((command, kwargs)) or 0):
