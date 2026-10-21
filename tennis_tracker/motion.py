@@ -6,15 +6,45 @@ import functools
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Sequence, Tuple
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .config import Config
 from .court_geometry import build_court_side_guides
 from .frame_window import FrameWindow, GpuFrame
+
+
+class MotionSettings(Protocol):
+    """The slice of ``Config`` this module reads: the background model, the
+    raw-mask gate and morphology, the boost-mask blob filter and the
+    detector-input enhancement.  ``Config`` satisfies it; a test may pass any
+    object with these fields."""
+
+    background_alpha: float
+    motion_freeze_alpha: float
+    motion_thresh: float
+    motion_k_std: float
+    motion_v_min: float
+    motion_raw_temporal_gate: bool
+    motion_raw_temporal_hi: float
+    motion_raw_temporal_lo: float
+    motion_raw_temporal_very_hi: float
+    motion_raw_close_size: int
+    motion_raw_open_size: int
+    boost_min_blob_area: int
+    boost_max_blob_area: int
+    blob_shape_filter: bool
+    blob_max_aspect: float
+    blob_preserve_tiny: bool
+    blob_tiny_max_area: int
+    motion_dilate: int
+    dim_static: float
+    static_sat_scale: float
+    pre_sat_boost: float
+    pre_val_boost: float
+    pre_hue_shift: float
 
 
 # Boost mask component filter.
@@ -33,7 +63,7 @@ def _get_kernel(size: int) -> np.ndarray:
     return np.ones((size, size), np.uint8)
 
 
-def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Optional[np.ndarray]:
+def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: MotionSettings) -> Optional[np.ndarray]:
     """Apply the active raw-mask morphology without appearance or size heuristics."""
     if mask_u8 is None or mask_u8.size == 0:
         return mask_u8
@@ -51,7 +81,7 @@ def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Option
     return out
 
 
-def filter_boost_mask(raw_motion: np.ndarray, min_area: int, max_area: int, cfg: Config,
+def filter_boost_mask(raw_motion: np.ndarray, min_area: int, max_area: int, cfg: MotionSettings,
                       buffers: Optional[Any] = None) -> np.ndarray:
     """The boost mask: a filled disc for every ball-sized component of ``raw_motion``.
 
@@ -288,7 +318,7 @@ class BackgroundModel:
     ``remember_motion`` with that frame's raw mask afterwards.
     """
 
-    def __init__(self, cfg: Config, device: torch.device) -> None:
+    def __init__(self, cfg: MotionSettings, device: torch.device) -> None:
         self.cfg = cfg
         self.device = device
         self.mean_v: Optional[torch.Tensor] = None
@@ -379,7 +409,7 @@ _WHITE_MIN_V = 170.0 / 255.0
 _BOOST_HUE = 30.0 / 179.0
 
 
-def _raw_motion_cuda(window: FrameWindow, background: BackgroundModel, cfg: Config,
+def _raw_motion_cuda(window: FrameWindow, background: BackgroundModel, cfg: MotionSettings,
                      rois: Optional[List[Roi]]) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
     """``(gated, ungated)`` boolean raw-motion masks for the current frame.
 
@@ -465,7 +495,7 @@ class _MaskReader:
     """Brings raw-motion masks to the CPU and keeps their ball-sized components, charging the
     time each step took to ``perf`` (when timing is on)."""
 
-    def __init__(self, cfg: Config, perf: Optional[Dict[str, float]]) -> None:
+    def __init__(self, cfg: MotionSettings, perf: Optional[Dict[str, float]]) -> None:
         self.cfg = cfg
         self.perf = perf
         self.min_area, self.max_area = cfg.boost_min_blob_area, cfg.boost_max_blob_area
@@ -488,7 +518,7 @@ class _MaskReader:
 
 
 def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optional[torch.Tensor],
-                 cfg: Config, rois: Optional[List[Roi]], wide_boost: bool,
+                 cfg: MotionSettings, rois: Optional[List[Roi]], wide_boost: bool,
                  perf: Optional[Dict[str, float]]) -> _BoostMasks:
     """Download the raw mask(s) and keep only ball-sized components.
 
@@ -510,7 +540,7 @@ def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optiona
     return _BoostMasks(raw_u8, narrow, wide, narrow is not None or wide is not None)
 
 
-def _fullframe_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tensor], cfg: Config,
+def _fullframe_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tensor], cfg: MotionSettings,
                            reader: _MaskReader) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     """The raw, narrow and wide masks of a whole frame (``wide_source`` None: the wide mask is
     the narrow one)."""
@@ -521,7 +551,7 @@ def _fullframe_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch
     return raw_u8, narrow, wide
 
 
-def _roi_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tensor], rois: List[Roi], cfg: Config,
+def _roi_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tensor], rois: List[Roi], cfg: MotionSettings,
                      reader: _MaskReader) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     """The raw, narrow and wide masks assembled ROI by ROI (``wide_source`` None: the wide mask
     is the narrow one), each ROI downloaded and filtered on its own."""
@@ -552,7 +582,7 @@ def _bgr_u8_hwc(t_chw: torch.Tensor) -> torch.Tensor:
 
 
 def _dim_static_bgr(t_chw: torch.Tensor, raw_motion: torch.Tensor, protect: Optional[torch.Tensor],
-                    cfg: Config) -> torch.Tensor:
+                    cfg: MotionSettings) -> torch.Tensor:
     """The frame with every pixel away from motion scaled by ``dim_static``, as HWC uint8."""
     static = ~_dilate_motion_cuda(raw_motion, cfg.motion_dilate)
     if protect is not None:
@@ -565,7 +595,7 @@ def _dim_static_bgr(t_chw: torch.Tensor, raw_motion: torch.Tensor, protect: Opti
 
 def _enhance_bgr(t_chw: torch.Tensor, curr_v: torch.Tensor, curr_s: torch.Tensor,
                  raw_motion: Optional[torch.Tensor], boost_u8: Optional[np.ndarray],
-                 protect: Optional[torch.Tensor], cfg: Config) -> torch.Tensor:
+                 protect: Optional[torch.Tensor], cfg: MotionSettings) -> torch.Tensor:
     """Boost S/V (and shift hue) inside the boost mask and dim static pixels, as HWC uint8."""
     b, g, r = t_chw[0], t_chw[1], t_chw[2]
     maxc = curr_v
@@ -607,7 +637,7 @@ def _enhance_bgr(t_chw: torch.Tensor, curr_v: torch.Tensor, curr_s: torch.Tensor
 
 
 def _enhanced_frame(curr: GpuFrame, raw_motion: Optional[torch.Tensor], masks: _BoostMasks,
-                    protect_mask: Optional[torch.Tensor], cfg: Config,
+                    protect_mask: Optional[torch.Tensor], cfg: MotionSettings,
                     request: DetectorInputRequest) -> Optional[torch.Tensor]:
     """The detector input as HWC uint8 on CUDA: boosted where a ball-sized blob was found, else at
     most the static background dimmed; None when the source frame is to be used as it is."""
@@ -622,7 +652,7 @@ def _enhanced_frame(curr: GpuFrame, raw_motion: Optional[torch.Tensor], masks: _
 
 
 @torch.no_grad()
-def preprocess_frame_cuda(window: FrameWindow, background: BackgroundModel, cfg: Config, *,
+def preprocess_frame_cuda(window: FrameWindow, background: BackgroundModel, cfg: MotionSettings, *,
                           request: DetectorInputRequest = DetectorInputRequest(cpu=True),
                           rois: Optional[List[Roi]] = None,
                           protect_mask: Optional[torch.Tensor] = None,

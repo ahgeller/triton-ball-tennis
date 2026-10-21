@@ -4,21 +4,31 @@ import contextlib
 import queue
 import subprocess
 import threading
-from typing import List, Optional, Tuple
+from typing import List, Optional, Protocol, Tuple
 
 import cv2
 import numpy as np
 import torch
 
-from .config import Config
 from .utils import (
     ENCODER_LIBX264,
     ENCODER_NVENC,
     ENCODER_OPENCV,
     FFMPEG_ENCODER_NAMES,
     EncoderChoice,
+    EncoderSettings,
     choose_encoder,
 )
+
+
+class WriterSettings(EncoderSettings, Protocol):
+    """The slice of ``Config`` the video writer reads: the NVENC options, and
+    whether frames are queued to a drain thread (and how many)."""
+
+    nvenc_preset: str
+    nvenc_bitrate: str
+    use_async_writer: bool
+    async_queue: int
 
 LIBX264_PRESET = "fast"
 LIBX264_CRF = "18"
@@ -90,7 +100,8 @@ def cuda_vs_tensors(frame_bgr: Optional[np.ndarray], device: torch.device,
     return maxc, s
 
 
-def ffmpeg_command(ffmpeg: str, encoder: str, w: int, h: int, fps: float, path: str, cfg: Config) -> List[str]:
+def ffmpeg_command(ffmpeg: str, encoder: str, w: int, h: int, fps: float, path: str,
+                   cfg: WriterSettings) -> List[str]:
     """The FFmpeg invocation that encodes raw BGR frames from stdin into ``path``.
 
     ``encoder`` is ``ENCODER_NVENC`` or ``ENCODER_LIBX264``; the codec options
@@ -124,7 +135,7 @@ class VideoWriter:
     ``write`` or on ``close``.
     """
 
-    def __init__(self, path: str, fps: float, w: int, h: int, cfg: Config,
+    def __init__(self, path: str, fps: float, w: int, h: int, cfg: WriterSettings,
                  encoder: Optional[EncoderChoice] = None):
         self._proc: Optional[subprocess.Popen] = None
         self._cv: Optional[cv2.VideoWriter] = None

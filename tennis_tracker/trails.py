@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import math
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Protocol, Sequence, Tuple
 
 import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult, Track
 
-from .config import Config
 from .court_geometry import court_axis_spans
 from .rendering import (
     COLOR_DISPLAY_PATH, COLOR_DISPLAY_PATH_INTERP, COLOR_INTERP, COLOR_OUTLINE, Canvas, Color, Point,
@@ -51,11 +50,19 @@ _CANDIDATE_LABEL_OFFSET: Point = (6, 6)
 _TRACK_COLOR_MIN_COMPONENT, _TRACK_COLOR_TARGET = 100, 150.0
 
 
+class TrailSettings(Protocol):
+    """The slice of ``Config`` the ball trail reads: the court-span fractions a
+    detected point may jump between frames before the trail breaks."""
+
+    trail_hard_switch_x_frac: float
+    trail_hard_switch_y_frac: float
+
+
 def _trail_base_color(src: str) -> Color:
     return _SOURCE_BASE_COLOR.get(src, _UNKNOWN_SOURCE_COLOR)
 
 
-def _trail_jump_fracs(src: Optional[str], cfg: Config) -> Tuple[float, float]:
+def _trail_jump_fracs(src: Optional[str], cfg: TrailSettings) -> Tuple[float, float]:
     """Court-span fractions a trail may jump between frames before it breaks, per source."""
     if src == "det":
         return cfg.trail_hard_switch_x_frac, cfg.trail_hard_switch_y_frac
@@ -121,7 +128,7 @@ class BallTrail:
     the segments, newest brightest and thickest.
     """
 
-    def __init__(self, cfg: Config, fps: float, frame_w: int, frame_h: int) -> None:
+    def __init__(self, cfg: TrailSettings, fps: float, frame_w: int, frame_h: int) -> None:
         self.cfg = cfg
         self.frame_w, self.frame_h = frame_w, frame_h
         self.max_len = max(TRAIL_MIN_LEN, int(round(fps * TRAIL_SECONDS)))

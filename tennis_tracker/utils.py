@@ -13,7 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Protocol, Tuple
 
 import torch
 
@@ -92,7 +92,13 @@ class EncoderChoice:
         return tuple(name for name in self.chain if name != ENCODER_OPENCV)
 
 
-def choose_encoder(cfg: Config, is_cuda: bool = True) -> EncoderChoice:
+class EncoderSettings(Protocol):
+    """The slice of ``Config`` the encoder choice reads."""
+
+    use_nvenc: bool
+
+
+def choose_encoder(cfg: EncoderSettings, is_cuda: bool = True) -> EncoderChoice:
     """Decide the encoder fallback order from ``cfg.use_nvenc`` and the FFmpeg build.
 
     NVENC needs a CUDA device and an FFmpeg with ``h264_nvenc``; libx264 needs
