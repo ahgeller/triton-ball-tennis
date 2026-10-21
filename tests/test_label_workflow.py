@@ -518,7 +518,7 @@ def test_suggest_reads_a_video_and_scores_trust(tmp_path):
     path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]   # an exact parabola
     video = write_clip(tmp_path / "clip.avi", ball_frames(path_of))
     seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
-    found = refine.suggest(video, seeds, spacing=1)
+    found = refine.suggest(video, seeds, refine.PassOptions(1))
     assert set(found) == set(range(12))       # the ends diff against one side only
     for frame, found_hint in found.items():
         column, row = path_of[frame]              # the 3x3 ball's middle pixel: centre at k + 0.5
@@ -543,8 +543,8 @@ def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(tmp_path
                     for _, _, start in items]
     video = write_clip(tmp_path / "clip.avi", ball_frames(path_of))
     seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
-    plain = refine.suggest(video, seeds, spacing=1)
-    placed = refine.suggest(video, seeds, spacing=1, placer=Nudge())
+    plain = refine.suggest(video, seeds, refine.PassOptions(1))
+    placed = refine.suggest(video, seeds, refine.PassOptions(1, placer=Nudge()))
     assert set(seen) == {(cnn_refiner.CROP, cnn_refiner.CROP, 9)}
     for frame, placed_hint in placed.items():
         assert placed_hint["centroid"][0] == pytest.approx(plain[frame]["x"], abs=5e-3)   # the measurement is kept
@@ -557,8 +557,8 @@ def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(tmp_path
     video = write_clip(tmp_path / "clip2.avi", ball_frames(path_of))
     unsure, checked = Nudge(), Nudge()
     unsure.sure, checked.sure = False, True
-    doubted = refine.suggest(video, seeds, spacing=1, placer=unsure)
-    vouched = refine.suggest(video, seeds, spacing=1, placer=checked)
+    doubted = refine.suggest(video, seeds, refine.PassOptions(1, placer=unsure))
+    vouched = refine.suggest(video, seeds, refine.PassOptions(1, placer=checked))
     assert not any(h["trusted"] for h in doubted.values())
     assert vouched[5]["trusted"]            # far from its measurement (8 px at 360p is 24 px at 1080p), but the network is sure
 
@@ -859,8 +859,8 @@ def test_a_changed_label_is_remeasured_with_checked_labels_steering():
     tool = make_tool()
     calls = []
     with patch("finetune.labeling.label_hints.refine.suggest",
-               side_effect=lambda video, seeds, spacing, stop, confirmed, only, placer:
-               calls.append((seeds, confirmed, only)) or {}), \
+               side_effect=lambda video, seeds, options:
+               calls.append((seeds, options.confirmed, options.only)) or {}), \
             patch("finetune.labeling.label_hints.cnn_refiner.current", return_value=None):
         tool.source.video = Path("clip.mp4")
         tool.hints.suggest_clip(tool.source)

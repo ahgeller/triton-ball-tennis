@@ -41,7 +41,7 @@ def seeds_for(path, offset=(0.9, 0.2), step=1):
 
 
 def variants():
-    """name -> (frames, keyword arguments for refine.suggest)."""
+    """name -> (frames, the seeds and PassOptions fields for refine.suggest)."""
     plain = seeds_for(PATH)
     off = {**plain, 7: (plain[7][0] + 10.0, plain[7][1])}                 # a label on the wrong thing
     noball = {f: (None if f == 3 else p) for f, p in plain.items() if f != 9}
@@ -65,7 +65,7 @@ def run_variant(name: str) -> dict:
     path, kwargs = variants()[name]
     with tempfile.TemporaryDirectory() as directory:
         video = write_clip(Path(directory) / "clip.avi", ball_frames(path))
-        found = refine.suggest(video, **kwargs)
+        found = refine.suggest(video, kwargs["seeds"], refine.PassOptions(**{k: v for k, v in kwargs.items() if k != "seeds"}))
     return json.loads(json.dumps({str(frame): dict(hint) for frame, hint in sorted(found.items())}))
 
 

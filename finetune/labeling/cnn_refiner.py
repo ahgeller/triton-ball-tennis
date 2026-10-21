@@ -510,7 +510,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     found = []
     for name in names:
         placer = placer_for(name)
-        hints = refine.suggest(video, seeds, refine.label_spacing(seeds), placer=placer)
+        hints = refine.suggest(video, seeds, refine.PassOptions(refine.label_spacing(seeds), placer=placer))
         found.append({f: (h["x"], h["y"]) for f, h in hints.items() if h["ball_here"]})
         print(f"  {name}: {len(found[-1])} suggestions", flush=True)
     shared = sorted(f for f in found[0] if f in found[1] and seeds.get(f) is not None)

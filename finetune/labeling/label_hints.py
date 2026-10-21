@@ -93,9 +93,9 @@ class Suggestions:
             only = {frames[j] for i in changed for j in range(max(0, i - SUGGEST_MEASURE), min(len(frames), i + SUGGEST_MEASURE + 1))}
             keep = {frames[j] for i in changed for j in range(max(0, i - SUGGEST_REPLACE), min(len(frames), i + SUGGEST_REPLACE + 1))}
         try:
-            found = refine.suggest(source.video, seeds, refine.label_spacing(seeds),
-                                   stop=lambda: self.closing, confirmed=confirmed, only=only,
-                                   placer=self.current_placer())
+            found = refine.suggest(source.video, seeds, refine.PassOptions(
+                refine.label_spacing(seeds), confirmed=confirmed, only=only, placer=self.current_placer(),
+                stop=lambda: self.closing))
         except Exception as error:            # a hint is never worth losing the session over
             print(f"[hint] {source.clip}: no suggestions ({error})")
             return

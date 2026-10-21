@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tuple, TypedDict
+from typing import Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tuple, TypedDict
 
 import cv2
 import numpy as np
@@ -252,20 +252,35 @@ class ClipGeometry:
                 min(self.width, cx + self.pad + 1), min(self.height, cy + self.pad + 1))
 
 
-def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Optional[int] = None,
-            stop=lambda: False, confirmed: Optional[Iterable[int]] = None,
-            only: Optional[Iterable[int]] = None, placer=None) -> Dict[int, Suggestion]:
+def _never() -> bool:
+    return False
+
+
+@dataclass(frozen=True)
+class PassOptions:
+    """What a measuring pass is told besides the seeds; the defaults measure every label frame once.
+
+    `confirmed` names the frames whose labels a person has checked; where enough of them are near,
+    only those decide where the path puts the ball, so a run of wrong drafts cannot vouch for
+    itself (elsewhere every label does). `only` limits the measuring to those label frames - after
+    an edit, a stretch around it - while every label still informs the path. `stop` is polled so
+    a caller can abandon the pass. A `placer` (cnn_refiner.Placer) moves each chosen point to where
+    you would click it; None keeps where the measurement itself put it ("centroid")."""
+    spacing: Optional[int] = None               # label frames apart; None: measured from the seeds
+    confirmed: Optional[Iterable[int]] = None
+    only: Optional[Iterable[int]] = None
+    placer: Optional[object] = None             # cnn_refiner.Placer, or anything with cut_crop and place
+    stop: Callable[[], bool] = _never
+
+
+def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]],
+            options: PassOptions = PassOptions()) -> Dict[int, Suggestion]:
     """A suggestion for every label frame, reading the video once from the start.
 
     `seeds` maps every label frame to its current label, or None where the label says there is no
-    ball. Returns frame -> Suggestion (its fields are documented there). `confirmed` names the
-    frames whose labels a person has checked; where enough of them are near, only those decide
-    where the path puts the ball, so a run of wrong drafts cannot vouch for itself (elsewhere every
-    label does). `only` limits the measuring to those label frames - after an edit, a stretch
-    around it - while every label still informs the path. Frames where nothing moved are left
-    out. `stop` is polled so a caller can abandon the pass. A `placer` (cnn_refiner.Placer) moves
-    each chosen point to where you would click it; "centroid" keeps where the measurement itself
-    put it.
+    ball. Returns frame -> Suggestion (its fields are documented there). `options` says which
+    frames and labels take part, what places the points and when to give up (see PassOptions).
+    Frames where nothing moved are left out.
 
     The stages: which frames and labels take part (plan), where to look on each frame
     (search_centres), one streamed pass measuring the candidates there (measure_clip), the choice
@@ -274,22 +289,22 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
     """
     if not seeds:
         return {}
-    plan = plan_pass(seeds, confirmed, only)
+    plan = plan_pass(seeds, options.confirmed, options.only)
     capture = cv2.VideoCapture(str(video))
     try:
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if width <= 0 or height <= 0:
             return {}
-        geometry = ClipGeometry.of(width, height, spacing or label_spacing(plan.order))
+        geometry = ClipGeometry.of(width, height, options.spacing or label_spacing(plan.order))
         centres = search_centres(plan, width, height)
         if not centres:
             return {}
-        measured = measure_clip(capture, centres, geometry, placer, stop)
+        measured = measure_clip(capture, centres, geometry, options.placer, options.stop)
     finally:
         capture.release()
     chosen = choose(measured, plan, geometry.to_1080)
-    placed = place(chosen, measured, placer, height)
+    placed = place(chosen, measured, options.placer, height)
     steer = steering(chosen, plan.anchors)
     out: Dict[int, Suggestion] = {}
     for frame, point in chosen.items():
