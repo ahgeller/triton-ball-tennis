@@ -7,21 +7,25 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-import torch
-from finetune.train_gridtracknet import find_clips, resolve_val_clips
-from tennis_tracker.gridtracknet import GridTrackNet
+SNAPSHOT = ROOT / "audit/snapshot.json"
+_HASH_BLOCK_BYTES = 1 << 20
 
 
-def digest(path):
+def digest(path: Path) -> str:
     value = hashlib.sha256()
     with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
+        for block in iter(lambda: handle.read(_HASH_BLOCK_BYTES), b""):
             value.update(block)
     return value.hexdigest()
 
 
-def main():
+def main() -> None:
+    # Run as a script from audit/, so the project packages are not importable until ROOT is on the path.
+    sys.path.insert(0, str(ROOT))
+    import torch
+    from finetune.train_gridtracknet import find_clips, resolve_val_clips
+    from tennis_tracker.gridtracknet import GridTrackNet
+
     ws = ROOT / "finetune"
     clips = find_clips(ws / "videos", ws / "labels")
     validation = resolve_val_clips([c[0] for c in clips], None)
@@ -46,14 +50,17 @@ def main():
              ROOT / "sample/pomona_annotations.json"]
     model = GridTrackNet()
     snapshot = {"python": sys.version, "interpreter": sys.executable, "versions": versions,
-                "gpu": torch.cuda.get_device_name(0), "sources": sources,
+                "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                "sources": sources,
                 "default_validation": validation,
                 "unchecked_clips_in_default_training": [name for name, _, _, source in clips
                     if source == "custom-uncorrected" and name not in validation],
                 "model_parameters": sum(p.numel() for p in model.parameters()),
                 "normalization_parameters": sum(p.numel() for p in model.batch_norms.parameters()),
                 "sha256": {str(p.relative_to(ROOT)): digest(p) for p in paths}}
-    (ROOT / "audit/snapshot.json").write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    pending = SNAPSHOT.with_suffix(".json.tmp")
+    pending.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    pending.replace(SNAPSHOT)  # never leave a half-written snapshot behind
     print(json.dumps({k: v for k, v in snapshot.items() if k != "sha256"}, indent=2))
 
 

@@ -51,11 +51,22 @@ source hashes for the review are in `audit/snapshot.json`. There is no complete
 locked installation manifest. TensorRT engines may be GPU/version specific.
 
 ```powershell
+& 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' -m pytest -q
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' clean_tracker.py --self-test
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' finetune/train_gridtracknet.py --self-test
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' clean_tracker.py --no-video --tracking-json output/new_review_tracking.json
 & 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' evaluate_archive.py --archive finetune --mode raw --clips video13
 ```
+
+`python -m pytest -q` (pytest required) runs every test: all suites live in
+`tests/` (`pytest.ini` sets `testpaths` and puts the root on the import path),
+use synthetic inputs only and need no GPU. `clean_tracker.py --self-test` runs
+the selector, court-overlay, ROI and GridTrackNet modules from `tests/` through
+pytest; `train_gridtracknet.py --self-test` is also run by
+`tests/test_train_gridtracknet.py`. Put new tests in `tests/`, shared synthetic
+fixtures in `tests/_helpers.py`. `audit/` keeps the review's record (reports,
+logs, verification scripts); `audit/review_checks.py` documents the September
+2026 defects and no longer runs.
 
 Always specify `--archive finetune` for workspace evaluation: the evaluator can
 otherwise prefer a separate Desktop archive. Use distinct output paths for new
