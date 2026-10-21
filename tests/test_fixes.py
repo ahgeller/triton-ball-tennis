@@ -23,8 +23,9 @@ from tennis_tracker.motion import BackgroundModel, preprocess_frame_cuda, refine
 from ball_in_play_selector.config import SelectorConfig
 from ball_in_play_selector.physics import BallKalmanFilter, predict_projectile, predict_projectile_velocity
 from ball_in_play_selector.core import motion_near
-from finetune import label_tool, realign
+from finetune import realign
 from finetune import label_audit
+from finetune.label_source import Source
 from finetune.data_policy import is_verified
 from validate_tracking import validate
 from ball_in_play_selector.core import frame_result
@@ -128,11 +129,10 @@ class FixTests(unittest.TestCase):
             def read(self):
                 ok, frame = super().read()
                 return ok, np.full_like(frame, 42) if ok else None
-        source = SimpleNamespace(position=0, capture=DuplicateCapture(3), sig_of={}, end=None)
-        tool = SimpleNamespace(source=source, signature=label_tool.Tool.signature)
-        tool.remember = lambda index, sig: label_tool.Tool.remember(tool, index, sig)
+        source = SimpleNamespace(position=0, capture=DuplicateCapture(3), sig_of={}, end=None,
+                                 frame_cache={}, label_frames=set())
         for index in range(3):
-            self.assertIsNotNone(label_tool.Tool.decode_at(tool, index))
+            self.assertIsNotNone(Source.decode_at(source, index))
         self.assertEqual(source.position, 3)
 
     def test_human_pin_is_a_hard_constraint(self):

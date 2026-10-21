@@ -140,7 +140,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 
 from finetune import label_window as win
 from finetune.label_hints import OFFER_MIN_PX, Suggestions
-from finetune.label_source import Source, build_source, expand, frame_signature   # noqa: F401 - the tool's parts, by name
+from finetune.label_source import Source, build_source, expand   # noqa: F401 - the tool's parts, by name
 from finetune.label_store import (SETTINGS_NAME, Row, load_review, load_rows, load_settings,  # noqa: F401
                                   load_suspects, save_review, save_rows, save_settings, save_suspects)
 from finetune.label_window import KEYS_NEXT, KEYS_PREV, WINDOW
@@ -534,15 +534,6 @@ class Tool:
     def frame(self, index: int) -> np.ndarray:
         """The picture of source frame `index` of the clip we are in (see Source.frame)."""
         return self.source.frame(index)
-
-    # Kept by their old names: the decoding is Source's, these only point at the clip we are in.
-    signature = staticmethod(frame_signature)
-
-    def decode_at(self, index: int) -> Optional[np.ndarray]:
-        return Source.decode_at(self.source, index)
-
-    def remember(self, index: int, signature: bytes) -> None:
-        Source.remember(self.source, index, signature)
 
     def toggle_grid(self) -> None:
         self.sheet = False

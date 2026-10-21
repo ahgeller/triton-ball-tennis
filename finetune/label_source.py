@@ -248,9 +248,6 @@ class Source:
             self.frame_cache.pop(next(iter(self.frame_cache)))
         self.frame_cache[index] = image
 
-    def remember(self, index: int, signature: bytes) -> None:
-        self.sig_of[index] = signature
-
     def placeholder(self, index: int) -> np.ndarray:
         """A black frame saying the video has no picture here; never a frame to label."""
         image = np.zeros((self.height, self.width, 3), np.uint8)
