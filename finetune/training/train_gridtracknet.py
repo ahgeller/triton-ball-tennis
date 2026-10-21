@@ -47,9 +47,9 @@ from finetune.data.fileio import copy_atomic, write_atomic
 from finetune.data.scoring import REFERENCE_HEIGHT, scale_for_width, score
 from finetune.data import workspace as ws
 from finetune.data.workspace import video_meta   # noqa: F401 - looked up by name here (tests patch it)
-from finetune.training.data import (Augmenter, Clip, ClipSelection, UnitDataset, build_units, find_clips, make_sampler,
-                                    make_target, photometric_augment, prepare_data, resolve_val_clips, training_targets,
-                                    validation_split)
+from finetune.training.clips import Clip, ClipSelection, find_clips, resolve_val_clips, validation_split
+from finetune.training.dataset import Augmenter, UnitDataset, make_sampler, make_target, photometric_augment
+from finetune.training.frame_cache import build_units, prepare_data, training_targets
 
 SEED = 7                   # every run draws the same augmentation and sampling sequence
 PROGRESS_EVERY = 200       # training steps between progress lines

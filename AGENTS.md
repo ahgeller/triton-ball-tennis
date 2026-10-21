@@ -69,9 +69,11 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `import_sources.py` holds what they share) and `realign.py`,
   source conversion and temporal realignment. `finetune/training/`:
   `train_gridtracknet.py` (training; `finetune/train_gridtracknet.py` at the old
-  path only hands over to it, for the command below), `data.py` (its clip
-  selection, frame cache, targets, augmentation and sampler), `detect.py` (the
-  raw prepass over a clip) and `pretrack.py` (drafts).
+  path only hands over to it, for the command below), `clips.py` (which clips
+  it trains on and holds out), `frame_cache.py` (the per-clip cache of frames
+  and training units), `dataset.py` (targets, augmentation, the Dataset and
+  the sampler), `detect.py` (the raw prepass over a clip) and `pretrack.py`
+  (drafts).
 - `evaluation/`: `tracking.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
   the pipeline on workspace clips with `finetune/data/scoring.py`, `parity.py` is the

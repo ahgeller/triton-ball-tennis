@@ -184,7 +184,9 @@ finetune/data/data_policy.py             Which clips may be trained, validated o
 finetune/data/import_data.py, realign.py Source conversion and temporal realignment
 finetune/data/import_sources.py          What the dataset importers share
 finetune/training/train_gridtracknet.py  Training; data/scoring.py is the detector metric
-finetune/training/data.py                The trainer's clips, frame cache, targets and sampler
+finetune/training/clips.py               Which clips the trainer uses and holds out
+finetune/training/frame_cache.py         The per-clip frame cache and its training units
+finetune/training/dataset.py             Grid targets, augmentation, Dataset and sampler
 finetune/training/pretrack.py, detect.py Drafts from the raw GridTrackNet prepass
 finetune/labels/                         Hand-corrected own-camera labels
 tests/                                   Synthetic regression tests (pytest)

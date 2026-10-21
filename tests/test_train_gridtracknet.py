@@ -13,8 +13,9 @@ import torch
 
 from finetune.training import train_gridtracknet as training
 from finetune.data.labels import write_labels
-from finetune.training.data import (DATA_VERSION, Augmenter, ClipSelection, TrainingUnit, UnitDataset, find_clips,
-                                    make_target, prepare_clip, training_targets)
+from finetune.training.clips import ClipSelection, find_clips
+from finetune.training.dataset import Augmenter, UnitDataset, make_target
+from finetune.training.frame_cache import DATA_VERSION, TrainingUnit, prepare_clip, training_targets
 from finetune.training.train_gridtracknet import better
 from tests._helpers import metric_probe, write_clip
 
