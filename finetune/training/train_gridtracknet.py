@@ -176,6 +176,8 @@ def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> ClipRecord:
                 cached["source"] = source
                 return cached
         except (OSError, ValueError) as error:
+            # The cache is a derived copy of the clip; a damaged entry is rebuilt below from the
+            # video and labels, so this is a note on the extra work, not a failure.
             print(f"[data] {clip}: cache entry unreadable ({error}); rebuilding it")
     fps, width, height, _ = video_meta(video)
     stride = require_phase_stride(fps)

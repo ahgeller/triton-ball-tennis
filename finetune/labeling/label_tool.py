@@ -18,7 +18,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Hashable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -500,7 +500,7 @@ class Tool:
         cv2.rectangle(display, (left - 1, top - 1), (left + width, top + height), (110, 110, 110), 1)
         self.inset_box = (left, top, left + width - 1, top + height - 1)
 
-    def render_state(self, image: np.ndarray, before: Optional[np.ndarray]) -> Tuple:
+    def render_state(self, image: np.ndarray, before: Optional[np.ndarray]) -> Tuple[Hashable, ...]:
         """Everything the single-frame view is drawn from. render redraws only when this changes,
         so the loop can call it every 30 ms for free. IF YOU MAKE render, draw_inset OR THE HUD READ
         SOMETHING NEW, ADD IT HERE - a screen that does not change when it should is far worse than
@@ -1099,6 +1099,8 @@ class Tool:
                 save_rows(rescue, source.rows, source.width, source.height)
                 print(f"[save] {source.out_csv.name} could not be written; your labels are in {rescue.name}")
             except OSError as error:
+                # The last resort has failed and the tool is closing: there is nowhere left to put
+                # these rows, so say so plainly and go on to rescue the other clips of the run.
                 print(f"[error] {source.clip}: unsaved labels lost, {rescue.name} failed too: {error}")
 
     def loop(self) -> None:

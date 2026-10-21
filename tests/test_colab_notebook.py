@@ -9,7 +9,8 @@ import json
 from pathlib import Path
 from typing import Iterator, List, Set
 
-ROOT = Path(__file__).resolve().parents[1]
+from tennis_tracker.paths import ROOT
+
 NOTEBOOK = ROOT / "finetune" / "GridTrackNet_FineTune_Colab.ipynb"
 PACKAGES = ("finetune", "tennis_tracker")
 TRAINER = "finetune.training.train_gridtracknet"

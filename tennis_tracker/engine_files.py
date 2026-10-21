@@ -36,13 +36,13 @@ def find_ball_class_id_from_names(names: Any, override: Optional[str] = None) ->
         for cid, name in names.items():
             if name.lower() == override.lower():
                 return cid, name
-        print(f"[WARN] class_name='{override}' not in {names}")
+        print(f"Engine class table {names} has no class named {override!r}; trying the usual ball names")
     for candidate in _BALL_CLASS_ALIASES:
         for cid, name in names.items():
             if name.lower() == candidate:
-                print(f"[info] Auto-detected ball class: {cid} -> '{name}'")
+                print(f"Ball class of the engine: {cid} -> {name!r}")
                 return cid, name
-    print(f"[WARN] Could not find ball class in {names}. All classes used!")
+    print(f"No ball class in the engine's class table {names}; every class is used")
     return None, None
 
 

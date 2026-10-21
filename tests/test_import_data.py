@@ -2,7 +2,6 @@
 ``workspace_dir`` fixture's workspace: the frame-phase and pixel mapping of each source, and
 the provenance that lands in clips.csv. No real dataset, label or video is read."""
 import io
-import json
 from contextlib import redirect_stdout
 from pathlib import Path
 

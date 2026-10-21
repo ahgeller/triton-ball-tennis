@@ -113,7 +113,7 @@ def build_network(self_check: bool = True) -> "nn.Module":
             self.heat = nn.Conv2d(width, 1, 1) if self_check else None
             self.sure = nn.Sequential(nn.Linear(width + 3, 64), nn.ReLU(), nn.Linear(64, 1)) if self_check else None
 
-        def forward(self, x):
+        def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", Optional["torch.Tensor"]]:
             n, _, h, w = x.shape
             feat = self.body(x)
             logits = (feat if self.heat is None else self.heat(feat)).flatten(1).float()

@@ -15,7 +15,9 @@ from evaluation.tracking import validate
 
 _SHA_BLOCK_BYTES = 1 << 20
 # A full tracker run on the benchmark clip takes minutes; this only stops a hung run.
-_TRACKER_TIMEOUT_S = 4 * 3600
+_TRACKER_TIMEOUT_HOURS = 4
+_SECONDS_PER_HOUR = 60 * 60
+_TRACKER_TIMEOUT_S = _TRACKER_TIMEOUT_HOURS * _SECONDS_PER_HOUR
 
 
 BASELINE = {

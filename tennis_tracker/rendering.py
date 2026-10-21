@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np

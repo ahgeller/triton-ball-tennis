@@ -13,9 +13,9 @@ import pytest
 from finetune import ft
 from finetune.data import workspace
 from finetune.data.labels import write_labels
+from tennis_tracker.paths import ROOT
 from tests._helpers import write_clip
 
-ROOT = Path(__file__).resolve().parents[1]
 SIZE = (64, 36)
 
 BLOCKED_IMPORT = """

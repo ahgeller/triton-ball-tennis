@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from ball_in_play_selector.config import SelectorConfig
-from ball_in_play_selector.physics import BallKalmanFilter, LinearKalman
+from ball_in_play_selector.physics import BallKalmanFilter
 
 
 def _constant_velocity_cfg() -> SelectorConfig:

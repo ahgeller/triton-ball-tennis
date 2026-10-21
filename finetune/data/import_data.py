@@ -183,6 +183,8 @@ def copy_media(src: Path, dst: Path, link: bool) -> str:
             os.link(src, dst)
             return "linked"
         except OSError as error:
+            # A hard link is only an optimisation (same drive, no second copy); across drives or on
+            # a filesystem without links the copy below is the right answer, so say so and go on.
             print(f"[info] {dst.name}: cannot hard-link ({error}); copying instead")
     shutil.copyfile(src, dst)
     return "copied"

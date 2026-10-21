@@ -2,9 +2,9 @@
 imports other scripts make keep working, and the package's two scorers are the ones they name."""
 import subprocess
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from tennis_tracker.paths import ROOT
+
 
 
 def test_root_scripts_front_the_package_modules():

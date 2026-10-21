@@ -3,16 +3,15 @@ TENNIS_WORKSPACE override, on folders under tmp_path. No real workspace file is 
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
 from finetune.data import workspace
+from tennis_tracker.paths import ROOT
 from finetune.data.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, draft_files, find_video,
                                      label_csv, label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
                                      require_video, review_json, suspect_json, unsaved_csv, videos_in, write_manifest)
 
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_a_clip_names_its_files(tmp_path):

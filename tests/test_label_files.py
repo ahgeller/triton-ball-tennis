@@ -1,7 +1,6 @@
 """The shared label-file format, its sidecars, video facts and the importer's row rules, on
 synthetic files in temporary folders. No workspace label or video is ever read."""
 import json
-from pathlib import Path
 
 import pytest
 

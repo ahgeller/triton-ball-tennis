@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from finetune.data.fileio import write_atomic
 from finetune.data.labels import (Flags, answered_point, format_point, frame_list, is_visible, read_flags, read_label_rows,
@@ -149,11 +149,17 @@ def apply_review(path: Path, rows: List[Row]) -> Optional[dict]:
             try:
                 row.source, row.conf = str(evidence["source"]), float(evidence["conf"])
             except (TypeError, ValueError):
+                # Evidence is a note on where a draft came from, not a label: one odd entry is
+                # reported and skipped so the reviewed/edited record of the whole clip still loads.
                 print(f"[warn] {path.name}: frame {row.frame} has unreadable evidence {evidence!r}; ignored")
     return state
 
 
-def load_settings(path: Path) -> dict:
+# The settings file holds the toggles worth keeping between sessions: filter, inset, grid size, trail.
+Settings = Dict[str, Union[str, bool, int]]
+
+
+def load_settings(path: Path) -> Settings:
     """The toggles worth keeping between sessions. Missing or broken file: the defaults."""
     try:
         blob = json.loads(path.read_text(encoding="utf-8"))
@@ -162,8 +168,10 @@ def load_settings(path: Path) -> dict:
         return {}
 
 
-def save_settings(path: Path, settings: dict) -> None:
+def save_settings(path: Path, settings: Settings) -> None:
     try:
         write_atomic(path, json.dumps(settings, indent=1))
     except OSError as error:
+        # A convenience file: losing it costs the next session its remembered toggles, never any
+        # labels, so the tool warns and carries on rather than failing an edit or a quit over it.
         print(f"[warn] could not save settings to {path}: {error}")
