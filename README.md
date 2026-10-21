@@ -33,16 +33,29 @@ unresolved detector gap remains a gap instead of becoming a long predicted path.
 
 ## Requirements
 
-- Python 3.10
-- NVIDIA CUDA GPU
-- CUDA-enabled PyTorch
-- TensorRT 10
-- OpenCV and NumPy
+- Python 3.10 and an NVIDIA CUDA GPU
+- CUDA-enabled PyTorch (install it from the PyTorch index for your CUDA version)
+- NumPy, OpenCV (the GUI build, for the label tool), FilterPy 1.4.5
+- TensorRT 10 for the player and court engines
+- BoxMOT for player tracking (without it players are not tracked)
+- CatBoost, only for `--court`
+- SciPy and psutil, optional (motion-debug trail smoothing; automatic frame-cache sizing)
+- Ultralytics, only for exporting new engines with `build_trt_engines.py`
+- pytest, for the tests and `clean_tracker.py --self-test`
 - FFmpeg recommended for faster video encoding
 
-The repository includes the GridTrackNet weight export and TensorRT engines used
-by the default pipeline. TensorRT engines are platform-specific and may need to
-be rebuilt for a different GPU or TensorRT version.
+`requirements.txt` lists these with the versions the last review ran with
+(recorded in `audit/snapshot.json`); it is not a full lock file:
+
+```powershell
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements.txt
+```
+
+The repository includes the GridTrackNet weight export, the CatBoost bounce
+model and the TensorRT engines used by the default pipeline. TensorRT engines
+are platform-specific and may need to be rebuilt for a different GPU or
+TensorRT version.
 
 ## Usage
 
@@ -92,10 +105,11 @@ The videos and caches the workspace builds are regenerable and stay untracked;
 
 ## Validation
 
-Run the deterministic tracking checks:
+Run the deterministic tracking checks and the synthetic regression tests:
 
 ```powershell
 python clean_tracker.py --self-test
+python -m pytest -q
 ```
 
 Evaluate against annotations:
@@ -104,18 +118,38 @@ Evaluate against annotations:
 python clean_tracker.py --no-video --annotations sample\pomona_annotations.json
 ```
 
+Score the detector (or the full pipeline) on the hand-labelled clips with
+`evaluate_archive.py`. `--archive` chooses the label set; pass it explicitly
+so the result does not depend on `$TENNIS_ARCHIVE` or other machine state:
+
+```powershell
+python evaluate_archive.py --archive finetune --mode raw --clips video13
+```
+
+`check_parity.py` is a strict gate against the frozen Pomona benchmark, and
+`validate_tracking.py` scores an exported tracking JSON against hand labels.
+
 ## Project structure
 
 ```text
 clean_tracker.py                         Command-line entry point
+evaluate_archive.py                      Detector/pipeline scoring on hand-labelled clips
+validate_tracking.py                     Tracking JSON vs. hand labels
+check_parity.py                          Frozen Pomona benchmark gate
+build_trt_engines.py                     YOLO checkpoint -> ONNX -> TensorRT engine builder
+requirements.txt                         Python packages (see Requirements)
 tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
+tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs, court minibar
 tennis_tracker/                          Detection, motion, rendering, and video pipeline
 ball_in_play_selector/                   Track construction, scoring, and recovery
 models/gridtracknet_weights_torch.npz    GridTrackNet inference weights
+models/ctb_regr_bounce.cbm               CatBoost bounce model (--court)
 models/                                  Player and court TensorRT engines
 sample/                                  Sample video and validation annotations
 finetune.bat / finetune.ps1              Front door for the fine-tuning workspace
-finetune/                                Labelling, import, training, and evaluation tools
+finetune/                                Labelling, import, pre-labelling, and training tools
+tests/                                   Synthetic regression tests (pytest)
+audit/                                   Review reports, logs and verification scripts
 output/                                  Generated videos, JSON, and reports (ignored)
 ```
 

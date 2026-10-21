@@ -1,0 +1,31 @@
+# Runtime packages imported by the tracker, the fine-tuning workspace and the tests.
+#
+# Pinned versions are the ones the October 2026 review ran with on Python
+# 3.10.19 / Windows / RTX 5080 (audit/snapshot.json, "versions"). Packages the
+# snapshot does not record are left unpinned. This is not a complete lock file:
+# transitive dependencies are not pinned.
+#
+# Not installable from PyPI defaults:
+#   - torch must be a CUDA build; the review used 2.10.0+cu128. Install it from
+#     the PyTorch index for your CUDA version first, e.g.
+#       pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+#   - FFmpeg (optional, faster NVENC/libx264 rendering) is an external binary.
+
+# --- Required ------------------------------------------------------------------
+torch==2.10.0             # CUDA build; GridTrackNet inference, CUDA motion masks, training
+numpy==1.26.4
+opencv-python==4.9.0.*    # GUI build (not -headless): the label tool opens windows
+filterpy==1.4.5           # Kalman filter in ball_in_play_selector/physics.py
+# TensorRT engines (models/*.engine) are specific to the GPU and TensorRT
+# version that built them; rebuild with build_trt_engines.py after upgrading.
+tensorrt==10.15.1.29      # player and court engine backends
+boxmot==16.0.11           # ByteTrack player tracking; without it players are not tracked
+
+# --- Optional, used only by some features -------------------------------------
+catboost==1.2.10          # --court: bounce model models/ctb_regr_bounce.cbm
+scipy                     # smoothed raw-motion trails in the motion-debug video
+psutil                    # sizes the automatic pass-2 frame cache (without it that cache is off)
+
+# --- Tools, install when needed -------------------------------------------------
+# ultralytics==8.4.51     # build_trt_engines.py: YOLO .pt -> ONNX export only
+# pytest                  # python -m pytest -q and clean_tracker.py --self-test
