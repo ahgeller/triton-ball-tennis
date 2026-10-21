@@ -170,16 +170,6 @@ class BallKalmanFilter:
                 
         return float(x_pred[0]), float(x_pred[1])
 
-    def get_search_radius(self, scale_mult: float = 3.0) -> float:
-        """Extract search radius based on position uncertainty."""
-        # Max of variance in X or Y
-        var_pos = max(self.kf.P[0, 0], self.kf.P[1, 1])
-        std_pos = math.sqrt(var_pos)
-        
-        # Ensure it doesn't get ridiculously small or large
-        radius = np.clip(std_pos * scale_mult, 10.0, 100.0)
-        return float(radius)
-
     def update(self, z_x: float, z_y: float, conf: Optional[float] = None) -> float:
         """Update filter with a measurement.
 

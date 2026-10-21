@@ -1,66 +1,18 @@
 import math
 import numpy as np
 from typing import Optional, List, Tuple
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
 
 from .config import SelectorConfig
 from .models import Detection, Track
 from .utils import _cfg_diag, _fps_norm_pxpf, _ensure_mask_u8
 from .physics import _xy_dist
-from .scoring import _track_speed_stats, _track_extent
 
 
-def _guide_static_speed_thresh(cfg: SelectorConfig, diag: float) -> float:
+def _static_speed_threshold(cfg: SelectorConfig, diag: float) -> float:
     """Static-speed threshold in px/frame, capped to avoid over-scaling with resolution."""
-    diag_based = float(cfg.guide_spawn_static_speed_frac) * float(diag) * 0.95
+    diag_based = float(cfg.assoc_static_speed_frac) * float(diag) * 0.95
     fps_capped = _fps_norm_pxpf(4.0, cfg)
     return max(1.2, min(diag_based, fps_capped))
-
-def _guide_det_gate_ok(
-    x: float,
-    y: float,
-    gx: float,
-    gy: float,
-    guide_exact: bool,
-    cfg: SelectorConfig,
-    diag: float
-) -> bool:
-    """Guide is used only to gate candidate detections near the chosen path."""
-    gate = (cfg.guide_gate_exact_frac if guide_exact else cfg.guide_gate_soft_frac) * diag
-    d = math.sqrt((x - gx) ** 2 + (y - gy) ** 2)
-    return d <= gate
-
-def _det_hard_continuity_ok(
-    x: float,
-    y: float,
-    last_det_pos: Optional[Tuple[float, float]],
-    last_vel: Tuple[float, float],
-    frames_since_det: int,
-    cfg: SelectorConfig,
-    diag: float
-) -> bool:
-    """Hard-reject abrupt det jumps that break local trajectory continuity."""
-    if last_det_pos is None:
-        return True
-
-    dt = max(int(frames_since_det), 1)
-    max_step = max(
-        20.0,
-        cfg.det_hard_step_frac * diag *
-        (1.0 + cfg.det_hard_step_growth_per_frame * (dt - 1))
-    )
-
-    d_raw = _xy_dist(x, y, last_det_pos[0], last_det_pos[1])
-    if d_raw <= max_step:
-        return True
-
-    pred_x = last_det_pos[0] + last_vel[0] * dt
-    pred_y = last_det_pos[1] + last_vel[1] * dt
-    d_pred = _xy_dist(x, y, pred_x, pred_y)
-    return d_pred <= max_step * 1.15
 
 
 def build_detections(
@@ -139,7 +91,7 @@ def _association_plausible(
             for a, b in zip(recent, recent[1:])
         ) / recent_dt
         recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
-        static_speed = _guide_static_speed_thresh(cfg, diag)
+        static_speed = _static_speed_threshold(cfg, diag)
         if recent_speed <= static_speed and recent_motion < 0.25 and obs_speed > 2.0 * static_speed:
             return False
 
@@ -174,15 +126,15 @@ def build_tracks(
     next_id = 0
     diag = _cfg_diag(cfg)
     dt_cap = max(int(cfg.assoc_gate_growth_cap_frames), 1)
-    stitch_enable = bool(getattr(cfg, "trail_stitch_enable", True))
-    stitch_gap_frames = max(1, int(getattr(cfg, "trail_stitch_gap_frames", 30)))
-    stitch_min_stale = max(1, int(getattr(cfg, "trail_stitch_min_stale_frames", 3)))
-    stitch_min_obs = max(1, int(getattr(cfg, "trail_stitch_min_obs", 3)))
-    stitch_dist_px = max(8.0, float(getattr(cfg, "trail_stitch_dist_frac", 0.06)) * diag)
-    stitch_max_step_px = max(10.0, float(getattr(cfg, "trail_stitch_max_step_frac", 0.11)) * diag)
-    stitch_pred_resid_px = max(10.0, float(getattr(cfg, "trail_stitch_pred_resid_frac", 0.08)) * diag)
-    jump_break_px = max(10.0, float(getattr(cfg, "trail_jump_break_frac", 0.06)) * diag)
-    jump_break_growth_px = max(0.0, float(getattr(cfg, "trail_jump_break_growth_frac", 0.020)) * diag)
+    stitch_enable = bool(cfg.trail_stitch_enable)
+    stitch_gap_frames = max(1, int(cfg.trail_stitch_gap_frames))
+    stitch_min_stale = max(1, int(cfg.trail_stitch_min_stale_frames))
+    stitch_min_obs = max(1, int(cfg.trail_stitch_min_obs))
+    stitch_dist_px = max(8.0, float(cfg.trail_stitch_dist_frac) * diag)
+    stitch_max_step_px = max(10.0, float(cfg.trail_stitch_max_step_frac) * diag)
+    stitch_pred_resid_px = max(10.0, float(cfg.trail_stitch_pred_resid_frac) * diag)
+    jump_break_px = max(10.0, float(cfg.trail_jump_break_frac) * diag)
+    jump_break_growth_px = max(0.0, float(cfg.trail_jump_break_growth_frac) * diag)
 
     for t, frame_dets in enumerate(all_dets):
         # Predict positions for all active tracks
@@ -337,24 +289,4 @@ def build_tracks(
             finished.append(trk)
 
     return finished
-
-
-def _is_track_moving_for_merge(trk: Track, cfg: SelectorConfig, diag: float) -> bool:
-    """Strict moving predicate for movement-based merge pass."""
-    if trk.num_obs < 3:
-        return False
-    sb = trk.score_breakdown if trk.score_breakdown else {}
-    avg_speed_fallback, peak_speed_fallback = _track_speed_stats(trk)
-    avg_speed = float(sb.get("avg_speed_pxpf", avg_speed_fallback))
-    peak_speed = float(sb.get("peak_speed_pxpf", peak_speed_fallback))
-    extent_px = float(sb.get("extent_px", _track_extent(trk)))
-
-    min_avg = _fps_norm_pxpf(cfg.movement_merge_min_avg_speed, cfg)
-    min_peak = _fps_norm_pxpf(cfg.movement_merge_min_peak_speed, cfg)
-    min_extent = max(12.0, cfg.movement_merge_min_extent_frac * diag)
-
-    moving_speed_ok = (avg_speed >= min_avg) or (peak_speed >= min_peak)
-    moving_extent_ok = extent_px >= min_extent
-    return moving_speed_ok and moving_extent_ok
-
 
