@@ -175,3 +175,107 @@ def test_reviewed_labels_cannot_have_their_video_replaced(tmp_path):
     assert code == 1
     assert out.endswith("Cannot replace the video under reviewed labels; resolve the source mapping manually first\n")
     assert listing(tmp_path) == before
+
+
+# --------------------------------------------------------------------------- the pieces main() calls
+
+def evidence() -> Tuple[np.ndarray, ...]:
+    """(frames, xs, ys, fast, lut_x, lut_y) for the fixture, built the way main() builds them."""
+    det_frames, det_x, det_y, _ = shifted_detections()
+    lut_x, lut_y = realign.lookup_tables(det_frames, det_x, det_y, TOTAL)
+    visible = [(f, float(x), float(y)) for f, x, y in label_rows() if labels.is_visible(float(x), float(y), WIDTH, HEIGHT)]
+    frames = np.array([f for f, _, _ in visible], np.int64)
+    xs = np.array([x for _, x, _ in visible], np.float32)
+    ys = np.array([y for _, _, y in visible], np.float32)
+    step = np.hypot(np.diff(xs, prepend=xs[0]), np.diff(ys, prepend=ys[0])) * realign.scale_for_width(WIDTH)
+    return frames, xs, ys, step >= realign.FAST_PX, lut_x, lut_y
+
+
+def test_parse_args_takes_two_clips_and_the_two_flags():
+    assert realign.parse_args(["realign.py", "a", "b", "--preview"]) == ("a", "b", True, False)
+    assert realign.parse_args(["realign.py", "a", "b", "--apply"]) == ("a", "b", False, True)
+    assert realign.parse_args(["realign.py", "x"]) is None
+    assert realign.parse_args(["realign.py"]) is None
+
+
+def test_solve_alignment_finds_the_constant_plus_three_offset_at_rate_1(capsys):
+    frames, xs, ys, fast, lut_x, lut_y = evidence()
+    assert len(frames) == 238 and realign.scale_for_width(WIDTH) == 1.5 and fast[1:].all() and not fast[0]
+    pinned = np.zeros(len(frames), bool)
+    best = realign.solve_alignment(frames, xs, ys, fast, lut_x, lut_y, TOTAL, 1.5, set(), pinned, chunks=8)
+    assert best is not None
+    result, rate, bases, chosen = best
+    assert rate == 1.0
+    assert (chosen == SHIFT).all()
+    np.testing.assert_array_equal(bases, frames)
+    assert result[0] == 1.0 and result[2] == 0.0
+    assert capsys.readouterr().out == "  rate 1: 22 candidate offsets in -182..+8  -> agree 1.00, median 0.0 px\n"
+
+
+def test_solve_alignment_is_none_when_no_rate_has_a_candidate_offset(capsys):
+    frames, xs, ys, fast, lut_x, lut_y = evidence()
+    pinned = np.zeros(len(frames), bool)
+    with patch.object(realign, "candidates", lambda *args: np.array([], np.int64)):
+        best = realign.solve_alignment(frames, xs, ys, fast, lut_x, lut_y, TOTAL, 1.5, set(), pinned, chunks=8)
+    assert best is None
+    assert capsys.readouterr().out == ""
+
+
+def test_solve_alignment_keeps_a_pinned_row_at_offset_zero():
+    frames, xs, ys, fast, lut_x, lut_y = evidence()
+    fixed = {PINNED_FRAME}
+    pinned = np.array([f in fixed for f in frames.tolist()], bool)
+    best = realign.solve_alignment(frames, xs, ys, fast, lut_x, lut_y, TOTAL, 1.5, fixed, pinned, chunks=8)
+    assert best is not None
+    _, rate, _, chosen = best
+    assert rate == 1.0
+    assert chosen[frames <= PINNED_FRAME].tolist() == [0] * int((frames <= PINNED_FRAME).sum())
+    assert (chosen[frames > PINNED_FRAME] == SHIFT).all()
+
+
+def test_segments_groups_runs_of_one_offset():
+    assert realign.segments(np.array([0, 1, 2, 3, 4]), np.array([0, 0, 2, 2, 2])) == [[0, 1, 0], [2, 4, 2]]
+    assert realign.segments(np.array([5, 9]), np.array([3, 3])) == [[5, 9, 3]]
+    assert realign.segments(np.array([], np.int64), np.array([], np.int64)) == []
+
+
+def test_apply_alignment_backs_up_once_and_retimes_every_row(tmp_path):
+    csv = write_fixture(tmp_path)
+    original = csv.read_bytes()
+    before = listing(tmp_path)
+    entries = sorted(labels.read_label_rows(csv))
+    frames = evidence()[0]
+    chosen = np.full(len(frames), SHIFT, np.int64)
+    with bound_to(tmp_path):
+        code = realign.apply_alignment(entries, frames, chosen, set(), set(), 1.0, TOTAL,
+                                       (WIDTH, HEIGHT), (WIDTH, HEIGHT), CLIP, CLIP)
+    assert code == 0
+    backup = csv.with_suffix(".csv.premisaligned")
+    assert backup.read_bytes() == original
+    assert listing(tmp_path) == before + [f"labels/{CLIP}_ball.csv.premisaligned"]
+    rewritten = [(row.frame, row.x, row.y) for row in labels.read_label_rows(csv)]
+    assert rewritten == [(f + SHIFT, float(x), float(y)) for f, x, y in label_rows()]
+    assert [f for f, x, y in rewritten if not labels.is_visible(x, y, WIDTH, HEIGHT)] == [f + SHIFT for f in SENTINEL_ROWS]
+
+    # a second apply re-times the already re-timed rows but leaves the first backup alone
+    entries = sorted(labels.read_label_rows(csv))
+    with bound_to(tmp_path):
+        realign.apply_alignment(entries, frames + SHIFT, chosen, set(), set(), 1.0, TOTAL,
+                                (WIDTH, HEIGHT), (WIDTH, HEIGHT), CLIP, CLIP)
+    assert backup.read_bytes() == original
+    assert listing(tmp_path) == before + [f"labels/{CLIP}_ball.csv.premisaligned"]
+    assert [row.frame for row in labels.read_label_rows(csv)] == [f + 2 * SHIFT for f in range(ROWS)]
+
+
+def test_apply_alignment_writes_nothing_when_a_reviewed_row_would_move(tmp_path):
+    csv = write_fixture(tmp_path, reviewed=[PINNED_FRAME])
+    original = csv.read_bytes()
+    before = listing(tmp_path)
+    entries = sorted(labels.read_label_rows(csv))
+    frames = evidence()[0]
+    chosen = np.full(len(frames), SHIFT, np.int64)
+    with bound_to(tmp_path), pytest.raises(ValueError, match="would move a reviewed row; nothing changed"):
+        realign.apply_alignment(entries, frames, chosen, set(), {PINNED_FRAME}, 1.0, TOTAL,
+                                (WIDTH, HEIGHT), (WIDTH, HEIGHT), CLIP, CLIP)
+    assert csv.read_bytes() == original
+    assert listing(tmp_path) == before
