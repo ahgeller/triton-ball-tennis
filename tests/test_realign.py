@@ -17,7 +17,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from finetune.data import labels, realign
+from finetune.data import labels, realign, realign_solve
 from finetune.data.alignment import Evidence, Tracks
 from finetune.data.workspace import VideoMeta
 
@@ -228,7 +228,7 @@ def test_visible_tracks_scales_onto_the_video_and_marks_the_fast_rows():
 def test_solve_alignment_finds_the_constant_plus_three_offset_at_rate_1(capsys):
     tracks, seen = evidence()
     pinned = np.zeros(len(tracks.frames), bool)
-    best = realign.solve_alignment(tracks, seen, set(), pinned, chunks=8)
+    best = realign_solve.solve_alignment(tracks, seen, set(), pinned, chunks=8)
     assert best is not None
     assert best.rate == 1.0
     assert (best.chosen == SHIFT).all()
@@ -240,8 +240,8 @@ def test_solve_alignment_finds_the_constant_plus_three_offset_at_rate_1(capsys):
 def test_solve_alignment_is_none_when_no_rate_has_a_candidate_offset(capsys):
     tracks, seen = evidence()
     pinned = np.zeros(len(tracks.frames), bool)
-    with patch.object(realign, "candidates", lambda *args: np.array([], np.int64)):
-        best = realign.solve_alignment(tracks, seen, set(), pinned, chunks=8)
+    with patch.object(realign_solve, "candidates", lambda *args: np.array([], np.int64)):
+        best = realign_solve.solve_alignment(tracks, seen, set(), pinned, chunks=8)
     assert best is None
     assert capsys.readouterr().out == ""
 
@@ -250,7 +250,7 @@ def test_solve_alignment_keeps_a_pinned_row_at_offset_zero():
     tracks, seen = evidence()
     fixed = {PINNED_FRAME}
     pinned = np.array([f in fixed for f in tracks.frames.tolist()], bool)
-    best = realign.solve_alignment(tracks, seen, fixed, pinned, chunks=8)
+    best = realign_solve.solve_alignment(tracks, seen, fixed, pinned, chunks=8)
     assert best is not None
     assert best.rate == 1.0
     frames = tracks.frames
@@ -266,14 +266,14 @@ def test_human_pin_is_a_hard_constraint():
     tracks = Tracks(bases, np.zeros(n, np.float32), np.zeros(n, np.float32), np.zeros(n, bool))
     pinned = np.zeros(n, bool)
     pinned[n // 2] = True
-    offsets = realign.solve(tracks, seen, np.array([0, 1]), pinned)
+    offsets = realign_solve.solve(tracks, seen, np.array([0, 1]), pinned)
     assert offsets[n // 2] == 0
 
 
 def test_segments_groups_runs_of_one_offset():
-    assert realign.segments(np.array([0, 1, 2, 3, 4]), np.array([0, 0, 2, 2, 2])) == [[0, 1, 0], [2, 4, 2]]
-    assert realign.segments(np.array([5, 9]), np.array([3, 3])) == [[5, 9, 3]]
-    assert realign.segments(np.array([], np.int64), np.array([], np.int64)) == []
+    assert realign_solve.segments(np.array([0, 1, 2, 3, 4]), np.array([0, 0, 2, 2, 2])) == [[0, 1, 0], [2, 4, 2]]
+    assert realign_solve.segments(np.array([5, 9]), np.array([3, 3])) == [[5, 9, 3]]
+    assert realign_solve.segments(np.array([], np.int64), np.array([], np.int64)) == []
 
 
 def aligned_by(shift: int, frames: np.ndarray) -> realign.Alignment:

@@ -16,7 +16,8 @@ from typing import Dict, Optional, Set, Tuple
 
 from finetune.data.data_policy import OWN_SOURCES
 from finetune.data.fileio import backup_copy, copy_atomic
-from finetune.data.label_audit import audit_labels, check_label_file, matches_any
+from finetune.data.label_audit import audit_labels
+from finetune.data.label_check import check_label_file, matches_any
 from finetune.data.labels import LabelFormatError, read_labels, reviewed_frames
 from finetune.data.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
 from finetune.data import workspace as ws

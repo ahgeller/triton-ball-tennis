@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from evaluation import archive as evaluate_archive
-from evaluation.archive import (
-    LINE_PX, _inside_player, _near_court_line, _segment_distance, list_clips, score_pipeline_clip,
-)
+from evaluation.archive import list_clips
+from evaluation.pipeline_score import (ClipScore, LINE_PX, _inside_player, _near_court_line, _segment_distance,
+                                       score_pipeline_clip)
 
 
 def _archive(tmp_path: Path) -> Path:
@@ -86,7 +85,7 @@ def test_score_pipeline_clip_on_a_synthetic_payload():
                "last_valid_court_keypoints": None}
     labels = {0: (10, 10), 1: (10, 10), 2: (50, 50), 3: None}
     result = score_pipeline_clip(labels, payload, 1920)
-    assert isinstance(result, evaluate_archive.ClipScore)
+    assert isinstance(result, ClipScore)
     assert result.by_source == {"det": {"hit": 1, "localized_error": 0, "wrong": 1, "invisible": 0}}
     assert result.landed == {"other": 1}
     assert result.bad_frames == [(1, "wrong", "det", "other")]
