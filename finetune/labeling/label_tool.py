@@ -18,7 +18,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -27,149 +27,29 @@ if __name__ == "__main__":          # run as a script: make the repository root 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finetune.labeling import label_window as win
-from finetune.labeling.label_hints import OFFER_MIN_PX, Suggestions
+from finetune.labeling.label_draw import (FILTERS, ZOOM_STEP, draw_ticks, enhance, fit_text, hit, label_mark_colour,
+                                          mark_plan)
+from finetune.labeling.label_hints import Suggestions
 from finetune.labeling.label_source import Source, build_source, expand   # noqa: F401 - the tool's parts, by name
 from finetune.labeling.label_store import SETTINGS_NAME, Row, load_settings, save_flags, save_review, save_rows, save_settings
-from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV, WINDOW
+from finetune.labeling.label_views import GRID_SIZES, GridView, SheetView
+from finetune.labeling.label_window import (KEY_TAB, KEYS_CONFIRM, KEYS_NEXT, KEYS_NUDGE, KEYS_PREV, KEYS_QUIT, KEYS_STEP,
+                                            KEYS_ZOOM_IN, KEYS_ZOOM_OUT, WINDOW)
 from finetune.data import workspace as ws
 from finetune.data.labels import LabelFormatError, is_visible
-from finetune.labeling.refine import Point, Suggestion
+from finetune.labeling.refine import Suggestion
 from finetune.data.scoring import REFERENCE_HEIGHT
 
 HUD = 58
 MAX_UPSCALE = 2.0         # cap on drawing the frame bigger than it is: past this it only costs time
 UI_REFERENCE = 1280.0     # view width the HUD text sizes were chosen for; bigger views scale up
-ZOOM_STEP = 1.18          # per wheel notch / keypress; multiplicative so every step feels the same size
 ZOOM_EASE = 0.34          # share of the remaining gap closed each redraw: a glide, not a jump
 ZOOM_MAX = 12.0
 PREFETCH = 6              # label frames decoded ahead while the tool waits for the next keypress
-FILTERS = ("off", "dim white", "ball pop", "motion")   # h cycles these; see enhance()
 INSET_SHARE = 0.22        # width of the overview inset as a share of the view
 GHOST_REACH = 3           # rows either side searched for a ball to interpolate a missing guess from
 SNAP_PX = 4               # a wheel turned with the pointer this close to the ball zooms about the ball
-SHEET_ROWS = 60           # label frames on one trajectory sheet (w)
-GRID_SIZES = (8, 16)
 AUTOSAVE_SECONDS = 5.0    # write labels + review progress this often while there are unsaved changes
-KEY_TAB = 9
-KEYS_QUIT = (ord("q"), 27)                 # q / ESC
-KEYS_CONFIRM = (ord(" "), 13, ord("c"))    # SPACE / ENTER / c
-KEYS_ZOOM_IN, KEYS_ZOOM_OUT = (ord("+"), ord("=")), (ord("-"), ord("_"))
-KEYS_STEP = {ord(digit): int(digit) for digit in "12468"}     # frames n/d/p/a move at a time
-NUDGE_OF = dict(zip("ijkl", ((0, -1), (-1, 0), (0, 1), (1, 0))))   # up / left / down / right
-KEYS_NUDGE = {ord(key): step for letter, step in NUDGE_OF.items() for key in (letter, letter.upper())}
-HINT_TRUSTED = (0, 150, 255)     # BGR: the suggestion's mark when it is trusted ...
-HINT_UNSURE = (70, 110, 150)     # ... and when it is only a guess
-DRAFT_MARK = (160, 160, 160)     # the draft label's ticks while the suggestion is the mark on offer
-
-
-def enhance(display: np.ndarray, mode: str, previous: Optional[np.ndarray] = None) -> np.ndarray:
-    """Redraw the visible picture so a small ball is easier to pick out. Applied to the zoomed view,
-    not the whole frame, so it costs the same at any clip size.
-
-    dim white  - bright, colourless pixels (court lines, white kit, sky) are pulled down to a dull
-                 blue-grey; a yellow ball keeps its colour and stops hiding on a line
-    ball pop   - only tennis-ball yellows keep their colour, everything else goes to a dim grey
-    motion     - what changed since the previous label frame is painted in magenta over a dimmed
-                 picture: a moving ball lights up, the court and the crowd do not
-    """
-    # Everything below stays in OpenCV calls: the same masks written with numpy indexing took
-    # 100 ms a redraw on a 2800-pixel-wide view, which is a third of the tool's frame rate.
-    if mode == "dim white":
-        hsv = cv2.cvtColor(display, cv2.COLOR_BGR2HSV)
-        white = cv2.inRange(hsv, (0, 0, 166), (180, 54, 255))
-        dimmed = cv2.multiply(display, (0.62, 0.48, 0.38, 1.0))   # BGR: a dull blue-grey
-        out = display.copy()
-        cv2.copyTo(dimmed, white, out)
-        return out
-    if mode == "ball pop":
-        hsv = cv2.cvtColor(display, cv2.COLOR_BGR2HSV)
-        ball = cv2.inRange(hsv, (18, 55, 110), (52, 255, 255))
-        out = cv2.cvtColor(cv2.convertScaleAbs(cv2.cvtColor(display, cv2.COLOR_BGR2GRAY), alpha=0.45),
-                           cv2.COLOR_GRAY2BGR)
-        cv2.copyTo(display, ball, out)
-        return out
-    if mode == "motion" and previous is not None and previous.shape == display.shape:
-        change = cv2.cvtColor(cv2.absdiff(display, previous), cv2.COLOR_BGR2GRAY)
-        change = cv2.GaussianBlur(change, (3, 3), 0)
-        # The noise floor is measured on the frame pair itself (from a 1-in-64 sample, so it is
-        # cheap): compression noise and a slightly unsteady camera stay dark, a ball that moved
-        # saturates. Both steps saturate at 0 and 255 - not convertScaleAbs, whose absolute value
-        # turned every unchanged pixel into a faint magenta.
-        floor = int(max(12.0, float(np.percentile(change[::8, ::8], 99.5)) + 8.0))
-        strength = cv2.multiply(cv2.subtract(change, floor), 4.0)
-        out = cv2.convertScaleAbs(display, alpha=0.55)
-        nothing = np.zeros_like(strength)
-        return cv2.add(out, cv2.merge([strength, nothing, strength]))
-    return display
-
-
-def hit(box, x: int, y: int) -> bool:
-    """Did a click at (x, y) land on this HUD button? Boxes are in display pixels."""
-    return bool(box) and box[0] <= x <= box[2] and box[1] <= y <= box[3]
-
-
-Colour = Tuple[int, int, int]
-
-
-def hint_colour(hint: Suggestion) -> Colour:
-    """Orange when the suggestion is trusted, dull when it is only a guess."""
-    return HINT_TRUSTED if hint["trusted"] else HINT_UNSURE
-
-
-def label_mark_colour(row: Row) -> Colour:
-    """The label's mark in the single-frame view: magenta flagged, red edited, green reviewed, yellow unreviewed."""
-    return ((255, 0, 255) if row.suspect else (0, 0, 255) if row.edited
-            else (0, 220, 0) if row.reviewed else (0, 255, 255))
-
-
-class MarkPlan(NamedTuple):
-    """What a row's frame is marked with, in frame coordinates: the mark (None on a no-ball row
-    without an offer), its colour, and the ticked points drawn beside it first."""
-    mark: Optional[Point]
-    colour: Optional[Colour]
-    ticks: List[Tuple[Point, Colour]]
-
-
-def mark_plan(row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion], label_colour: Colour) -> MarkPlan:
-    """The mark is the suggestion on offer - in orange, the draft label it replaces ticked grey - or
-    else the label in `label_colour`, with a suggestion that differs from it ticked orange beside
-    it. Both renderers draw from this; only the mapping to their pixels is their own."""
-    if offer is not None:
-        ticks = [((row.x, row.y), DRAFT_MARK)] if row.visible else []
-        return MarkPlan((offer["x"], offer["y"]), hint_colour(offer), ticks)
-    if not row.visible:
-        return MarkPlan(None, None, [])
-    ticks = []
-    if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= OFFER_MIN_PX:
-        ticks.append(((hint["x"], hint["y"]), hint_colour(hint)))
-    return MarkPlan((row.x, row.y), label_colour, ticks)
-
-
-def draw_ticks(image: np.ndarray, hx: int, hy: int, colour: Colour, ui: float) -> None:
-    """Four short ticks on the diagonals around image pixel (hx, hy), leaving the centre itself clear."""
-    near, far = int(round(3 * ui)), int(round(7 * ui))
-    thin = max(1, int(round(ui)))
-    for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
-        start, end = (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far)
-        cv2.line(image, start, end, (0, 0, 0), thin + 2, cv2.LINE_AA)
-        cv2.line(image, start, end, colour, thin, cv2.LINE_AA)
-
-
-def fit_text(text: str, width: int, scale: float, thin: int) -> str:
-    """`text` cut to what fits in `width` pixels. Guessing from the average character width gets it
-    about right in one go; the loop is there for the handful of pixels that guess is out by."""
-    measure = lambda s: cv2.getTextSize(s, cv2.FONT_HERSHEY_SIMPLEX, scale, thin)[0][0]
-    full = measure(text)
-    if full <= width:
-        return text
-    original = text
-    text = text[:max(0, int(len(text) * width / full))]
-    while text and measure(text) > width:
-        text = text[:-1]
-    # End on a whole word ("q=qui" reads as a typo), unless the cut already fell between words.
-    if original[len(text):len(text) + 1] not in (" ", "") and " " in text.strip():
-        text = text[:text.rstrip().rfind(" ")]
-    return text.rstrip()
 
 
 class Tool:
@@ -206,19 +86,9 @@ class Tool:
         self.dirty = False
         self.pending_cursor_move = False
         self.last_save = time.monotonic()
-        self.grid = False
-        self.grid_indices = []
-        self.grid_centers = {}
-        self.grid_tiles = []
-        self.grid_cache = None
-        self.grid_cache_key = None
-        self.grid_zoom = 1.0
-        self.grid_size = GRID_SIZES[0]
-        self.sheet = False            # the trajectory sheet is showing, see render_sheet
-        self.sheet_start = 0          # its first row
-        self.sheet_points = []        # (row index, view x, view y) of each label drawn on it
-        self.sheet_cache_key = None
-        self.sheet_cache = None
+        self.grid_view = GridView(self)   # TAB's page of crops; see label_views
+        self.sheet_view = SheetView(self) # w's trajectory sheet
+
         self.last_clip = None
         self.presented = None
         self.filter = 0               # index into FILTERS; h cycles it, the HUD chip shows it
@@ -255,6 +125,16 @@ class Tool:
     def overview(self) -> bool:
         """The grid or the trajectory sheet: views with no single frame under a parked mouse."""
         return self.grid or self.sheet
+
+    # The views' state, by the names the tool's own code and the tests read; the views own it.
+    grid = property(lambda self: self.grid_view.active, lambda self, on: setattr(self.grid_view, "active", on))
+    sheet = property(lambda self: self.sheet_view.active, lambda self, on: setattr(self.sheet_view, "active", on))
+    grid_size = property(lambda self: self.grid_view.size, lambda self, n: setattr(self.grid_view, "size", n))
+    grid_zoom = property(lambda self: self.grid_view.zoom, lambda self, z: setattr(self.grid_view, "zoom", z))
+    grid_indices = property(lambda self: self.grid_view.indices)
+    grid_tiles = property(lambda self: self.grid_view.tiles)
+    sheet_start = property(lambda self: self.sheet_view.start, lambda self, i: setattr(self.sheet_view, "start", i))
+    sheet_points = property(lambda self: self.sheet_view.points)
 
     # ---------------------------------------------------------------- geometry
     @property
@@ -476,262 +356,53 @@ class Tool:
         """The picture of source frame `index` of the clip we are in (see Source.frame)."""
         return self.source.frame(index)
 
-    def toggle_grid(self) -> None:
-        self.sheet = False
-        self.grid = not self.grid
-        if self.grid:
-            self.prepare_grid(self.cursor)
-        self.follow_ball()
-
-    # ---------------------------------------------------------------- trajectory sheet
     def clip_bounds(self, index: int) -> Tuple[int, int]:
         """(first, last + 1) row indices of the clip row `index` belongs to."""
         source = self.by_clip[self.rows[index].clip]
         return source.start, source.start + len(source.rows)
 
-    def toggle_sheet(self) -> None:
-        self.sheet = not self.sheet
-        if self.sheet:
-            self.grid = False
-            first, end = self.clip_bounds(self.cursor)
-            self.sheet_start = max(first, min(self.cursor - SHEET_ROWS // 2, end - SHEET_ROWS))
-            self.sheet_cache_key = None
-        self.follow_ball()
-
-    def sheet_page(self, direction: int) -> None:
-        first, end = self.clip_bounds(self.sheet_start)
-        start = max(first, min(self.sheet_start + direction * SHEET_ROWS, end - SHEET_ROWS))
-        if start != self.sheet_start:
-            self.sheet_start = start
-            self.cursor = start       # leaving the sheet lands in the stretch it shows
-            self.follow_ball()
-
-    def sheet_mouse(self, event: int, x: int, y: int) -> None:
-        if event == cv2.EVENT_RBUTTONDOWN:
-            self.toggle_sheet()
-        elif event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_LBUTTONDBLCLK) and self.sheet_points:
-            index, px, py = min(self.sheet_points, key=lambda p: (p[1] - x) ** 2 + (p[2] - y) ** 2)
-            if math.hypot(px - x, py - y) <= 14 * self.ui:
-                self.cursor = index
-                if self.walk and index in self.walk:
-                    self.walk_pos = self.walk.index(index)
-                self.sheet = False
-                self.follow_ball()
-
-    def render_sheet(self) -> np.ndarray:
-        """The whole frame, dimmed, with every label of a stretch of SHEET_ROWS label frames drawn
-        on it, joined in order, and the suggestions as small orange dots. The labels trace the ball's
-        flight, so one that is off it - or a run of them following a player - is plain at a glance,
-        and the orange path says where the video itself puts the ball.
-
-        A motion trace was tried as the background and dropped: the players' movement swamped it,
-        and the ball's streak is a pixel or two wide at this scale, under the labels anyway."""
-        end = self.clip_bounds(self.sheet_start)[1]
-        indices = list(range(self.sheet_start, min(self.sheet_start + SHEET_ROWS, end)))
-        key = (tuple(indices), Row.revision, self.hints.version, self.view_w, self.view_h, self.hud_h,
-               self.cursor, self.ui)
-        if key == self.sheet_cache_key:
-            self.render_fresh = False
-            return self.sheet_cache
-        self.render_fresh = True
-        selected = self.cursor
-        base = self.frame(self.rows[selected].frame)
-        ui, thin = self.ui, max(1, int(round(self.ui)))
-        scale = min(self.view_w / self.width, self.view_h / self.height)
-        shown_w, shown_h = max(1, int(round(self.width * scale))), max(1, int(round(self.height * scale)))
-        scale = shown_w / self.width                     # what resize really does, for the points
-        off_x, off_y = (self.view_w - shown_w) // 2, (self.view_h - shown_h) // 2
-        picture = cv2.convertScaleAbs(base, alpha=0.45)
-        canvas = np.zeros((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
-        canvas[off_y:off_y + shown_h, off_x:off_x + shown_w] = cv2.resize(
-            picture, (shown_w, shown_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
-        display = canvas[:self.view_h]
-        to_sheet = lambda x, y: (math.floor(x * scale + off_x), math.floor(y * scale + off_y))
-        for index in indices:                            # the suggestions first, under the labels
-            hint = self.suggestion_for(index)
-            if hint is not None:
-                cv2.circle(display, to_sheet(hint["x"], hint["y"]), max(2, int(round(2 * ui))),
-                           HINT_TRUSTED if hint["trusted"] else HINT_UNSURE, -1, cv2.LINE_AA)
-        self.sheet_points = []
-        last = None
-        for index in indices:
-            row = self.rows[index]
-            if not row.visible:
-                last = None
-                continue
-            point = to_sheet(row.x, row.y)
-            if last is not None:
-                cv2.line(display, last, point, (200, 200, 200), thin, cv2.LINE_AA)
-            last = point
-            self.sheet_points.append((index,) + point)
-        differs = 0
-        for index, px, py in self.sheet_points:
-            row = self.rows[index]
-            colour = (70, 210, 70) if row.settled else (0, 220, 255)
-            cv2.circle(display, (px, py), max(2, int(round(3 * ui))), colour, -1, cv2.LINE_AA)
-            if self.hint_verdict(index) == "differs":
-                differs += 1
-                cv2.circle(display, (px, py), int(round(8 * ui)), (0, 0, 255), thin, cv2.LINE_AA)
-            if index == selected:
-                cv2.circle(display, (px, py), int(round(12 * ui)), (255, 255, 255), thin, cv2.LINE_AA)
-            if (index - self.sheet_start) % 10 == 0:
-                cv2.putText(display, str(row.frame), (px + int(6 * ui), py - int(6 * ui)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42 * ui, (255, 255, 255), thin, cv2.LINE_AA)
-        rows = [self.rows[i] for i in indices]
-        line1 = (f"{self.rows[indices[0]].clip}  TRAJECTORY  frames {rows[0].frame}-{rows[-1].frame}  "
-                 f"{sum(r.visible for r in rows)} with a ball  reviewed {sum(r.settled for r in rows)}/{len(rows)}"
-                 + (f"  hint differs {differs} (red)" if differs else ""))
-        line2 = "click a point: open that frame   a/d: stretch before/after   w or right click: back   q: save/quit"
-        hud = canvas[self.view_h:]
-        cv2.putText(hud, fit_text(line1, self.view_w - int(16 * ui), 0.55 * ui, thin), (int(8 * ui), int(22 * ui)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * ui, (255, 255, 255), thin, cv2.LINE_AA)
-        cv2.putText(hud, fit_text(line2, self.view_w - int(16 * ui), 0.48 * ui, thin), (int(8 * ui), int(46 * ui)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48 * ui, (180, 180, 180), thin, cv2.LINE_AA)
-        self.sheet_cache_key, self.sheet_cache = key, canvas
-        return canvas
+    # ---------------------------------------------------------------- the grid and the sheet
+    # The two overview views own their state, picture and keys (label_views); these are the
+    # actions by name, the surface the key table and the tests use.
+    def toggle_grid(self) -> None:
+        self.grid_view.toggle()
 
     def prepare_grid(self, start: int) -> None:
-        candidates = self.walk if self.walk else list(range(len(self.rows)))
-        position = candidates.index(start) if start in candidates else 0
-        clip = self.rows[candidates[position]].clip
-        self.grid_indices = []
-        for index in candidates[position:position + self.grid_size]:
-            if self.rows[index].clip != clip:
-                break
-            self.grid_indices.append(index)
-        self.cursor = self.grid_indices[0]
-        if self.walk:
-            self.walk_pos = self.walk.index(self.cursor)
-        self.grid_centers = {i: (self.rows[i].x, self.rows[i].y) for i in self.grid_indices}
-        self.grid_tiles = []
-        self.grid_cache_key = None
-        self.follow_ball()
+        self.grid_view.prepare(start)
 
     def grid_page(self, direction: int) -> None:
-        candidates = self.walk if self.walk else list(range(len(self.rows)))
-        edge = self.grid_indices[-1] if direction > 0 else self.grid_indices[0]
-        position = candidates.index(edge) + (1 if direction > 0 else -self.grid_size)
-        if position >= len(candidates):
-            return
-        self.prepare_grid(candidates[max(0, position)])
+        self.grid_view.page(direction)
 
     def grid_select(self, slot: int) -> None:
-        """Make the grid's slot-th tile (0-based, clamped to the page) the one the keys act on."""
-        if not self.grid_indices:
-            return
-        self.cursor = self.grid_indices[min(max(slot, 0), len(self.grid_indices) - 1)]
-        if self.walk and self.cursor in self.walk:
-            self.walk_pos = self.walk.index(self.cursor)
+        self.grid_view.select(slot)
 
     def grid_step(self, direction: int) -> None:
-        """Move the selection one tile along, turning the page at either end."""
-        slot = self.grid_indices.index(self.cursor) + direction if self.cursor in self.grid_indices else 0
-        if 0 <= slot < len(self.grid_indices):
-            self.grid_select(slot)
-            return
-        before = self.grid_indices[0]
-        self.grid_page(direction)
-        if self.grid_indices[0] != before and direction < 0:
-            self.grid_select(len(self.grid_indices) - 1)   # came back a page: land on its last tile
+        self.grid_view.step(direction)
 
     def toggle_grid_size(self) -> None:
-        self.grid_size = GRID_SIZES[(GRID_SIZES.index(self.grid_size) + 1) % len(GRID_SIZES)] \
-            if self.grid_size in GRID_SIZES else GRID_SIZES[0]
-        if self.grid:
-            selected = self.cursor
-            self.prepare_grid(self.grid_indices[0])
-            if selected in self.grid_indices:
-                self.grid_select(self.grid_indices.index(selected))
-        self.remember_settings()
+        self.grid_view.toggle_size()
 
     def confirm_grid(self) -> None:
-        # Confirm only frames actually rendered, never a prefetched/unseen page.
-        if [tile[0] for tile in self.grid_tiles] != self.grid_indices:
-            return
-        for index in self.grid_indices:
-            self.cursor = index
-            self.confirm()
-        self.grid_page(1)
+        self.grid_view.confirm_page()
 
     def render_grid(self) -> np.ndarray:
-        key = (self.view_w, self.view_h, self.grid_zoom, self.grid_size, self.cursor, self.dirty, self.hints.version,
-               tuple((i, self.rows[i].x, self.rows[i].y, self.rows[i].visible,
-                      self.rows[i].reviewed, self.rows[i].edited) for i in self.grid_indices))
-        if key == self.grid_cache_key:
-            self.render_fresh = False
-            return self.grid_cache
-        self.render_fresh = True
-        canvas = np.zeros((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
-        tiles = []
-        offers: Dict[int, tuple] = {}
-        ui = self.ui
-        band = int(round(28 * ui))                       # title strip above each tile
-        # A page is one clip (prepare_grid stops at a clip's end) and the cursor is on it, so
-        # self.frame reads every tile from the right clip without touching the cursor.
-        for slot, index in enumerate(self.grid_indices):
-            row = self.rows[index]
-            image = self.frame(row.frame)
-            rows_of = max(1, self.grid_size // 4)
-            left, right = slot % 4 * self.view_w // 4, (slot % 4 + 1) * self.view_w // 4
-            top, bottom = slot // 4 * self.view_h // rows_of, (slot // 4 + 1) * self.view_h // rows_of
-            y0 = top + band
-            width, height = right - left, bottom - y0
-            scale = width / 96.0 * self.grid_zoom if row.visible else min(width / self.width, height / self.height)
-            cx, cy = self.grid_centers[index] if row.visible else (self.width / 2, self.height / 2)
-            ox, oy = cx - width / (2 * scale), cy - height / (2 * scale)
-            # Pixel centres sit at k + 0.5 in frame coordinates, as in render (see to_view).
-            matrix = np.array([[scale, 0, scale * (0.5 - ox) - 0.5],
-                               [0, scale, scale * (0.5 - oy) - 0.5]], np.float64)
-            tile = cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_NEAREST)
-            if FILTERS[self.filter] not in ("off", "motion"):    # motion needs the frame before
-                tile = enhance(tile, FILTERS[self.filter])
-            color = (70, 210, 70) if row.settled else (0, 210, 255)
-            hint = self.suggestion_for(index)
-            offer = self.offer_for(index)
-            if offer is not None:
-                offers[index] = (offer["x"], offer["y"])
-            to_tile = lambda point: (math.floor((point[0] - ox) * scale), math.floor((point[1] - oy) * scale))
-            plan = mark_plan(row, hint, offer, (255, 255, 255))
-            for point, colour in plan.ticks:
-                draw_ticks(tile, *to_tile(point), colour, ui)
-            if plan.mark is not None:
-                px, py = to_tile(plan.mark)                 # the tile pixel holding the ball
-                inner, outer = int(round(8 * ui)), int(round(17 * ui))
-                # Drawn on the tile, so a mark near its edge cannot spill onto a neighbour, and
-                # leaving the actual ball center unobstructed, including at high zoom.
-                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    start, end = (px + dx * inner, py + dy * inner), (px + dx * outer, py + dy * outer)
-                    cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
-                    cv2.line(tile, start, end, plan.colour, max(1, int(round(ui))))
-            canvas[y0:bottom, left:right] = tile
-            title = (f"{slot + 1}  " if slot < 9 else "") + \
-                f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
-            if not row.visible:
-                title += "  absent"
-            if offer is not None:
-                title += "  HINT sure" if offer["trusted"] else "  HINT unsure"
-            else:
-                verdict = self.hint_verdict(index)
-                if verdict is not None:
-                    title += "  hint ok" if verdict == "agrees" else "  hint differs"
-            cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
-                        (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
-                        color, max(1, int(ui)))
-            cv2.rectangle(canvas, (left, top), (right-1, bottom-1), (255, 180, 50) if index == self.cursor else (65, 65, 65), 2)
-            tiles.append((index, (left, y0, right-1, bottom-1), ox, oy, scale))
-        caption =(f"{self.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}"
-                   f"{' (orange crosses are hints on offer)' if offers else ''}  a/d=page  TAB=single")
-        thin = max(1, int(ui))
-        cv2.putText(canvas, fit_text(caption, self.view_w - 12, .48 * ui, thin),
-                    (6, self.view_h + int(round(21 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .48 * ui, (255, 255, 255), thin)
-        keys = ("1-9 or ,/. select | y: take hint | x: keep draft | i/j/k/l: 1px (SHIFT 0.25px) | u: undo | "
-                f"v: absent | +/- zoom | z: {GRID_SIZES[(GRID_SIZES.index(self.grid_size) + 1) % len(GRID_SIZES)]} tiles | q: save/quit")
-        cv2.putText(canvas, fit_text(keys, self.view_w - 12, .42 * ui, thin),
-                    (6, self.view_h + int(round(44 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .42 * ui, (200, 200, 200), thin)
-        self.grid_tiles = tiles
-        self.shown_offers = offers
-        self.grid_cache_key, self.grid_cache = key, canvas
-        return canvas
+        return self.grid_view.render()
+
+    def grid_mouse(self, event: int, x: int, y: int) -> None:
+        self.grid_view.on_mouse(event, x, y)
+
+    def toggle_sheet(self) -> None:
+        self.sheet_view.toggle()
+
+    def sheet_page(self, direction: int) -> None:
+        self.sheet_view.page(direction)
+
+    def render_sheet(self) -> np.ndarray:
+        return self.sheet_view.render()
+
+    def sheet_mouse(self, event: int, x: int, y: int) -> None:
+        self.sheet_view.on_mouse(event, x, y)
+
 
     def view_ready(self) -> bool:
         return self.presented == (self.cursor, self.origin, self.scale)
@@ -744,25 +415,6 @@ class Tool:
             self.shown = image
         self.presented = presented
 
-    def grid_mouse(self, event: int, x: int, y: int) -> None:
-        if event not in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_LBUTTONDBLCLK, cv2.EVENT_RBUTTONDOWN):
-            return
-        for index, box, ox, oy, scale in self.grid_tiles:
-            if hit(box, x, y):
-                self.cursor = index
-                if self.walk:
-                    self.walk_pos = self.walk.index(index)
-                if event == cv2.EVENT_RBUTTONDOWN:
-                    self.grid = False
-                    self.follow_ball()
-                else:                 # +0.5: highgui floors the pointer to a pixel; aim at its middle
-                    fx, fy = ox + (x + 0.5 - box[0]) / scale, oy + (y + 0.5 - box[1]) / scale
-                    if 0 <= fx < self.width and 0 <= fy < self.height:
-                        was_visible = self.rows[index].visible
-                        if self.set_point(fx, fy) and not was_visible:
-                            # The tile was showing the whole frame; zoom it on the ball just placed.
-                            self.grid_centers[index] = (self.rows[index].x, self.rows[index].y)
-                return
 
     def frame_missing(self) -> bool:
         """True when the frame under the cursor has no picture, so nothing should be said about it."""
@@ -1121,7 +773,7 @@ class Tool:
 
     def cycle_filter(self) -> None:
         self.filter = (self.filter + 1) % len(FILTERS)
-        self.grid_cache_key = None
+        self.grid_view.invalidate()
         self.remember_settings()
 
     def toggle_inset(self) -> None:
@@ -1493,7 +1145,7 @@ class Tool:
     # ---------------------------------------------------------------- keys
     def handle_key(self, key: int) -> bool:
         """One key from waitKeyEx; True when the tool should quit. The guards and q are here; what
-        a key does belongs to the view showing it (sheet_key, grid_key, plain_key), and the grid and
+        a key does belongs to the view showing it (SheetView, GridView, plain_key), and the grid and
         the single frame then share common_key."""
         code = key & 0xFF if key < 0x10000 else key
         if win.non_character_key(code):
@@ -1504,9 +1156,9 @@ class Tool:
             return self.quit_key()
         direction = self.key_direction(key, code)
         if self.sheet:
-            self.sheet_key(code, direction)
+            self.sheet_view.handle_key(code, direction)
         elif self.grid:
-            self.grid_key(code, direction) or self.common_key(code)
+            self.grid_view.handle_key(code, direction) or self.common_key(code)
         else:
             self.plain_key(code, direction) or self.common_key(code)
         return False
@@ -1533,45 +1185,6 @@ class Tool:
             return False
         return True
 
-    def sheet_key(self, code: int, direction: int) -> None:
-        """The trajectory sheet only finds frames: its own few keys, nothing else."""
-        if code in (ord("w"), KEY_TAB):
-            self.toggle_sheet()
-            if code == KEY_TAB:
-                self.toggle_grid()
-        elif direction:
-            self.sheet_page(direction)
-
-    def grid_key(self, code: int, direction: int) -> bool:
-        """What a key does on a grid page; False for a key the grid reads like the single frame."""
-        if code in KEYS_CONFIRM:
-            self.confirm_grid()
-        elif direction:
-            self.grid_page(direction)
-        elif code in (ord(","), ord(".")):
-            self.grid_step(-1 if code == ord(",") else 1)
-        elif ord("1") <= code <= ord("9"):
-            self.grid_select(code - ord("1"))
-        elif code == ord("y"):
-            if self.take_suggestion():
-                self.grid_step(1)
-        elif code == ord("x"):
-            self.confirm(take_offer=False)    # the draft is right, not the hint on offer
-            self.grid_step(1)
-        elif code == ord("v"):
-            self.mark_invisible()
-        elif code == ord("e"):
-            if self.seek_disputed():
-                self.prepare_grid(self.cursor)   # bring the page along, not just the cursor
-        elif code in (ord("f"), ord("b")):
-            self.jump(1 if code == ord("f") else -1)
-            self.prepare_grid(self.cursor)
-        elif code in KEYS_ZOOM_IN + KEYS_ZOOM_OUT:
-            factor = ZOOM_STEP if code in KEYS_ZOOM_IN else 1 / ZOOM_STEP
-            self.grid_zoom = min(4., max(.5, self.grid_zoom * factor))
-        elif code != ord("r"):            # r: only the displayed page can be batch-confirmed (SPACE)
-            return False
-        return True
 
     def plain_key(self, code: int, direction: int) -> bool:
         """What a key does in the single-frame view; False for a key it shares with the grid."""

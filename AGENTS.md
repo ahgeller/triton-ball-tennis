@@ -49,8 +49,11 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `finetune/ft.py`: workflow front door. The rest of the package is three
   subpackages. `finetune/labeling/`: `label_tool.py` (manual edits), split into
   `label_store.py` (a clip's rows and sidecars), `label_source.py` (one clip of a
-  labelling run), `label_window.py` (window plumbing) and `label_hints.py` (the
-  suggestions), with `refine.py` and `cnn_refiner.py` above. `finetune/data/`: `labels.py`, the label
+  labelling run), `label_window.py` (window plumbing and the key tables),
+  `label_views.py` (the grid and trajectory-sheet views, each owning its state,
+  picture and keys), `label_draw.py` (the filters, marks and text every view
+  draws with) and `label_hints.py` (the suggestions), with `refine.py` and
+  `cnn_refiner.py` above. `finetune/data/`: `labels.py`, the label
   file format; `label_audit.py`, checks labels against the video and the raw
   detector; `workspace.py`, where the workspace keeps things and a clip's video
   facts, and the one place `clips.csv` and `exclude.txt` are read and written

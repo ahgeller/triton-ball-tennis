@@ -170,8 +170,8 @@ models/                                  Player and court TensorRT engines
 sample/                                  Sample video and validation annotations
 finetune.bat / finetune.ps1              Front door for the fine-tuning workspace
 finetune/ft.py                           Front door for the labelling and training workflow
-finetune/labeling/label_tool.py          Manual label editing (label_store, label_source,
-                                         label_window and label_hints hold its pieces)
+finetune/labeling/label_tool.py          Manual label editing (label_store, label_source, label_window,
+                                         label_views, label_draw and label_hints hold its pieces)
 finetune/labeling/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
 finetune/data/labels.py                  Label file format; label_audit.py checks labels
 finetune/data/workspace.py, fileio.py    Workspace layout, clip facts, atomic writes

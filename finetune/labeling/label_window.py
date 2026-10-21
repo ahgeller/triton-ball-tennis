@@ -24,6 +24,13 @@ KEY_DOWN = 0x8000              # the high bit of GetKeyState
 VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 37, 38, 39, 40      # what waitKeyEx gives for the arrows here
 KEYS_NEXT = {VK_RIGHT, 2555904, 83, 0x01000014}         # Win32 / Qt (this build) / GTK / Qt raw
 KEYS_PREV = {VK_LEFT, 2424832, 81, 0x01000012}
+KEY_TAB = 9
+KEYS_QUIT = (ord("q"), 27)                 # q / ESC
+KEYS_CONFIRM = (ord(" "), 13, ord("c"))    # SPACE / ENTER / c
+KEYS_ZOOM_IN, KEYS_ZOOM_OUT = (ord("+"), ord("=")), (ord("-"), ord("_"))
+KEYS_STEP = {ord(digit): int(digit) for digit in "12468"}     # frames n/d/p/a move at a time
+NUDGE_OF = dict(zip("ijkl", ((0, -1), (-1, 0), (0, 1), (1, 0))))   # up / left / down / right
+KEYS_NUDGE = {ord(key): step for letter, step in NUDGE_OF.items() for key in (letter, letter.upper())}
 WHEEL_QUIET = 0.25        # seconds after a wheel notch during which the mouse is left alone
 VIEWPORT_CHECK = 3.0      # seconds between checks that the window's own zoom is still at x1
 PROBE_TIMEOUT = 2.0       # a probe unanswered this long was lost (window hidden, being resized)
