@@ -32,9 +32,6 @@ def _get_kernel(size: int) -> np.ndarray:
     return np.ones((size, size), np.uint8)
 
 
-_KERNEL_3x3 = _get_kernel(3)
-
-
 def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) -> np.ndarray:
     """C++ probe-style frame delta: max(gray, V, scaled-S), blurred 3x3."""
     prev_hsv = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2HSV)

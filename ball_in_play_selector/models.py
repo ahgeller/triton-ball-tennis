@@ -70,8 +70,6 @@ class Track:
     # Scoring
     score: float = 0.0
     score_breakdown: Dict[str, float] = field(default_factory=dict)
-    # Area Tracking for stable ROI search
-    historical_areas: List[float] = field(default_factory=list)
     # Cached kinematics for repeated scoring passes
     # (num_obs, first frame, last frame, last cx, last cy); see scoring._track_kinematics
     _kin_cache_key: Optional[Tuple[int, int, int, float, float]] = field(default=None, init=False, repr=False)
@@ -142,24 +140,10 @@ class Track:
                 self.kf.update(det.cx, det.cy, conf=det.conf)
                 self.last_vel = self.kf.get_velocity()
 
-            # Update historical area for stable rolling average (keep last 5)
-            # Only add to history if it's a solid detection, not a spawned proxy
-            if det.conf > 0.1:
-                self.historical_areas.append(det.area)
-                if len(self.historical_areas) > 5:
-                    self.historical_areas.pop(0)
-
         self.last_pos = (det.cx, det.cy)
         self.observations.append(det)
         self.misses = 0
         self._kin_cache_key = None
-
-    def get_recent_average_area(self) -> float:
-        """Return the mean area of the last up to 5 actual detections."""
-        if not self.historical_areas:
-            # Fallback to last known observation if history isn't populated
-            return self.observations[-1].area if self.observations else 0.0
-        return sum(self.historical_areas) / len(self.historical_areas)
 
 
 # What decided a frame's position:

@@ -855,10 +855,6 @@ class PlayerDetector:
     def enabled(self) -> bool:
         return self.session is not None and self.tracker is not None
 
-    @staticmethod
-    def _center(b: List[float]) -> Tuple[float, float]:
-        return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
-
     def set_court_keypoints(self, court_keypoints: Optional[List[float]]) -> None:
         self.court_kps = court_keypoints
 
