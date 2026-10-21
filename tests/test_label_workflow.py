@@ -502,7 +502,7 @@ class SuggestionTests(unittest.TestCase):
         seen = []
 
         class Nudge:                      # stands in for the network: 0.5 px right, frame 5 far off
-            cut = staticmethod(cnn_refiner.cut)
+            cut_crop = staticmethod(cnn_refiner.cut_crop)
             sure = None                   # a version without the self-check
 
             def place(self, items, height):
@@ -538,7 +538,7 @@ class CnnRefinerTests(unittest.TestCase):
         from finetune import cnn_refiner
         image = np.zeros((720, 1280, 3), np.uint8)
         image[300, 500] = 255
-        crop = cnn_refiner.cut([image] * 3, (500.5, 300.5), 720)     # pixel 500's centre, 720p -> 1080p scale
+        crop = cnn_refiner.cut_crop([image] * 3, (500.5, 300.5), 720)     # pixel 500's centre, 720p -> 1080p scale
         self.assertEqual(crop.shape, (96, 96, 9))
         peak = np.unravel_index(np.argmax(crop[..., 4]), crop.shape[:2])
         self.assertTrue(47 <= peak[0] <= 48 and 47 <= peak[1] <= 48)
@@ -588,7 +588,7 @@ class CnnRefinerTests(unittest.TestCase):
         from finetune import cnn_refiner
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "refiner-20261019-120547.pt"
-            torch.save({"state": cnn_refiner.network(False).state_dict(), "trained": "then"}, path)
+            torch.save({"state": cnn_refiner.build_network(False).state_dict(), "trained": "then"}, path)
             placer = cnn_refiner.Placer(path)
             crop = np.zeros((cnn_refiner.CROP, cnn_refiner.CROP, 9), np.uint8)
             (x, y, sure), = placer.place([(crop, (100.0, 100.0), (100.0, 100.0))], 1080)
@@ -604,7 +604,7 @@ class CnnRefinerTests(unittest.TestCase):
                 for name in ("refiner-20261001-090000.pt", "refiner-20261019-110000.pt"):
                     (models / name).write_bytes(b"")
                 self.assertEqual(cnn_refiner.current().name, "refiner-20261019-110000.pt")
-                cnn_refiner.use("20261001")
+                cnn_refiner.make_current("20261001")
                 self.assertEqual(cnn_refiner.current().name, "refiner-20261001-090000.pt")
                 (models / "refiner-20261020-080000.pt").write_bytes(b"")
                 self.assertEqual(cnn_refiner.current().name, "refiner-20261001-090000.pt")   # a choice sticks
@@ -612,7 +612,7 @@ class CnnRefinerTests(unittest.TestCase):
                 self.assertEqual(cnn_refiner.current().name, "refiner-20261020-080000.pt")   # ... unless it is gone
                 self.assertEqual(len(cnn_refiner.versions()), 2)
                 with self.assertRaises(ValueError):
-                    cnn_refiner.use("2026")                 # ambiguous
+                    cnn_refiner.make_current("2026")                 # ambiguous
 
     def test_label_tool_reloads_the_placer_when_the_current_version_changes(self):
         tool = LabelWorkflowTests.tool(self)

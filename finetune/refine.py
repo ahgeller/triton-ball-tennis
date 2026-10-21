@@ -381,7 +381,7 @@ def measure_due(pending: List[int], upto: float, kept: Dict[int, np.ndarray], ce
         if placer is not None:
             step = geometry.step
             images = [kept.get(frame - step, kept[frame]), kept[frame], kept.get(frame + step, kept[frame])]
-            found.crops = [(centre, placer.cut(images, centre, geometry.height)) for _, centre in centres[frame]]
+            found.crops = [(centre, placer.cut_crop(images, centre, geometry.height)) for _, centre in centres[frame]]
         out[frame] = found
     return out
 

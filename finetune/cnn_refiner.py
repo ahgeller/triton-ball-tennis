@@ -74,7 +74,7 @@ FAR_PX = 5.0               # a placement this far off (1080p px) counts as a mis
 
 
 # ---------------------------------------------------------------------------------------- crops
-def cut(images: Sequence[np.ndarray], point: Tuple[float, float], height: int) -> np.ndarray:
+def cut_crop(images: Sequence[np.ndarray], point: Tuple[float, float], height: int) -> np.ndarray:
     """uint8 CROP x CROP x 9: the three frames (before, label frame, after) around `point`, scaled
     to 1080p. Crop pixel j sits at point + (j - (CROP - 1) / 2) * height / 1080 in the image."""
     side = int(round(CROP * height / REFERENCE_HEIGHT))
@@ -85,14 +85,14 @@ def cut(images: Sequence[np.ndarray], point: Tuple[float, float], height: int) -
     return np.concatenate(out, axis=2)
 
 
-def window(crop: np.ndarray, centre: Tuple[float, float]) -> np.ndarray:
+def cut_window(crop: np.ndarray, centre: Tuple[float, float]) -> np.ndarray:
     """WINDOW x WINDOW x 9 of a crop, centred (sub-pixel) at crop coordinates `centre`."""
     return np.concatenate([cv2.getRectSubPix(np.ascontiguousarray(crop[..., i:i + 3]), (WINDOW, WINDOW), centre)
                            for i in (0, 3, 6)], axis=2)
 
 
 # -------------------------------------------------------------------------------------- network
-def network(self_check: bool = True) -> "nn.Module":
+def build_network(self_check: bool = True) -> "nn.Module":
     """self_check=False is the first design (versions before the self-check), kept so they still load."""
     import torch.nn as nn
     import torch
@@ -142,23 +142,23 @@ def to_tensor(windows: np.ndarray, device: str) -> "torch.Tensor":
 
 class Placer:
     """Puts suggestions where you would click. `place` takes (crop, crop_point, start) per frame:
-    a crop from `cut` around crop_point, and the point to start from (within about 16 px of it), and
+    a crop from `cut_crop` around crop_point, and the point to start from (within about 16 px of it), and
     returns (x, y, sure) - sure is None for a version without the self-check, else whether its
     confidence reaches the version's threshold."""
     ROUNDS = 2
-    cut = staticmethod(cut)
+    cut_crop = staticmethod(cut_crop)
 
     def __init__(self, path: Path):
         import torch
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         saved = torch.load(path, map_location=self.device, weights_only=True)
-        self.net = network(bool(saved.get("self_check"))).to(self.device)
+        self.net = build_network(bool(saved.get("self_check"))).to(self.device)
         self.net.load_state_dict(saved["state"])
         self.net.eval()
         self.threshold = saved.get("threshold") if saved.get("self_check") else None
         self.name = path.stem
 
-    def looks(self, x: "torch.Tensor") -> Tuple["torch.Tensor", Optional["torch.Tensor"]]:
+    def predict_averaged(self, x: "torch.Tensor") -> Tuple["torch.Tensor", Optional["torch.Tensor"]]:
         """The network's answer averaged over the window, its mirror image, its frames reversed and
         both (each mapped back): 3% closer to the click than one look (0.600 -> 0.582 px median on
         the folds). The self-check reads the plain look only, so its calibration stands."""
@@ -189,8 +189,8 @@ class Placer:
             moved = []
             with torch.no_grad():
                 for i in range(0, len(items), PLACE_BATCH):
-                    batch = np.stack([window(items[j][0], centres[j]) for j in range(i, min(len(items), i + PLACE_BATCH))])
-                    xy, logit = self.looks(to_tensor(batch, self.device))
+                    batch = np.stack([cut_window(items[j][0], centres[j]) for j in range(i, min(len(items), i + PLACE_BATCH))])
+                    xy, logit = self.predict_averaged(to_tensor(batch, self.device))
                     for k, (px, py) in enumerate(xy.cpu().numpy()):
                         cx, cy = centres[i + k]
                         moved.append((min(hi, max(lo, cx + px - lo)), min(hi, max(lo, cy + py - lo))))
@@ -231,7 +231,7 @@ def version_named(name: str) -> Path:
     return match[0]
 
 
-def use(name: str) -> Path:
+def make_current(name: str) -> Path:
     chosen = version_named(name)
     write_atomic(current_file(), chosen.name)
     return chosen
@@ -289,7 +289,7 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
         while pending and (not ok or index > pending[0] + step):
             f = pending.pop(0)
             if f in kept:
-                crops.append(cut([kept.get(g, kept[f]) for g in (f - step, f, f + step)], points[f], height))
+                crops.append(cut_crop([kept.get(g, kept[f]) for g in (f - step, f, f + step)], points[f], height))
             for g in (f - step, f, f + step):
                 users[g] -= 1
                 if users[g] == 0:
@@ -303,7 +303,7 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
     return out
 
 
-def gather(log: Callable[..., None] = lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
+def gather_crops(log: Callable[..., None] = lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
     """{clip: crops} for every clip with checked frames."""
     out = {}
     for clip in labelled_clips():
@@ -347,15 +347,16 @@ def to_device(parts: Sequence[np.ndarray], device: str) -> "torch.Tensor":
     return out
 
 
-def batches(data, device: str, rng: np.random.Generator, size: int, flip: bool = True,
-            every: bool = False) -> Tuple["torch.Tensor", "torch.Tensor"]:
-    """Random windows of random crops on the GPU: (inputs, targets in window pixels). `every`
-    takes the first `size` crops in order instead of drawing them at random (scoring)."""
+def sample_batch(data, device: str, rng: np.random.Generator, size: int, flip: bool = True,
+                 in_order: bool = False) -> Tuple["torch.Tensor", "torch.Tensor"]:
+    """One batch of `size` random windows of random crops on the GPU: (inputs, targets in window
+    pixels). `in_order` takes the first `size` crops in order instead of drawing them at random
+    (scoring)."""
     import torch
     count = data.shape[0]
     span, mid = CROP - WINDOW, (CROP - 1) / 2.0
     ar = torch.arange(WINDOW, device=device)
-    idx = torch.arange(size, device=device) if every else torch.from_numpy(rng.integers(0, count, size)).to(device)
+    idx = torch.arange(size, device=device) if in_order else torch.from_numpy(rng.integers(0, count, size)).to(device)
     ox = torch.from_numpy(rng.integers(0, span + 1, size)).to(device)
     oy = torch.from_numpy(rng.integers(0, span + 1, size)).to(device)
     rows, cols = (oy[:, None] + ar)[:, :, None], (ox[:, None] + ar)[:, None, :]
@@ -373,11 +374,11 @@ def batches(data, device: str, rng: np.random.Generator, size: int, flip: bool =
     return x.contiguous(memory_format=torch.channels_last), torch.stack([tx, ty], 1)
 
 
-def fit(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[..., None],
+def train_network(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[..., None],
         label: str) -> "nn.Module":
     """One network trained on `data` (crops already on the device)."""
     import torch
-    net = network().to(device).to(memory_format=torch.channels_last)
+    net = build_network().to(device).to(memory_format=torch.channels_last)
     batch = 256
     per_epoch = max(1, len(data) // batch)
     opt = torch.optim.AdamW(net.parameters(), 2e-3, weight_decay=1e-4)
@@ -388,7 +389,7 @@ def fit(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[
         net.train()
         total = 0.0
         for _ in range(per_epoch):
-            x, target = batches(data, device, rng, batch)
+            x, target = sample_batch(data, device, rng, batch)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 xy, logit = net(x)
             hit = ((xy.detach() - target).norm(dim=1) <= SURE_PX).float()
@@ -403,7 +404,7 @@ def fit(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[
     return net.eval()
 
 
-def score(net, data, device: str, rng: np.random.Generator, repeats: int = 2) -> Tuple[np.ndarray, np.ndarray]:
+def fold_errors(net, data, device: str, rng: np.random.Generator, repeats: int = 2) -> Tuple[np.ndarray, np.ndarray]:
     """Errors (window px = 1080p px) and confidences of every frame, `repeats` times each from a
     random start up to 16 px off."""
     import torch
@@ -412,7 +413,7 @@ def score(net, data, device: str, rng: np.random.Generator, repeats: int = 2) ->
         for _ in range(repeats):
             for i in range(0, len(data), SCORE_BATCH):
                 part = data[i:i + SCORE_BATCH]
-                x, target = batches(part, device, rng, len(part), flip=False, every=True)
+                x, target = sample_batch(part, device, rng, len(part), flip=False, in_order=True)
                 xy, logit = net(x)
                 errors.append((xy.float() - target).norm(dim=1).cpu().numpy())
                 confs.append(torch.sigmoid(logit.float()).cpu().numpy())
@@ -434,7 +435,7 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
     import torch
     log = log or (lambda *parts: print(*parts, flush=True))
     log("gathering the frames you have checked ...")
-    crops = gather(log)
+    crops = gather_crops(log)
     total = sum(len(c) for c in crops.values())
     if total < 500 or len(crops) < FOLDS:
         log(f"only {total} checked frames in {len(crops)} clips - label more before training")
@@ -447,9 +448,9 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
     errors, confs = [], []
     for k in range(FOLDS):
         train_part = to_device([crops[c] for c in sorted(crops) if fold_of[c] != k], device)
-        net = fit(train_part, epochs, device, rng, log, f"test {k + 1}/{FOLDS}")
+        net = train_network(train_part, epochs, device, rng, log, f"test {k + 1}/{FOLDS}")
         del train_part
-        e, c = score(net, to_device([crops[c] for c in sorted(crops) if fold_of[c] == k], device), device,
+        e, c = fold_errors(net, to_device([crops[c] for c in sorted(crops) if fold_of[c] == k], device), device,
                      np.random.default_rng(k + 1))
         errors.append(e)
         confs.append(c)
@@ -460,7 +461,7 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
     sure_far = float(np.mean(errors[sure] > FAR_PX)) if sure.any() else 0.0
     log(f"on clips each test network never saw: median {median:.2f} px, {far:.1%} over 5 px; "
         f"{sure.mean():.0%} sure, {sure_far:.2%} of those over 5 px")
-    net = fit(to_device(list(crops.values()), device), epochs, device, rng, log, "final")
+    net = train_network(to_device(list(crops.values()), device), epochs, device, rng, log, "final")
     previous = current()
     MODELS.mkdir(parents=True, exist_ok=True)
     path = MODELS / f"refiner-{time.strftime('%Y%m%d-%H%M%S')}.pt"
@@ -485,11 +486,11 @@ SHEET_COLOURS = {"label": (255, 255, 255), "a": (0, 165, 255), "b": (255, 0, 255
 
 
 def placer_for(name: str) -> Optional[Placer]:
-    """A Placer for a version name (`use`'s matching), or None for "centroid" (refine.py alone)."""
+    """A Placer for a version name (`version_named`'s matching), or None for "centroid" (refine.py alone)."""
     return None if name == "centroid" else Placer(version_named(name))
 
 
-def cross(canvas: np.ndarray, point: Tuple[float, float], origin: Tuple[int, int], zoom: float, colour) -> None:
+def draw_hollow_cross(canvas: np.ndarray, point: Tuple[float, float], origin: Tuple[int, int], zoom: float, colour) -> None:
     """A cross with a hole at `point` (frame coordinates) on a canvas that shows the frame from
     `origin` zoomed `zoom` times, so the pixel under the centre stays visible."""
     cx, cy = (point[0] - origin[0]) * zoom, (point[1] - origin[1]) * zoom
@@ -550,7 +551,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
             y0 = min(max(0, int(math.floor(my)) - side // 2), max(0, height - side))
             patch = cv2.resize(image[y0:y0 + side, x0:x0 + side], (tile, tile), interpolation=cv2.INTER_NEAREST)
             for key, mark in reversed(list(zip(("label", "a", "b"), marks))):     # your label on top
-                cross(patch, mark, (x0, y0), scale, SHEET_COLOURS[key])
+                draw_hollow_cross(patch, mark, (x0, y0), scale, SHEET_COLOURS[key])
             canvas = np.zeros((tile + strip, tile, 3), np.uint8)
             canvas[strip:] = patch
             da, db = (math.hypot(m[0] - seeds[f][0], m[1] - seeds[f][1]) * to_1080 for m in marks[1:])
@@ -579,7 +580,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     return out
 
 
-def describe() -> List[str]:
+def version_lines() -> List[str]:
     import torch
     lines, active = [], current()
     for path in versions():
@@ -617,7 +618,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.command == "train":
             return 0 if train(args.epochs) else 1
         if args.command == "list":
-            print("\n".join(describe()))
+            print("\n".join(version_lines()))
             return 0
         if args.command == "sheet":
             names = list(args.versions)
@@ -628,7 +629,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if len(names) != 2:
                 parser.error("sheet takes two names")
             return 0 if sheet(args.clip, names, args.count) else 1
-        print(f"the label tool now uses {use(args.version).stem}")
+        print(f"the label tool now uses {make_current(args.version).stem}")
     except ValueError as error:
         print(f"[error] {error}", file=sys.stderr)
         return 1

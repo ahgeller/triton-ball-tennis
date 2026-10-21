@@ -15,11 +15,11 @@ from finetune import cnn_refiner  # noqa: E402
 def _write_checkpoints(tmp_path: Path):
     path_a = tmp_path / "refiner-a.pt"
     path_b = tmp_path / "refiner-b.pt"
-    torch.save({"state": cnn_refiner.network(True).state_dict(), "self_check": True, "threshold": 0.5,
+    torch.save({"state": cnn_refiner.build_network(True).state_dict(), "self_check": True, "threshold": 0.5,
                 "trained": "x", "clips": 1, "frames": 1,
                 "check": {"median_px": 0.5, "over5": 0.0, "sure": 0.5, "sure_over5": 0.0}},
                path_a)
-    torch.save({"state": cnn_refiner.network(False).state_dict(), "self_check": False}, path_b)
+    torch.save({"state": cnn_refiner.build_network(False).state_dict(), "self_check": False}, path_b)
     return path_a, path_b
 
 
@@ -37,7 +37,7 @@ def test_describe_reads_both_checkpoint_shapes(tmp_path, monkeypatch):
     path_a, path_b = _write_checkpoints(tmp_path)
     monkeypatch.setattr(cnn_refiner, "versions", lambda: [path_a, path_b])
     monkeypatch.setattr(cnn_refiner, "current", lambda: path_a)
-    lines = cnn_refiner.describe()
+    lines = cnn_refiner.version_lines()
     assert len(lines) == 2
     assert lines[0].startswith("*")
     assert lines[1].startswith(" ")

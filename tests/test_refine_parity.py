@@ -27,7 +27,7 @@ class Nudge:
 
     def __init__(self, sure=None):
         from finetune import cnn_refiner
-        self.cut = cnn_refiner.cut
+        self.cut_crop = cnn_refiner.cut_crop
         self.sure = sure
 
     def place(self, items, height):
