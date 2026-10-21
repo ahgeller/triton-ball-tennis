@@ -31,10 +31,12 @@ from pathlib import Path
 
 import cv2
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+if __name__ == "__main__":          # run as a script: make the repository root importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tennis_tracker.config import Config  # noqa: E402
+from tennis_tracker.config import Config
+
+ROOT = Path(__file__).resolve().parents[1]
 
 WORKSPACE = Path(__file__).resolve().parent
 VIDEOS = WORKSPACE / "videos"

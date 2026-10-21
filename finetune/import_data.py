@@ -44,6 +44,9 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 
+if __name__ == "__main__":          # run as a script: make the repository root importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 WORKSPACE = Path(__file__).resolve().parent
 VIDEOS = WORKSPACE / "videos"
 LABELS = WORKSPACE / "labels"

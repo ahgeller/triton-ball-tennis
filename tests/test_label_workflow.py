@@ -1,7 +1,6 @@
-"""Headless annotation tests using synthetic frames; never open workspace labels."""
+"""Headless label-tool tests on synthetic frames; never open workspace labels."""
 import json
 from pathlib import Path
-import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -10,7 +9,6 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from finetune.label_tool import Tool, Row, save_review, load_review, load_rows
 
 
@@ -369,8 +367,7 @@ class LabelWorkflowTests(unittest.TestCase):
         self.assertTrue(row.suspect)                 # undo puts the question back
 
     def test_a_later_audit_does_not_reask_an_answered_frame(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune"))
-        import ft
+        from finetune import ft
         with tempfile.TemporaryDirectory() as directory:
             labels = Path(directory)
             (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")
@@ -407,6 +404,18 @@ def hint(row, x=None, y=None, trusted=True, ball_here=True, seed="label"):
             "trusted": trusted, "ball_here": ball_here}
 
 
+def write_clip(path, frames, fps=30):
+    """Encode ``frames`` losslessly (FFV1 in AVI, as tests/test_pipeline_run.py does), so what
+    refine.suggest measures is the synthetic picture itself and not an encoder's noise."""
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"FFV1"), fps, (frames[0].shape[1], frames[0].shape[0]))
+    if not writer.isOpened():
+        raise unittest.SkipTest("this OpenCV build cannot write FFV1; the test needs a lossless clip")
+    for image in frames:
+        writer.write(image)
+    writer.release()
+    return path
+
+
 def ball_frames(positions, size=(360, 640)):
     """Grey frames with a 3x3 bright ball whose middle pixel is at each (column, row)."""
     frames = []
@@ -431,18 +440,14 @@ class SuggestionTests(unittest.TestCase):
         from finetune import refine
         path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]   # an exact parabola
         with tempfile.TemporaryDirectory() as directory:
-            video = Path(directory) / "clip.avi"
-            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 30, (640, 360))
-            for image in ball_frames(path_of):
-                writer.write(image)
-            writer.release()
+            video = write_clip(Path(directory) / "clip.avi", ball_frames(path_of))
             seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
             found = refine.suggest(video, seeds, spacing=1)
         self.assertEqual(set(found), set(range(12)))       # the ends diff against one side only
         for frame, hint in found.items():
-            column, row = path_of[frame]
-            self.assertLess(abs(hint["x"] - (column + .5)), .35)   # MJPG is lossy, so not exact
-            self.assertLess(abs(hint["y"] - (row + .5)), .35)
+            column, row = path_of[frame]              # the 3x3 ball's middle pixel: centre at k + 0.5
+            self.assertAlmostEqual(hint["x"], column + .5, places=3)   # lossless clip: exact
+            self.assertAlmostEqual(hint["y"], row + .5, places=3)
         self.assertTrue(found[5]["trusted"] and found[5]["ball_here"])
         self.assertLess(found[5]["path"], 1.0)
 
@@ -460,11 +465,7 @@ class SuggestionTests(unittest.TestCase):
                 return [(start[0] + (8.0 if abs(start[0] - 160.5) < 2 else 0.5), start[1], self.sure)
                         for _, _, start in items]
         with tempfile.TemporaryDirectory() as directory:
-            video = Path(directory) / "clip.avi"
-            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 30, (640, 360))
-            for image in ball_frames(path_of):
-                writer.write(image)
-            writer.release()
+            video = write_clip(Path(directory) / "clip.avi", ball_frames(path_of))
             seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
             plain = refine.suggest(video, seeds, spacing=1)
             placed = refine.suggest(video, seeds, spacing=1, placer=Nudge())
@@ -477,11 +478,7 @@ class SuggestionTests(unittest.TestCase):
         self.assertTrue(plain[5]["trusted"])
         self.assertFalse(placed[5]["trusted"])
         with tempfile.TemporaryDirectory() as directory:     # a self-check decides trust by itself
-            video = Path(directory) / "clip.avi"
-            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 30, (640, 360))
-            for image in ball_frames(path_of):
-                writer.write(image)
-            writer.release()
+            video = write_clip(Path(directory) / "clip.avi", ball_frames(path_of))
             unsure, checked = Nudge(), Nudge()
             unsure.sure, checked.sure = False, True
             doubted = refine.suggest(video, seeds, spacing=1, placer=unsure)
@@ -686,8 +683,7 @@ class TrajectorySheetTests(unittest.TestCase):
 
 class DraftTests(unittest.TestCase):
     def test_drafts_use_the_unshifted_detector_point(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune"))
-        import pretrack
+        from finetune import pretrack
         from tennis_tracker import detectors
         seen = {}
 

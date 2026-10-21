@@ -45,9 +45,11 @@ from pathlib import Path
 
 import numpy as np
 
+if __name__ == "__main__":          # run as a script: make the repository root importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 WS = Path(__file__).resolve().parent
 ROOT = WS.parent
-sys.path.insert(0, str(ROOT))
 
 AGREE_PX = 15.0          # detector and label agree within this many 1080p pixels
 FAST_PX = 6.0            # only a moving ball can tell one offset from the next

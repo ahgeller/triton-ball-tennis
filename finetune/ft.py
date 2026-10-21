@@ -35,6 +35,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
+if __name__ == "__main__":          # run as a script: make the repository root importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 WORKSPACE = Path(__file__).resolve().parent
 ROOT = WORKSPACE.parent
 VIDEOS = WORKSPACE / "videos"
@@ -619,7 +622,6 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
     """Cross-check every label file against the raw detector: agreement at offset 0, and the best temporal
     shift. Catches public clips whose labels were made on a different cut of the video."""
     import math
-    sys.path.insert(0, str(ROOT))
     from tennis_tracker.config import Config
     from tennis_tracker import detectors as backends
 
@@ -764,7 +766,6 @@ def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: i
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    sys.path.insert(0, str(ROOT))
     from finetune.data_policy import read_review_status, is_verified
     manifest = read_manifest()
     clips = args.clips
@@ -855,7 +856,7 @@ def measure_camera_motion(video: Path):
 
 
 def write_manifest(rows: Dict[str, dict]) -> None:
-    from import_data import MANIFEST_COLUMNS
+    from finetune.import_data import MANIFEST_COLUMNS   # import_data needs cv2; ft.py must not (ensure_interpreter)
     temporary = MANIFEST.with_suffix(".tmp")
     with temporary.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS, extrasaction="ignore")
@@ -903,7 +904,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
 
 
 def cmd_paths(args: argparse.Namespace) -> int:
-    from import_data import DEFAULT_SOURCES
+    from finetune.import_data import DEFAULT_SOURCES   # see write_manifest
     print(f"python     {sys.executable}")
     print(f"workspace  {WORKSPACE}")
     print(f"repo       {ROOT}")

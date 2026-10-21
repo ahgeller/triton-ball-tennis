@@ -142,11 +142,10 @@ import threading
 import cv2
 import numpy as np
 
-try:                                  # imported as finetune.label_tool (tests) or run as a script
-    from finetune import cnn_refiner, refine
-except ImportError:
-    import cnn_refiner
-    import refine
+if __name__ == "__main__":          # run as a script: make the repository root importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from finetune import cnn_refiner, refine
 
 WORKSPACE = Path(__file__).resolve().parent
 VIDEOS = WORKSPACE / "videos"
@@ -192,17 +191,21 @@ VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 37, 38, 39, 40      # what waitKeyEx gives f
 KEYS_NEXT = {VK_RIGHT, 2555904, 83, 0x01000014}         # Win32 / Qt (this build) / GTK / Qt raw
 KEYS_PREV = {VK_LEFT, 2424832, 81, 0x01000012}
 
+import ctypes
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
 try:  # cursor placement and window sizing are Windows niceties; everything else works without them
-    import ctypes
     _user32 = ctypes.windll.user32
-
-    class _POINT(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-    class _RECT(ctypes.Structure):
-        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-except (AttributeError, ImportError, OSError):
+except (AttributeError, OSError):
     _user32 = None
 
 

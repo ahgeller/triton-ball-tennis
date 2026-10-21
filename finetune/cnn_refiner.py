@@ -44,6 +44,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+if __name__ == "__main__":          # run as a script: make the repository root importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from finetune import refine
+
 HERE = Path(__file__).resolve().parent
 LABELS, VIDEOS = HERE / "labels", HERE / "videos"
 MODELS = HERE / "models" / "refiner"
@@ -509,10 +514,6 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     furthest apart, each zoomed SHEET_ZOOM times with the pixel grid intact and three crosses: your
     label (white), the first version (orange) and the second (magenta). For judging by eye which one
     sits on the ball; the captions give each mark's distance from your label in 1080p px."""
-    try:                                  # imported as finetune.cnn_refiner, or run as a script
-        from finetune import refine
-    except ImportError:
-        import refine
     video, labels_csv = video_for(clip), LABELS / f"{clip}_ball.csv"
     if video is None or not labels_csv.is_file():
         print(f"{clip}: no video or labels under {LABELS.parent}")

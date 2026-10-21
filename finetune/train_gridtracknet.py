@@ -41,14 +41,15 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+if __name__ == "__main__":          # run as a script: make the repository root importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tennis_tracker.gridtracknet import (  # noqa: E402
+from tennis_tracker.gridtracknet import (
     FRAMES_PER_UNIT, GRID_COLS, GRID_ROWS, HEIGHT, WIDTH, GridTrackNet, decode_predictions, frame_tensor, load_model,
 )
 from finetune.data_policy import is_verified, read_review_status
 
+ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = Path(__file__).resolve().parent
 DATA_VERSION = 4
 HIT_PX = 10.0
