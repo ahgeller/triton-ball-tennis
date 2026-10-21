@@ -36,10 +36,11 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `tennis_tracker/motion.py`, `tracking.py`: CUDA motion masks and ROI tracking.
 - `tennis_tracker/court_overlay.py`: CatBoost/kinematic bounce candidates,
   player contacts and schematic rally legs.
-- `finetune/labeling/refine.py`: model-free sub-pixel ball suggestions for the label tool
+- `finetune/refiner/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
-- `finetune/labeling/cnn_refiner.py`: small CNN, trained only on frames the user checked, that places
-  those suggestions where the user clicks (`refiner_training.py` does the training). Versions live in
+- `finetune/refiner/cnn_refiner.py`: small CNN, trained only on frames the user reviewed, that places
+  those suggestions where the user clicks (`refiner_training.py` does the training; `hints.py`
+  is their command line, the script `ft.py hints` runs). Versions live in
   `finetune/models/refiner/` (all kept, `current.txt` names the active one); retrain with
   `ft.py hints train` or menu option 10. Its self-check decides "trusted" (threshold set on
   folds of clips it never saw); refine.py still finds the ball and decides ball/no ball.
@@ -51,7 +52,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   prior on the hints was measured and makes them worse (see the module docstring).
 - `finetune/ft.py`: workflow front door (launchers, script commands;
   `menu.py` is the interactive menu, `commands.py` has the in-process commands,
-  `interpreter.py` the venv hand-over). The rest of the package is three
+  `interpreter.py` the venv hand-over). The rest of the package is four
   subpackages. `finetune/labeling/`: `label_tool.py` (manual edits: the tool's
   state, navigation and edits, the actions the key table names), split into
   `label_cli.py` (its command line), `label_store.py` (a clip's rows and
@@ -62,8 +63,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `label_frame_view.py` (the single-frame picture and HUD), `label_grid.py` and
   `label_sheet.py` (the grid and trajectory-sheet views, each owning its state,
   picture and keys), `label_draw.py` (the filters, marks and text every view
-  draws with) and `label_hints.py` (the suggestions), with `refine.py` and
-  `cnn_refiner.py` above. `finetune/data/`: `labels.py`, the label
+  draws with) and `label_hints.py` (the suggestions). `finetune/refiner/`: the
+  suggestion model above (`refine.py`, `cnn_refiner.py`, `refiner_training.py`,
+  `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
   file format; `label_check.py`, checks a label file against its video's facts;
   `label_audit.py`, checks labels against the raw detector and flags frames; `workspace.py`, where the workspace keeps things and a clip's video
   facts, and the one place `clips.csv` and `exclude.txt` are read and written

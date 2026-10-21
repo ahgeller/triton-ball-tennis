@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Tuple
 
-from finetune.labeling import cnn_refiner, refine
+from finetune.refiner import cnn_refiner, refine
 from finetune.labeling.label_store import Row
-from finetune.labeling.refine import Suggestion
+from finetune.refiner.refine import Suggestion
 from finetune.data.scoring import REFERENCE_HEIGHT
 
 if TYPE_CHECKING:

@@ -5,8 +5,6 @@ and sidecars), ``label_source`` (one clip of a labelling run, and decoding ahead
 the ball), ``label_keys`` (what the keys do), ``label_mouse`` (what the mouse does),
 ``label_frame_view`` (the single-frame picture and HUD), ``label_grid`` and ``label_sheet`` (the grid
 and the trajectory sheet, each owning its state, picture and keys), ``label_draw`` (what every
-view draws with) and ``label_hints`` (the suggestions); ``refine`` measures the model-free
-suggestions, ``cnn_refiner`` is the small network that places them, ``refiner_training`` trains
-it and ``refiner_sheet`` draws where two versions of it disagree. Every key and what the marks mean:
-``LABEL_TOOL.md`` beside these.
+view draws with) and ``label_hints`` (the suggestions, measured by ``finetune.refiner``). Every key
+and what the marks mean: ``LABEL_TOOL.md`` beside these.
 """

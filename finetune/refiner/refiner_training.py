@@ -3,8 +3,8 @@
 ``train`` first trains FOLDS networks that each leave a third of the clips out (TrackNet clips
 of one game together) and scores them on those: that sets how sure is sure enough (at most
 SURE_FAR_SHARE of the "sure" frames more than FAR_PX off) and is the check a version must pass.
-Then it trains on everything, saves the version in ``cnn_refiner.MODELS`` and makes it current
-when it passes. ``python finetune/labeling/cnn_refiner.py train`` runs it."""
+Then it trains on everything, saves the version in ``cnn_refiner.models_dir()`` and makes it
+current when it passes. ``python finetune/refiner/hints.py train`` runs it."""
 from __future__ import annotations
 
 import re
@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tupl
 import cv2
 import numpy as np
 
+from finetune.data import workspace as ws
 from finetune.data.fileio import write_atomic
 from finetune.data.labels import Labels, read_labels, reviewed_frames
 from finetune.data.workspace import find_video, label_csv, labelled_clips, read_manifest, review_json, video_meta
-from finetune.labeling import cnn_refiner, refine
-from finetune.labeling.cnn_refiner import BACKWARDS, CROP, SURE_PX, WINDOW, build_network, cut_crop
+from finetune.refiner import cnn_refiner, refine
+from finetune.refiner.cnn_refiner import BACKWARDS, CROP, SURE_PX, WINDOW, build_network, cut_crop
 
 if TYPE_CHECKING:
     import torch
@@ -39,7 +40,7 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
     video = find_video(clip)
     if video is None or not review.is_file():
         return None
-    cached = cnn_refiner.CACHE / f"{clip}.npz"
+    cached = cnn_refiner.cache_dir() / f"{clip}.npz"
     stamp = max(labels_csv.stat().st_mtime, review.stat().st_mtime, video.stat().st_mtime)
     if cached.is_file() and cached.stat().st_mtime >= stamp:
         crops = np.load(cached)["crops"]
@@ -52,7 +53,7 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
     if not points:
         return None
     crops = crops_from_video(video, points, step, meta.height)
-    cnn_refiner.CACHE.mkdir(parents=True, exist_ok=True)
+    cached.parent.mkdir(parents=True, exist_ok=True)
     out = np.stack(crops) if crops else np.zeros((0, CROP, CROP, 9), np.uint8)
     np.savez(cached, crops=out)
     return out
@@ -257,8 +258,9 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
         f"{sure.mean():.0%} sure, {sure_far:.2%} of those over 5 px")
     net = train_network(to_device(list(crops.values()), device), epochs, device, rng, log, "final")
     previous = cnn_refiner.current()
-    cnn_refiner.MODELS.mkdir(parents=True, exist_ok=True)
-    path = cnn_refiner.MODELS / f"refiner-{time.strftime('%Y%m%d-%H%M%S')}.pt"
+    models = cnn_refiner.models_dir()
+    models.mkdir(parents=True, exist_ok=True)
+    path = models / f"refiner-{time.strftime('%Y%m%d-%H%M%S')}.pt"
     torch.save({"state": net.state_dict(), "self_check": True, "threshold": threshold,
                 "trained": time.strftime("%Y-%m-%d %H:%M:%S"), "clips": len(crops), "frames": int(total),
                 "check": {"median_px": median, "over5": far, "sure": float(sure.mean()), "sure_over5": sure_far}},
@@ -270,5 +272,5 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
         return path
     write_atomic(cnn_refiner.current_file(), path.name)
     log(f"saved {path.name}; the label tool uses it from its next start "
-        f"(older versions stay in {cnn_refiner.MODELS.relative_to(cnn_refiner.ws.WORKSPACE.parent)})")
+        f"(older versions stay in {models.relative_to(ws.WORKSPACE.parent)})")
     return path

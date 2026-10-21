@@ -1,11 +1,11 @@
-"""finetune/labeling/refiner_training.py on synthetic clips and arrays: the one-pass crop walk, the
+"""finetune/refiner/refiner_training.py on synthetic clips and arrays: the one-pass crop walk, the
 training batches and the self-check threshold. No workspace file, no GPU."""
 import numpy as np
 import pytest
 import torch
 
-from finetune.labeling.cnn_refiner import CROP, WINDOW
-from finetune.labeling.refiner_training import (FAR_PX, SURE_FAR_SHARE, crops_from_video, cut_label, frame_users,
+from finetune.refiner.cnn_refiner import CROP, WINDOW
+from finetune.refiner.refiner_training import (FAR_PX, SURE_FAR_SHARE, crops_from_video, cut_label, frame_users,
                                                 sample_batch, sure_threshold, to_device)
 from tests._helpers import write_clip
 

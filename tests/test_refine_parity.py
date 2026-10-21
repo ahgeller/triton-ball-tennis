@@ -27,7 +27,7 @@ class Nudge:
     self-check (None), one that doubts every answer (False) or vouches for all (True)."""
 
     def __init__(self, sure=None):
-        from finetune.labeling import cnn_refiner
+        from finetune.refiner import cnn_refiner
         self.cut_crop = cnn_refiner.cut_crop
         self.sure = sure
 
@@ -61,7 +61,7 @@ def variants():
 
 def run_variant(name: str) -> dict:
     """One variant's suggestions, in the fixture's shape (frames as text, tuples as lists)."""
-    from finetune.labeling import refine
+    from finetune.refiner import refine
     path, kwargs = variants()[name]
     with tempfile.TemporaryDirectory() as directory:
         video = write_frames(Path(directory) / "clip.avi", ball_frames(path))

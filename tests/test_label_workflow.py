@@ -473,7 +473,7 @@ def hint(row, x=None, y=None, trusted=True, ball_here=True, seed="label"):
 
 
 def test_centroid_finds_the_ball_in_label_coordinates():
-    from finetune.labeling.refine import motion_centroid
+    from finetune.refiner.refine import motion_centroid
     previous, current, following = ball_frames([(40, 30), (50, 40), (60, 50)])
     x, y = motion_centroid(previous, current, following, (52.0, 38.0), 9)
     assert x == pytest.approx(50.5, abs=5e-5)    # pixel 50's centre is 50.5 in label files
@@ -483,7 +483,7 @@ def test_centroid_finds_the_ball_in_label_coordinates():
 
 
 def test_suggest_reads_a_video_and_scores_trust(tmp_path):
-    from finetune.labeling import refine
+    from finetune.refiner import refine
     path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]   # an exact parabola
     video = write_frames(tmp_path / "clip.avi", ball_frames(path_of))
     seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
@@ -498,7 +498,7 @@ def test_suggest_reads_a_video_and_scores_trust(tmp_path):
 
 
 def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(tmp_path):
-    from finetune.labeling import cnn_refiner, refine
+    from finetune.refiner import cnn_refiner, refine
     path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]
     seen = []
 
@@ -536,7 +536,7 @@ def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(tmp_path
 
 def test_cut_centres_the_point_and_place_maps_window_pixels_back():
     import torch
-    from finetune.labeling import cnn_refiner
+    from finetune.refiner import cnn_refiner
     image = np.zeros((720, 1280, 3), np.uint8)
     image[300, 500] = 255
     crop = cnn_refiner.cut_crop([image] * 3, (500.5, 300.5), 720)     # pixel 500's centre, 720p -> 1080p scale
@@ -566,7 +566,7 @@ def test_cut_centres_the_point_and_place_maps_window_pixels_back():
 
 
 def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(tmp_path):
-    from finetune.labeling import refiner_training
+    from finetune.refiner import refiner_training
     confs = np.linspace(1.0, 0.0, 3000)
     errors = np.where(np.arange(3000) >= 2000, 9.0, 0.5)       # the least confident third is wrong
     threshold = refiner_training.sure_threshold(errors, confs)
@@ -587,7 +587,7 @@ def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(tmp
 
 def test_a_version_from_before_the_self_check_still_loads(tmp_path):
     import torch
-    from finetune.labeling import cnn_refiner
+    from finetune.refiner import cnn_refiner
     path = tmp_path / "refiner-20261019-120547.pt"
     torch.save({"state": cnn_refiner.build_network(False).state_dict(), "trained": "then"}, path)
     placer = cnn_refiner.Placer(path)
@@ -597,23 +597,24 @@ def test_a_version_from_before_the_self_check_still_loads(tmp_path):
     assert sure is None                                          # refine.py's own rule decides
 
 
-def test_versions_newest_is_current_until_one_is_chosen_and_old_ones_stay(tmp_path):
-    from finetune.labeling import cnn_refiner
-    models = tmp_path
-    with patch.object(cnn_refiner, "MODELS", models):     # current.txt is looked up under it
-        assert cnn_refiner.current() is None
-        for name in ("refiner-20261001-090000.pt", "refiner-20261019-110000.pt"):
-            (models / name).write_bytes(b"")
-        assert cnn_refiner.current().name == "refiner-20261019-110000.pt"
-        cnn_refiner.make_current("20261001")
-        assert cnn_refiner.current().name == "refiner-20261001-090000.pt"
-        (models / "refiner-20261020-080000.pt").write_bytes(b"")
-        assert cnn_refiner.current().name == "refiner-20261001-090000.pt"   # a choice sticks
-        (models / "refiner-20261001-090000.pt").unlink()
-        assert cnn_refiner.current().name == "refiner-20261020-080000.pt"   # ... unless it is gone
-        assert len(cnn_refiner.versions()) == 2
-        with pytest.raises(ValueError):
-            cnn_refiner.make_current("2026")                 # ambiguous
+def test_versions_newest_is_current_until_one_is_chosen_and_old_ones_stay(workspace_dir):
+    from finetune.refiner import cnn_refiner
+    models = cnn_refiner.models_dir()                        # read from the workspace when asked, not at import
+    assert models == workspace_dir / "models" / "refiner"
+    models.mkdir(parents=True)
+    assert cnn_refiner.current() is None
+    for name in ("refiner-20261001-090000.pt", "refiner-20261019-110000.pt"):
+        (models / name).write_bytes(b"")
+    assert cnn_refiner.current().name == "refiner-20261019-110000.pt"
+    cnn_refiner.make_current("20261001")
+    assert cnn_refiner.current().name == "refiner-20261001-090000.pt"
+    (models / "refiner-20261020-080000.pt").write_bytes(b"")
+    assert cnn_refiner.current().name == "refiner-20261001-090000.pt"   # a choice sticks
+    (models / "refiner-20261001-090000.pt").unlink()
+    assert cnn_refiner.current().name == "refiner-20261020-080000.pt"   # ... unless it is gone
+    assert len(cnn_refiner.versions()) == 2
+    with pytest.raises(ValueError):
+        cnn_refiner.make_current("2026")                 # ambiguous
 
 
 def test_label_tool_reloads_the_placer_when_the_current_version_changes():

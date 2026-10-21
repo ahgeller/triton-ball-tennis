@@ -15,8 +15,8 @@ from finetune.data import workspace as ws
 from finetune.data.labels import read_labels
 from finetune.data.scoring import REFERENCE_HEIGHT
 from finetune.data.workspace import find_video, label_csv, video_meta
-from finetune.labeling import refine
-from finetune.labeling.cnn_refiner import CACHE, Placer, version_named
+from finetune.refiner import refine
+from finetune.refiner.cnn_refiner import Placer, version_named
 
 SHEET_PATCH, SHEET_ZOOM, SHEET_COLUMNS = 32, 10, 6   # a sheet tile is PATCH px (1080p) around the marks, ZOOM x
 SHEET_COLOURS = {"label": (255, 255, 255), "a": (0, 165, 255), "b": (255, 0, 255)}      # BGR: white, orange, magenta
@@ -61,7 +61,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     marks_of = {f: [seeds[f], found[0][f], found[1][f]] for f in frames}
     tiles = sheet_tiles(video, marks_of, (width, height))
     board = sheet_board(tiles, clip, names)
-    out = out or (CACHE.parent / "sheets" / f"{clip}_{names[0]}_vs_{names[1]}.png")
+    out = out or (ws.CACHE / "sheets" / f"{clip}_{names[0]}_vs_{names[1]}.png")
     out.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out), board)
     print(f"wrote {out}")

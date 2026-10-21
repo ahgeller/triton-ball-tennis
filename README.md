@@ -193,9 +193,10 @@ finetune/commands.py, interpreter.py     Its in-process commands and the venv ha
 finetune/labeling/label_tool.py          Manual label editing (label_cli, label_store, label_source,
                                          label_window, label_cursor, label_keys, label_mouse, label_frame_view,
                                          label_grid, label_sheet, label_draw and label_hints hold its pieces)
-finetune/labeling/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
-finetune/labeling/refiner_sheet.py       A zoomed sheet of where two versions of that CNN disagree
-finetune/labeling/refiner_training.py    Training that CNN on the frames you have checked
+finetune/refiner/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
+finetune/refiner/refiner_sheet.py        A zoomed sheet of where two versions of that CNN disagree
+finetune/refiner/refiner_training.py     Training that CNN on the frames you have reviewed
+finetune/refiner/hints.py                Their command line (ft.py hints: train, list, use, sheet)
 finetune/data/labels.py                  Label file format; label_check.py checks a file, label_audit.py
                                          audits labels against the detector
 finetune/data/workspace.py, fileio.py    Workspace layout, clip facts, atomic writes

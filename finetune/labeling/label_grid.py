@@ -16,7 +16,7 @@ import numpy as np
 
 from finetune.labeling.label_draw import (FILTERS, ZOOM_STEP, draw_ticks, draw_tile_mark, enhance, fit_text, hit, mark_plan)
 from finetune.labeling.label_window import KEYS_CONFIRM, KEYS_ZOOM_IN, KEYS_ZOOM_OUT
-from finetune.labeling.refine import Point, Suggestion
+from finetune.refiner.refine import Point, Suggestion
 
 if TYPE_CHECKING:
     from finetune.labeling.label_tool import Tool

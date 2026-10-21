@@ -12,7 +12,7 @@ import numpy as np
 
 from finetune.labeling.label_hints import OFFER_MIN_PX
 from finetune.labeling.label_store import Row
-from finetune.labeling.refine import Point, Suggestion
+from finetune.refiner.refine import Point, Suggestion
 
 ZOOM_STEP = 1.18          # per wheel notch / keypress; multiplicative so every step feels the same size
 FILTERS = ("off", "dim white", "ball pop", "motion")   # h cycles these; see enhance()

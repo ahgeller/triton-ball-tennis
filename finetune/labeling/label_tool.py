@@ -38,7 +38,7 @@ from finetune.labeling.label_grid import GridView
 from finetune.labeling.label_sheet import SheetView
 from finetune.labeling.label_window import WINDOW
 from finetune.data.labels import LabelFormatError, is_visible
-from finetune.labeling.refine import Suggestion
+from finetune.refiner.refine import Suggestion
 
 HUD = 58
 MAX_UPSCALE = 2.0         # cap on drawing the frame bigger than it is: past this it only costs time

@@ -1,7 +1,7 @@
 """The comparison sheet's pieces in refiner_sheet: which frames it shows, each tile and the board."""
 import numpy as np
 
-from finetune.labeling.refiner_sheet import (SHEET_COLUMNS, SHEET_HEADER, SHEET_PATCH, SHEET_STRIP, SHEET_ZOOM,
+from finetune.refiner.refiner_sheet import (SHEET_COLUMNS, SHEET_HEADER, SHEET_PATCH, SHEET_STRIP, SHEET_ZOOM,
                                            frames_furthest_apart, sheet_board, sheet_tile, sheet_tiles)
 from tests._helpers import write_clip
 

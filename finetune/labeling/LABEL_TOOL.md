@@ -83,8 +83,8 @@ out at once. Click a point to open that frame; `a` / `d` move to the stretch bef
 While you work, the tool measures each label frame's ball from the video itself:
 the centre of what moved between that frame and its neighbours, looked for around
 the current label and around where the labels either side put the ball
-(`finetune/labeling/refine.py`). A small network trained on the frames you have checked
-(`finetune/labeling/cnn_refiner.py`; "hint model" in the finetune menu retrains it) then puts
+(`finetune/refiner/refine.py`). A small network trained on the frames you have reviewed
+(`finetune/refiner/cnn_refiner.py`; "hint model" in the finetune menu retrains it) then puts
 it where you would click and says whether it is sure. Without a trained version the
 measurement is shown as it is.
 
