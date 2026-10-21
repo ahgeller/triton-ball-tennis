@@ -1,9 +1,10 @@
-"""The data the stages of ``pipeline.run`` hand to each other.
+"""The data the stages of ``pipeline.run`` hand to each other, and what it returns.
 
 ``RunContext`` is what ``_open_inputs`` builds once per run: the validated
 config, the input clip's metadata, the CUDA device, the encoder choice and
 the three detector backends.  ``Selection`` and ``CourtEvents`` are what the
 selector and the court-event stages produce for pass 2 and the JSON export.
+``RunResult`` is what ``run`` returns to a programmatic caller.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from ball_in_play_selector import FrameResult, Track
 from .config import Config
 from .ball_detectors import BallDetectorBackend
 from .court_detector import CourtDetector
-from .court_overlay import BounceEvent, ContactEvent, RallyLeg
+from .court_overlay import BounceEvent, ContactEvent, PlayerBoxes, RallyLeg
 from .player_detector import PlayerDetector
 from .utils import EncoderChoice
 
@@ -113,3 +114,37 @@ class CourtEvents:
     bounces: List[BounceEvent] = field(default_factory=list)
     contacts: List[ContactEvent] = field(default_factory=list)
     rally_legs: List[RallyLeg] = field(default_factory=list)
+
+
+@dataclass
+class RunResult:
+    """What ``pipeline.run`` returns: the selection, the per-frame court and
+    player evidence, where the outputs went and how long it took, so a caller
+    that drives the tracker from Python need not re-read the tracking JSON.
+    """
+
+    per_frame: List[Optional[FrameResult]]
+    chosen_track: Optional[Track]                    # the stitched timeline chain
+    all_tracks: List[Track]
+    frame_count: int                                 # decoded source frames
+    court_keypoints: List[Optional[List[float]]]     # per frame, as pass 1 saw them
+    player_boxes: List[PlayerBoxes]                  # per frame, tracked player id -> box
+    last_valid_court_keypoints: Optional[List[float]]
+    elapsed_sec: float
+    timing: Dict[str, float]                         # per-stage seconds, filled when cfg.info_timing is on
+    pass2_frames_rendered: int
+    outputs: Dict[str, Path]                         # files written, by role: tracking_json, tracking_video, ...
+
+    def frame_rows(self) -> List[Dict[str, Any]]:
+        """The per-frame rows as the tracking JSON's ``frames`` table holds them."""
+        from .export import frame_result_to_json, json_safe   # export imports this module
+
+        rows = []
+        for i in range(self.frame_count):
+            row = frame_result_to_json(i, self.per_frame[i] if i < len(self.per_frame) else None)
+            if i < len(self.court_keypoints):
+                row["court_keypoints"] = json_safe(self.court_keypoints[i])
+            if i < len(self.player_boxes):
+                row["player_boxes"] = json_safe(self.player_boxes[i])
+            rows.append(row)
+        return rows

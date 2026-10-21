@@ -1,8 +1,11 @@
-"""tennis_tracker/run_context.py: Timing, RunContext.needs_pass2_outputs and Selection."""
+"""tennis_tracker/run_context.py: Timing, RunContext.needs_pass2_outputs, Selection and RunResult."""
+from pathlib import Path
 from types import SimpleNamespace
 
+from ball_in_play_selector import FrameResult
+
 from tennis_tracker.config import Config
-from tennis_tracker.run_context import RunContext, Selection, Timing
+from tennis_tracker.run_context import RunContext, RunResult, Selection, Timing
 
 
 def test_disabled_timing_is_a_no_op():
@@ -45,3 +48,20 @@ def test_selection_counts_the_filled_frames():
                           court_polygon=None, last_court_keypoints=None, display_path={})
     assert selection.filled_frames == 2
     assert Selection([], None, [], None, None, {}).filled_frames == 0
+
+
+def test_run_result_frame_rows_match_the_tracking_json_layout():
+    hit = FrameResult(cx=10.0, cy=20.0, conf=0.9, source="det")
+    result = RunResult(
+        per_frame=[None, hit], chosen_track=None, all_tracks=[], frame_count=3,
+        court_keypoints=[[1.0, 2.0], None], player_boxes=[{1: [0.0, 0.0, 4.0, 4.0]}, {}],
+        last_valid_court_keypoints=None, elapsed_sec=1.5, timing={}, pass2_frames_rendered=0,
+        outputs={"tracking_json": Path("out.json")},
+    )
+    rows = result.frame_rows()
+    assert [row["frame"] for row in rows] == [0, 1, 2]           # one row per decoded frame
+    assert rows[0]["present"] is False and rows[0]["court_keypoints"] == [1.0, 2.0]
+    assert rows[0]["player_boxes"] == {"1": [0.0, 0.0, 4.0, 4.0]}   # JSON-safe keys
+    assert rows[1]["present"] is True and (rows[1]["x"], rows[1]["y"], rows[1]["source"]) == (10.0, 20.0, "det")
+    assert rows[1]["court_keypoints"] is None
+    assert "court_keypoints" not in rows[2] and "player_boxes" not in rows[2]

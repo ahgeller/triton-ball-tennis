@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Dict
 
 import cv2
 import torch
 from ball_in_play_selector import select_ball_in_play
 
 from .config import Config
-from .court_geometry import build_court_polygon
+from .court_geometry import build_court_polygon, last_valid_court_keypoints
 from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
 from .ball_detectors import BallDetectorBackend, GridTrackNetBallDetector, TensorRTRuntimeBallDetector
 from .court_detector import CourtDetector
@@ -24,7 +25,7 @@ from .pass1 import Pass1Result, collect_pass1, erase_ghost_rois
 from .pass2 import render_pass2
 from .player_detector import PlayerDetector
 from .rendering import build_display_path
-from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
+from .run_context import CourtEvents, RunContext, RunResult, Selection, Timing, VideoInfo
 from .summaries import print_selector_track_summary, print_timing_summary
 from .utils import detect_device, print_platform_report, resolve_runtime
 
@@ -204,8 +205,24 @@ def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> 
     return CourtEvents(list(bounces.confirmed), list(contacts), list(rally_legs))
 
 
-def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered: int) -> None:
-    """Write the tracking JSON and report what was produced."""
+def _written_outputs(cfg: Config) -> Dict[str, Path]:
+    """The files this run wrote, by role, in the order they are reported."""
+    outputs = {}
+    if cfg.tracking_json:
+        outputs["tracking_json"] = Path(cfg.tracking_json)
+    if cfg.save_tracking_video:
+        outputs["tracking_video"] = Path(cfg.output_video)
+    if cfg.save_motion_debug:
+        outputs["motion_debug"] = Path(cfg.output_debug_path)
+    if cfg.save_detector_input_debug:
+        outputs["detector_input"] = Path(cfg.output_detector_input_debug_path)
+    if cfg.save_track_debug_video:
+        outputs["track_debug"] = Path(cfg.output_track_debug_path)
+    return outputs
+
+
+def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered: int) -> RunResult:
+    """Write the tracking JSON, report what was produced and assemble the result."""
     cfg = ctx.cfg
     n = pass1.frame_count
     elapsed = ctx.elapsed()
@@ -225,14 +242,28 @@ def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered:
         print(f"[done] Track debug:  {cfg.output_track_debug_path}")
     if ctx.timing.enabled:
         print_timing_summary(ctx.timing.values, elapsed, n, rendered)
+    return RunResult(
+        per_frame=list(selection.per_frame),
+        chosen_track=selection.chosen_track,
+        all_tracks=list(selection.all_tracks),
+        frame_count=n,
+        court_keypoints=list(pass1.court_keypoints),
+        player_boxes=list(pass1.player_boxes),
+        last_valid_court_keypoints=last_valid_court_keypoints(pass1.court_keypoints),
+        elapsed_sec=elapsed,
+        timing=dict(ctx.timing.values),
+        pass2_frames_rendered=rendered,
+        outputs=_written_outputs(cfg),
+    )
 
 
-def run(cfg: Config) -> None:
-    """Track the ball through ``cfg.input_video`` and write the configured outputs."""
+def run(cfg: Config) -> RunResult:
+    """Track the ball through ``cfg.input_video``, write the configured outputs
+    and return what was found (see ``RunResult``)."""
     ctx = _open_inputs(cfg)
     pass1 = collect_pass1(ctx)
     erase_ghost_rois(pass1)
     selection = _select(ctx, pass1)
     events = _court_events(ctx, pass1, selection)
     rendered = render_pass2(ctx, pass1, selection, events)
-    _finish(ctx, pass1, selection, rendered)
+    return _finish(ctx, pass1, selection, rendered)

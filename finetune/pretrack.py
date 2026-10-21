@@ -24,7 +24,6 @@ the convention the trainer and evaluate_archive.py already read.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -85,11 +84,10 @@ def pipeline_rows(video: Path, weights: Path, conf: Optional[float], device: str
         save_tracking_video=False,
         print_selector_tracks=False,
     )
-    run(cfg)
-    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    rows = run(cfg).frame_rows()
     return {
         row["frame"]: (row["x"], row["y"], row.get("source", "det"), float(row.get("conf", 0.0)))
-        for row in payload["frames"] if row.get("present")
+        for row in rows if row.get("present")
     }
 
 

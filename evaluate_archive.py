@@ -259,9 +259,10 @@ def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float
             if json_path.is_file() and reuse_json:
                 print(f"[reuse] {json_path.name} -- NOT re-running the tracker; "
                       f"these numbers are from whenever this file was written")
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
             else:
-                run(tracker_config(video_path, name, conf[name], device, out_dir, json_path))
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
+                result = run(tracker_config(video_path, name, conf[name], device, out_dir, json_path))
+                payload = {"frames": result.frame_rows(), "last_valid_court_keypoints": result.last_valid_court_keypoints}
             results.append((video_path.stem, *score_pipeline_clip(labels, payload, meta.width)))
         print(f"\n=== pipeline [{name}] per clip ===")
         pooled = []

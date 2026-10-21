@@ -47,6 +47,7 @@ import pytest
 from tennis_tracker import pass1, pass2, pipeline
 from tennis_tracker.config import Config
 from tennis_tracker.court_detector import CourtDetector
+from tennis_tracker.run_context import RunResult
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "pipeline_run_golden.json"
 UPDATE_ENV = "UPDATE_PIPELINE_GOLDEN"
@@ -397,9 +398,21 @@ def run_pipeline(tmp_path: Path, monkeypatch, clip: Path, **overrides) -> Dict[s
     install_fakes(monkeypatch)
     cfg = make_config(tmp_path, clip, **overrides)
     result = pipeline.run(cfg)
-    assert result is None
     with open(cfg.tracking_json, encoding="utf-8") as f:
         payload = json.load(f)
+    # The returned result is what the JSON holds, so callers need not re-read the file.
+    assert isinstance(result, RunResult)
+    assert json.loads(json.dumps(result.frame_rows())) == payload["frames"]
+    assert result.frame_count == payload["video"]["total_frames"] == len(result.per_frame)
+    assert result.last_valid_court_keypoints == payload["last_valid_court_keypoints"]
+    assert result.pass2_frames_rendered == payload["summary"]["pass2_frames_rendered"]
+    assert result.timing == payload["timing"] and result.elapsed_sec == payload["summary"]["elapsed_sec"]
+    assert (result.chosen_track is None) == (payload["chosen_track"] is None)
+    assert len(result.all_tracks) == payload["summary"]["track_count"]
+    assert result.outputs["tracking_json"] == Path(cfg.tracking_json)
+    assert set(result.outputs) == {"tracking_json"} | {
+        role + ("_video" if role == "tracking" else "") for role, attr in STREAM_ROLES.items()
+        if CapturingVideoWriter.streams.get(getattr(cfg, attr)) is not None}
     streams = {}
     for role, attr in STREAM_ROLES.items():
         writer = CapturingVideoWriter.streams.get(getattr(cfg, attr))
