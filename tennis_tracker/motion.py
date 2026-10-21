@@ -54,8 +54,8 @@ def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Option
         return mask_u8
 
     out = mask_u8
-    close_size = int(cfg.motion_raw_close_size or 0)
-    open_size = int(cfg.motion_raw_open_size or 0)
+    close_size = cfg.motion_raw_close_size
+    open_size = cfg.motion_raw_open_size
     if close_size > 1:
         out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _get_kernel(close_size))
     if open_size > 1:
@@ -78,10 +78,10 @@ def refine_raw_motion_temporal_cpu(
     if raw_motion_u8 is None:
         return None
     refined = raw_motion_u8
-    if bool(cfg.motion_raw_temporal_gate) and prev_bgr is not None and curr_bgr is not None:
-        hi = float(cfg.motion_raw_temporal_hi)
-        lo = float(cfg.motion_raw_temporal_lo)
-        very_hi = float(cfg.motion_raw_temporal_very_hi)
+    if cfg.motion_raw_temporal_gate and prev_bgr is not None and curr_bgr is not None:
+        hi = cfg.motion_raw_temporal_hi
+        lo = cfg.motion_raw_temporal_lo
+        very_hi = cfg.motion_raw_temporal_very_hi
         d_prev = _motion_probe_delta_from_frames(prev_bgr, curr_bgr)
         if next_bgr is not None:
             d_next = _motion_probe_delta_from_frames(curr_bgr, next_bgr)
@@ -394,17 +394,16 @@ class BackgroundModel:
         if not self.ready:
             self.mean_v = curr_v.clone()
             self.mean_s = curr_s.clone()
-            thr = float(self.cfg.motion_thresh) / 255.0
+            thr = self.cfg.motion_thresh / 255.0
             self.var_v = torch.full_like(self.mean_v, thr ** 2)
             self.var_s = torch.full_like(self.mean_s, thr ** 2)
             return
         v_diff_sq = (curr_v - self.mean_v) ** 2
         s_diff_sq = (curr_s - self.mean_s) ** 2
         if self._prev_motion is not None:
-            alpha = torch.where(self._prev_motion, float(self.cfg.motion_freeze_alpha),
-                                float(self.cfg.background_alpha))
+            alpha = torch.where(self._prev_motion, self.cfg.motion_freeze_alpha, self.cfg.background_alpha)
         else:
-            alpha = float(self.cfg.background_alpha)
+            alpha = self.cfg.background_alpha
         self.var_v.mul_(1.0 - alpha).add_(alpha * v_diff_sq)
         self.var_s.mul_(1.0 - alpha).add_(alpha * s_diff_sq)
         self.mean_v.mul_(1.0 - alpha).add_(curr_v * alpha)
@@ -459,9 +458,9 @@ def _raw_motion_cuda(window: FrameWindow, background: BackgroundModel, cfg: Conf
         return None, None
     curr = window.curr_gpu
     curr_v, curr_s = curr.v, curr.s
-    thr_sq = (float(cfg.motion_thresh) / 255.0) ** 2
-    k_sq = float(cfg.motion_k_std) ** 2
-    v_min = float(cfg.motion_v_min) / 255.0
+    thr_sq = (cfg.motion_thresh / 255.0) ** 2
+    k_sq = cfg.motion_k_std ** 2
+    v_min = cfg.motion_v_min / 255.0
 
     def foreground(y1: int, y2: int, x1: int, x2: int) -> torch.Tensor:
         v_diff_sq = (curr_v[y1:y2, x1:x2] - background.mean_v[y1:y2, x1:x2]) ** 2
@@ -478,11 +477,11 @@ def _raw_motion_cuda(window: FrameWindow, background: BackgroundModel, cfg: Conf
         raw_motion = foreground(0, int(curr_v.shape[0]), 0, int(curr_v.shape[1]))
 
     prev = window.prev_gpu
-    if not (bool(cfg.motion_raw_temporal_gate) and prev is not None):
+    if not (cfg.motion_raw_temporal_gate and prev is not None):
         return raw_motion, raw_motion
-    hi = float(cfg.motion_raw_temporal_hi)
-    lo = float(cfg.motion_raw_temporal_lo)
-    very_hi = float(cfg.motion_raw_temporal_very_hi)
+    hi = cfg.motion_raw_temporal_hi
+    lo = cfg.motion_raw_temporal_lo
+    very_hi = cfg.motion_raw_temporal_very_hi
     nxt = window.next_gpu
 
     def temporal(y1: int, y2: int, x1: int, x2: int) -> torch.Tensor:

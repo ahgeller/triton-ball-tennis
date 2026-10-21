@@ -5,7 +5,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from .config import SelectorConfig
 from .models import Detection, Track
-from .utils import PlayerBoxesByFrame, cfg_diag
+from .utils import PlayerBoxesByFrame
 from .physics import kinematic_motion_frac, xy_dist
 
 # Timeline handover: below ~1.5% of the diagonal per frame a track's velocity
@@ -33,14 +33,19 @@ _TINY_BRIDGE_MIN_SPAN_FRAMES = 6
 _TINY_BRIDGE_SPAN_FRAC = 0.005
 _TINY_BRIDGE_MAX_OBS = 10
 _TINY_BRIDGE_PENALTY_MULT = 0.4
-# A skipped track is continuous with the chain when an edge observation is
-# near a chain observation within 0.1 s (at least two frames).
+# A skipped track is continuous with the chain when the chain observation
+# nearest in time to its first observation (within 0.1 s, at least two
+# frames) is within the handover distance; see _add_disjoint_tracks.
 _HANDOVER_WINDOW_SEC = 0.1
 _HANDOVER_MIN_FRAMES = 2
 # A turn sharper than 0.6 pi (108 deg) between consecutive velocities is jitter.
 _SHARP_TURN_PI_FRAC = 0.6
 # A step more than 2.5x the median step is a jump.
 _JUMP_MEDIAN_SPEED_MULT = 2.5
+# score_tracks: player boxes are dilated by this much (px) for the
+# near-player fraction, which only weakly multiplies the score.
+_NEAR_PLAYER_MARGIN_PX = 60
+_NEAR_PLAYER_MULT_FLOOR, _NEAR_PLAYER_MULT_RANGE = 0.70, 0.30
 
 
 def _track_kinematics(trk: Track) -> Tuple[List[Tuple[float, float]], List[float], float, float]:
@@ -152,15 +157,15 @@ class _TimelineLimits(NamedTuple):
 
 def _timeline_limits(cfg: SelectorConfig, total_frames: int) -> _TimelineLimits:
     tden = max(total_frames, 1)
-    small_gap = max(0, int(round(max(0.0, cfg.timeline_small_gap_frac) * tden)))
+    small_gap = int(round(cfg.timeline_small_gap_frac * tden))
     return _TimelineLimits(
-        diag=cfg_diag(cfg),
+        diag=cfg.diag,
         tden=tden,
-        max_gap=max(1, int(round(max(0.0, cfg.timeline_max_gap_frac) * tden))),
-        overlap_tol=max(0, int(round(max(0.0, cfg.timeline_overlap_tol_frac) * tden))),
+        max_gap=max(1, int(round(cfg.timeline_max_gap_frac * tden))),
+        overlap_tol=int(round(cfg.timeline_overlap_tol_frac * tden)),
         small_gap=small_gap,
         medium_gap=max(small_gap + 1, int(round(small_gap * 2.0))),
-        jump_reject=max(0.0, float(cfg.timeline_small_gap_jump_reject_frac)),
+        jump_reject=cfg.timeline_small_gap_jump_reject_frac,
     )
 
 
@@ -230,14 +235,14 @@ def _handover_transition(ti: Track, tj: Track, cfg: SelectorConfig, lim: _Timeli
         return None
 
     if hard_discontinuity:
-        trans = -_HARD_SWITCH_PENALTY_MULT * float(cfg.timeline_switch_penalty)
+        trans = -_HARD_SWITCH_PENALTY_MULT * cfg.timeline_switch_penalty
     else:
-        trans = -float(cfg.timeline_switch_penalty)
+        trans = -cfg.timeline_switch_penalty
         if gap < 0:
-            trans -= float(cfg.timeline_overlap_penalty) * (abs(gap) / float(tden))
-        trans -= float(cfg.timeline_jump_penalty) * min(dfrac, _JUMP_PENALTY_FRAC_CAP)
+            trans -= cfg.timeline_overlap_penalty * (abs(gap) / float(tden))
+        trans -= cfg.timeline_jump_penalty * min(dfrac, _JUMP_PENALTY_FRAC_CAP)
     if gap > 0:
-        trans -= float(cfg.timeline_gap_penalty) * (gap / float(tden))
+        trans -= cfg.timeline_gap_penalty * (gap / float(tden))
 
     # -- Speed-continuity penalty --
     # A handover whose implied speed differs wildly from track i's
@@ -257,7 +262,7 @@ def _handover_transition(ti: Track, tj: Track, cfg: SelectorConfig, lim: _Timeli
     ):
         speed_ratio = obs_speed / max(exp_speed, 1e-6)
         if speed_ratio > _HANDOVER_SPEED_RATIO_MAX or speed_ratio < _HANDOVER_SPEED_RATIO_MIN:
-            trans -= float(cfg.timeline_jump_penalty) * _SPEED_MISMATCH_PENALTY_MULT
+            trans -= cfg.timeline_jump_penalty * _SPEED_MISMATCH_PENALTY_MULT
 
     # -- Tiny-bridge penalty --
     # A track with very few observations spanning a tiny window that creates
@@ -267,7 +272,7 @@ def _handover_transition(ti: Track, tj: Track, cfg: SelectorConfig, lim: _Timeli
     tj_span = max(int(tj.last_obs_frame) - int(tj.first_frame) + 1, 1)
     tiny_span = max(_TINY_BRIDGE_MIN_SPAN_FRAMES, int(round(_TINY_BRIDGE_SPAN_FRAC * tden)))
     if tj_span < tiny_span and tj.num_obs < _TINY_BRIDGE_MAX_OBS:
-        trans -= float(cfg.timeline_switch_penalty) * _TINY_BRIDGE_PENALTY_MULT
+        trans -= cfg.timeline_switch_penalty * _TINY_BRIDGE_PENALTY_MULT
     return trans
 
 
@@ -295,6 +300,16 @@ def _add_disjoint_tracks(
     handover_dist = max(_HANDOVER_MIN_DIST_PX, lim.jump_reject * lim.diag)
 
     def continuous(candidate: Track) -> bool:
+        """Whether the candidate's boundary meets the chain.
+
+        The chain observation nearest in time to the candidate's first
+        observation decides (offsets grow one frame at a time, the earlier
+        frame tried first): continuous when it lies within ``handover_dist``.
+        The last observation is only consulted when no chain observation falls
+        within ``handover_frames`` of the first one, so a far chain point next
+        to the start vetoes a candidate whose end connects cleanly (pinned by
+        test_disjoint_continuity_is_decided_at_the_start_edge).
+        """
         for edge in (candidate.observations[0], candidate.observations[-1]):
             for offset in range(1, handover_frames + 1):
                 for frame in (edge.frame - offset, edge.frame + offset):
@@ -329,8 +344,8 @@ def select_timeline_chain(
     if not tracks:
         return []
 
-    min_score = max(0.0, float(cfg.timeline_min_track_score))
-    eligible = [t for t in tracks if float(t.score) >= min_score]
+    min_score = cfg.timeline_min_track_score
+    eligible = [t for t in tracks if t.score >= min_score]
     if not eligible:
         return []
     if len(eligible) == 1:
@@ -339,13 +354,13 @@ def select_timeline_chain(
     lim = _timeline_limits(cfg, total_frames)
     ordered = sorted(eligible, key=lambda t: (t.first_frame, t.last_obs_frame, -t.score))
     n = len(ordered)
-    cov_w = max(0.0, float(cfg.timeline_coverage_weight))
-    score_w = max(0.0, float(cfg.timeline_score_weight))
+    cov_w = cfg.timeline_coverage_weight
+    score_w = cfg.timeline_score_weight
     base = []
     for t in ordered:
         span_frames = max(int(t.last_obs_frame) - int(t.first_frame) + 1, 1)
         span_frac = span_frames / float(lim.tden)
-        base_score = max(0.0, float(t.score))
+        base_score = max(0.0, t.score)
         base.append(cov_w * span_frac + score_w * base_score)
     dp = base[:]
     prev = [-1] * n
@@ -519,13 +534,14 @@ def score_tracks(
     if not tracks:
         return tracks
 
+    last_index = max(total_frames - 1, 1)
     for trk in tracks:
         obs = trk.observations
         n = trk.num_obs
         span = trk.span
 
-        coverage_frac = (n / max(total_frames, 1)) if total_frames > 0 else 0.0
-        span_frac = (span / max(total_frames, 1)) if total_frames > 0 else 0.0
+        coverage_frac = n / total_frames if total_frames > 0 else 0.0
+        span_frac = span / total_frames if total_frames > 0 else 0.0
 
         inside_frac, _, strict_inside_frac = _court_fractions(
             trk, court_poly, cfg.court_expand_px
@@ -539,7 +555,7 @@ def score_tracks(
             near_player_court_count = 0
             for o in obs:
                 near_player = is_near_player(
-                    o.cx, o.cy, player_boxes_by_frame, o.frame, margin=60
+                    o.cx, o.cy, player_boxes_by_frame, o.frame, margin=_NEAR_PLAYER_MARGIN_PX
                 )
                 if near_player:
                     near_player_count += 1
@@ -551,15 +567,15 @@ def score_tracks(
                         )
                         if cdist >= -cfg.court_expand_px:
                             near_player_court_count += 1
-            near_player_frac = near_player_count / max(n, 1)
-            near_player_court_frac = near_player_court_count / max(n, 1)
+            near_player_frac = near_player_count / n
+            near_player_court_frac = near_player_court_count / n
 
         avg_speed, peak_speed = _track_speed_stats(trk)
         extent = _track_extent(trk)
         jump_penalty_raw = _jump_penalty(trk)
         motion_smooth = _motion_consistency(trk)
         motion_kin_frac = kinematic_motion_frac(
-            avg_speed, peak_speed, extent, near_player_frac, cfg, cfg_diag(cfg)
+            avg_speed, peak_speed, extent, near_player_frac, cfg, cfg.diag
         )
         # Motion evidence: the mask overlap, or the kinematic estimate when the
         # mask misses a small, distant or slow ball.
@@ -570,14 +586,15 @@ def score_tracks(
         span_add = cfg.w_span * span_frac
         base_add = obs_add + span_add
 
-        # Multipliers in [0, 1], with near-player intentionally weaker.
-        # Use near_court_frac (inside OR within margin) instead of strict_inside_frac
-        # so near-edge detections don't destroy track scores.
-        inside_mult = max(0.0, min(1.0, inside_frac))
-        motion_mult = max(0.0, min(1.0, motion_evidence))
-        near_player_mult = 0.70 + 0.30 * max(0.0, min(1.0, near_player_frac))
+        # Multipliers, each a fraction in [0, 1], with near-player intentionally
+        # weaker.  The court term is the near-court fraction (inside OR within
+        # the margin), not strict_inside_frac, so near-edge detections don't
+        # destroy track scores.
+        inside_mult = inside_frac
+        motion_mult = motion_evidence
+        near_player_mult = _NEAR_PLAYER_MULT_FLOOR + _NEAR_PLAYER_MULT_RANGE * near_player_frac
 
-        # Non-negative by construction: clamped multipliers times a positive sum.
+        # Non-negative by construction: fractions times a positive sum.
         total_score = base_add * inside_mult * motion_mult * near_player_mult
 
         trk.score = total_score
@@ -600,8 +617,8 @@ def score_tracks(
             "span_frac": float(span_frac),
             "start_frame": float(trk.first_frame),
             "end_frame": float(trk.last_obs_frame),
-            "start_frac": (trk.first_frame / float(max(total_frames - 1, 1))) if total_frames > 0 else 0.0,
-            "end_frac": (trk.last_obs_frame / float(max(total_frames - 1, 1))) if total_frames > 0 else 0.0,
+            "start_frac": trk.first_frame / last_index if total_frames > 0 else 0.0,
+            "end_frac": trk.last_obs_frame / last_index if total_frames > 0 else 0.0,
             "obs_add": float(obs_add),
             "span_add": float(span_add),
             "additive_core": float(base_add),

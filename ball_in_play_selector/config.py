@@ -20,6 +20,17 @@ def fps_scale(fps: float) -> float:
     return max(_FPS_SCALE_MIN, min(_FPS_SCALE_MAX, scale))
 
 
+# Weights and fractions the selector multiplies as given; a negative one would
+# silently invert a penalty.
+_NON_NEGATIVE_FIELDS = (
+    "timeline_min_track_score", "timeline_coverage_weight", "timeline_score_weight",
+    "timeline_max_gap_frac", "timeline_overlap_tol_frac", "timeline_small_gap_frac",
+    "timeline_small_gap_jump_reject_frac", "trail_jump_break_growth_frac", "bounce_restitution",
+)
+# Frame counts the selector divides by or uses as loop bounds.
+_POSITIVE_FRAME_COUNT_FIELDS = ("trail_stitch_min_obs", "assoc_gate_growth_cap_frames")
+
+
 @dataclass
 class SelectorConfig:
     """Selector parameters.
@@ -142,8 +153,18 @@ class SelectorConfig:
     def __post_init__(self) -> None:
         self.auto_scale()
 
+    def _validate(self) -> None:
+        """Reject values the selector's arithmetic assumes away (it never clamps them)."""
+        for name in _NON_NEGATIVE_FIELDS:
+            if getattr(self, name) < 0:
+                raise ValueError(f"SelectorConfig.{name} must be >= 0, got {getattr(self, name)!r}")
+        for name in _POSITIVE_FRAME_COUNT_FIELDS:
+            if getattr(self, name) < 1:
+                raise ValueError(f"SelectorConfig.{name} must be >= 1, got {getattr(self, name)!r}")
+
     def auto_scale(self) -> "SelectorConfig":
         """Derive the resolution/fps-dependent fields from fps, width and height."""
+        self._validate()
         self.diag = math.sqrt(self.width ** 2 + self.height ** 2)
         diag = self.diag
         fps_now = max(float(self.fps), 1.0)

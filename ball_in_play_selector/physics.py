@@ -3,7 +3,7 @@ import numpy as np
 from typing import Optional, Tuple
 
 from .config import SelectorConfig
-from .utils import fps_norm_pxpf, clamp01
+from .utils import clamp01, pxpf_at_fps
 
 
 def kinematic_motion_frac(
@@ -15,9 +15,9 @@ def kinematic_motion_frac(
     diag: float
 ) -> float:
     """Estimate motion evidence from kinematics when mask overlap is weak/noisy."""
-    weak = fps_norm_pxpf(1.6, cfg)
-    strong = fps_norm_pxpf(4.6, cfg)
-    peak_ref = fps_norm_pxpf(8.0, cfg)
+    weak = pxpf_at_fps(1.6, cfg.fps, clamp=True)
+    strong = pxpf_at_fps(4.6, cfg.fps, clamp=True)
+    peak_ref = pxpf_at_fps(8.0, cfg.fps, clamp=True)
     extent_ref = max(0.08 * diag, 1.0)
 
     avg_term = clamp01((avg_speed - weak) / max(strong - weak, 1e-6))
@@ -34,10 +34,10 @@ def xy_dist(ax: float, ay: float, bx: float, by: float) -> float:
 
 def _projectile_matrices(cfg: SelectorConfig, dt: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
     """Exact linear-drag transition in source-frame units; drag is a 30 FPS reference."""
-    drag = float(cfg.gravity_drag_factor) if cfg.gravity_enabled else 1.0
+    drag = cfg.gravity_drag_factor if cfg.gravity_enabled else 1.0
     if not 0.0 < drag <= 1.0:
         raise ValueError("gravity_drag_factor must be in (0, 1]")
-    rate = -math.log(drag) * 30.0 / max(float(cfg.fps), 1.0)
+    rate = -math.log(drag) * 30.0 / max(cfg.fps, 1.0)
     if rate < 1e-8:
         decay, travel, fall = 1.0, float(dt), 0.5 * dt * dt
     else:
@@ -183,7 +183,7 @@ class BallKalmanFilter:
 
     def predict(self) -> Tuple[float, float]:
         """Use the same transition for ROI, filter state and covariance."""
-        gravity = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
+        gravity = self.cfg.gravity_px_per_frame2 if self.cfg.gravity_enabled else 0.0
         self.kf.F, self.kf.B = _projectile_matrices(self.cfg)
         self.kf.predict(np.array([[gravity]]))
         x = self._x()
@@ -192,7 +192,7 @@ class BallKalmanFilter:
     def predict_dt(self, dt: int) -> Tuple[float, float]:
         """Predict the state an arbitrary number of frames ahead WITHOUT changing the true state."""
         x_pred = self._x().copy()
-        gravity = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
+        gravity = self.cfg.gravity_px_per_frame2 if self.cfg.gravity_enabled else 0.0
         F, B = _projectile_matrices(self.cfg)
         for _ in range(dt):
             x_pred = F @ x_pred + B[:, 0] * gravity
@@ -236,7 +236,7 @@ class BallKalmanFilter:
         residual = np.array([z_x, z_y], dtype=float) - hx
         pred_vy = float(x[3])
         if pred_vy > 2.0 and float(residual[1]) < -10.0:
-            self.kf.x[3, 0] = -abs(pred_vy) * max(0.0, float(self.cfg.bounce_restitution))
+            self.kf.x[3, 0] = -abs(pred_vy) * self.cfg.bounce_restitution
             self.kf.P[3, 3] += 80.0
 
         self.kf.update(z)

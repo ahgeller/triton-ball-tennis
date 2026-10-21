@@ -155,10 +155,10 @@ def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, even
             if canvas.debug is not None:
                 candidate_trails.advance_and_draw(canvas.debug, fi)
             if result is not None:
-                draw_selected_result(canvas, result, fi, sizer, search_smoother, bool(cfg.draw_search_regions))
+                draw_selected_result(canvas, result, fi, sizer, search_smoother, cfg.draw_search_regions)
             ball_trail.advance(result, ground_model.keypoints)
-            ball_trail.draw(canvas, bool(cfg.draw_ball_trail))
-            if bool(cfg.draw_court_minimap):
+            ball_trail.draw(canvas, cfg.draw_ball_trail)
+            if cfg.draw_court_minimap:
                 draw_court_minimap(canvas.main, model, pass1.player_boxes[fi], events.rally_legs, fi, video.fps,
                                    contact_events=events.contacts)
 
@@ -191,7 +191,7 @@ def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, even
                 rois = pass1.rois[fi]
                 vis = draw_motion_masks(frame, raw_m, boost_m, cfg, court_keypoints=court_kps,
                                         protect_mask=protect_masks.get(court_kps), rois=rois)
-                probe_style = bool(cfg.debug_probe_motion_style)
+                probe_style = cfg.debug_probe_motion_style
                 if not probe_style:
                     for rx1, ry1, rx2, ry2 in rois or ():
                         cv2.rectangle(vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)), COLOR_ROI_THIN, 1)

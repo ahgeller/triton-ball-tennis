@@ -271,9 +271,7 @@ class ROIMotionTracker:
                 t.coasting_rois.append((frame_idx, *roi))
 
         valid_rois: List[Box] = []
-        for rx1, ry1, rx2, ry2 in rois:
-            rx1, rx2 = max(0, min(rx1, self.frame_w)), max(0, min(rx2, self.frame_w))
-            ry1, ry2 = max(0, min(ry1, self.frame_h)), max(0, min(ry2, self.frame_h))
+        for rx1, ry1, rx2, ry2 in rois:          # already clipped to the frame by _clip
             w, h = rx2 - rx1, ry2 - ry1
             if w <= 0 or h <= 0:
                 continue

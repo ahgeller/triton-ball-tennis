@@ -130,7 +130,7 @@ def draw_motion_masks(frame: np.ndarray, raw_motion: Optional[np.ndarray], boost
     """
     if raw_motion is None and boost_mask is None:
         return frame.copy()
-    if bool(cfg.debug_probe_motion_style):
+    if cfg.debug_probe_motion_style:
         return _draw_probe_motion_overlay(frame, raw_motion, boost_mask, protect_mask, rois)
     out = frame.copy()
     motion_vis = ((raw_motion > 0) if (raw_motion is not None and cfg.debug_show_raw_motion)

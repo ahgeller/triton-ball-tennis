@@ -387,7 +387,7 @@ def write_tracking_json(ctx: RunContext, pass1: Pass1Result, selection: Selectio
                 selection.per_frame, pass1.detections, pass1.boost_masks, pass1.raw_motions,
                 int(video.width), int(video.height),
             )
-            if bool(cfg.motion_diagnostics) else {}
+            if cfg.motion_diagnostics else {}
         ),
         "frames": frame_rows,
     }

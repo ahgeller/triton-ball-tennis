@@ -13,12 +13,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .config import REFERENCE_DIAG_PX, REFERENCE_FPS, SelectorConfig
+from .config import REFERENCE_DIAG_PX, SelectorConfig
 from .models import Detection, FrameResult, Source, Track
 from .physics import predict_projectile
 from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
 from .tracking import build_detections, build_tracks
-from .utils import MaskLike, PlayerBoxesByFrame, ensure_mask_u8
+from .utils import MaskLike, PlayerBoxesByFrame, ensure_mask_u8, pxpf_at_fps
 
 # -- Tuned constants (30 FPS, 1080p reference unless stated) ----------------
 # Longest internal gap, and longest tail, the selector will fill: 0.30 s.
@@ -69,13 +69,12 @@ _REFINE_SOURCE_WEIGHT = {"det": 1.0, "motion": 0.30, "interp": 0.15}
 _REFINE_DET_RELABEL_FRAC = 0.02
 
 
-def _pxpf_at(base_pxpf_30fps: float, fps: float) -> float:
-    """A 30 FPS px/frame speed at `fps` (unclamped, unlike config.fps_scale)."""
-    return base_pxpf_30fps * REFERENCE_FPS / max(float(fps), 1.0)
+def selected_tracks(tracks: List[Track]) -> List[Track]:
+    """Keep established shots, reacquisitions, airborne balls, and slow in-court rolls.
 
-
-def selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
-    """Keep established shots, reacquisitions, airborne balls, and slow in-court rolls."""
+    Every threshold comes from each track's own ``cfg`` (already scaled to the
+    clip's frame rate and resolution).
+    """
     selected = []
     for track in tracks:
         cfg = track.cfg
@@ -232,13 +231,13 @@ def _motion_search_radius(cfg: SelectorConfig, steps: int, speed: float) -> floa
     the ball's own speed: a 3% prediction error on an 80 px/frame ball is
     already outside any fixed radius that is safe for a slow one.
     """
-    base = max(float(cfg.motion_search_min_px), float(cfg.motion_search_base_frac) * cfg.diag)
+    base = max(cfg.motion_search_min_px, cfg.motion_search_base_frac * cfg.diag)
     radius = (
         base
-        + float(cfg.motion_search_growth_px) * max(0, int(steps) - 1)
-        + float(cfg.motion_search_vel_mult) * max(0.0, float(speed))
+        + cfg.motion_search_growth_px * max(0, steps - 1)
+        + cfg.motion_search_vel_mult * max(0.0, speed)
     )
-    return min(radius, float(cfg.motion_search_max_frac) * cfg.diag)
+    return min(radius, cfg.motion_search_max_frac * cfg.diag)
 
 
 def _motion_candidate(
@@ -620,7 +619,7 @@ def _fill_gap(
     # Judged once for the whole gap, but re-read per frame below: a single
     # frame vetoed beside a player must not disqualify the rest of the gap.
     gap_pair_supported = _gap_is_supported(scene, observations, index, speed, direction_supported)
-    near_player_slow = speed < _pxpf_at(_NEAR_PLAYER_FILL_SPEED_PXPF, scene.fps)
+    near_player_slow = speed < pxpf_at_fps(_NEAR_PLAYER_FILL_SPEED_PXPF, scene.fps, clamp=False)
     cfg = scene.cfg
     offset_x = offset_y = 0.0
     offset_active = False
@@ -847,7 +846,7 @@ def select_ball_in_play(
         boost_masks=boost_masks, raw_motions=raw_motions,
         player_boxes_by_frame=player_boxes_by_frame,
         fill_frames=max(_FILL_WINDOW_MIN_FRAMES, int(round(float(fps) * _FILL_WINDOW_SEC))),
-        min_fill_speed=_pxpf_at(_MIN_FILL_SPEED_PXPF, fps),
+        min_fill_speed=pxpf_at_fps(_MIN_FILL_SPEED_PXPF, fps, clamp=False),
     )
     detections = build_detections(detections_by_frame, boost_masks)
     tracks = score_tracks(
@@ -857,7 +856,7 @@ def select_ball_in_play(
         player_boxes_by_frame=player_boxes_by_frame,
         total_frames=total,
     )
-    selected = select_timeline_chain(selected_tracks(tracks, fps), cfg, total)
+    selected = select_timeline_chain(selected_tracks(tracks), cfg, total)
     chosen = stitch_track_chain(selected, cfg)
     selected_observations = {
         id(track): trajectory_observations(track, fps) for track in selected

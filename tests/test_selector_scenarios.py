@@ -203,6 +203,37 @@ def test_timeline_keeps_a_continuous_track_inside_another_tracks_hole():
     assert [track.track_id for track in select_timeline_chain([outer, far], chain_cfg, 200)] == [5]
 
 
+def _point_track(track_id, points, score, cfg):
+    """A track through the given ``(frame, x)`` points along y=100."""
+    track = Track(track_id=track_id, cfg=cfg)
+    track.observations = [
+        Detection(frame, float(x), 100.0, 0, 0, 4, 4, 0.9, 16.0, True) for frame, x in points
+    ]
+    track.last_vel = (1.0, 0.0)
+    track.score = score
+    return track
+
+
+def test_disjoint_continuity_is_decided_at_the_start_edge():
+    # Pins scoring._add_disjoint_tracks.continuous as it behaves today: the
+    # chain observation nearest in time to the candidate's FIRST observation
+    # decides, and the last observation is never consulted when one exists.
+    # A candidate whose start sits far from the chain but whose end meets it
+    # is therefore dropped, while the mirror image is kept.  Whether the end
+    # edge should also count is an open behaviour question, not settled here.
+    chain_cfg = _cfg(30.0)
+    outer = _line_track(5, list(range(0, 40)) + list(range(61, 100)), 100.0, 50.0, chain_cfg)
+    inner_frames = range(40, 61)
+    near_end = _point_track(
+        6, [(frame, 900.0 if frame < 50 else 100.0 + frame) for frame in inner_frames], 20.0, chain_cfg
+    )
+    near_start = _point_track(
+        7, [(frame, 100.0 + frame if frame <= 50 else 900.0) for frame in inner_frames], 20.0, chain_cfg
+    )
+    assert [track.track_id for track in select_timeline_chain([outer, near_end], chain_cfg, 200)] == [5]
+    assert [track.track_id for track in select_timeline_chain([outer, near_start], chain_cfg, 200)] == [5, 7]
+
+
 def test_weak_endpoint_without_motion_creates_no_interpolation():
     # Weak detector endpoints do not create blue interpolation without motion.
     detections, masks = _moving_ball()
@@ -228,7 +259,7 @@ def test_slow_confident_ball_rolling_in_court_is_not_static_clutter():
         "inside_strict_frac": 0.9,
         "extent_px": 29.0,
     }
-    assert rolling in selected_tracks([rolling], 30.0)
+    assert rolling in selected_tracks([rolling])
 
 
 def _sparse_track(track_id, frames):
@@ -247,8 +278,8 @@ def test_sparse_off_court_bystander_is_rejected_but_consecutive_reacquisition_is
     # not a reacquired ball; the same ten on consecutive frames are.
     bystander = _sparse_track(102, [0, 2, 30, 55, 56, 59, 69, 70, 71, 72])
     reacquired_ball = _sparse_track(103, list(range(10)))
-    assert bystander not in selected_tracks([bystander], 60.0)
-    assert reacquired_ball in selected_tracks([reacquired_ball], 60.0)
+    assert bystander not in selected_tracks([bystander])
+    assert reacquired_ball in selected_tracks([reacquired_ball])
 
 
 def test_fast_short_track_is_selected():
@@ -259,7 +290,7 @@ def test_fast_short_track_is_selected():
     ]
     fast_short.score = 15.0
     fast_short.score_breakdown = {"motion_overlap": 1.0}
-    assert fast_short in selected_tracks([fast_short], 60.0)
+    assert fast_short in selected_tracks([fast_short])
 
 
 def _airborne_track(track_id, motion_evidence, extent_px):
@@ -286,20 +317,20 @@ def test_lobbed_ball_crossing_the_baseline_is_selected():
     # time, but its flight is unmistakable. These are the measured numbers of
     # the VolyAvw track that used to leave a 7.3 s hole in the middle of a rally.
     lobbed_ball = _airborne_track(104, 1.0, 663.0)
-    assert lobbed_ball in selected_tracks([lobbed_ball], 60.0)
+    assert lobbed_ball in selected_tracks([lobbed_ball])
 
 
 def test_wide_but_slow_airborne_footprint_is_rejected():
     # The kinematic route is not a free pass: a wide but slow footprint scores at
     # most 0.60 from the extent term alone, which must stay below the gate.
     wide_and_slow = _airborne_track(105, 0.60, 663.0)
-    assert wide_and_slow not in selected_tracks([wide_and_slow], 60.0)
+    assert wide_and_slow not in selected_tracks([wide_and_slow])
 
 
 def test_fast_airborne_track_must_also_travel():
     # ... and a genuinely fast ball still needs to travel to qualify.
     fast_but_tiny = _airborne_track(106, 1.0, 40.0)
-    assert fast_but_tiny not in selected_tracks([fast_but_tiny], 60.0)
+    assert fast_but_tiny not in selected_tracks([fast_but_tiny])
 
 
 def test_timeline_prefers_the_continuous_overlap_and_keeps_a_reset_segment():

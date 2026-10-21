@@ -1,19 +1,21 @@
-import math
 from typing import Dict, Hashable, NamedTuple, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from .config import SelectorConfig, fps_scale
+from .config import REFERENCE_FPS, fps_scale
 
 
-def cfg_diag(cfg: SelectorConfig) -> float:
-    if cfg.diag > 0.0:
-        return cfg.diag
-    return math.sqrt(cfg.width ** 2 + cfg.height ** 2)
+def pxpf_at_fps(base_pxpf_30fps: float, fps: float, *, clamp: bool) -> float:
+    """A 30 FPS px/frame speed converted to ``fps``.
 
-def fps_norm_pxpf(base_pxpf_30fps: float, cfg: SelectorConfig) -> float:
-    """Convert a 30fps px/frame threshold to the current fps domain."""
-    return base_pxpf_30fps * fps_scale(cfg.fps)
+    With ``clamp`` the frame-rate ratio is bounded by ``config.fps_scale``
+    (0.35 to 3.0), which the association and scoring thresholds want so an odd
+    clip cannot scale them away; without it the ratio is exact, which the
+    fill-speed floors in ``core`` want.
+    """
+    if clamp:
+        return base_pxpf_30fps * fps_scale(fps)
+    return base_pxpf_30fps * REFERENCE_FPS / max(float(fps), 1.0)
 
 def clamp01(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
