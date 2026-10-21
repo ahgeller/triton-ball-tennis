@@ -30,3 +30,4 @@ finetune/.training-python
 /finetune/labels/*.premisaligned
 .desloppify/
 scorecard.png
+.claude/worktrees/
