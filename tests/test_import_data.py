@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from finetune.data import import_data
-from finetune.data.import_data import (GRID_LABEL_CANVAS, ImportOptions, Manifest, Provenance, cadence_frame, canvas_scale,
-                                       grid_frame, import_archive, import_grid, import_tracknetv2)
+from finetune.data.import_data import GRID_LABEL_CANVAS, import_archive, import_grid, import_tracknetv2
+from finetune.data.import_sources import ImportOptions, Manifest, Provenance, cadence_frame, canvas_scale, grid_frame
 from finetune.data.labels import LabelFormatError, read_labels
 from finetune.data.workspace import read_manifest
 from tests._helpers import write_clip

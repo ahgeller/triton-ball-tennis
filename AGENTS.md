@@ -63,7 +63,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   (`TENNIS_WORKSPACE` relocates the workspace); `scoring.py`, the detector metric;
   `data_policy.py`, which clips may be trained, validated or scored on;
   `fileio.py`, atomic workspace writes; `alignment.py`, the one label-vs-detector
-  agreement the audit and `realign.py` share; `import_data.py` and `realign.py`,
+  agreement the audit and `realign.py` share; `import_data.py` (its importers;
+  `import_sources.py` holds what they share) and `realign.py`,
   source conversion and temporal realignment. `finetune/training/`:
   `train_gridtracknet.py` (training; `finetune/train_gridtracknet.py` at the old
   path only hands over to it, for the command below), `data.py` (its clip

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from finetune.data import data_policy, fileio, labels, workspace
-from finetune.data.import_data import ReviewedLabelsError, convert_rows, protect_existing, read_tracknet_csv
+from finetune.data.import_sources import ReviewedLabelsError, convert_rows, protect_existing, read_tracknet_csv
 from finetune.data.workspace import VideoMeta, video_meta
 from tests._helpers import write_clip
 

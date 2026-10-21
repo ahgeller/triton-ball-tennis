@@ -181,6 +181,7 @@ finetune/data/labels.py                  Label file format; label_audit.py check
 finetune/data/workspace.py, fileio.py    Workspace layout, clip facts, atomic writes
 finetune/data/data_policy.py             Which clips may be trained, validated or scored on
 finetune/data/import_data.py, realign.py Source conversion and temporal realignment
+finetune/data/import_sources.py          What the dataset importers share
 finetune/training/train_gridtracknet.py  Training; data/scoring.py is the detector metric
 finetune/training/data.py                The trainer's clips, frame cache, targets and sampler
 finetune/training/pretrack.py, detect.py Drafts from the raw GridTrackNet prepass
