@@ -56,7 +56,7 @@ def test_contacts_need_a_nearby_player():
     assert detect_player_contacts(track, far, 30.0, 1920, 1080) == []
 
 
-def test_assemble_accepts_named_events_and_plain_tuples():
+def test_assemble_links_a_contact_to_its_confirmed_landing():
     contacts = [ContactEvent(0, 60.0, 205.0, 1, 10.0, "kink")]
     confirmed = [BounceEvent(30, 40.0, 60.0, 0.9)]
     keypoints = [KEYPOINTS] * 80
@@ -69,10 +69,6 @@ def test_assemble_accepts_named_events_and_plain_tuples():
     assert (leg["start_frame"], leg["end_frame"]) == (0, 30)
     assert leg["outcome"] == "bounce" and leg["quality"] == "confirmed"
     np.testing.assert_allclose(leg["end"], (0.30, 0.25), atol=1e-6)
-    assert assemble_rally_legs(
-        None, None, 30.0, 120, 220, keypoints, [tuple(contacts[0])],
-        ([tuple(confirmed[0])], []), [],
-    ) == legs
 
 
 def test_court_keypoints_key_rejects_short_and_non_finite_sets():

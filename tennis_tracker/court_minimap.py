@@ -5,7 +5,7 @@ image-to-court homography from ``court_geometry.build_ground_projection_model``.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -18,7 +18,7 @@ from .court_geometry import (
     SINGLES_INSET,
     homography_apply,
 )
-from .court_overlay import Color, CourtPoint, PlayerBoxes, RallyLeg, coerce_contacts
+from .court_overlay import Color, ContactEvent, CourtPoint, PlayerBoxes, RallyLeg
 
 # --- Minimap drawing ----------------------------------------------------------
 _PANEL_BG: Color = (42, 42, 42)
@@ -94,7 +94,7 @@ def _draw_dashed_line(
 
 def _visible_completed_legs(
     rally_legs: Sequence[RallyLeg],
-    contact_events: Optional[Iterable[Sequence[Any]]],
+    contact_events: Optional[Iterable[ContactEvent]],
     current_frame: int,
     fps: float,
 ) -> List[RallyLeg]:
@@ -111,7 +111,7 @@ def _visible_completed_legs(
         return []
     if any(
         latest["end_frame"] < int(event.frame) <= current_frame
-        for event in coerce_contacts(contact_events)
+        for event in contact_events or ()
     ):
         return []
 
@@ -243,7 +243,7 @@ def draw_court_minimap(
     rally_legs: Sequence[RallyLeg],
     current_frame: int,
     fps: float,
-    contact_events: Optional[Iterable[Sequence[Any]]] = (),
+    contact_events: Optional[Iterable[ContactEvent]] = (),
 ) -> None:
     """Draw the optional top-right 2D court minibar in-place."""
     if frame is None or ground_model is None:

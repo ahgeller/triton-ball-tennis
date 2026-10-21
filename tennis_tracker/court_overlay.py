@@ -12,11 +12,10 @@ The stages run in this order (see ``pipeline.run``):
    every frame.
 
 Every event stage takes ``(per_frame, player_boxes_by_frame, fps, width,
-height, ...)`` in that order.  Events are ``BounceEvent`` / ``ContactEvent``
-named tuples, so plain ``(frame, x, y, score)`` and ``(frame, x, y, player,
-score, source)`` tuples are accepted wherever events go in.  Everything is
-image-space evidence projected through the court homography; nothing here is
-a measured 3D position.
+height, ...)`` in that order.  Events are the ``BounceEvent`` /
+``ContactEvent`` named tuples below.  Everything is image-space evidence
+projected through the court homography; nothing here is a measured 3D
+position.
 """
 
 from __future__ import annotations
@@ -26,9 +25,9 @@ from typing import (
     Any,
     Dict,
     Hashable,
-    Iterable,
     Iterator,
     List,
+    Literal,
     Mapping,
     NamedTuple,
     Optional,
@@ -52,8 +51,10 @@ from .court_geometry import (
 )
 
 
-Box = Sequence[float]
-PlayerBoxes = Mapping[Hashable, Optional[Box]]
+# One player's xyxy box, the tracked player id -> box map pass 1 records per
+# frame (``PlayerDetector.get_player_dict``), and that map for every frame.
+PlayerBox = Sequence[float]
+PlayerBoxes = Mapping[Hashable, Optional[PlayerBox]]
 PlayerBoxesByFrame = Sequence[Optional[PlayerBoxes]]
 BallTrack = Sequence[Optional[FrameResult]]
 CourtKeypoints = Sequence[float]
@@ -104,6 +105,18 @@ _CONTACT_BOUNDS = (-0.12, 1.12)
 # --- Court geometry (unit-court fractions come from court_geometry) ------------
 _SERVE_BASELINE_BAND = 0.15  # a serve starts within this of a baseline
 
+# How a contact was found: a visible direction change, a reversing occlusion
+# gap next to the player, or (placed contacts only) rescued from a landing
+# that had no contact before it.
+ContactSource = Literal["kink", "gap"]
+PlacedContactSource = Literal["kink", "gap", "inferred"]
+# Whether a landing or a leg origin came from the bounce model / a detected
+# contact ("confirmed") or from kinematics / a rescue ("inferred").
+EventQuality = Literal["confirmed", "inferred"]
+LegPhase = Literal["serve", "rally", "fault"]
+LegOutcome = Literal["bounce", "volley"]
+
+
 class BounceEvent(NamedTuple):
     """A ball landing in image pixels; ``score`` is model or kink strength."""
 
@@ -114,18 +127,14 @@ class BounceEvent(NamedTuple):
 
 
 class ContactEvent(NamedTuple):
-    """A racket contact anchored at the player's feet.
-
-    ``source`` is ``"kink"`` (visible direction change) or ``"gap"`` (a
-    reversing occlusion gap next to the player).
-    """
+    """A racket contact anchored at the player's feet."""
 
     frame: int
     x: float
     y: float
     player_id: Hashable
     score: float
-    source: str
+    source: ContactSource
 
 
 class BouncePrediction(NamedTuple):
@@ -140,21 +149,21 @@ class _RallyLegRequired(TypedDict):
     end_frame: int
     start: CourtPoint
     end: CourtPoint
-    phase: str  # "serve" | "rally" | "fault"
-    outcome: str  # "bounce" | "volley"
-    quality: Optional[str]  # landing: "confirmed" | "inferred" | None (volley)
+    phase: LegPhase
+    outcome: LegOutcome
+    quality: Optional[EventQuality]  # the landing's; None for a volley
 
 
 class RallyLeg(_RallyLegRequired, total=False):
     """One completed contact-to-landing leg in unit court coordinates."""
 
-    start_quality: str  # origin: "confirmed" | "inferred"
+    start_quality: EventQuality  # the origin contact's
 
 
 class _PlacedBounce(NamedTuple):
     frame: int
     point: CourtPoint
-    quality: Optional[str]
+    quality: Optional[EventQuality]
     score: float
 
 
@@ -163,7 +172,7 @@ class _PlacedContact(NamedTuple):
     point: CourtPoint
     player: Hashable
     score: float
-    source: str  # "kink" | "gap" | "inferred"
+    source: PlacedContactSource
 
 
 _Sample = Tuple[int, FrameResult]
@@ -181,21 +190,6 @@ class _GapTurn(NamedTuple):
     @property
     def midpoint(self) -> int:
         return (self.start + self.end) // 2
-
-
-def _coerce_bounces(events: Optional[Iterable[Sequence[Any]]]) -> List[BounceEvent]:
-    return [
-        event if isinstance(event, BounceEvent) else BounceEvent(*event)
-        for event in (events or ())
-    ]
-
-
-def coerce_contacts(events: Optional[Iterable[Sequence[Any]]]) -> List[ContactEvent]:
-    """Contacts as ``ContactEvent``s, accepting plain ``(frame, x, y, player_id, score, kind)`` tuples."""
-    return [
-        event if isinstance(event, ContactEvent) else ContactEvent(*event)
-        for event in (events or ())
-    ]
 
 
 def _frames(seconds: float, fps: float) -> int:
@@ -401,7 +395,7 @@ def predict_bounce_events(
     return BouncePrediction(confirmed, candidates)
 
 
-def _box_distance(x: float, y: float, box: Box) -> float:
+def _box_distance(x: float, y: float, box: PlayerBox) -> float:
     x1, y1, x2, y2 = map(float, box[:4])
     dx = max(x1 - x, 0.0, x - x2)
     dy = max(y1 - y, 0.0, y - y2)
@@ -410,7 +404,7 @@ def _box_distance(x: float, y: float, box: Box) -> float:
 
 def _nearest_player(
     x: float, y: float, boxes: Optional[PlayerBoxes]
-) -> Optional[Tuple[float, Hashable, Box]]:
+) -> Optional[Tuple[float, Hashable, PlayerBox]]:
     best = None
     for player_id, box in (boxes or {}).items():
         if box is None or len(box) < 4:
@@ -525,7 +519,7 @@ def _gap_turns(per_frame: BallTrack, fps: float, stride: int) -> Iterator[_GapTu
 
 def _striking_player(
     ball: FrameResult, boxes: Optional[PlayerBoxes], diagonal: float
-) -> Optional[Tuple[Hashable, Box]]:
+) -> Optional[Tuple[Hashable, PlayerBox]]:
     """The player whose box the ball is touching at or above the feet."""
     nearest = _nearest_player(float(ball.cx), float(ball.cy), boxes)
     if nearest is None or nearest[0] > 0.045 * diagonal:
@@ -577,7 +571,7 @@ def _kink_contacts(
 
 def _nearest_player_to_either(
     a: FrameResult, b: FrameResult, boxes: Optional[PlayerBoxes]
-) -> Optional[Tuple[float, Hashable, Box]]:
+) -> Optional[Tuple[float, Hashable, PlayerBox]]:
     nearest = None
     for player_id, box in (boxes or {}).items():
         distance = min(
@@ -965,7 +959,7 @@ def _find_landing(
     bounces: Sequence[_PlacedBounce],
     stop: int,
     collision: int,
-) -> Optional[Tuple[_PlacedBounce, str]]:
+) -> Optional[Tuple[_PlacedBounce, LegOutcome]]:
     """Return (landing, outcome) for a contact, or None when the leg is incomplete.
 
     Prefer the first confirmed bounce, then the strongest inferred bounce on
@@ -999,8 +993,8 @@ def _find_landing(
 
 
 def _leg_phase(
-    contact: _PlacedContact, landing: _PlacedBounce, outcome: str, first_after_reset: bool
-) -> str:
+    contact: _PlacedContact, landing: _PlacedBounce, outcome: LegOutcome, first_after_reset: bool
+) -> LegPhase:
     if outcome == "volley":
         return "rally"
     if _court_side(contact.point) == _court_side(landing.point):
@@ -1059,28 +1053,21 @@ def assemble_rally_legs(
     width: int,
     height: int,
     court_keypoints_by_frame: Sequence[Optional[CourtKeypoints]],
-    contacts: Iterable[Sequence[Any]],
-    bounces: Tuple[Iterable[Sequence[Any]], Iterable[Sequence[Any]]],
-    kinematic_bounces: Iterable[Sequence[Any]],
+    contacts: Sequence[ContactEvent],
+    bounces: BouncePrediction,
+    kinematic_bounces: Sequence[BounceEvent],
 ) -> List[RallyLeg]:
     """Build completed, plane-valid player-contact-to-landing rally legs.
 
-    ``bounces`` is the ``BouncePrediction`` (confirmed, candidates) pair.
     ``per_frame`` and ``player_boxes_by_frame`` may be None; contacts are then
     not rescued for confirmed landings that have none.
     """
     project = _CourtProjector(court_keypoints_by_frame)
     collision = max(1, _frames(_CONTACT_BOUNCE_COLLISION_S, fps))
-    confirmed, candidates = bounces
     placed_bounces = _place_bounces(
-        _coerce_bounces(confirmed),
-        _coerce_bounces(candidates),
-        _coerce_bounces(kinematic_bounces),
-        project, fps,
+        bounces.confirmed, bounces.candidates, kinematic_bounces, project, fps,
     )
-    placed_contacts = _place_contacts(
-        coerce_contacts(contacts), placed_bounces, project, collision
-    )
+    placed_contacts = _place_contacts(contacts, placed_bounces, project, collision)
     if per_frame is not None and player_boxes_by_frame is not None:
         _rescue_missing_contacts(
             placed_bounces, placed_contacts, per_frame, player_boxes_by_frame,

@@ -18,6 +18,7 @@ from .config import Config
 from .court_geometry import (
     GroundModel, build_court_side_guides, clip_infinite_line_to_frame, court_axis_spans, homography_apply,
 )
+from .court_overlay import PlayerBoxes
 
 Color = Tuple[int, int, int]
 Point = Tuple[int, int]
@@ -226,7 +227,7 @@ def draw_court_layer(targets: Iterable[np.ndarray], court_detector: Any, court_k
             cv2.drawContours(img, [court_polygon.astype(np.int32)], 0, COLOR_COURT_POLYGON, 1)
 
 
-def draw_player_boxes(targets: Iterable[np.ndarray], player_boxes: Dict[Any, Any]) -> None:
+def draw_player_boxes(targets: Iterable[np.ndarray], player_boxes: PlayerBoxes) -> None:
     targets = tuple(targets)
     for pbox in player_boxes.values():
         if pbox is None or len(pbox) < 4:

@@ -14,9 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from ball_in_play_selector import FrameResult
+from ball_in_play_selector import FrameResult, Track
 
 from .config import Config
+from .court_overlay import BounceEvent, ContactEvent, RallyLeg
 from .detectors import BallDetectorBackend, CourtDetector, PlayerDetector
 from .utils import EncoderChoice
 
@@ -92,8 +93,8 @@ class Selection:
     """The selector's answer for the clip plus what pass 2 derives from it."""
 
     per_frame: List[Optional[FrameResult]]
-    chosen_track: Any                      # ball_in_play_selector Track or None
-    all_tracks: List[Any]
+    chosen_track: Optional[Track]          # the stitched timeline chain
+    all_tracks: List[Track]                # every scored track, for diagnostics
     court_polygon: Optional[np.ndarray]    # cv2 contour of the court, or None
     last_court_keypoints: Optional[List[float]]
     display_path: Dict[int, PathPoint]     # chosen track's path for the track-debug video
@@ -107,6 +108,6 @@ class Selection:
 class CourtEvents:
     """Bounces, player contacts and rally legs for the court minimap (empty when it is off)."""
 
-    bounces: List[Any] = field(default_factory=list)
-    contacts: List[Any] = field(default_factory=list)
-    rally_legs: List[Any] = field(default_factory=list)
+    bounces: List[BounceEvent] = field(default_factory=list)
+    contacts: List[ContactEvent] = field(default_factory=list)
+    rally_legs: List[RallyLeg] = field(default_factory=list)

@@ -8,6 +8,8 @@ import numpy as np
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court_minimap import _visible_completed_legs, draw_court_minimap
 from tennis_tracker.court_overlay import (
+    BouncePrediction,
+    ContactEvent,
     _build_bounce_features,
     _cluster_bounce_candidates,
     _inside_player,
@@ -103,10 +105,10 @@ def test_two_kinks_without_contacts_or_bounces_make_no_inferred_leg():
     inferred_leg = assemble_rally_legs(
         None, None, 30.0, 120, 220, [test_kps] * 80,
         [
-            (0, 90, 210, 1, 10.0, "kink"),
-            (50, 35, 10, 2, 10.0, "kink"),
+            ContactEvent(0, 90, 210, 1, 10.0, "kink"),
+            ContactEvent(50, 35, 10, 2, 10.0, "kink"),
         ],
-        ([], []),
+        BouncePrediction([], []),
         [],
     )
     assert inferred_leg == []
@@ -116,7 +118,7 @@ def test_completed_leg_stays_visible_until_the_next_contact_or_timeout():
     minibar_leg = _minibar_leg()
     assert _visible_completed_legs([minibar_leg], [], 60, 60.0) == [minibar_leg]
     assert not _visible_completed_legs(
-        [minibar_leg], [(61, 0, 0, 1, 1.0, "kink")], 61, 60.0
+        [minibar_leg], [ContactEvent(61, 0, 0, 1, 1.0, "kink")], 61, 60.0
     )
     assert not _visible_completed_legs([minibar_leg], [], 91, 60.0)
 
