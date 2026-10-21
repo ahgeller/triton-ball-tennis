@@ -1,6 +1,11 @@
 {
-  "verified_video_min": 13,
-  "verified_clips": [],
-  "note": "User confirmed video13 and onward manually verified on 2026-09-07. Other clips remain under review and are excluded from evaluation and default training. Update this file when the user clears additional clips. In-progress clips are ones a person is labelling now; the label tool's suggestion network (the CNN refiner) leaves them out of its training, calibration and checks until they are taken off the list.",
+  "verified_video_min": 1,
+  "verified_clips": [
+    "PomonaPitzer_Women_vs._UCSD-cut-merged-1778697988405",
+    "grid_match1", "grid_match4", "grid_match7", "grid_match8", "grid_match16", "grid_match17",
+    "grid_match19", "grid_match21", "grid_match22", "grid_match23", "grid_match24", "grid_match26",
+    "grid_match31"
+  ],
+  "note": "User confirmed video13 and onward manually verified on 2026-09-07; on 2026-10-18 the user had reviewed every video clip (video1-video53), the Pomona clip and grid_match 1, 4, 7, 8, 16, 17, 19, 21, 22, 23, 24, 26 and 31 (see AGENTS.md, 'Label review status'); this file was brought in line with that on 2026-10-21. Other grid_match clips remain under review and are excluded from evaluation and default training. Update this file when the user clears additional clips. In-progress clips are ones a person is labelling now; the label tool's suggestion network (the CNN refiner) leaves them out of its training, calibration and checks until they are taken off the list.",
   "in_progress_clips": ["grid_match36"]
 }
