@@ -8753,6 +8753,10 @@
    "width": 640
   }
  },
+ "render_env": {
+  "numpy": "2.5.3",
+  "opencv": "5.0.0"
+ },
  "streams": {
   "detector_input": [
    "99e838036bcde5eb3c13e8efcce5e251",

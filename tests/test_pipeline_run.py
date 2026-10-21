@@ -17,6 +17,14 @@ fails these tests.  To accept a change deliberately, regenerate the fixture:
 
 and commit the new fixture together with the change that caused it.
 
+The frame hashes are byte-exact, so they also depend on how OpenCV rasterises
+anti-aliased lines and text; a different OpenCV (or numpy) build can change
+them without any tracking behaviour moving.  The fixture therefore records the
+versions it was made with (``render_env``), and ``test_rendered_frames_match_golden``
+is skipped, with a message, when the running versions differ.  The JSON
+comparison (``test_run_matches_golden``) does not depend on that and always
+runs.  Regenerate the fixture on the pinned environment to re-arm the frame check.
+
 What the fakes cannot cover: the real GridTrackNet prepass and its worker
 thread, the TensorRT player/court engines, real CUDA streams and pinned
 uploads, and the FFmpeg/NVENC encoders.
@@ -407,6 +415,11 @@ def run_pipeline(tmp_path: Path, monkeypatch, clip: Path, **overrides) -> Dict[s
     return {"json": comparable_json(payload), "raw_json": payload, "streams": streams, "cfg": cfg}
 
 
+def render_env() -> Dict[str, str]:
+    """The library versions the rendered-frame hashes depend on."""
+    return {"opencv": cv2.__version__, "numpy": np.__version__}
+
+
 def load_golden() -> Dict[str, Any]:
     if not FIXTURE_PATH.exists():
         pytest.fail(f"missing golden fixture {FIXTURE_PATH}; run with {UPDATE_ENV}=1 to create it")
@@ -457,7 +470,7 @@ def test_pinned_uploader_falls_back_without_a_driver(fake_cuda):
 def test_run_matches_golden(tmp_path, monkeypatch, fake_cuda, capsys, clip):
     result = run_pipeline(tmp_path, monkeypatch, clip, **FULL_OVERRIDES)
     out = capsys.readouterr().out
-    golden = {"json": result["json"], "streams": result["streams"]}
+    golden = {"json": result["json"], "streams": result["streams"], "render_env": render_env()}
     maybe_update_golden(golden)
     expected = load_golden()
 
@@ -483,6 +496,19 @@ def test_run_matches_golden(tmp_path, monkeypatch, fake_cuda, capsys, clip):
     assert "timing" in result["raw_json"] and result["raw_json"]["timing"].get("pass1_total", 0.0) > 0.0
 
     assert result["json"] == expected["json"], "tracking JSON changed; see module docstring to update the golden"
+
+
+def test_rendered_frames_match_golden(tmp_path, monkeypatch, fake_cuda, clip):
+    """Byte-exact hashes of every rendered frame, checked only on the fixture's OpenCV/numpy."""
+    expected = load_golden()
+    if expected.get("render_env") != render_env():
+        pytest.skip(
+            f"golden frames were rendered with {expected.get('render_env')}, this run has "
+            f"{render_env()}; OpenCV rasterisation differs between builds, so the frame hashes "
+            f"are not comparable.  Regenerate the fixture here ({UPDATE_ENV}=1) to check them."
+        )
+    result = run_pipeline(tmp_path, monkeypatch, clip, **FULL_OVERRIDES)
+    assert set(result["streams"]) == set(expected["streams"])
     for role, hashes in expected["streams"].items():
         changed = [i for i, (a, b) in enumerate(zip(result["streams"][role], hashes)) if a != b]
         assert result["streams"][role] == hashes, f"{role} video frames changed at {changed[:10]}"
