@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, List, Optional
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -68,7 +68,7 @@ class _GroundModelCache:
 
     def __init__(self, initial_kps: Optional[List[float]]) -> None:
         self.keypoints = initial_kps
-        self._key: Any = None
+        self._key: Optional[Tuple[int, ...]] = None     # court_keypoints_key of the model's keypoints
         self.model = None
 
     def update(self, court_kps: Optional[List[float]]):
@@ -86,7 +86,7 @@ class _ProtectMaskCache:
 
     def __init__(self, height: int, width: int) -> None:
         self.height, self.width = height, width
-        self._key: Any = None
+        self._key: Optional[Tuple[int, ...]] = None     # court_keypoints_key of the mask's keypoints
         self.mask: Optional[np.ndarray] = None
         self._first = True
 

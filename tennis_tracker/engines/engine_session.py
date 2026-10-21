@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+import numpy.typing as npt
 import torch
 import torch.nn.functional as F
 
@@ -31,7 +32,7 @@ def import_tensorrt() -> Any:
     return trt
 
 
-def _torch_dtype(np_dtype: Any) -> torch.dtype:
+def _torch_dtype(np_dtype: npt.DTypeLike) -> torch.dtype:
     return torch.from_numpy(np.empty((0,), dtype=np_dtype)).dtype
 
 
@@ -53,7 +54,7 @@ def _deserialize_engine(trt: Any, engine_path: str) -> Tuple[Any, Any]:
 class _Binding(NamedTuple):
     name: str
     index: int
-    dtype: Any  # numpy dtype
+    dtype: npt.DTypeLike  # trt.nptype's numpy type for the tensor
     shape: Tuple[int, ...]
     data: torch.Tensor
     ptr: int

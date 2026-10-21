@@ -19,8 +19,12 @@ from ball_in_play_selector import PackedMask, RawDetection
 
 from .court.court_geometry import court_keypoints_key
 from .court.court_events import PlayerBoxes
+from .engines.ball_detectors import FrameInput
+from .engines.player_detector import PlayerPending
 from .frame_window import FrameWindow
-from .motion import BackgroundModel, DetectorInputRequest, build_court_side_protect_mask, preprocess_frame_cuda
+from .motion import (
+    BackgroundModel, DetectorInputRequest, PreprocessResult, build_court_side_protect_mask, preprocess_frame_cuda,
+)
 from .run_context import RunContext
 from .roi_tracking import ROIMotionTracker
 from .video_io import ThreadedFrameReader, VideoWriter
@@ -97,7 +101,7 @@ class _Preprocessed:
     det_pending: Any = None
 
     @property
-    def detector_input(self) -> Any:
+    def detector_input(self) -> Optional[FrameInput]:
         return self.detector_frame_cuda if self.detector_frame_cuda is not None else self.detector_frame
 
 
@@ -191,7 +195,8 @@ class _Pass1Collector:
                       for track in self.roi_tracker.tracks)
         return not visible
 
-    def _aux_detect(self, frame_index: int, frame: np.ndarray, detect_this_frame: bool) -> Tuple[Optional[List[float]], Any]:
+    def _aux_detect(self, frame_index: int, frame: np.ndarray,
+                    detect_this_frame: bool) -> Tuple[Optional[List[float]], Optional[PlayerPending]]:
         """Court keypoints for this frame and the started player inference (or None)."""
         t0 = self.timing.start()
         run_aux = True
@@ -225,7 +230,7 @@ class _Pass1Collector:
         return self._protect_mask_cuda
 
     def _preprocess(self, frame_index: int, court_kps: Optional[List[float]],
-                    detect_this_frame: bool) -> Tuple[Any, Optional[List[Box]], Optional[Box]]:
+                    detect_this_frame: bool) -> Tuple[PreprocessResult, Optional[List[Box]], Optional[Box]]:
         """Motion masks and detector input for the current frame.
 
         Returns ``(preprocess_result, visual_rois, pack_roi)``.

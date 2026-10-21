@@ -6,7 +6,7 @@ import functools
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Protocol, Sequence, Tuple
 import cv2
 import numpy as np
 import torch
@@ -81,8 +81,14 @@ def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: MotionSettings) -
     return out
 
 
+class BoostMaskBuffers(Protocol):
+    """Where ``filter_boost_mask`` may write its result instead of allocating one."""
+
+    boost_mask_u8: np.ndarray
+
+
 def filter_boost_mask(raw_motion: np.ndarray, min_area: int, max_area: int, cfg: MotionSettings,
-                      buffers: Optional[Any] = None) -> np.ndarray:
+                      buffers: Optional[BoostMaskBuffers] = None) -> np.ndarray:
     """The boost mask: a filled disc for every ball-sized component of ``raw_motion``.
 
     Components outside ``[min_area, max_area]`` px are dropped; ball-sized ones

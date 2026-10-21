@@ -17,7 +17,7 @@ _DEFAULT_ENGINE_NAMES: Dict[int, str] = {0: "ball"}
 _BALL_CLASS_ALIASES = ("ball", "sports ball", "tennis ball", "sports_ball", "tennis_ball")
 
 
-def find_ball_class_id_from_names(names: Any, override: Optional[str] = None) -> Tuple[Optional[int], Optional[str]]:
+def find_ball_class_id_from_names(names: object, override: Optional[str] = None) -> Tuple[Optional[int], Optional[str]]:
     """Pick the ball class of a detection engine from its class-name table.
 
     A single-class table is taken as is; otherwise ``override`` wins, then the

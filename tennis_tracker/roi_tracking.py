@@ -8,7 +8,7 @@ the ball is lost.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, TypedDict
 
 from ball_in_play_selector import RawDetection, SelectorConfig, predict_projectile
 
@@ -40,6 +40,14 @@ _LOW_CONF_EXPAND = 0.25
 _LOST_BOX_SCALE = 4.0
 # ROIs covering this fraction of the frame or more are a full-frame search.
 _FULL_FRAME_AREA_FRAC = 0.7
+
+
+class _Candidate(TypedDict):
+    """A detection waiting to be assigned to a track: its centre, confidence and box."""
+
+    pos: Point
+    conf: float
+    bbox: Sequence[float]
 
 
 class ROITrack:
@@ -118,7 +126,7 @@ class ROIMotionTracker:
 
     def _assign_detections(self, dets: Sequence[RawDetection], frame_index: int) -> None:
         """Greedily match tracks to detections by predicted distance; the rest start new tracks."""
-        unassigned: List[Dict[str, Any]] = [
+        unassigned: List[_Candidate] = [
             {"pos": ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0), "conf": conf, "bbox": bbox}
             for bbox, conf in dets
         ]

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
 from ball_in_play_selector import FrameResult, Track
@@ -71,7 +73,7 @@ class VideoInfo:
 class RunContext:
     cfg: Config
     video: VideoInfo
-    capture: Any                     # the cv2.VideoCapture pass 1 decodes from
+    capture: cv2.VideoCapture        # what pass 1 decodes from
     device: torch.device
     encoder: EncoderChoice
     detector: BallDetectorBackend
