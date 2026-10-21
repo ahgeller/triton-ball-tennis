@@ -9,15 +9,18 @@ ball, a click where the ball is if not, v if there is no ball. Every key, the gr
 views, and what the marks, hints and badges mean: finetune/labeling/LABEL_TOOL.md (the bar at the bottom
 of the window names the keys that matter on the frame you are on). Output is
 labels/<clip>_ball.csv, with progress in labels/<clip>_ball.review.json, autosaved.
+
+``Tool`` is the actions - the edits and the navigation the keys name (``label_keys``), the window,
+the picture and the loop; the state they act on is one ``LabelSession`` (``label_session``), which
+the views and handlers read and write directly.
 """
 
 from __future__ import annotations
 
-import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Hashable, List, Optional, Tuple
+from typing import Hashable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -27,120 +30,53 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 
 from finetune.labeling import label_window as win
 from finetune.labeling.label_cursor import CursorPlacer
-from finetune.labeling.label_draw import FILTERS, ZOOM_STEP
+from finetune.labeling.label_draw import FILTERS
 from finetune.labeling.label_frame_view import FrameView
-from finetune.labeling.label_hints import Suggestions
+from finetune.labeling.label_grid import GridView
 from finetune.labeling.label_keys import KeyHandler
 from finetune.labeling.label_mouse import MouseHandler
+from finetune.labeling.label_session import LabelSession
+from finetune.labeling.label_sheet import SheetView
 from finetune.labeling.label_source import Prefetcher, Source
 from finetune.labeling.label_store import Row, rescue_unsaved, save_flags, save_review, save_rows, save_settings
-from finetune.labeling.label_grid import GridView
-from finetune.labeling.label_sheet import SheetView
 from finetune.labeling.label_window import WINDOW
 from finetune.data.labels import LabelFormatError, is_visible
-from finetune.refiner.refine import Suggestion
 
-HUD = 58
-MAX_UPSCALE = 2.0         # cap on drawing the frame bigger than it is: past this it only costs time
-UI_REFERENCE = 1280.0     # view width the HUD text sizes were chosen for; bigger views scale up
-ZOOM_EASE = 0.34          # share of the remaining gap closed each redraw: a glide, not a jump
-ZOOM_MAX = 12.0
-GHOST_REACH = 3           # rows either side searched for a ball to interpolate a missing guess from
-SNAP_PX = 4               # a wheel turned with the pointer this close to the ball zooms about the ball
 AUTOSAVE_SECONDS = 5.0    # write labels + review progress this often while there are unsaved changes
 
 
 class Tool:
-    def __init__(self, sources: List["Source"]):
-        self.sources = sources
-        self.rows: List[Row] = []
-        for source in sources:
-            source.start = len(self.rows)
-            self.rows.extend(source.rows)
-        self.by_clip = {source.clip: source for source in sources}
-        self.width, self.height = sources[0].width, sources[0].height
-        self.base_scale = 1.0                  # replaced by fit_view once the window has a size
-        self.view_w, self.view_h = self.width, self.height
-        self.ui = 1.0                          # HUD/marker scale, so text stays readable when enlarged
-        self.hud_h = HUD
+    def __init__(self, sources: List[Source]):
+        self.session = LabelSession(sources)
+        session = self.session
         self.client = None                     # last client size seen; a change re-fits and re-measures
-        self.mouse = CursorPlacer(self)        # parks the OS pointer on the ball (Windows); see label_cursor
+        self.mouse = CursorPlacer(session, self.pump)   # parks the OS pointer on the ball (Windows); see label_cursor
         self.viewport = win.ViewportGuard()    # keeps the Qt window's own zoom at x1
-        self.hints = Suggestions(sources)      # refine.suggest's measurements, kept current in the background
-        self.frame_view = FrameView(self)      # the single-frame picture and HUD; see label_frame_view
-        self.pointer = MouseHandler(self)      # what clicks and the wheel do; see label_mouse
-        self.keys = KeyHandler(self)           # what the keys do; see label_keys
-        self.prefetcher = Prefetcher(self)     # decodes ahead of the cursor while idle; see label_source
+        self.frame_view = FrameView(session, self)      # the single-frame picture and HUD; see label_frame_view
+        self.grid_view = GridView(session, self)        # TAB's page of crops; see label_grid
+        self.sheet_view = SheetView(session, self)      # w's trajectory sheet; see label_sheet
+        self.pointer = MouseHandler(session, self)      # what clicks and the wheel do; see label_mouse
+        self.keys = KeyHandler(session, self)           # what the keys do; see label_keys
+        self.prefetcher = Prefetcher(session)           # decodes ahead of the cursor while idle; see label_source
         self.fullscreen = False
-        self.zoom = 1.0
-        self.zoom_target = 1.0
-        self.anchor = None            # (frame point, view point) the zoom glide holds still
-        self.center = (self.width / 2.0, self.height / 2.0)
-        self.origin = (0.0, 0.0)
-        self.cursor = 0
-        self.walk: List[int] = []     # row indices navigation visits; empty means every row
-        self.walk_pos = 0
-        self.trail = True
-        self.follow = True            # auto-centre: the view and the mouse go to the guess
-        self.step = 1                 # frames n/d/p/a move at a time; SPACE and a click stay at 1
-        self.dirty = False
         self.pending_cursor_move = False
         self.last_save = time.monotonic()
-        self.grid_view = GridView(self)   # TAB's page of crops; see label_grid
-        self.sheet_view = SheetView(self) # w's trajectory sheet; see label_sheet
-
         self.last_clip = None
         self.presented = None
-        self.filter = 0               # index into FILTERS; h cycles it, the HUD chip shows it
-        self.inset = True             # the small whole-frame overview drawn while zoomed in
-        self.ghost = None             # a frame with no guess: where the neighbours say the ball should be
         self.settings_path: Optional[Path] = None
         self.normal_rect = None       # the window's rect before going full screen, to rebuild into
         self.pending_key = -1         # a key pumped out of the queue by a short waitKey, kept for loop
-        self.disputed_key, self.disputed = None, 0   # disputed_count's cache
-        self.shown_offers: Dict[int, tuple] = {}   # row index -> the suggestion drawn as the mark on
-                                                   # offer in the last render; what SPACE takes
         self.render_key = None        # what the last single-frame render was drawn from, see render_state
         self.render_cache = None
-        self.render_fresh = True      # did the last render() draw anything new?
         self.shown = None             # the image last handed to imshow, so an unchanged one is not re-sent
-        self.direction = 1            # which way the last move went, so prefetch runs ahead of a or d
         self.quit_warned = False      # q with unsaved labels warns once, then quits
-
-    # ---------------------------------------------------------------- the clip we are in
-    @property
-    def source(self) -> "Source":
-        return self.by_clip[self.rows[self.cursor].clip]
-
-    @property
-    def clip(self) -> str:
-        return self.source.clip
 
     @property
     def overview(self) -> bool:
         """The grid or the trajectory sheet: views with no single frame under a parked mouse."""
-        return self.grid or self.sheet
+        return self.grid_view.active or self.sheet_view.active
 
-    # The views' state, by the names the tool's own code and the tests read; the views own it.
-    grid = property(lambda self: self.grid_view.active, lambda self, on: setattr(self.grid_view, "active", on))
-    sheet = property(lambda self: self.sheet_view.active, lambda self, on: setattr(self.sheet_view, "active", on))
-    grid_size = property(lambda self: self.grid_view.size, lambda self, n: setattr(self.grid_view, "size", n))
-    grid_zoom = property(lambda self: self.grid_view.zoom, lambda self, z: setattr(self.grid_view, "zoom", z))
-    grid_indices = property(lambda self: self.grid_view.indices)
-    grid_tiles = property(lambda self: self.grid_view.tiles)
-    sheet_start = property(lambda self: self.sheet_view.start, lambda self, i: setattr(self.sheet_view, "start", i))
-    sheet_points = property(lambda self: self.sheet_view.points)
-
-    @property
-    def filter_name(self) -> str:
-        """The view filter in force, by its name in FILTERS (h cycles it)."""
-        return FILTERS[self.filter]
-
-    # ---------------------------------------------------------------- geometry
-    @property
-    def scale(self) -> float:
-        return self.base_scale * self.zoom
-
+    # ---------------------------------------------------------------- the window
     def create_window(self) -> None:
         """WINDOW_NORMAL, not WINDOW_AUTOSIZE: autosize lets highgui pick the size from the image and
         the monitor DPI, which on a 200% display made a 1080p clip a 3226x2095 window on a 2880x1800
@@ -148,12 +84,12 @@ class Tool:
         toolbar whose magnifier buttons zoom the window itself (see viewport_wheel) and without the
         status bar, so the whole client area is picture."""
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
-        cv2.setMouseCallback(WINDOW, self.on_mouse)
+        cv2.setMouseCallback(WINDOW, self.pointer.on_mouse)
 
     def open_window(self) -> None:
         """Create a resizable window filling the desktop."""
         self.create_window()
-        cv2.imshow(WINDOW, np.zeros((self.height, self.width, 3), dtype=np.uint8))
+        cv2.imshow(WINDOW, np.zeros((self.session.height, self.session.width, 3), dtype=np.uint8))
         self.shown = None             # the window shows a blank, not the last render
         cv2.waitKey(1)
         area = win.work_area()
@@ -193,22 +129,12 @@ class Tool:
         print("[view] the window's own zoom had drifted off x1; window rebuilt")
 
     def fit_view(self, client_w: int, client_h: int) -> None:
-        """Draw at the size the window actually is, so enlarging it gains detail instead of blur."""
-        self.anchor = None
+        """Draw at the size the window actually is (LabelSession.fit); a new size means highgui
+        fits the picture differently, so the pointer map is measured again."""
+        self.session.anchor = None
         self.mouse.aim = None
-        old = (self.view_w, self.view_h, self.hud_h)
-        self.ui = max(1.0, min(client_w / UI_REFERENCE, 2.5))
-        self.hud_h = int(round(HUD * self.ui))
-        room_h = max(120, client_h - self.hud_h)
-        self.base_scale = max(0.2, min(client_w / self.width, room_h / self.height, MAX_UPSCALE))
-        # The view is the whole client area, not just the frame at that scale: highgui keeps the
-        # image's aspect ratio and fills whatever is left over in white, which framed a capped or
-        # differently-shaped frame in bright bars. Beyond the frame the view is black.
-        self.view_w = max(160, int(client_w))
-        self.view_h = max(90, int(room_h))
-        self.centre_view()
-        if (self.view_w, self.view_h, self.hud_h) != old:
-            self.mouse.map_stale = True   # a new image size means highgui fits it differently: re-measure
+        if self.session.fit(client_w, client_h):
+            self.mouse.map_stale = True
             self.viewport.void_probe()
 
     def track_window(self) -> None:
@@ -235,34 +161,7 @@ class Tool:
                               cv2.WINDOW_FULLSCREEN if self.fullscreen else cv2.WINDOW_NORMAL)
         cv2.waitKey(1)
 
-    def centre_view(self) -> None:
-        """Work out the corner to draw from: whatever we want in the middle, put in the middle.
-
-        Nothing is pulled back to keep the picture full. A ball at the very edge of the frame is
-        centred like any other and the view simply runs off the side, which renders as black - the
-        frame has nothing there to show anyway. Holding the view inside the frame is what dragged
-        the ball left on one frame and right on the next as a rally crossed the court, and up
-        against the top on a lob; at a big zoom that is most frames. Dead centre every time means
-        the ball, and the mouse sitting on it, never move from the middle of the screen.
-
-        self.center is what we want in the middle and is left exactly as asked for, so a later
-        change of zoom re-derives this from the ball rather than from a corner it worked out
-        earlier: that is what used to walk the view down off a ball near the top as it zoomed.
-        """
-        self.origin = (self.center[0] - self.view_w / self.scale / 2.0,
-                       self.center[1] - self.view_h / self.scale / 2.0)
-
-    # Frame coordinates put pixel k's centre at k + 0.5 (what the click mapping, GridTrackNet's grid
-    # decode and training's encode all assume). View pixel u covers [u, u + 1), so a frame point maps
-    # to the view pixel whose span holds it (floor, not round: round's ties go to even, which put a
-    # ball dead centre a pixel off); render's warp is built on the same convention.
-    def to_view(self, x: float, y: float) -> Tuple[int, int]:
-        return (math.floor((x - self.origin[0]) * self.scale),
-                math.floor((y - self.origin[1]) * self.scale))
-
-    def to_frame(self, vx: float, vy: float) -> Tuple[float, float]:
-        return self.origin[0] + vx / self.scale, self.origin[1] + vy / self.scale
-
+    # ---------------------------------------------------------------- following the ball
     def toggle_follow(self) -> None:
         """Auto-centring on or off, from the g key or a click on the HUD badge.
 
@@ -270,8 +169,8 @@ class Tool:
         frame or working somewhere other than the middle of the screen; back on snaps to the ball
         straight away rather than waiting for the next frame.
         """
-        self.follow = not self.follow
-        if self.follow:
+        self.session.follow = not self.session.follow
+        if self.session.follow:
             self.follow_ball()
 
     def follow_ball(self) -> None:
@@ -283,158 +182,75 @@ class Tool:
         frame's ball - so scrolling and then pressing SPACE straight away left you looking at, and
         with the mouse parked on, the previous detection.
         """
-        if self.last_clip != self.clip:
+        session = self.session
+        if self.last_clip != session.clip:
             if self.last_clip is not None:
-                self.by_clip[self.last_clip].release()   # let go of the clip being left, decoder included
-            self.last_clip = self.clip
-            self.width, self.height = self.source.width, self.source.height
-            self.fit_view(*(self.client or (self.view_w, self.view_h + self.hud_h)))
-        self.anchor = None
-        self.mouse.aim = None  # a pending OS cursor report belongs to the previous view
-        self.zoom = self.zoom_target  # finish the old frame's animation before centering the next
+                session.by_clip[self.last_clip].release()   # let go of the clip being left, decoder included
+            self.last_clip = session.clip
+            session.width, session.height = session.source.width, session.source.height
+            self.fit_view(*(self.client or (session.view_w, session.view_h + session.hud_h)))
+        session.anchor = None
+        self.mouse.aim = None         # a pending OS cursor report belongs to the previous view
+        session.zoom = session.zoom_target  # finish the old frame's animation before centering the next
         if self.overview:
             self.pending_cursor_move = False
             return
-        row = self.rows[self.cursor]
-        self.ghost = None if row.visible else self.guess_for(self.cursor)
-        if not self.follow:
+        row = session.rows[session.cursor]
+        session.ghost = None if row.visible else session.guess_for(session.cursor)
+        if not session.follow:
             return                    # auto-centring is off: leave the view and the mouse be
-        point = self.target_point()   # the mark on offer, the ball, or the neighbours' guess
+        point = session.target_point()   # the mark on offer, the ball, or the neighbours' guess
         if point is not None:
-            self.center = point
-        self.centre_view()
+            session.center = point
+        session.centre_view()
         self.pending_cursor_move = True
 
-    def guess_for(self, index: int) -> Optional[Tuple[float, float]]:
-        """Where a frame with no detection probably has its ball: a straight line between the nearest
-        visible labels either side, weighted by how far away each is. One side only is still worth
-        aiming at when it is the row next door. None when there is nothing nearby to go on.
+    def place_cursor(self) -> None:
+        """Put the OS mouse cursor on the current guess so a click is a one-pixel move.
 
-        Only a hint - it is drawn dashed, the mouse is parked on it, and nothing is written until you
-        click. It saves the hunt on the frames the detector missed, which are most of the ones the
-        --uncertain walk stops on.
+        follow_ball has already put the ball in the middle of the view, so this normally lands the
+        pointer dead centre. A frame with no ball has nothing to aim at, and the pointer goes to
+        the centre anyway rather than being left wherever the last frame happened to leave it.
         """
-        before, after = self.visible_neighbours(index)
-        frame = self.rows[index].frame
-        if before is not None and after is not None and after.frame > before.frame:
-            share = (frame - before.frame) / (after.frame - before.frame)
-            return (before.x + (after.x - before.x) * share, before.y + (after.y - before.y) * share)
-        near = before if after is None else after if before is None else None
-        if near is not None and abs(self.rows.index(near) - index) == 1:
-            return (near.x, near.y)
-        return None
+        session = self.session
+        self.pending_cursor_move = False
+        if win._user32 is None or not session.follow:
+            return
+        if self.mouse.cursor_map is None or self.mouse.map_stale:
+            self.mouse.calibrate()                   # never measured, or the window changed size
+        point = session.target_point()               # the ball, or the ghost guess standing in for it
+        if point is None:
+            self.mouse.warp(session.view_w / 2.0, session.view_h / 2.0)
+            return
+        view_x, view_y = session.to_view(*point)
+        if not (0 <= view_x < session.view_w and 0 <= view_y < session.view_h):
+            session.center = point                # nothing should leave the ball off screen, but if
+            session.centre_view()                 # anything does, do not leave the mouse behind
+            view_x, view_y = session.to_view(*point)
+        self.mouse.warp(view_x, view_y)
 
-    def visible_neighbours(self, index: int) -> Tuple[Optional[Row], Optional[Row]]:
-        """The nearest rows with a ball within GHOST_REACH either side of `index`, in its clip."""
-        clip = self.rows[index].clip
-        before = after = None
-        for step in range(1, GHOST_REACH + 1):
-            if before is None and index - step >= 0:
-                row = self.rows[index - step]
-                if row.clip == clip and row.visible:
-                    before = row
-            if after is None and index + step < len(self.rows):
-                row = self.rows[index + step]
-                if row.clip == clip and row.visible:
-                    after = row
-        return before, after
+    def zoom_key(self, notches: float) -> None:
+        """Keyboard zoom pivots on the ball so it stays put on screen (view centre when invisible)."""
+        session = self.session
+        point = session.target_point()
+        if point is not None:         # exact, not rounded to a view pixel: see LabelSession.zoom_at
+            session.zoom_at(notches, (point[0] - session.origin[0]) * session.scale,
+                            (point[1] - session.origin[1]) * session.scale)
+        else:
+            session.zoom_at(notches, session.view_w / 2.0, session.view_h / 2.0)
+        self.pending_cursor_move = True
 
-    def target_point(self) -> Optional[Tuple[float, float]]:
-        """The frame point this frame is about - where the view centres and the mouse parks: the
-        suggestion on offer, else the ball, else the ghost guess when there is no ball.
-
-        Only the suggestions known at this moment count. One that arrives for the frame on screen a
-        little later (the clip's first pass, or a re-measure after an edit) is drawn as the mark on
-        offer where it is, but the view and the mouse stay put: snapping them to a point that moved
-        by a fraction of a pixel would jog the picture and pull the mouse out from under a hand on
-        its way to click. SPACE takes the drawn mark exactly, wherever the mouse sits."""
-        row = self.rows[self.cursor]
-        offer = self.offer_for(self.cursor)
-        if offer is not None:
-            return (offer["x"], offer["y"])
-        if row.visible:
-            return (row.x, row.y)
-        return self.ghost
-
-    # ---------------------------------------------------------------- frames
-    def frame(self, index: int) -> np.ndarray:
-        """The picture of source frame `index` of the clip we are in (see Source.frame)."""
-        return self.source.frame(index)
-
-    def clip_bounds(self, index: int) -> Tuple[int, int]:
-        """(first, last + 1) row indices of the clip row `index` belongs to."""
-        source = self.by_clip[self.rows[index].clip]
-        return source.start, source.start + len(source.rows)
-
-    # ---------------------------------------------------------------- the grid and the sheet
-    # The two overview views own their state, picture and keys (label_grid, label_sheet); these are the
-    # actions by name, the surface the key table and the tests use.
-    def toggle_grid(self) -> None:
-        self.grid_view.toggle()
-
-    def prepare_grid(self, start: int) -> None:
-        self.grid_view.prepare(start)
-
-    def grid_page(self, direction: int) -> None:
-        self.grid_view.page(direction)
-
-    def grid_select(self, slot: int) -> None:
-        self.grid_view.select(slot)
-
-    def grid_step(self, direction: int) -> None:
-        self.grid_view.step(direction)
-
-    def toggle_grid_size(self) -> None:
-        self.grid_view.toggle_size()
-
-    def confirm_grid(self) -> None:
-        self.grid_view.confirm_page()
-
-    def render_grid(self) -> np.ndarray:
-        return self.grid_view.render()
-
-    def grid_mouse(self, event: int, x: int, y: int) -> None:
-        self.grid_view.on_mouse(event, x, y)
-
-    def toggle_sheet(self) -> None:
-        self.sheet_view.toggle()
-
-    def sheet_page(self, direction: int) -> None:
-        self.sheet_view.page(direction)
-
-    def render_sheet(self) -> np.ndarray:
-        return self.sheet_view.render()
-
-    def sheet_mouse(self, event: int, x: int, y: int) -> None:
-        self.sheet_view.on_mouse(event, x, y)
-
-
+    # ---------------------------------------------------------------- the picture
     def view_ready(self) -> bool:
-        return self.presented == (self.cursor, self.origin, self.scale)
+        session = self.session
+        return self.presented == (session.cursor, session.origin, session.scale)
 
     def show(self) -> None:
         image = self.render()
-        presented = (self.cursor, self.origin, self.scale)
-        if self.render_fresh or image is not self.shown:   # unchanged and already on screen: skip
+        if image is not self.shown:   # unchanged and already on screen: skip
             cv2.imshow(WINDOW, image)
             self.shown = image
-        self.presented = presented
-
-
-    def frame_missing(self) -> bool:
-        """True when the frame under the cursor has no picture, so nothing should be said about it."""
-        return self.rows[self.cursor].frame in self.source.missing
-
-    def previous_image(self) -> Optional[np.ndarray]:
-        """The picture of the label row before this one in the same clip, if it is already in the
-        cache - it usually is, having just been looked at. Never decoded on purpose: a frame behind
-        the capture costs a re-read from the start of the clip, and the motion view is a hint."""
-        if self.cursor == 0:
-            return None
-        before = self.rows[self.cursor - 1]
-        if before.clip != self.rows[self.cursor].clip:
-            return None
-        return self.source.frame_cache.get(before.frame)
+        self.presented = (self.session.cursor, self.session.origin, self.session.scale)
 
     def render_state(self, image: np.ndarray, before: Optional[np.ndarray]) -> Tuple[Hashable, ...]:
         """Everything the single-frame view is drawn from. render redraws only when this changes,
@@ -443,29 +259,28 @@ class Tool:
         the CPU this saves. Any write to any Row bumps Row.revision, which covers the labels, review
         flags, trail and every counter in the HUD; the frame images are keyed by identity, which
         changes when one is decoded, evicted or replaced by a placeholder."""
-        return (Row.revision, self.cursor, self.origin, self.scale, self.zoom, self.view_w, self.view_h,
-                self.hud_h, self.ui, self.width, self.height, self.filter, self.inset, self.trail,
-                self.follow, self.step, self.dirty, id(self.walk), len(self.walk), self.walk_pos,
-                self.ghost, len(self.sources), id(image), id(before), self.hints.version)
+        s = self.session
+        return (Row.revision, s.cursor, s.origin, s.scale, s.zoom, s.view_w, s.view_h, s.hud_h, s.ui, s.width,
+                s.height, s.filter, s.inset, s.trail, s.follow, s.step, s.dirty, id(s.walk), len(s.walk), s.walk_pos,
+                s.ghost, len(s.sources), id(image), id(before), s.hints.version)
 
     def render(self) -> np.ndarray:
-        if self.sheet:
-            return self.render_sheet()
-        if self.grid:
-            return self.render_grid()
-        self.centre_view()
-        row = self.rows[self.cursor]
-        image = self.frame(row.frame)
-        mode = self.filter_name
-        before = self.previous_image() if mode == "motion" else None
+        if self.sheet_view.active:
+            return self.sheet_view.render()
+        if self.grid_view.active:
+            return self.grid_view.render()
+        session = self.session
+        session.centre_view()
+        row = session.rows[session.cursor]
+        image = session.frame(row.frame)
+        mode = session.filter_name
+        before = session.previous_image() if mode == "motion" else None
         key = self.render_state(image, before)
         if key == self.render_key:
-            self.render_fresh = False
             return self.render_cache
-        self.render_fresh = True
-        hint = self.suggestion_for(self.cursor)
-        offer = self.offer_for(self.cursor)
-        self.shown_offers = {} if offer is None else {self.cursor: (offer["x"], offer["y"])}
+        hint = session.suggestion_for(session.cursor)
+        offer = session.offer_for(session.cursor)
+        session.shown_offers = {} if offer is None else {session.cursor: (offer["x"], offer["y"])}
         canvas = self.frame_view.draw(image, before, mode, row, hint, offer)
         self.render_key, self.render_cache = key, canvas
         return canvas
@@ -478,162 +293,50 @@ class Tool:
         if key != -1 and self.pending_key == -1:
             self.pending_key = key
 
-    def place_cursor(self) -> None:
-        """Put the OS mouse cursor on the current guess so a click is a one-pixel move.
-
-        follow_ball has already put the ball in the middle of the view, so this normally lands the
-        pointer dead centre. A frame with no ball has nothing to aim at, and the pointer goes to
-        the centre anyway rather than being left wherever the last frame happened to leave it.
-        """
-        self.pending_cursor_move = False
-        if win._user32 is None or not self.follow:
-            return
-        if self.mouse.cursor_map is None or self.mouse.map_stale:
-            self.mouse.calibrate()                   # never measured, or the window changed size
-        point = self.target_point()                  # the ball, or the ghost guess standing in for it
-        if point is None:
-            self.mouse.warp(self.view_w / 2.0, self.view_h / 2.0)
-            return
-        view_x, view_y = self.to_view(*point)
-        if not (0 <= view_x < self.view_w and 0 <= view_y < self.view_h):
-            self.center = point                   # nothing should leave the ball off screen, but if
-            self.centre_view()                    # anything does, do not leave the mouse behind
-            view_x, view_y = self.to_view(*point)
-        self.mouse.warp(view_x, view_y)
-
-    # ---------------------------------------------------------------- edits
-    def on_mouse(self, event: int, x: int, y: int, flags: int, param: object) -> None:
-        """The window's mouse callback (label_mouse.MouseHandler)."""
-        self.pointer.on_mouse(event, x, y, flags, param)
-
+    # ---------------------------------------------------------------- the toggles
     def cycle_filter(self) -> None:
-        self.filter = (self.filter + 1) % len(FILTERS)
+        self.session.filter = (self.session.filter + 1) % len(FILTERS)
         self.grid_view.invalidate()
         self.remember_settings()
 
     def toggle_inset(self) -> None:
-        self.inset = not self.inset
+        self.session.inset = not self.session.inset
+        self.remember_settings()
+
+    def toggle_trail(self) -> None:
+        self.session.trail = not self.session.trail
         self.remember_settings()
 
     def remember_settings(self) -> None:
         if self.settings_path is not None:
-            save_settings(self.settings_path, {"filter": self.filter_name, "inset": self.inset,
-                                               "grid_size": self.grid_size,
-                                               "trail": self.trail})
+            save_settings(self.settings_path, {"filter": self.session.filter_name, "inset": self.session.inset,
+                                               "grid_size": self.grid_view.size,
+                                               "trail": self.session.trail})
 
-    def zoom_at(self, notches: float, vx: float, vy: float) -> None:
-        """Aim the zoom at a new level about the view point (vx, vy). The glide there happens in
-        step_zoom; whatever sits under (vx, vy) stays under it the whole way.
-
-        With the pointer on or next to the ball - where the tool itself parks it - the zoom pivots on
-        the ball exactly, not on the pixel highgui rounded the pointer to. That rounding is under a
-        pixel, but a pivot a pixel off the ball moves the ball by that pixel times the zoom ratio:
-        going from x1 to x12 walked it a dozen pixels away from the centre, and from the pointer.
-        """
-        target = min(max(self.zoom_target * ZOOM_STEP ** notches, 1.0), ZOOM_MAX)
-        if abs(target - self.zoom_target) < 1e-6:
-            return
-        self.zoom_target = target
-        point = self.target_point()
-        if point is not None:
-            ball_x = (point[0] - self.origin[0]) * self.scale
-            ball_y = (point[1] - self.origin[1]) * self.scale
-            if abs(ball_x - vx) <= SNAP_PX and abs(ball_y - vy) <= SNAP_PX:
-                self.anchor = (point, (ball_x, ball_y))
-                return
-        self.anchor = (self.to_frame(vx, vy), (vx, vy))
-
-    def step_zoom(self) -> bool:
-        """Ease one redraw's worth towards the target zoom. True while there is still moving to do."""
-        gap = self.zoom_target - self.zoom
-        if abs(gap) < 5e-3:
-            if self.zoom != self.zoom_target:
-                self.zoom = self.zoom_target
-                self.hold_anchor()
-                return True
-            return False
-        self.zoom += gap * ZOOM_EASE
-        self.hold_anchor()
-        return True
-
-    def hold_anchor(self) -> None:
-        """Re-centre so the anchored frame point stays under the same view point at the new zoom."""
-        if self.anchor is None:
-            return
-        (frame_x, frame_y), (view_x, view_y) = self.anchor
-        self.center = (frame_x + (self.view_w / 2.0 - view_x) / self.scale,
-                       frame_y + (self.view_h / 2.0 - view_y) / self.scale)
-        self.centre_view()
-
-    def zoom_key(self, notches: float) -> None:
-        """Keyboard zoom pivots on the ball so it stays put on screen (view centre when invisible)."""
-        point = self.target_point()
-        if point is not None:         # exact, not rounded to a view pixel: see zoom_at
-            self.zoom_at(notches, (point[0] - self.origin[0]) * self.scale,
-                         (point[1] - self.origin[1]) * self.scale)
-        else:
-            self.zoom_at(notches, self.view_w / 2.0, self.view_h / 2.0)
-        self.pending_cursor_move = True
-
-    # ---------------------------------------------------------------- suggestions
-    def suggestion_for(self, index: int) -> Optional[Suggestion]:
-        """The suggestion worth showing for a row, or None (see Suggestions.for_row)."""
-        row = self.rows[index]
-        return self.hints.for_row(row, self.by_clip[row.clip].height)
-
-    def offer_for(self, index: int) -> Optional[Suggestion]:
-        """The suggestion drawn as the mark SPACE takes on an unreviewed row (see Suggestions.offer_for)."""
-        row = self.rows[index]
-        return self.hints.offer_for(row, self.by_clip[row.clip].height)
-
-    def hint_verdict(self, index: int) -> Optional[str]:
-        """"agrees" / "differs" / None for a row's label against a trusted suggestion."""
-        row = self.rows[index]
-        return self.hints.verdict(row, self.by_clip[row.clip].height)
-
-    def disputed_count(self) -> int:
-        """How many frames the suggestions disagree with, cached on the state it depends on."""
-        key = (Row.revision, self.hints.version)
-        if self.disputed_key != key:
-            self.disputed_key = key
-            self.disputed = sum(1 for i in range(len(self.rows)) if self.hint_verdict(i) == "differs")
-        return self.disputed
-
-    def jump_disputed(self, direction: int) -> bool:
-        """Go to the next (or previous) frame the suggestions disagree with. False if there is none."""
-        index = self.cursor + direction
-        while 0 <= index < len(self.rows):
-            if self.hint_verdict(index) == "differs":
-                self.direction = direction
-                self.cursor = index
-                if self.walk and index in self.walk:
-                    self.walk_pos = self.walk.index(index)
-                self.follow_ball()
-                return True
-            index += direction
-        return False
-
+    # ---------------------------------------------------------------- edits
     def take_suggestion(self) -> bool:
         """Move this frame's label to its suggestion. True when there was one to take."""
-        hint = self.suggestion_for(self.cursor)
+        session = self.session
+        hint = session.suggestion_for(session.cursor)
         if hint is None or not self.set_point(hint["x"], hint["y"]):
             return False
-        self.rows[self.cursor].source = "refined"   # kept apart from clicks in the review file
+        session.rows[session.cursor].source = "refined"   # kept apart from clicks in the review file
         return True
 
     def set_point(self, x: float, y: float) -> bool:
         """Put this frame's ball at (x, y). False when nothing was stored."""
-        if self.frame_missing():
+        session = self.session
+        if session.frame_missing():
             return False
-        x = float(min(max(x, 0.0), self.width - 1.0))
-        y = float(min(max(y, 0.0), self.height - 1.0))
-        if not is_visible(x, y, self.width, self.height):
+        x = float(min(max(x, 0.0), session.width - 1.0))
+        y = float(min(max(y, 0.0), session.height - 1.0))
+        if not is_visible(x, y, session.width, session.height):
             # The label CSV marks "no ball" by a point in the top-right corner, and every reader in
             # the workspace takes any point there to mean that. Stored, this would read back as absent.
-            print(f"[warn] frame {self.rows[self.cursor].frame}: ({x:.0f}, {y:.0f}) is in the top-right "
+            print(f"[warn] frame {session.rows[session.cursor].frame}: ({x:.0f}, {y:.0f}) is in the top-right "
                   f"corner the label files reserve for 'no ball', so it cannot be saved as a ball there")
             return False
-        row = self.rows[self.cursor]
+        row = session.rows[session.cursor]
         row.snapshot()
         row.suspect = False           # an edit answers an audit flag
         row.x, row.y = x, y
@@ -641,25 +344,26 @@ class Tool:
             row.source = "click"      # placed by hand now, not taken from a suggestion
         row.visible = True
         row.reviewed = row.edited = True
-        self.dirty = self.source.dirty = True
-        self.source.cursor = self.cursor - self.source.start
+        session.dirty = session.source.dirty = True
+        session.source.cursor = session.cursor - session.source.start
         return True
 
     def nudge(self, dx: float, dy: float) -> None:
-        row = self.rows[self.cursor]
+        row = self.session.rows[self.session.cursor]
         if row.visible:
             self.set_point(row.x + dx, row.y + dy)
             self.pending_cursor_move = True
 
     def mark_invisible(self) -> None:
-        if self.frame_missing():
+        session = self.session
+        if session.frame_missing():
             return
-        row = self.rows[self.cursor]
+        row = session.rows[session.cursor]
         row.snapshot()
         row.suspect = False
         row.visible = False
         row.reviewed = row.edited = True
-        self.dirty = self.source.dirty = True
+        session.dirty = session.source.dirty = True
 
     def confirm(self, take_offer: bool = True) -> None:
         """SPACE: the mark on screen is right. When that mark was a suggestion on offer, the label
@@ -667,41 +371,58 @@ class Tool:
         it is. Only an offer that was actually drawn counts - one that arrived between the draw and
         the key press is not taken on a frame you judged without it. `take_offer=False` confirms
         the label as it is (x, and r's unseen frames)."""
-        if self.frame_missing():
+        session = self.session
+        if session.frame_missing():
             return                    # a black placeholder is not something to say "good" to
-        offer = self.shown_offers.get(self.cursor) if take_offer else None
+        offer = session.shown_offers.get(session.cursor) if take_offer else None
         if offer is not None:
             if self.set_point(*offer):
-                self.rows[self.cursor].source = "refined"
+                session.rows[session.cursor].source = "refined"
             return                    # could not be stored (set_point said why): nothing confirmed
-        row = self.rows[self.cursor]
+        row = session.rows[session.cursor]
         if not row.reviewed or row.suspect:
             row.snapshot()
         row.suspect = False           # "it is right where it is" answers an audit flag
         row.reviewed = True
-        self.dirty = self.source.dirty = True
+        session.dirty = session.source.dirty = True
 
-    def only_uncertain(self) -> int:
-        """Restrict stepping to the frames that want attention. Returns how many there are.
-
-        A filter on where you go, never on what is saved: every row stays in its clip's list, so
-        the frames you skip past are written back exactly as they were.
-        """
-        self.walk = [i for i, row in enumerate(self.rows) if row.suspect or (row.uncertain and not row.reviewed)]
-        self.walk_pos = 0
-        if self.walk:
-            self.cursor = self.walk[0]
-        return len(self.walk)
-
-    def move(self, delta: int) -> None:
-        if delta:
-            self.direction = 1 if delta > 0 else -1
-        if self.walk:
-            self.walk_pos = min(max(self.walk_pos + delta, 0), len(self.walk) - 1)
-            self.cursor = self.walk[self.walk_pos]
-        else:
-            self.cursor = min(max(self.cursor + delta, 0), len(self.rows) - 1)
+    def undo(self) -> None:
+        """u: the last change on this frame comes back off its history."""
+        session = self.session
+        session.rows[session.cursor].undo()
+        session.dirty = session.source.dirty = True
         self.follow_ball()
+
+    # ---------------------------------------------------------------- navigation
+    def move(self, delta: int) -> None:
+        self.session.step_cursor(delta)
+        self.follow_ball()
+
+    def jump(self, direction: int) -> None:
+        """f / b: the next / previous frame that wants attention (LabelSession.next_uncertain)."""
+        session = self.session
+        session.direction = direction
+        session.set_cursor(session.next_uncertain(direction))
+        self.follow_ball()
+
+    def jump_disputed(self, direction: int) -> bool:
+        """Go to the next (or previous) frame the suggestions disagree with. False if there is none."""
+        session = self.session
+        index = session.next_disputed(direction)
+        if index is None:
+            return False
+        session.direction = direction
+        session.set_cursor(index)
+        self.follow_ball()
+        return True
+
+    def seek_disputed(self) -> bool:
+        """e / SHIFT+e: the next / previous frame the suggestions disagree with. False, with a
+        note, when there is none that way."""
+        if self.jump_disputed(-1 if win.shift_held() else 1):
+            return True
+        print("[hint] no more frames the suggestions disagree with that way")
+        return False
 
     def accept_run(self) -> int:
         """Mark every confident guess from here up to the next iffy one as reviewed, and stop there.
@@ -709,62 +430,40 @@ class Tool:
         f already skips past confident frames, but it leaves them unreviewed, so the counter never
         moves and the same frames come round again. This is that skip with the tick applied.
         """
+        session = self.session
         accepted = 0
-        while not self.rows[self.cursor].uncertain:
-            if not self.rows[self.cursor].reviewed and not self.frame_missing():
+        while not session.rows[session.cursor].uncertain:
+            if not session.rows[session.cursor].reviewed and not session.frame_missing():
                 self.confirm(take_offer=False)    # the detector's guesses, as asked; the frames
                 accepted += 1                     # were not looked at, so no offer was judged
-            previous = self.cursor
+            previous = session.cursor
             self.move(1)
-            if self.cursor == previous:
+            if session.cursor == previous:
                 break
         self.follow_ball()
         return accepted
 
-    def jump(self, direction: int) -> None:
-        self.direction = direction
-        if self.walk:                                  # already walking the uncertain ones
-            position = self.walk_pos + direction
-            while 0 <= position < len(self.walk):
-                if self.rows[self.walk[position]].suspect or not self.rows[self.walk[position]].reviewed:
-                    self.walk_pos, self.cursor = position, self.walk[position]
-                    self.follow_ball()
-                    return
-                position += direction
-            self.walk_pos = len(self.walk) - 1 if direction > 0 else 0
-            self.cursor = self.walk[self.walk_pos]
-            self.follow_ball()
-            return
-        index = self.cursor + direction
-        while 0 <= index < len(self.rows):
-            row = self.rows[index]
-            if row.suspect or (row.uncertain and not row.reviewed):
-                self.cursor = index
-                self.follow_ball()
-                return
-            index += direction
-        self.cursor = len(self.rows) - 1 if direction > 0 else 0
-        self.follow_ball()
-
+    # ---------------------------------------------------------------- saving
     def save(self, quiet: bool = False) -> None:
         """Write back every clip that has changed - and only those, so an untouched clip is left alone.
 
         The clip you are in gets its review file refreshed even with no edits, so quitting after
         only stepping through frames still resumes where you stopped rather than where you last
         clicked."""
+        session = self.session
         written, failed = [], []
-        for source in self.sources:
-            here = source.start <= self.cursor < source.start + len(source.rows)
+        for source in session.sources:
+            here = source.start <= session.cursor < source.start + len(source.rows)
             if here:
-                source.cursor = self.cursor - source.start
+                source.cursor = session.cursor - source.start
             try:
                 if not source.dirty:
                     if here and source.cursor != source.saved_cursor:
-                        save_review(source.review, source.rows, source.cursor, self.zoom)
+                        save_review(source.review, source.rows, source.cursor, session.zoom)
                         source.saved_cursor = source.cursor
                     continue
                 save_rows(source.out_csv, source.rows, source.width, source.height)
-                save_review(source.review, source.rows, source.cursor, self.zoom)
+                save_review(source.review, source.rows, source.cursor, session.zoom)
                 save_flags(source.suspects, source.rows)
             except (OSError, LabelFormatError) as error:
                 # Another program has the file open, most likely (or a sidecar was damaged under
@@ -777,29 +476,35 @@ class Tool:
             source.saved_cursor = source.cursor
             source.dirty = False
             written.append(source)
-        self.dirty = bool(failed)
+        session.dirty = bool(failed)
         self.last_save = time.monotonic()
         if not quiet and written:
             for source in written:
                 print(f"[save] {source.out_csv.name} ({sum(r.visible for r in source.rows)} visible, "
                       f"{sum(r.reviewed for r in source.rows)}/{len(source.rows)} reviewed)")
 
+    def rescue_unsaved(self) -> None:
+        """At exit, the labels of every clip that still could not be written go beside the real
+        file (label_store.rescue_unsaved)."""
+        rescue_unsaved(self.session.sources)
+
     # ---------------------------------------------------------------- loop
     def run(self) -> None:
+        session = self.session
         self.open_window()
         self.track_window()
-        self.center = (self.width / 2.0, self.height / 2.0)
-        self.centre_view()
+        session.center = (session.width / 2.0, session.height / 2.0)
+        session.centre_view()
         self.follow_ball()            # first, so a run resumed mid-way draws with that clip's size
         self.show()
         cv2.waitKey(1)
-        if not self.grid:
+        if not self.grid_view.active:
             self.mouse.calibrate()
-        self.hints.start(lambda: self.source)
+        session.hints.start(lambda: session.source)
         try:
             self.loop()
         finally:
-            self.hints.closing = True
+            session.hints.closing = True
             # Any way out - q, the window's X, Ctrl+C, a crash - keeps the work done so far.
             try:
                 self.save()
@@ -807,11 +512,6 @@ class Tool:
             finally:
                 self.remember_settings()
                 cv2.destroyAllWindows()
-
-    def rescue_unsaved(self) -> None:
-        """At exit, the labels of every clip that still could not be written go beside the real
-        file (label_store.rescue_unsaved)."""
-        rescue_unsaved(self.sources)
 
     def loop(self) -> None:
         while True:
@@ -822,20 +522,21 @@ class Tool:
             key = self.next_key(gliding)
             if not self.overview and self.view_ready():
                 self.mouse.check_placement()    # only reconcile reports for the displayed view
-            if self.dirty and time.monotonic() - self.last_save > AUTOSAVE_SECONDS:
+            if self.session.dirty and time.monotonic() - self.last_save > AUTOSAVE_SECONDS:
                 self.save(quiet=True)
             if key == -1:
                 if self.idle(gliding):
                     return
                 continue
-            if self.handle_key(key):
+            if self.keys.handle(key):
                 break
 
     def redraw(self) -> bool:
         """One redraw: a step of the zoom glide, the picture, and the mouse put on the ball once
         the view it belongs to is up. True while the zoom is still gliding."""
-        was_gliding = self.zoom != self.zoom_target
-        gliding = self.step_zoom()
+        session = self.session
+        was_gliding = session.zoom != session.zoom_target
+        gliding = session.step_zoom()
         self.show()
         if was_gliding and not gliding:
             self.pending_cursor_move = True       # zoom has settled: put the mouse back on the ball
@@ -868,30 +569,12 @@ class Tool:
                                      # while a warp is still waiting to be checked: a decode
                                      # runs long enough to age the answer out
         if not gliding and not self.mouse.scrolling() and not self.mouse.calibrating:
-            self.viewport.check(self.view_w, self.view_h + self.hud_h)   # whole picture, at x1?
+            self.viewport.check(self.session.view_w, self.session.view_h + self.session.hud_h)   # whole picture, at x1?
         return False
 
-    # ---------------------------------------------------------------- keys (label_keys has the table)
-    def handle_key(self, key: int) -> bool:
-        """One key from waitKeyEx; True when the tool should quit (label_keys.KeyHandler)."""
-        return self.keys.handle(key)
-
-    def seek_disputed(self) -> bool:
-        """e / SHIFT+e: the next / previous frame the suggestions disagree with. False, with a
-        note, when there is none that way."""
-        if self.jump_disputed(-1 if win.shift_held() else 1):
-            return True
-        print("[hint] no more frames the suggestions disagree with that way")
-        return False
-
-    def toggle_trail(self) -> None:
-        self.trail = not self.trail
-        self.remember_settings()
 
 def main() -> int:
     """The command line (label_cli); this file stays the script people run."""
-    # label_cli builds a Tool, so it imports this module: imported here, when the script runs,
-    # rather than at load, or the two would import each other half-made.
     from finetune.labeling.label_cli import main as cli_main
     return cli_main()
 

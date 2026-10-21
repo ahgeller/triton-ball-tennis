@@ -190,9 +190,10 @@ finetune.bat / finetune.ps1              Front door for the fine-tuning workspac
 finetune/ft.py                           Front door for the labelling and training workflow
 finetune/menu.py                         Its interactive menu
 finetune/commands.py, interpreter.py     Its in-process commands and the venv hand-over
-finetune/labeling/label_tool.py          Manual label editing (label_cli, label_store, label_source,
-                                         label_window, label_cursor, label_keys, label_mouse, label_frame_view,
-                                         label_grid, label_sheet, label_draw and label_hints hold its pieces)
+finetune/labeling/label_tool.py          Manual label editing (label_session holds its state; label_cli,
+                                         label_store, label_source, label_window, label_cursor, label_keys,
+                                         label_mouse, label_frame_view, label_grid, label_sheet, label_draw and
+                                         label_hints hold its other pieces)
 finetune/refiner/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
 finetune/refiner/refiner_sheet.py        A zoomed sheet of where two versions of that CNN disagree
 finetune/refiner/refiner_training.py     Training that CNN on the frames you have reviewed

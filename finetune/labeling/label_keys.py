@@ -1,8 +1,9 @@
 """What the label tool's keys do: the guards every key passes, q, and the single-frame view's
 keys, with the keys the grid shares. The grid's and the sheet's own keys are in ``label_grid`` and ``label_sheet``.
 
-Every key names a tool action (``tool.confirm``, ``tool.move``, ``tool.jump``...): that is the
-surface the key table in the tests pins, so the handler calls the tool by those names.
+Every key names a tool action (``tool.confirm``, ``tool.move``, ``tool.jump``...) or a view's
+(``grid_view.toggle``, ``sheet_view.page``...): that is the surface the key table in the tests
+pins, so the handler calls them by those names and reads the session for everything else.
 """
 
 from __future__ import annotations
@@ -14,11 +15,13 @@ from finetune.labeling.label_window import (KEY_TAB, KEYS_CONFIRM, KEYS_NEXT, KE
                                             KEYS_ZOOM_IN, KEYS_ZOOM_OUT)
 
 if TYPE_CHECKING:
+    from finetune.labeling.label_session import LabelSession
     from finetune.labeling.label_tool import Tool
 
 
 class KeyHandler:
-    def __init__(self, tool: "Tool") -> None:
+    def __init__(self, session: "LabelSession", tool: "Tool") -> None:
+        self.session = session
         self.tool = tool
 
     def handle(self, key: int) -> bool:
@@ -34,9 +37,9 @@ class KeyHandler:
         if code in KEYS_QUIT:
             return self.quit_key()
         direction = self.key_direction(key, code)
-        if tool.sheet:
+        if tool.sheet_view.active:
             tool.sheet_view.handle_key(code, direction)
-        elif tool.grid:
+        elif tool.grid_view.active:
             tool.grid_view.handle_key(code, direction) or self.common_key(code)
         else:
             self.plain_key(code, direction) or self.common_key(code)
@@ -58,7 +61,7 @@ class KeyHandler:
         """q / ESC: save, and quit - unless labels could not be saved and that has not been said."""
         tool = self.tool
         tool.save()
-        if tool.dirty and not tool.quit_warned:
+        if self.session.dirty and not tool.quit_warned:
             tool.quit_warned = True
             print("[warn] some labels could not be saved (see above). Close the file in the other "
                   "program and press q again; quitting anyway keeps them in <clip>_ball.unsaved.csv")
@@ -67,7 +70,7 @@ class KeyHandler:
 
     def plain_key(self, code: int, direction: int) -> bool:
         """What a key does in the single-frame view; False for a key it shares with the grid."""
-        tool = self.tool
+        tool, session = self.tool, self.session
         if self.edit_key(code):
             return True
         if code == ord("e"):
@@ -75,9 +78,9 @@ class KeyHandler:
         elif code in (ord("f"), ord("b")):
             tool.jump(1 if code == ord("f") else -1)
         elif direction:
-            tool.move(direction * tool.step)
+            tool.move(direction * session.step)
         elif code in KEYS_STEP:
-            tool.step = KEYS_STEP[code]
+            session.step = KEYS_STEP[code]
         elif code in KEYS_ZOOM_IN + KEYS_ZOOM_OUT:
             tool.zoom_key(1.0 if code in KEYS_ZOOM_IN else -1.0)
         else:
@@ -103,7 +106,7 @@ class KeyHandler:
         elif code == ord("r"):
             accepted = tool.accept_run()
             print(f"[run ] accepted {accepted} confident frame(s); stopped at frame "
-                  f"{tool.rows[tool.cursor].frame}")
+                  f"{self.session.rows[self.session.cursor].frame}")
         else:
             return False
         return True
@@ -111,15 +114,12 @@ class KeyHandler:
     def common_key(self, code: int) -> None:
         """The keys the grid and the single frame read the same way."""
         tool = self.tool
-        toggles = {ord("w"): tool.toggle_sheet, KEY_TAB: tool.toggle_grid, ord("z"): tool.toggle_grid_size,
+        toggles = {ord("w"): tool.sheet_view.toggle, KEY_TAB: tool.grid_view.toggle, ord("z"): tool.grid_view.toggle_size,
                    ord("t"): tool.toggle_trail, ord("g"): tool.toggle_follow, ord("h"): tool.cycle_filter,
-                   ord("o"): tool.toggle_inset, ord("m"): tool.toggle_fullscreen, ord("s"): tool.save}
+                   ord("o"): tool.toggle_inset, ord("m"): tool.toggle_fullscreen, ord("s"): tool.save,
+                   ord("u"): tool.undo}
         if code in toggles:
             toggles[code]()
-        elif code == ord("u"):
-            tool.rows[tool.cursor].undo()
-            tool.dirty = tool.source.dirty = True
-            tool.follow_ball()
         elif code in KEYS_NUDGE:
             dx, dy = KEYS_NUDGE[code]
             step = .25 if (chr(code).isupper() or win.shift_held()) else 1.

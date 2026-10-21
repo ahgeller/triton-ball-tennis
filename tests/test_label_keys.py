@@ -24,17 +24,17 @@ def test_direction_keys_match_every_backends_arrow_codes():
 def test_the_single_frame_view_claims_its_keys_and_leaves_the_shared_ones():
     tool = tool_over()
     keys = tool.keys
-    assert keys.plain_key(ord("4"), 0) and tool.step == 4
-    assert keys.plain_key(ord("d"), 1) and tool.cursor == 3                  # moves at the step, clipped to the end
+    assert keys.plain_key(ord("4"), 0) and tool.session.step == 4
+    assert keys.plain_key(ord("d"), 1) and tool.session.cursor == 3                  # moves at the step, clipped to the end
     assert not keys.plain_key(ord("g"), 0) and not keys.edit_key(ord("g"))  # g is common_key's
     with patch.object(win, "shift_held", return_value=False):
         keys.common_key(ord("g"))
-    assert not tool.follow
+    assert not tool.session.follow
 
 
 def test_q_warns_once_about_labels_that_could_not_be_saved(capsys):
     tool = tool_over()
-    with patch.object(Tool, "save", lambda self: setattr(self, "dirty", True)):
+    with patch.object(Tool, "save", lambda self: setattr(self.session, "dirty", True)):
         assert not tool.keys.quit_key() and tool.quit_warned
         assert "could not be saved" in capsys.readouterr().out
         assert tool.keys.quit_key()                                          # the second q quits anyway

@@ -1,7 +1,7 @@
 """Headless label-tool tests on synthetic frames; never open workspace labels."""
 import io
 import json
-from contextlib import redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, Mock, call, patch
@@ -11,8 +11,11 @@ import numpy as np
 import pytest
 
 from finetune.labeling import label_window as win
+from finetune.labeling.label_draw import ZOOM_STEP
+from finetune.labeling.label_grid import GridView
+from finetune.labeling.label_sheet import SheetView
 from finetune.labeling.label_store import Row, apply_flags, apply_review, load_rows, save_flags, save_review
-from finetune.labeling.label_tool import ZOOM_STEP, Tool
+from finetune.labeling.label_tool import Tool
 from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV
 from tests._helpers import ball_frames, fake_source, fake_tool, write_frames
 
@@ -31,107 +34,107 @@ def make_tool(*sources):
 
 def test_zoomed_next_frame_discards_old_anchor_and_cursor_report():
     tool = make_tool()
-    tool.zoom, tool.zoom_target = 5., 9.
-    tool.anchor = ((50., 80.), (120., 250.))
+    tool.session.zoom, tool.session.zoom_target = 5., 9.
+    tool.session.anchor = ((50., 80.), (120., 250.))
     tool.mouse.aim = ("old cursor feedback",)
     tool.move(1)
-    assert tool.anchor is None
+    assert tool.session.anchor is None
     assert tool.mouse.aim is None
     for _ in range(10):
-        tool.step_zoom()
-        x, y = tool.to_view(tool.rows[1].x, tool.rows[1].y)
-        assert (x, y) == (round(tool.view_w/2), round(tool.view_h/2))
-    assert tool.zoom == 9.
+        tool.session.step_zoom()
+        x, y = tool.session.to_view(tool.session.rows[1].x, tool.session.rows[1].y)
+        assert (x, y) == (round(tool.session.view_w/2), round(tool.session.view_h/2))
+    assert tool.session.zoom == 9.
 
 
 def test_queued_click_cannot_edit_an_unshown_next_frame():
     tool = make_tool()
-    tool.zoom = tool.zoom_target = 8.
+    tool.session.zoom = tool.session.zoom_target = 8.
     tool.follow_ball()
     with patch.object(cv2, "imshow"):
         tool.show()
-    tool.on_mouse(cv2.EVENT_LBUTTONDOWN, tool.view_w//2, tool.view_h//2, 0, None)
-    assert tool.cursor == 1
-    tool.on_mouse(cv2.EVENT_LBUTTONDBLCLK, tool.view_w//2, tool.view_h//2, 0, None)
-    assert tool.cursor == 1
-    assert not tool.rows[1].reviewed
+    tool.pointer.on_mouse(cv2.EVENT_LBUTTONDOWN, tool.session.view_w//2, tool.session.view_h//2, 0, None)
+    assert tool.session.cursor == 1
+    tool.pointer.on_mouse(cv2.EVENT_LBUTTONDBLCLK, tool.session.view_w//2, tool.session.view_h//2, 0, None)
+    assert tool.session.cursor == 1
+    assert not tool.session.rows[1].reviewed
 
 
 def test_crop_click_maps_to_subpixel_source_coordinates():
     tool = make_tool()
-    tool.toggle_grid()
-    tool.render_grid()
-    index, box, ox, oy, scale = tool.grid_tiles[0]
+    tool.grid_view.toggle()
+    tool.grid_view.render()
+    index, box, ox, oy, scale = tool.grid_view.tiles[0]
     # Pick a valid point nearer the middle when the crop runs over an edge.
     x, y = (box[0]+box[2])//2 + 3, (box[1]+box[3])//2 + 2
     expected = (ox+(x+.5-box[0])/scale, oy+(y+.5-box[1])/scale)
-    tool.grid_mouse(cv2.EVENT_LBUTTONDOWN, x, y)
-    assert tool.rows[index].x == pytest.approx(expected[0], abs=5e-8)
-    assert tool.rows[index].y == pytest.approx(expected[1], abs=5e-8)
-    assert tool.grid_indices == list(range(8))
-    assert tool.rows[0].edited
+    tool.grid_view.on_mouse(cv2.EVENT_LBUTTONDOWN, x, y)
+    assert tool.session.rows[index].x == pytest.approx(expected[0], abs=5e-8)
+    assert tool.session.rows[index].y == pytest.approx(expected[1], abs=5e-8)
+    assert tool.grid_view.indices == list(range(8))
+    assert tool.session.rows[0].edited
 
 
 def test_resize_drops_stale_zoom_anchor_and_keeps_target_centered():
     tool = make_tool()
-    tool.zoom = tool.zoom_target = 10.
+    tool.session.zoom = tool.session.zoom_target = 10.
     tool.follow_ball()
-    tool.anchor = ((1000, 600), (10, 10))
+    tool.session.anchor = ((1000, 600), (10, 10))
     tool.mouse.aim = ("stale",)
     tool.fit_view(1000, 700)
-    assert tool.anchor is None
+    assert tool.session.anchor is None
     assert tool.mouse.aim is None
-    assert tool.to_view(tool.rows[0].x, tool.rows[0].y) == (round(tool.view_w/2), round(tool.view_h/2))
+    assert tool.session.to_view(tool.session.rows[0].x, tool.session.rows[0].y) == (round(tool.session.view_w/2), round(tool.session.view_h/2))
 
 
 def test_stale_wheel_still_cancels_native_window_zoom():
     tool = make_tool()
     with patch.object(tool.viewport, "repay_wheel") as repay:
-        tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
+        tool.pointer.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
     repay.assert_called_once_with(120)
 
 
 def test_confirm_grid_requires_displayed_page_and_preserves_missing():
     tool = make_tool()
-    tool.toggle_grid()
-    tool.confirm_grid()
-    assert not any(r.reviewed for r in tool.rows)
-    tool.source.missing.add(2)
-    tool.render_grid()
-    tool.confirm_grid()
-    assert all(r.reviewed for i, r in enumerate(tool.rows[:8]) if i != 2)
-    assert not tool.rows[2].reviewed
-    assert not any(r.reviewed for r in tool.rows[8:])
-    tool.confirm_grid()  # next page has not been rendered yet
-    assert not any(r.reviewed for r in tool.rows[8:])
+    tool.grid_view.toggle()
+    tool.grid_view.confirm_page()
+    assert not any(r.reviewed for r in tool.session.rows)
+    tool.session.source.missing.add(2)
+    tool.grid_view.render()
+    tool.grid_view.confirm_page()
+    assert all(r.reviewed for i, r in enumerate(tool.session.rows[:8]) if i != 2)
+    assert not tool.session.rows[2].reviewed
+    assert not any(r.reviewed for r in tool.session.rows[8:])
+    tool.grid_view.confirm_page()  # next page has not been rendered yet
+    assert not any(r.reviewed for r in tool.session.rows[8:])
 
 
 def test_mixed_resolution_pages_keep_source_identity():
     tool = make_tool(source("small", 2, 640, 360), source("large", 2, 1920, 1080))
-    tool.toggle_grid()
-    assert tool.grid_indices == [0, 1]
-    tool.grid_page(1)
-    assert (tool.clip, tool.width, tool.height) == ("large", 1920, 1080)
-    assert tool.grid_indices == [2, 3]
+    tool.grid_view.toggle()
+    assert tool.grid_view.indices == [0, 1]
+    tool.grid_view.page(1)
+    assert (tool.session.clip, tool.session.width, tool.session.height) == ("large", 1920, 1080)
+    assert tool.grid_view.indices == [2, 3]
 
 
 def test_grid_tiles_read_their_own_clip_without_moving_the_cursor():
     tool = make_tool(source("small", 3, 640, 360), source("large", 3, 1920, 1080))
     read = []
-    tool.frame = lambda index: read.append((tool.source.clip, index)) or np.zeros(
-        (tool.source.height, tool.source.width, 3), np.uint8)
-    tool.toggle_grid()
-    tool.grid_page(1)                                  # the page of clip "large": rows 3..5
-    tool.grid_select(1)
-    tool.render_grid()
+    tool.session.frame = lambda index: read.append((tool.session.source.clip, index)) or np.zeros(
+        (tool.session.source.height, tool.session.source.width, 3), np.uint8)
+    tool.grid_view.toggle()
+    tool.grid_view.page(1)                                  # the page of clip "large": rows 3..5
+    tool.grid_view.select(1)
+    tool.grid_view.render()
     assert sorted(read) == [("large", 0), ("large", 1), ("large", 2)]
-    assert tool.cursor == 4                            # rendering leaves the selection alone
-    assert [tile[0] for tile in tool.grid_tiles] == [3, 4, 5]
+    assert tool.session.cursor == 4                            # rendering leaves the selection alone
+    assert [tile[0] for tile in tool.grid_view.tiles] == [3, 4, 5]
 
 
 def test_undo_restores_review_flags():
     tool = make_tool()
-    row = tool.rows[0]
+    row = tool.session.rows[0]
     row.suspect = True
     tool.set_point(90, 100)
     row.undo()
@@ -168,8 +171,8 @@ def test_an_edited_frame_is_a_reviewed_frame_for_the_tool_as_for_every_reader(tm
     assert reviewed_frames("clip", tmp_path) == {1, 2}
     tool = make_tool(source("clip", 4))
     tool.set_point(50.0, 40.0)                                   # an edit in the tool reviews the frame too
-    assert tool.rows[0].reviewed and tool.rows[0].edited
-    save_review(review, tool.rows, 0, 2.0)
+    assert tool.session.rows[0].reviewed and tool.session.rows[0].edited
+    save_review(review, tool.session.rows, 0, 2.0)
     assert json.loads(review.read_text())["reviewed"] == [0]
 
 
@@ -202,11 +205,11 @@ def test_apply_flags_counts_a_legacy_frames_list_as_check_flags(tmp_path):
 def test_accept_run_marks_each_clip_dirty_including_last_row():
     a, b = source("a", 2), source("b", 2)
     tool = make_tool(a, b)
-    for row in tool.rows:
+    for row in tool.session.rows:
         row.conf = .9
     assert tool.accept_run() == 4
     assert a.dirty and b.dirty
-    assert all(row.reviewed for row in tool.rows)
+    assert all(row.reviewed for row in tool.session.rows)
 
 
 def test_drawn_picture_and_stored_click_agree_to_the_pixel():
@@ -214,52 +217,52 @@ def test_drawn_picture_and_stored_click_agree_to_the_pixel():
     blank = np.zeros((720, 1280, 3), np.uint8)
     image = blank.copy()
     image[50, 100] = 255                       # frame pixel (100, 50): centre at (100.5, 50.5)
-    tool.rows[0].x, tool.rows[0].y = 100.5, 50.5
-    tool.zoom = tool.zoom_target = 6.
+    tool.session.rows[0].x, tool.session.rows[0].y = 100.5, 50.5
+    tool.session.zoom = tool.session.zoom_target = 6.
     tool.follow_ball()
-    tool.frame = lambda index: blank           # the same markers over nothing, to subtract
-    markers = tool.render()[:tool.view_h].astype(int)
-    tool.frame = lambda index: image
-    drawn = tool.render()[:tool.view_h].astype(int)
+    tool.session.frame = lambda index: blank           # the same markers over nothing, to subtract
+    markers = tool.render()[:tool.session.view_h].astype(int)
+    tool.session.frame = lambda index: image
+    drawn = tool.render()[:tool.session.view_h].astype(int)
     lit = np.argwhere(np.abs(drawn - markers).max(2) > 127)
     (top, left), (bottom, right) = lit.min(0), lit.max(0)
     click = ((left + right) // 2, (top + bottom) // 2)
-    stored = tool.to_frame(click[0] + .5, click[1] + .5)
+    stored = tool.session.to_frame(click[0] + .5, click[1] + .5)
     # Clicking the middle of the drawn pixel stores its centre, to within half a view pixel;
     # the warp used to draw everything 0.5 - 0.5/scale frame px off from where clicks went.
-    slack = .5 / tool.scale + 1e-9
+    slack = .5 / tool.session.scale + 1e-9
     assert abs(stored[0] - 100.5) <= slack, stored
     assert abs(stored[1] - 50.5) <= slack, stored
-    assert left <= tool.to_view(100.5, 50.5)[0] <= right
-    for u, v in ((0, 0), (37, 91), (tool.view_w - 1, tool.view_h - 1)):
-        assert tool.to_view(*tool.to_frame(u + .5, v + .5)) == (u, v)
+    assert left <= tool.session.to_view(100.5, 50.5)[0] <= right
+    for u, v in ((0, 0), (37, 91), (tool.session.view_w - 1, tool.session.view_h - 1)):
+        assert tool.session.to_view(*tool.session.to_frame(u + .5, v + .5)) == (u, v)
 
 
 def test_idle_render_is_cached_and_every_change_redraws():
     tool = make_tool()
     frames = {}
-    tool.frame = lambda index: frames.setdefault(index, np.zeros((720, 1280, 3), np.uint8))
+    tool.session.frame = lambda index: frames.setdefault(index, np.zeros((720, 1280, 3), np.uint8))
     tool.follow_ball()
     first = tool.render()
     with patch.object(cv2, "warpAffine", wraps=cv2.warpAffine) as warp:
         assert tool.render() is first                # nothing changed: nothing drawn
         assert warp.call_count == 0
     changes = {
-        "label moved": lambda t: setattr(t.rows[0], "x", t.rows[0].x + 1),
-        "another row reviewed (counter)": lambda t: setattr(t.rows[7], "reviewed", True),
-        "flagged": lambda t: setattr(t.rows[0], "suspect", True),
-        "filter": lambda t: setattr(t, "filter", 1),
-        "inset": lambda t: setattr(t, "inset", not t.inset),
-        "trail": lambda t: setattr(t, "trail", not t.trail),
-        "follow": lambda t: setattr(t, "follow", not t.follow),
-        "step": lambda t: setattr(t, "step", 4),
-        "unsaved": lambda t: setattr(t, "dirty", not t.dirty),
-        "zoom": lambda t: setattr(t, "zoom", t.zoom * 1.5),
-        "pan": lambda t: setattr(t, "center", (t.center[0] + 7, t.center[1])),
-        "walk": lambda t: t.only_uncertain(),
-        "ghost": lambda t: setattr(t, "ghost", (400., 300.)),
+        "label moved": lambda t: setattr(t.session.rows[0], "x", t.session.rows[0].x + 1),
+        "another row reviewed (counter)": lambda t: setattr(t.session.rows[7], "reviewed", True),
+        "flagged": lambda t: setattr(t.session.rows[0], "suspect", True),
+        "filter": lambda t: setattr(t.session, "filter", 1),
+        "inset": lambda t: setattr(t.session, "inset", not t.session.inset),
+        "trail": lambda t: setattr(t.session, "trail", not t.session.trail),
+        "follow": lambda t: setattr(t.session, "follow", not t.session.follow),
+        "step": lambda t: setattr(t.session, "step", 4),
+        "unsaved": lambda t: setattr(t.session, "dirty", not t.session.dirty),
+        "zoom": lambda t: setattr(t.session, "zoom", t.session.zoom * 1.5),
+        "pan": lambda t: setattr(t.session, "center", (t.session.center[0] + 7, t.session.center[1])),
+        "walk": lambda t: t.session.only_uncertain(),
+        "ghost": lambda t: setattr(t.session, "ghost", (400., 300.)),
         "next frame": lambda t: t.move(1),
-        "frame re-decoded": lambda t: frames.update({t.rows[t.cursor].frame: np.ones((720, 1280, 3), np.uint8)}),
+        "frame re-decoded": lambda t: frames.update({t.session.rows[t.session.cursor].frame: np.ones((720, 1280, 3), np.uint8)}),
         "window resized": lambda t: t.fit_view(900, 600),
     }
     for name, change in changes.items():
@@ -277,9 +280,9 @@ def test_show_resends_only_when_needed():
         tool.shown = None                            # what reset_window does for a new window
         tool.show()
         assert imshow.call_count == 2
-        tool.toggle_grid()
+        tool.grid_view.toggle()
         tool.show()
-        tool.toggle_grid()
+        tool.grid_view.toggle()
         tool.show()                                  # back from the grid: the frame view again
         assert imshow.call_count == 4
 
@@ -319,21 +322,21 @@ def test_stepping_back_near_the_start_hits_the_cache():
         clip = Source("c", Path("c.mp4"), rows, 64, 36, Path("c_ball.csv"), Path("c_ball.review.json"))
         clip.cache_limit = 64
         tool = Tool([clip])
-        tool.cursor = len(rows) - 1
-        tool.frame(rows[-1].frame)
+        tool.session.cursor = len(rows) - 1
+        tool.session.frame(rows[-1].frame)
         Capture.opened = 0
         for i in range(len(rows) - 1, -1, -1):       # `a` all the way back to the start
-            tool.cursor = i
-            assert int(tool.frame(rows[i].frame)[0, 0, 0]) == rows[i].frame
+            tool.session.cursor = i
+            assert int(tool.session.frame(rows[i].frame)[0, 0, 0]) == rows[i].frame
     assert Capture.opened <= 2                       # was one reopen per press
 
 
 def test_point_in_the_no_ball_corner_is_refused():
     tool = make_tool()
-    before = (tool.rows[0].x, tool.rows[0].y)
+    before = (tool.session.rows[0].x, tool.session.rows[0].y)
     assert not tool.set_point(1270, 10)  # would read back as "no ball"
-    assert (tool.rows[0].x, tool.rows[0].y) == before
-    assert not tool.rows[0].reviewed
+    assert (tool.session.rows[0].x, tool.session.rows[0].y) == before
+    assert not tool.session.rows[0].reviewed
     assert tool.set_point(600, 300)
 
 
@@ -341,21 +344,21 @@ def test_click_beyond_the_frame_is_not_a_label():
     tool = make_tool()
     with patch.object(cv2, "imshow"):
         tool.show()
-    tool.on_mouse(cv2.EVENT_LBUTTONDOWN, 0, 0, 0, None)   # top-left of a view centred near (30, 25)
-    assert tool.cursor == 0
-    assert not tool.rows[0].reviewed
+    tool.pointer.on_mouse(cv2.EVENT_LBUTTONDOWN, 0, 0, 0, None)   # top-left of a view centred near (30, 25)
+    assert tool.session.cursor == 0
+    assert not tool.session.rows[0].reviewed
 
 
 def test_wheel_in_grid_or_while_calibrating_still_cancels_window_zoom():
     tool = make_tool()
-    tool.toggle_grid()
+    tool.grid_view.toggle()
     with patch.object(tool.viewport, "repay_wheel") as repay:
-        tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
+        tool.pointer.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
     repay.assert_called_once_with(120)
-    tool.toggle_grid()
+    tool.grid_view.toggle()
     tool.mouse.calibrating = True
     with patch.object(tool.viewport, "repay_wheel") as repay:
-        tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
+        tool.pointer.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
     repay.assert_called_once_with(120)
 
 
@@ -391,7 +394,7 @@ def test_save_survives_a_locked_file_and_keeps_the_edits(tmp_path):
         clip.review = tmp_path / f"{clip.clip}_ball.review.json"
         clip.suspects = tmp_path / f"{clip.clip}_ball.suspect.json"
     tool = make_tool(a, b)
-    a.dirty = b.dirty = tool.dirty = True
+    a.dirty = b.dirty = tool.session.dirty = True
     real = label_tool.save_rows
 
     def locked(path, *rest):
@@ -401,7 +404,7 @@ def test_save_survives_a_locked_file_and_keeps_the_edits(tmp_path):
     with patch.object(label_tool, "save_rows", side_effect=locked):
         tool.save(quiet=True)
     assert b.out_csv.is_file()     # one stuck clip does not stop the others
-    assert a.dirty and tool.dirty  # ... and its edits are kept for the next try
+    assert a.dirty and tool.session.dirty  # ... and its edits are kept for the next try
     assert not b.dirty
     tool.rescue_unsaved()
     assert (tmp_path / "a_ball.unsaved.csv").is_file()
@@ -421,17 +424,17 @@ def test_legacy_flag_list_survives_a_save(tmp_path):
 
 def test_new_audit_flag_reopens_a_reviewed_frame_until_answered():
     tool = make_tool()
-    for done in tool.rows[:8]:
+    for done in tool.session.rows[:8]:
         done.reviewed = True                     # the start of the clip is reviewed ...
-    row = tool.rows[4]
+    row = tool.session.rows[4]
     row.suspect = True                           # ... and an audit after that flagged frame 4
     assert row.uncertain
-    tool.cursor = 0
+    tool.session.cursor = 0
     tool.jump(1)
-    assert tool.cursor == 4                      # f goes to it even though it was reviewed
-    assert (tool.only_uncertain() and 4 in tool.walk) is True
-    tool.walk = []
-    tool.cursor = 4
+    assert tool.session.cursor == 4                      # f goes to it even though it was reviewed
+    assert (tool.session.only_uncertain() and 4 in tool.session.walk) is True
+    tool.session.walk = []
+    tool.session.cursor = 4
     tool.confirm()                               # SPACE: it is right where it is
     assert not row.suspect
     row.undo()
@@ -642,10 +645,10 @@ def test_label_tool_reloads_the_placer_when_the_current_version_changes():
     with patch("finetune.labeling.label_hints.cnn_refiner.current", side_effect=[first, first, second, None]), \
             patch("finetune.labeling.label_hints.cnn_refiner.load_current",
                   side_effect=lambda: loaded.append(1) or SimpleNamespace(name=f"v{len(loaded)}")):
-        assert tool.hints.current_placer().name == "v1"
-        assert tool.hints.current_placer().name == "v1"       # unchanged: not loaded again
-        assert tool.hints.current_placer().name == "v2"       # retrained: the new version
-        assert tool.hints.current_placer() is None            # none left: the centroid alone
+        assert tool.session.hints.current_placer().name == "v1"
+        assert tool.session.hints.current_placer().name == "v1"       # unchanged: not loaded again
+        assert tool.session.hints.current_placer().name == "v2"       # retrained: the new version
+        assert tool.session.hints.current_placer() is None            # none left: the centroid alone
     assert len(loaded) == 2
 
 
@@ -657,91 +660,91 @@ def grid_tool():
 
 def test_sixteen_tiles_page_and_select_from_the_keyboard():
     tool = grid_tool()
-    tool.grid_size = 16
-    tool.toggle_grid()
-    tool.render_grid()
-    assert len(tool.grid_tiles) == 16
-    boxes = [box for _, box, *_ in tool.grid_tiles]
+    tool.grid_view.size = 16
+    tool.grid_view.toggle()
+    tool.grid_view.render()
+    assert len(tool.grid_view.tiles) == 16
+    boxes = [box for _, box, *_ in tool.grid_view.tiles]
     assert len({box[1] for box in boxes}) == 4          # four rows of four
-    assert all(box[3] < tool.view_h for box in boxes)   # none run into the bar
-    tool.grid_select(5)
-    assert tool.cursor == 5
-    tool.grid_step(-1)
-    assert tool.cursor == 4
-    tool.grid_select(15)
-    tool.grid_step(1)                                   # off the end: next page
-    assert tool.grid_indices == list(range(16, 32))
-    assert tool.cursor == 16
-    tool.grid_step(-1)                                  # and back onto the last tile
-    assert tool.grid_indices == list(range(16))
-    assert tool.cursor == 15
+    assert all(box[3] < tool.session.view_h for box in boxes)   # none run into the bar
+    tool.grid_view.select(5)
+    assert tool.session.cursor == 5
+    tool.grid_view.step(-1)
+    assert tool.session.cursor == 4
+    tool.grid_view.select(15)
+    tool.grid_view.step(1)                                   # off the end: next page
+    assert tool.grid_view.indices == list(range(16, 32))
+    assert tool.session.cursor == 16
+    tool.grid_view.step(-1)                                  # and back onto the last tile
+    assert tool.grid_view.indices == list(range(16))
+    assert tool.session.cursor == 15
 
 
 def test_switching_size_keeps_the_selected_frame():
     tool = grid_tool()
-    tool.toggle_grid()
-    tool.grid_select(6)
-    tool.toggle_grid_size()
-    assert tool.grid_size == 16
-    assert len(tool.grid_indices) == 16
-    assert tool.cursor == 6
-    tool.toggle_grid_size()
-    assert tool.grid_size == 8
+    tool.grid_view.toggle()
+    tool.grid_view.select(6)
+    tool.grid_view.toggle_size()
+    assert tool.grid_view.size == 16
+    assert len(tool.grid_view.indices) == 16
+    assert tool.session.cursor == 6
+    tool.grid_view.toggle_size()
+    assert tool.grid_view.size == 8
 
 
 def test_y_in_the_grid_takes_the_selected_tiles_suggestion_and_moves_on():
     tool = grid_tool()
-    tool.toggle_grid()
-    tool.grid_select(2)
-    row = tool.rows[2]
-    tool.hints.found["test"] = {2: hint(row, x=row.x + 1)}
+    tool.grid_view.toggle()
+    tool.grid_view.select(2)
+    row = tool.session.rows[2]
+    tool.session.hints.found["test"] = {2: hint(row, x=row.x + 1)}
     assert tool.take_suggestion()
-    tool.grid_step(1)
-    assert (row.source, tool.cursor) == ("refined", 3)
+    tool.grid_view.step(1)
+    assert (row.source, tool.session.cursor) == ("refined", 3)
 
 
 # --------------------------------------------------------------------------- the trajectory sheet
 
 def test_sheet_draws_a_stretch_and_a_click_opens_that_frame():
     tool = make_tool(source("test", 150))
-    tool.cursor = 70
-    tool.toggle_sheet()
-    assert tool.sheet and not tool.grid
-    assert tool.sheet_start == 40                        # the cursor's stretch, centred on it
+    tool.session.cursor = 70
+    tool.sheet_view.toggle()
+    assert tool.sheet_view.active and not tool.grid_view.active
+    assert tool.sheet_view.start == 40                        # the cursor's stretch, centred on it
     tool.render()
-    assert [p[0] for p in tool.sheet_points] == list(range(40, 100))
-    index, x, y = tool.sheet_points[25]
-    tool.sheet_mouse(cv2.EVENT_LBUTTONDOWN, x + 2, y - 1)
-    assert not tool.sheet
-    assert tool.cursor == index
-    assert not any(row.reviewed for row in tool.rows)     # finding a frame edits nothing
+    assert [p[0] for p in tool.sheet_view.points] == list(range(40, 100))
+    index, x, y = tool.sheet_view.points[25]
+    tool.sheet_view.on_mouse(cv2.EVENT_LBUTTONDOWN, x + 2, y - 1)
+    assert not tool.sheet_view.active
+    assert tool.session.cursor == index
+    assert not any(row.reviewed for row in tool.session.rows)     # finding a frame edits nothing
 
 
 def test_sheet_pages_stay_inside_the_clip():
     tool = make_tool(source("a", 70), source("b", 70))
-    tool.cursor = 5
-    tool.toggle_sheet()
-    assert tool.sheet_start == 0
-    tool.sheet_page(1)
-    assert tool.sheet_start == 10                        # the last full stretch of clip a
-    tool.sheet_page(1)
-    assert tool.sheet_start == 10
+    tool.session.cursor = 5
+    tool.sheet_view.toggle()
+    assert tool.sheet_view.start == 0
+    tool.sheet_view.page(1)
+    assert tool.sheet_view.start == 10                        # the last full stretch of clip a
+    tool.sheet_view.page(1)
+    assert tool.sheet_view.start == 10
     tool.render()
-    assert all(tool.rows[i].clip == "a" for i, *_ in tool.sheet_points)
-    tool.sheet_page(-1)
-    assert tool.sheet_start == 0
+    assert all(tool.session.rows[i].clip == "a" for i, *_ in tool.sheet_view.points)
+    tool.sheet_view.page(-1)
+    assert tool.sheet_view.start == 0
 
 
 def test_a_click_far_from_every_point_does_nothing():
     tool = make_tool(source("test", 150))
-    tool.toggle_sheet()
+    tool.sheet_view.toggle()
     tool.render()
-    cursor = tool.cursor
-    tool.sheet_mouse(cv2.EVENT_LBUTTONDOWN, tool.view_w - 1, tool.view_h - 1)
-    assert tool.sheet
-    assert tool.cursor == cursor
-    tool.sheet_mouse(cv2.EVENT_RBUTTONDOWN, 0, 0)          # right click goes back
-    assert not tool.sheet
+    cursor = tool.session.cursor
+    tool.sheet_view.on_mouse(cv2.EVENT_LBUTTONDOWN, tool.session.view_w - 1, tool.session.view_h - 1)
+    assert tool.sheet_view.active
+    assert tool.session.cursor == cursor
+    tool.sheet_view.on_mouse(cv2.EVENT_RBUTTONDOWN, 0, 0)          # right click goes back
+    assert not tool.sheet_view.active
 
 
 # --------------------------------------------------------------------------- drafts
@@ -773,14 +776,14 @@ def test_drafts_use_the_unshifted_detector_point():
 def hinted_tool():
     """make_tool() with a suggestion for its first row, 0.75 px right and up of the label."""
     tool = make_tool()
-    tool.hints.found["test"] = {0: hint(tool.rows[0], 31.0, 25.5)}
-    tool.hints.version += 1
+    tool.session.hints.found["test"] = {0: hint(tool.session.rows[0], 31.0, 25.5)}
+    tool.session.hints.version += 1
     return tool
 
 
 def test_y_takes_the_suggestion_as_refined_and_undo_restores_it():
     tool = hinted_tool()
-    row = tool.rows[0]
+    row = tool.session.rows[0]
     assert tool.take_suggestion()
     assert (row.x, row.y, row.source) == (31.0, 25.5, "refined")
     assert row.edited
@@ -793,51 +796,51 @@ def test_y_takes_the_suggestion_as_refined_and_undo_restores_it():
 
 def test_suggestion_is_dropped_once_the_label_moves_away_from_its_seed():
     tool = hinted_tool()
-    assert tool.suggestion_for(0) is not None
-    tool.rows[0].x += 40                         # far from where the suggestion was measured
-    assert tool.suggestion_for(0) is None
+    assert tool.session.suggestion_for(0) is not None
+    tool.session.rows[0].x += 40                         # far from where the suggestion was measured
+    assert tool.session.suggestion_for(0) is None
     assert not tool.take_suggestion()
-    assert tool.suggestion_for(1) is None        # no suggestion measured for this frame
+    assert tool.session.suggestion_for(1) is None        # no suggestion measured for this frame
 
 
 def test_verdict_flags_labels_off_a_trusted_suggestion_and_e_walks_them():
     tool = make_tool()     # 1280x720: 1 frame px is 1.5 px at 1080p
-    hints = {row.frame: hint(row, x=row.x + 1.0) for row in tool.rows}
-    hints[3]["x"] = tool.rows[3].x + 2.5          # 3.75 px at 1080p: the label is off
-    hints[6]["x"] = tool.rows[6].x + 2.5
+    hints = {row.frame: hint(row, x=row.x + 1.0) for row in tool.session.rows}
+    hints[3]["x"] = tool.session.rows[3].x + 2.5          # 3.75 px at 1080p: the label is off
+    hints[6]["x"] = tool.session.rows[6].x + 2.5
     hints[8]["trusted"] = False                   # the suggestion itself is not trusted here
-    hints[8]["x"] = tool.rows[8].x + 2.5
-    tool.hints.found["test"] = hints
-    tool.hints.version += 1
-    assert tool.hint_verdict(0) == "agrees"
-    assert tool.hint_verdict(3) == "differs"
-    assert tool.hint_verdict(8) is None
-    assert tool.disputed_count() == 2
+    hints[8]["x"] = tool.session.rows[8].x + 2.5
+    tool.session.hints.found["test"] = hints
+    tool.session.hints.version += 1
+    assert tool.session.hint_verdict(0) == "agrees"
+    assert tool.session.hint_verdict(3) == "differs"
+    assert tool.session.hint_verdict(8) is None
+    assert tool.session.disputed_count() == 2
     assert tool.jump_disputed(1)
-    assert tool.cursor == 3
+    assert tool.session.cursor == 3
     assert tool.jump_disputed(1)
-    assert tool.cursor == 6
+    assert tool.session.cursor == 6
     assert not tool.jump_disputed(1)
     assert tool.jump_disputed(-1)
-    assert tool.cursor == 3
-    tool.set_point(tool.rows[3].x + 2.5, tool.rows[3].y)   # fixed: now it agrees
-    assert tool.disputed_count() == 1
-    assert not any(row.reviewed for row in tool.rows if row.frame != 3)   # nothing auto-accepted
+    assert tool.session.cursor == 3
+    tool.set_point(tool.session.rows[3].x + 2.5, tool.session.rows[3].y)   # fixed: now it agrees
+    assert tool.session.disputed_count() == 1
+    assert not any(row.reviewed for row in tool.session.rows if row.frame != 3)   # nothing auto-accepted
 
 
 def test_no_ball_frame_shows_only_a_trusted_suggestion_and_y_places_it():
     tool = make_tool()
-    row = tool.rows[2]
+    row = tool.session.rows[2]
     row.visible = False
-    tool.hints.found["test"] = {2: hint(row, 300.0, 200.0, trusted=False, seed=None)}
-    assert tool.suggestion_for(2) is None         # a guess is not enough to put a ball there
-    tool.hints.found["test"][2]["trusted"] = True
-    assert tool.suggestion_for(2) is not None
-    tool.cursor = 2
+    tool.session.hints.found["test"] = {2: hint(row, 300.0, 200.0, trusted=False, seed=None)}
+    assert tool.session.suggestion_for(2) is None         # a guess is not enough to put a ball there
+    tool.session.hints.found["test"][2]["trusted"] = True
+    assert tool.session.suggestion_for(2) is not None
+    tool.session.cursor = 2
     assert tool.take_suggestion()
     assert row.visible and (row.x, row.y) == (300.0, 200.0) and row.source == "refined"
-    tool.hints.found["test"][2]["ball_here"] = False
-    assert tool.suggestion_for(2) is None         # nothing ball-like moved: never shown
+    tool.session.hints.found["test"][2]["ball_here"] = False
+    assert tool.session.suggestion_for(2) is None         # nothing ball-like moved: never shown
 
 
 def test_a_changed_label_is_remeasured_with_reviewed_labels_steering():
@@ -847,31 +850,31 @@ def test_a_changed_label_is_remeasured_with_reviewed_labels_steering():
                side_effect=lambda video, seeds, options:
                calls.append((seeds, options.reviewed, options.only)) or {}), \
             patch("finetune.labeling.label_hints.cnn_refiner.current", return_value=None):
-        tool.source.video = Path("clip.mp4")
-        tool.hints.suggest_clip(tool.source)
+        tool.session.source.video = Path("clip.mp4")
+        tool.session.hints.suggest_clip(tool.session.source)
         assert calls[-1][1] == []                             # nothing reviewed yet
-        before = tool.hints.label_state(tool.source)
-        tool.cursor = 1
+        before = tool.session.hints.label_state(tool.session.source)
+        tool.session.cursor = 1
         tool.set_point(80, 40)
-        assert tool.hints.label_state(tool.source) != before
-        tool.hints.suggest_clip(tool.source)
+        assert tool.session.hints.label_state(tool.session.source) != before
+        tool.session.hints.suggest_clip(tool.session.source)
         seeds, reviewed, only = calls[-1]
         assert seeds[1] == (80.0, 40.0)
         assert reviewed == [1]
         assert only == set(range(10))                         # the stretch around frame 1 (10 rows)
         assert calls[0][2] is None                            # the first pass measures everything
-        assert tool.hints.measured_state["test"] == tool.hints.label_state(tool.source)
+        assert tool.session.hints.measured_state["test"] == tool.session.hints.label_state(tool.session.source)
 
 
 def test_suggestion_is_drawn_and_its_arrival_redraws():
     tool = make_tool()
-    tool.zoom = tool.zoom_target = 6.
+    tool.session.zoom = tool.session.zoom_target = 6.
     tool.follow_ball()
     plain = tool.render()
     orange = lambda image: int(np.sum((image[:, :, 0] == 0) & (image[:, :, 1] == 150) & (image[:, :, 2] == 255)))
     assert orange(plain) == 0
-    tool.hints.found["test"] = {0: hint(tool.rows[0], 33.0, 27.0)}
-    tool.hints.version += 1
+    tool.session.hints.found["test"] = {0: hint(tool.session.rows[0], 33.0, 27.0)}
+    tool.session.hints.version += 1
     hinted = tool.render()
     assert hinted is not plain
     assert orange(hinted) > 0
@@ -882,19 +885,19 @@ def test_suggestion_is_drawn_and_its_arrival_redraws():
 
 def test_space_takes_the_offer_and_a_reviewed_label_stays_the_mark():
     tool = make_tool()
-    row = tool.rows[0]
-    tool.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y - 0.5)}
-    tool.hints.version += 1
+    row = tool.session.rows[0]
+    tool.session.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y - 0.5)}
+    tool.session.hints.version += 1
     tool.follow_ball()
-    assert tool.target_point() == (31.25, 24.25)       # the view and the mouse go to the offer
+    assert tool.session.target_point() == (31.25, 24.25)       # the view and the mouse go to the offer
     tool.render()
     tool.confirm()
     assert (row.x, row.y, row.source) == (31.25, 24.25, "refined")
     assert row.reviewed and row.edited
-    tool.hints.found["test"][0] = hint(row, row.x + 2.0, row.y)   # re-measured from the new label
-    tool.hints.version += 1
-    assert tool.offer_for(0) is None                   # reviewed: your label is the mark
-    assert tool.suggestion_for(0) is not None          # the hint is still shown beside it
+    tool.session.hints.found["test"][0] = hint(row, row.x + 2.0, row.y)   # re-measured from the new label
+    tool.session.hints.version += 1
+    assert tool.session.offer_for(0) is None                   # reviewed: your label is the mark
+    assert tool.session.suggestion_for(0) is not None          # the hint is still shown beside it
     tool.render()
     tool.confirm()
     assert (row.x, row.y) == (31.25, 24.25)
@@ -902,68 +905,68 @@ def test_space_takes_the_offer_and_a_reviewed_label_stays_the_mark():
 
 def test_an_offer_that_was_not_drawn_is_not_taken():
     tool = make_tool()
-    row = tool.rows[0]
+    row = tool.session.rows[0]
     tool.render()                                      # judged without a suggestion
-    tool.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y)}
-    tool.hints.version += 1
+    tool.session.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y)}
+    tool.session.hints.version += 1
     tool.confirm()                                     # SPACE lands after it arrived
     assert (row.x, row.reviewed, row.edited) == (30.25, True, False)
-    tool.cursor = 1
-    tool.hints.found["test"][1] = hint(tool.rows[1], tool.rows[1].x + 1.0, tool.rows[1].y)
-    tool.hints.version += 1
+    tool.session.cursor = 1
+    tool.session.hints.found["test"][1] = hint(tool.session.rows[1], tool.session.rows[1].x + 1.0, tool.session.rows[1].y)
+    tool.session.hints.version += 1
     tool.render()
-    tool.cursor = 2                                    # drawn for frame 1, pressed on 2
+    tool.session.cursor = 2                                    # drawn for frame 1, pressed on 2
     tool.confirm()
-    assert (tool.rows[1].reviewed, tool.rows[2].edited) == (False, False)
-    assert tool.rows[2].reviewed
+    assert (tool.session.rows[1].reviewed, tool.session.rows[2].edited) == (False, False)
+    assert tool.session.rows[2].reviewed
 
 
 def test_x_keeps_the_draft_and_the_offer_rules():
     from finetune.labeling import label_hints
     tool = make_tool()
-    row = tool.rows[0]
-    tool.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y, trusted=False)}
-    tool.hints.version += 1
+    row = tool.session.rows[0]
+    tool.session.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y, trusted=False)}
+    tool.session.hints.version += 1
     with patch.object(label_hints, "OFFER_UNSURE", False):
-        assert tool.offer_for(0) is None
-    assert tool.offer_for(0) is not None               # unsure but near the draft: offered, dull
-    tool.hints.found["test"][0]["x"] = row.x + 2.5     # 3.75 px at 1080p: too far to offer unsure
-    tool.hints.version += 1
-    assert tool.offer_for(0) is None
-    assert tool.suggestion_for(0) is not None          # ... but still a hint beside the draft
-    tool.hints.found["test"][0]["trusted"] = True      # sure: offered wherever it is
-    tool.hints.version += 1
-    assert tool.offer_for(0) is not None
-    tool.hints.found["test"][0] = hint(row, row.x + 1.0, row.y, trusted=False)
-    tool.hints.version += 1
+        assert tool.session.offer_for(0) is None
+    assert tool.session.offer_for(0) is not None               # unsure but near the draft: offered, dull
+    tool.session.hints.found["test"][0]["x"] = row.x + 2.5     # 3.75 px at 1080p: too far to offer unsure
+    tool.session.hints.version += 1
+    assert tool.session.offer_for(0) is None
+    assert tool.session.suggestion_for(0) is not None          # ... but still a hint beside the draft
+    tool.session.hints.found["test"][0]["trusted"] = True      # sure: offered wherever it is
+    tool.session.hints.version += 1
+    assert tool.session.offer_for(0) is not None
+    tool.session.hints.found["test"][0] = hint(row, row.x + 1.0, row.y, trusted=False)
+    tool.session.hints.version += 1
     tool.render()
     tool.confirm(take_offer=False)                     # x: the draft was right
     assert (row.x, row.reviewed, row.edited) == (30.25, True, False)
-    other = tool.rows[1]
-    tool.hints.found["test"][1] = hint(other, other.x + 0.1, other.y)
-    tool.hints.version += 1
-    assert tool.offer_for(1) is None                   # nothing to choose between
-    for row in tool.rows:
+    other = tool.session.rows[1]
+    tool.session.hints.found["test"][1] = hint(other, other.x + 0.1, other.y)
+    tool.session.hints.version += 1
+    assert tool.session.offer_for(1) is None                   # nothing to choose between
+    for row in tool.session.rows:
         row.conf = .9
-    tool.hints.found["test"][2] = hint(tool.rows[2], tool.rows[2].x + 1.0, tool.rows[2].y)
-    tool.hints.version += 1
-    tool.cursor = 1
+    tool.session.hints.found["test"][2] = hint(tool.session.rows[2], tool.session.rows[2].x + 1.0, tool.session.rows[2].y)
+    tool.session.hints.version += 1
+    tool.session.cursor = 1
     tool.render()
     tool.accept_run()                                  # r confirms the drafts, unseen
-    assert (tool.rows[2].x, tool.rows[2].edited) == (52.25, False)
-    assert all(row.reviewed for row in tool.rows)
+    assert (tool.session.rows[2].x, tool.session.rows[2].edited) == (52.25, False)
+    assert all(row.reviewed for row in tool.session.rows)
 
 
 def test_confirm_grid_takes_the_offers_it_drew():
     tool = make_tool()
-    rows = tool.rows
-    tool.hints.found["test"] = {0: hint(rows[0], rows[0].x + 1.0, rows[0].y),
+    rows = tool.session.rows
+    tool.session.hints.found["test"] = {0: hint(rows[0], rows[0].x + 1.0, rows[0].y),
                                 3: hint(rows[3], rows[3].x, rows[3].y + 1.0, trusted=False),
                                 9: hint(rows[9], rows[9].x + 1.0, rows[9].y)}
-    tool.hints.version += 1
-    tool.toggle_grid()
-    tool.render_grid()
-    tool.confirm_grid()
+    tool.session.hints.version += 1
+    tool.grid_view.toggle()
+    tool.grid_view.render()
+    tool.grid_view.confirm_page()
     assert (rows[0].x, rows[0].source) == (31.25, "refined")
     assert (rows[3].y, rows[3].source) == (34.75, "refined")
     assert all(row.reviewed for row in rows[:8])
@@ -974,13 +977,13 @@ def test_confirm_grid_takes_the_offers_it_drew():
 
 def test_a_no_ball_draft_with_a_sure_hint_offers_it():
     tool = make_tool()
-    row = tool.rows[2]
+    row = tool.session.rows[2]
     row.visible = False
-    tool.cursor = 2
-    tool.hints.found["test"] = {2: hint(row, 300.0, 200.0, seed=None)}
-    tool.hints.version += 1
+    tool.session.cursor = 2
+    tool.session.hints.found["test"] = {2: hint(row, 300.0, 200.0, seed=None)}
+    tool.session.hints.version += 1
     tool.follow_ball()
-    assert tool.target_point() == (300.0, 200.0)
+    assert tool.session.target_point() == (300.0, 200.0)
     tool.render()
     tool.confirm()
     assert row.visible
@@ -988,12 +991,28 @@ def test_a_no_ball_draft_with_a_sure_hint_offers_it():
 
 
 # --------------------------------------------------------------------------- the key table
-# Every Tool method a key can reach, replaced by a mock while a key is pressed, so a key that
-# calls the wrong one, or one too many, fails the table below.
-KEY_HANDLERS = ("save", "toggle_sheet", "toggle_grid", "toggle_grid_size", "confirm", "confirm_grid", "move",
-                "jump", "jump_disputed", "take_suggestion", "mark_invisible", "accept_run", "nudge", "zoom_key",
-                "toggle_fullscreen", "remember_settings", "toggle_follow", "cycle_filter", "toggle_inset",
-                "follow_ball", "grid_page", "grid_step", "grid_select", "prepare_grid", "sheet_page")
+# Every action a key can reach, replaced by a mock while a key is pressed, so a key that calls the
+# wrong one, or one too many, fails the table below. The tool's actions go by their own names; the
+# grid's and the sheet's are mocked on their views under the names the table has always used.
+TOOL_HANDLERS = ("save", "confirm", "move", "jump", "jump_disputed", "take_suggestion", "mark_invisible", "accept_run",
+                 "nudge", "zoom_key", "toggle_fullscreen", "remember_settings", "toggle_follow", "cycle_filter",
+                 "toggle_inset", "follow_ball")
+VIEW_HANDLERS = {GridView: {"toggle": "toggle_grid", "toggle_size": "toggle_grid_size", "confirm_page": "confirm_grid",
+                            "page": "grid_page", "step": "grid_step", "select": "grid_select", "prepare": "prepare_grid"},
+                 SheetView: {"toggle": "toggle_sheet", "page": "sheet_page"}}
+
+
+@contextmanager
+def every_handler_mocked():
+    """Every action the keys can reach replaced by a mock, as {table name: mock}."""
+    with ExitStack() as stack:
+        mocks = stack.enter_context(patch.multiple(Tool, **{name: DEFAULT for name in TOOL_HANDLERS}))
+        for view, names in VIEW_HANDLERS.items():
+            view_mocks = stack.enter_context(patch.multiple(view, **{method: DEFAULT for method in names}))
+            mocks.update({names[method]: mock for method, mock in view_mocks.items()})
+        yield mocks
+
+
 FORWARD = sorted({ord("n"), ord("d"), *KEYS_NEXT})
 BACKWARD = sorted({ord("p"), ord("a"), *KEYS_PREV})
 
@@ -1064,16 +1083,16 @@ def key_name(key: int) -> str:
 def press(mode, key, returns=None, shift=False, ready=True):
     """(the handler calls the key made, whether the tool wants to quit, the tool)."""
     tool = Tool([source("test")])
-    tool.grid, tool.sheet = mode == "grid", mode == "sheet"
+    tool.grid_view.active, tool.sheet_view.active = mode == "grid", mode == "sheet"
     calls = Mock()
-    with patch.multiple(Tool, **{name: DEFAULT for name in KEY_HANDLERS}) as mocks, \
+    with every_handler_mocked() as mocks, \
             patch.object(Tool, "view_ready", return_value=ready), patch.object(Row, "undo"), \
             patch.object(win, "shift_held", return_value=shift), patch.object(win, "non_character_key", return_value=False):
         for name, mock in mocks.items():
             calls.attach_mock(mock, name)
         for name, value in {"take_suggestion": True, "jump_disputed": True, "accept_run": 0, **(returns or {})}.items():
             mocks[name].return_value = value          # what the real ones answer, so the chain reads them
-        quit_ = tool.handle_key(key)
+        quit_ = tool.keys.handle(key)
     return calls.mock_calls, quit_, tool
 
 
@@ -1096,12 +1115,12 @@ def test_q_quits_unless_unsaved_labels_have_not_been_warned_about():
         assert press(mode, ord("q"))[1]
         assert not press(mode, ord("w"))[1]
     tool = Tool([source("test")])
-    tool.dirty = True
-    with patch.multiple(Tool, **{name: DEFAULT for name in KEY_HANDLERS}), \
+    tool.session.dirty = True
+    with every_handler_mocked(), \
             patch.object(win, "non_character_key", return_value=False), patch("builtins.print"):
-        assert not tool.handle_key(ord("q"))            # once: the warning
+        assert not tool.keys.handle(ord("q"))            # once: the warning
         assert tool.quit_warned
-        assert tool.handle_key(27)                      # again: quits anyway
+        assert tool.keys.handle(27)                      # again: quits anyway
 
 
 def test_y_moves_on_only_when_a_suggestion_was_taken():
@@ -1119,19 +1138,19 @@ def test_shift_reverses_e_and_makes_a_nudge_fine():
 
 def test_keys_that_change_state_rather_than_call_a_handler():
     for digit in "12468":
-        assert press("plain", ord(digit))[2].step == int(digit)
-    assert not press("plain", ord("t"))[2].trail
+        assert press("plain", ord(digit))[2].session.step == int(digit)
+    assert not press("plain", ord("t"))[2].session.trail
     tool = press("plain", ord("u"))[2]
-    assert tool.dirty and tool.source.dirty
+    assert tool.session.dirty and tool.session.source.dirty
     for key, factor in ((ord("+"), ZOOM_STEP), (ord("="), ZOOM_STEP), (ord("-"), 1 / ZOOM_STEP), (ord("_"), 1 / ZOOM_STEP)):
-        assert press("grid", key)[2].grid_zoom == pytest.approx(factor, abs=5e-8)
+        assert press("grid", key)[2].grid_view.zoom == pytest.approx(factor, abs=5e-8)
 
 
 def test_guards_swallow_function_keys_and_keys_ahead_of_the_view():
     tool = Tool([source("test")])
-    with patch.multiple(Tool, **{name: DEFAULT for name in KEY_HANDLERS}) as mocks, \
+    with every_handler_mocked() as mocks, \
             patch.object(win, "non_character_key", return_value=True):
-        assert not tool.handle_key(0x70)                  # F1 reads as p; it is not p
+        assert not tool.keys.handle(0x70)                  # F1 reads as p; it is not p
     assert not any(mock.called for mock in mocks.values())
     assert press("plain", ord(" "), ready=False)[0] == []    # the view lags: not SPACE
     assert press("plain", ord("q"), ready=False)[0] == [call.save()]   # but q still saves

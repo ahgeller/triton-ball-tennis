@@ -70,8 +70,8 @@ def fake_tool(*sources: SimpleNamespace, follow: bool = True):
 
     tool = Tool(list(sources or [fake_source("a")]))
     frames: Dict[Tuple[str, int], np.ndarray] = {}
-    tool.frame = lambda index: frames.setdefault(
-        (tool.source.clip, index), np.zeros((tool.source.height, tool.source.width, 3), np.uint8))
+    tool.session.frame = lambda index: frames.setdefault(
+        (tool.session.source.clip, index), np.zeros((tool.session.source.height, tool.session.source.width, 3), np.uint8))
     if follow:
         tool.follow_ball()
     return tool

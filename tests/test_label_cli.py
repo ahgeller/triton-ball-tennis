@@ -47,31 +47,31 @@ def test_open_sources_keeps_the_names_and_drops_clips_that_are_not_ready(tmp_pat
 
 def test_a_single_clip_resumes_where_it_was_and_a_run_at_the_first_unfinished_frame():
     one = source("a", cursor=3)
-    assert starting_cursor(tool_over(one), [one]) == 3
+    assert starting_cursor(tool_over(one).session, [one]) == 3
     first, second = source("a"), source("b")
     for row in first.rows:
         row.reviewed = True
     tool = tool_over(first, second)
-    assert starting_cursor(tool, [first, second]) == 4                       # clip b's first row
+    assert starting_cursor(tool.session, [first, second]) == 4                       # clip b's first row
 
 
 def test_settings_apply_only_where_they_still_make_sense():
     tool = tool_over(source("a"))
     apply_settings(tool, {"filter": FILTERS[1], "inset": False, "trail": False, "grid_size": 16})
-    assert tool.filter == 1 and not tool.inset and not tool.trail and tool.grid_size == 16
+    assert tool.session.filter == 1 and not tool.session.inset and not tool.session.trail and tool.grid_view.size == 16
     apply_settings(tool, {"filter": "no such filter", "grid_size": 5})
-    assert tool.filter == 1 and tool.grid_size == 16                         # unknown values: unchanged
+    assert tool.session.filter == 1 and tool.grid_view.size == 16                         # unknown values: unchanged
 
 
 def test_announce_describes_one_clip_a_run_and_the_walk(capsys):
     one = source("a", flagged=2)
-    announce(tool_over(one), [one], ["a"], uncertain=False)
+    announce(tool_over(one).session, [one], ["a"], uncertain=False)
     out = capsys.readouterr().out
     assert "[open] a.mp4: 4 label frames" in out and "[flag] 2 frame(s)" in out
     first, second = source("a"), source("b")
     tool = tool_over(first, second)
-    tool.walk = [1, 5]
-    announce(tool, [first, second], ["a", "b"], uncertain=True)
+    tool.session.walk = [1, 5]
+    announce(tool.session, [first, second], ["a", "b"], uncertain=True)
     out = capsys.readouterr().out
     assert "[open] 2 clips as one run: a .. b, 8 label frames" in out
     assert "[only ] stepping through 2 uncertain frame(s) of 8" in out and "[flag]" not in out

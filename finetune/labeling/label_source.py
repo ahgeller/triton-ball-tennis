@@ -38,7 +38,7 @@ PREFETCH = 6              # label frames decoded ahead while the tool waits for 
 PREFETCH_BUDGET_S = 0.02  # about a screen refresh of decoding per idle tick
 
 if TYPE_CHECKING:
-    from finetune.labeling.label_tool import Tool
+    from finetune.labeling.label_session import LabelSession
 
 
 def frame_signature(image: np.ndarray) -> bytes:
@@ -368,27 +368,27 @@ def resume_from(source: Source, state: dict) -> None:
 class Prefetcher:
     """Decodes the label frames ahead of the cursor while the tool is idle, so the next SPACE
     lands on a frame that is already in memory. Runs ahead the way the last move went, at the
-    tool's step, along the uncertain walk when there is one."""
+    session's step, along the uncertain walk when there is one."""
 
-    def __init__(self, tool: "Tool") -> None:
-        self.tool = tool
+    def __init__(self, session: "LabelSession") -> None:
+        self.session = session
 
     def run(self) -> bool:
         """Decode not-yet-cached frames ahead of the cursor. True when there was work to do.
 
         Keeps going for about a screen refresh rather than one frame per idle tick: a run of SPACE
         presses at two or three a second was outrunning one decode per 30 ms wait."""
-        tool = self.tool
+        session = self.session
         started, worked = time.monotonic(), False
         for index in self.upcoming_rows():
-            if tool.rows[index].clip != tool.rows[tool.cursor].clip:
+            if session.rows[index].clip != session.rows[session.cursor].clip:
                 break                                    # do not disturb the next clip's capture yet
-            frame = tool.rows[index].frame
-            if tool.filter_name == "motion":
+            frame = session.rows[index].frame
+            if session.filter_name == "motion":
                 self.warm_frame_before(index)
-            if frame in tool.source.frame_cache or frame in tool.source.missing:
+            if frame in session.source.frame_cache or frame in session.source.missing:
                 continue
-            tool.frame(frame)
+            session.frame(frame)
             worked = True
             if time.monotonic() - started > PREFETCH_BUDGET_S:
                 break
@@ -396,21 +396,21 @@ class Prefetcher:
 
     def upcoming_rows(self) -> Sequence[int]:
         """The next PREFETCH row indices the way the last move went, at the current step."""
-        tool = self.tool
-        s = tool.step                                    # n/d/p/a land every step-th row
-        if tool.direction >= 0:
-            return (tool.walk[tool.walk_pos + s::s][:PREFETCH] if tool.walk
-                    else range(tool.cursor + s, min(tool.cursor + s * PREFETCH + 1, len(tool.rows)), s))
+        session = self.session
+        s = session.step                                    # n/d/p/a land every step-th row
+        if session.direction >= 0:
+            return (session.walk[session.walk_pos + s::s][:PREFETCH] if session.walk
+                    else range(session.cursor + s, min(session.cursor + s * PREFETCH + 1, len(session.rows)), s))
         # heading back: run ahead of `a` instead
-        return ((tool.walk[tool.walk_pos - s::-s][:PREFETCH] if tool.walk_pos - s >= 0 else [])
-                if tool.walk else range(tool.cursor - s, max(-1, tool.cursor - s * PREFETCH - 1), -s))
+        return ((session.walk[session.walk_pos - s::-s][:PREFETCH] if session.walk_pos - s >= 0 else [])
+                if session.walk else range(session.cursor - s, max(-1, session.cursor - s * PREFETCH - 1), -s))
 
     def warm_frame_before(self, index: int) -> None:
         """The motion view diffs a row against the row before it: decode that one too while it is
         still ahead of the capture (no seek), unless it is cached or known to be missing."""
-        tool = self.tool
-        if index > 0 and tool.rows[index - 1].clip == tool.rows[index].clip:
-            before = tool.rows[index - 1].frame
-            if (before not in tool.source.frame_cache and before not in tool.source.missing
-                    and before >= tool.source.position >= 0):
-                tool.frame(before)
+        session = self.session
+        if index > 0 and session.rows[index - 1].clip == session.rows[index].clip:
+            before = session.rows[index - 1].frame
+            if (before not in session.source.frame_cache and before not in session.source.missing
+                    and before >= session.source.position >= 0):
+                session.frame(before)

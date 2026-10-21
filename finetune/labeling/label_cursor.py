@@ -6,7 +6,7 @@ OpenCV's Qt window never says where it draws the picture. A Windows nicety: with
 from __future__ import annotations
 
 import time
-from typing import Optional, Tuple
+from typing import Callable, Optional, Protocol, Tuple
 
 from finetune.labeling import label_window as win
 
@@ -20,13 +20,21 @@ MIN_SPREAD_PX = 5         # the two probes must read this far apart to solve a s
 SCALE_RANGE = (0.05, 20.0)   # a solved scale outside this is a hand on the mouse, not a measurement
 
 
+class ViewSize(Protocol):
+    """What the placer needs to know about the displayed image: its size and the HUD under it."""
+    view_w: int
+    view_h: int
+    hud_h: int
+
+
 class CursorPlacer:
     """Puts the OS mouse pointer on a point of the displayed image, and keeps the map from view
-    pixels to screen pixels true. `host` is the tool: it supplies the view size (view_w, view_h,
-    hud_h) and pump(ms), which lets highgui deliver the pointer reports this reads."""
+    pixels to screen pixels true. `view` supplies the view size (the label session) and `pump(ms)`
+    lets highgui deliver the pointer reports this reads (the tool's pump)."""
 
-    def __init__(self, host) -> None:
-        self.host = host
+    def __init__(self, view: ViewSize, pump: Callable[[int], None]) -> None:
+        self.view = view
+        self.pump = pump
         self.cursor_map: Optional[Tuple[float, float, float, float]] = None   # (scale_x, scale_y, offset_x, offset_y) view px -> client px
         self.map_stale = True         # until calibrate has measured the real one
         self.map_time = 0.0           # when the map was last measured
@@ -78,8 +86,8 @@ class CursorPlacer:
         measurement, and one taken while another window covered ours, or before the window was
         moved to a screen at a different DPI, is wrong in a way nothing else here would notice.
         """
-        view_x = min(max(view_x, 0.0), self.host.view_w - 1.0)
-        view_y = min(max(view_y, 0.0), self.host.view_h - 1.0)
+        view_x = min(max(view_x, 0.0), self.view.view_w - 1.0)
+        view_y = min(max(view_y, 0.0), self.view.view_h - 1.0)
         target = self.screen_for(view_x, view_y)
         if target is None:
             return False
@@ -168,7 +176,7 @@ class CursorPlacer:
         """Pump highgui until it reports a pointer position newer than `seq`. None if it never does."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            self.host.pump(5)
+            self.pump(5)
             if self.pointer_seq != seq:
                 return self.pointer
         return None
@@ -192,9 +200,9 @@ class CursorPlacer:
         if geometry is None:
             return
         origin_x, origin_y, client_w, client_h = geometry
-        host = self.host
+        view = self.view
         if self.cursor_map is None:    # something to aim with until the measurement comes back
-            guess = min(client_w / max(host.view_w, 1), client_h / max(host.view_h + host.hud_h, 1))
+            guess = min(client_w / max(view.view_w, 1), client_h / max(view.view_h + view.hud_h, 1))
             self.cursor_map = (guess, guess, 0.0, 0.0)
         self.map_stale = False
         self.map_time = time.monotonic()

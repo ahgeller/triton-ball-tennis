@@ -11,36 +11,44 @@ from typing import TYPE_CHECKING
 import cv2
 
 if TYPE_CHECKING:
+    from finetune.labeling.label_session import LabelSession
     from finetune.labeling.label_tool import Tool
 
 
 class MouseHandler:
     """``on_mouse`` is the highgui callback the tool registers on its window."""
 
-    def __init__(self, tool: "Tool") -> None:
+    def __init__(self, session: "LabelSession", tool: "Tool") -> None:
+        self.session = session
         self.tool = tool
 
     def on_mouse(self, event: int, x: int, y: int, flags: int, param: object = None) -> None:
-        tool = self.tool
-        if event == cv2.EVENT_MOUSEWHEEL and tool.viewport.absorb_wheel(x, y, flags, tool.view_w):
+        tool, session = self.tool, self.session
+        if event == cv2.EVENT_MOUSEWHEEL and tool.viewport.absorb_wheel(x, y, flags, session.view_w):
             return                                  # a wheel the tool sent itself, not the hand's
         self.note_pointer(x, y)
         if self.guarded(event):
             if event == cv2.EVENT_MOUSEWHEEL:
                 self.settle_wheel(flags)
             return
-        if tool.sheet:
-            tool.sheet_mouse(event, x, y)
+        if tool.sheet_view.active:
+            tool.sheet_view.on_mouse(event, x, y)
             return
         if event == cv2.EVENT_LBUTTONDBLCLK:
             # The second press of a quick double-click comes through as this instead of a press. With
             # the pointer parked on the same screen pixel frame after frame, click-click on two
             # consecutive frames is exactly that, and every second click used to be thrown away.
             event = cv2.EVENT_LBUTTONDOWN
-        if tool.grid:
-            tool.grid_mouse(event, x, y)
+        if tool.grid_view.active:
+            tool.grid_view.on_mouse(event, x, y)
             return
-        if y >= tool.view_h:                        # the HUD: its buttons, and nothing else
+        self.frame_event(event, x, y, flags)
+
+    def frame_event(self, event: int, x: int, y: int, flags: int) -> None:
+        """An event on the single-frame view: the HUD's chips, the inset, a click placing the ball,
+        a right click re-centring, or the wheel zooming about the pointer."""
+        tool, session = self.tool, self.session
+        if y >= session.view_h:                     # the HUD: its buttons, and nothing else
             if event == cv2.EVENT_LBUTTONDOWN:
                 tool.frame_view.click_hud(x, y)
             return
@@ -50,13 +58,10 @@ class MouseHandler:
         if event == cv2.EVENT_LBUTTONDOWN:
             self.place_click(x, y)
         elif event == cv2.EVENT_RBUTTONDOWN:
-            frame_x, frame_y = tool.to_frame(x + 0.5, y + 0.5)
-            tool.center = (min(max(frame_x, 0.0), tool.width - 1.0),   # a click in the black beyond
-                           min(max(frame_y, 0.0), tool.height - 1.0))  # the frame: keep it on frame
-            tool.centre_view()
-        elif event == cv2.EVENT_MOUSEWHEEL:
+            session.centre_on(*session.to_frame(x + 0.5, y + 0.5))   # a click in the black beyond the
+        elif event == cv2.EVENT_MOUSEWHEEL:                           # frame is kept on the frame
             tool.mouse.wheel_at = time.monotonic()
-            tool.zoom_at(self.wheel_notches(flags), x + 0.5, y + 0.5)
+            session.zoom_at(self.wheel_notches(flags), x + 0.5, y + 0.5)
             tool.viewport.repay_wheel(flags >> 16)
 
     def note_pointer(self, x: int, y: int) -> None:
@@ -83,14 +88,14 @@ class MouseHandler:
 
     def place_click(self, x: int, y: int) -> None:
         """A left click on the picture: the ball is there, and the next frame comes up."""
-        tool = self.tool
-        if tool.frame_missing():
+        session = self.session
+        if session.frame_missing():
             return                                  # nothing to see, so nothing to label
-        fx, fy = tool.to_frame(x + 0.5, y + 0.5)  # highgui floors the pointer to a pixel: aim at
-        if not (-2 <= fx < tool.width + 2 and -2 <= fy < tool.height + 2):   # its middle
+        fx, fy = session.to_frame(x + 0.5, y + 0.5)  # highgui floors the pointer to a pixel: aim at
+        if not (-2 <= fx < session.width + 2 and -2 <= fy < session.height + 2):   # its middle
             return                                # a click in the black beyond the frame
-        if tool.set_point(fx, fy):
-            tool.move(1)
+        if self.tool.set_point(fx, fy):
+            self.tool.move(1)
 
     @staticmethod
     def wheel_notches(flags: int) -> float:

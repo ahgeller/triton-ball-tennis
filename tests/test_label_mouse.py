@@ -33,47 +33,47 @@ def test_guarded_is_a_pure_test_of_calibrating_the_overview_and_a_lagging_view()
     assert pointer.guarded(cv2.EVENT_LBUTTONDOWN) and pointer.guarded(cv2.EVENT_MOUSEWHEEL)
     assert not pointer.guarded(cv2.EVENT_MOUSEMOVE)                          # moves are what calibration reads
     tool.mouse.calibrating = False
-    tool.grid = True                                                         # the overview: no wheel, clicks are its own
+    tool.grid_view.active = True                                                         # the overview: no wheel, clicks are its own
     assert pointer.guarded(cv2.EVENT_MOUSEWHEEL) and not pointer.guarded(cv2.EVENT_LBUTTONDOWN)
-    tool.grid = False
-    tool.cursor = 3                                                          # the view lags the cursor
+    tool.grid_view.active = False
+    tool.session.cursor = 3                                                          # the view lags the cursor
     assert pointer.guarded(cv2.EVENT_LBUTTONDOWN) and not pointer.guarded(cv2.EVENT_MOUSEMOVE)
 
 
 def test_every_event_notes_the_pointer_and_an_unused_wheel_is_settled():
     tool = shown_tool()
-    tool.on_mouse(cv2.EVENT_MOUSEMOVE, 7, 9, 0, None)
+    tool.pointer.on_mouse(cv2.EVENT_MOUSEMOVE, 7, 9, 0, None)
     assert tool.mouse.pointer == (7, 9)                                      # note_pointer, before any guard
     with patch.object(tool.viewport, "absorb_wheel", return_value=True), patch.object(tool.viewport, "repay_wheel") as repay:
-        tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16, None)         # the tool's own wheel: swallowed
+        tool.pointer.on_mouse(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16, None)         # the tool's own wheel: swallowed
     assert tool.mouse.pointer == (7, 9) and not repay.called
     tool.mouse.calibrating = True
     with patch.object(tool.viewport, "repay_wheel") as repay:
-        tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16, None)         # guarded: settled, not zoomed
+        tool.pointer.on_mouse(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16, None)         # guarded: settled, not zoomed
     repay.assert_called_once_with(120)
-    assert tool.mouse.pointer == (10, 10) and tool.zoom_target == 1.0
+    assert tool.mouse.pointer == (10, 10) and tool.session.zoom_target == 1.0
 
 
 def test_a_left_click_places_the_ball_and_moves_on_a_right_click_recentres():
     tool = shown_tool()
-    x, y = tool.to_view(150.0, 90.0)
-    tool.on_mouse(cv2.EVENT_LBUTTONDOWN, x, y, 0, None)
-    assert tool.rows[0].edited and abs(tool.rows[0].x - 150.0) < 1.0 and abs(tool.rows[0].y - 90.0) < 1.0
-    assert tool.cursor == 1
+    x, y = tool.session.to_view(150.0, 90.0)
+    tool.pointer.on_mouse(cv2.EVENT_LBUTTONDOWN, x, y, 0, None)
+    assert tool.session.rows[0].edited and abs(tool.session.rows[0].x - 150.0) < 1.0 and abs(tool.session.rows[0].y - 90.0) < 1.0
+    assert tool.session.cursor == 1
     with patch.object(cv2, "imshow"):
         tool.show()
-    x, y = tool.to_view(20.0, 30.0)
-    tool.on_mouse(cv2.EVENT_RBUTTONDOWN, x, y, 0, None)
-    assert abs(tool.center[0] - 20.0) < 1.0 and abs(tool.center[1] - 30.0) < 1.0 and tool.cursor == 1
-    tool.on_mouse(cv2.EVENT_LBUTTONDOWN, -5000, 10, 0, None)                 # the black beyond the frame
-    assert tool.cursor == 1
+    x, y = tool.session.to_view(20.0, 30.0)
+    tool.pointer.on_mouse(cv2.EVENT_RBUTTONDOWN, x, y, 0, None)
+    assert abs(tool.session.center[0] - 20.0) < 1.0 and abs(tool.session.center[1] - 30.0) < 1.0 and tool.session.cursor == 1
+    tool.pointer.on_mouse(cv2.EVENT_LBUTTONDOWN, -5000, 10, 0, None)                 # the black beyond the frame
+    assert tool.session.cursor == 1
 
 
 def test_a_click_on_the_bar_goes_to_the_chips_and_a_missing_frame_takes_no_label():
     tool = shown_tool()
     view = tool.frame_view
-    tool.on_mouse(cv2.EVENT_LBUTTONDOWN, view.centre_button[0], view.centre_button[1], 0, None)
-    assert not tool.follow and tool.cursor == 0
-    tool.source.missing.add(tool.rows[0].frame)
+    tool.pointer.on_mouse(cv2.EVENT_LBUTTONDOWN, view.centre_button[0], view.centre_button[1], 0, None)
+    assert not tool.session.follow and tool.session.cursor == 0
+    tool.session.source.missing.add(tool.session.rows[0].frame)
     tool.pointer.place_click(10, 10)
-    assert not tool.rows[0].edited and tool.cursor == 0
+    assert not tool.session.rows[0].edited and tool.session.cursor == 0

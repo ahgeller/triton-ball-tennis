@@ -12,10 +12,11 @@ from typing import List, Tuple
 from finetune.labeling import label_tool
 from finetune.labeling import label_window as win
 from finetune.labeling.label_draw import FILTERS
+from finetune.labeling.label_grid import GRID_SIZES
+from finetune.labeling.label_session import ZOOM_MAX, LabelSession
 from finetune.labeling.label_source import Source, build_source, expand_clip_ranges
 from finetune.labeling.label_store import SETTINGS_NAME, Settings, load_settings
-from finetune.labeling.label_tool import ZOOM_MAX, Tool
-from finetune.labeling.label_grid import GRID_SIZES
+from finetune.labeling.label_tool import Tool
 from finetune.data import workspace as ws
 
 
@@ -68,42 +69,44 @@ def main() -> int:
     if not sources:
         return 1
     tool = Tool(sources)
-    if args.uncertain and not tool.only_uncertain():
+    session = tool.session
+    if args.uncertain and not session.only_uncertain():
         print("[done] nothing uncertain left in " + (names[0] if len(names) == 1 else
                                                      f"{names[0]}..{names[-1]}") +
               " - every frame here has either a confident guess or your tick on it.")
         return 0
     if not args.uncertain:
-        tool.cursor = starting_cursor(tool, sources)
-    tool.zoom = min(max(args.zoom or sources[0].zoom, 1.0), ZOOM_MAX)
-    tool.zoom_target = tool.zoom
+        session.set_cursor(starting_cursor(session, sources))
+    session.zoom = min(max(args.zoom or sources[0].zoom, 1.0), ZOOM_MAX)
+    session.zoom_target = session.zoom
     tool.settings_path = args.labels / SETTINGS_NAME
     apply_settings(tool, load_settings(tool.settings_path))
-    announce(tool, sources, names, args.uncertain)
+    announce(session, sources, names, args.uncertain)
     if args.grid:
-        tool.toggle_grid()
+        tool.grid_view.toggle()
     tool.run()
     return 0
 
 
-def starting_cursor(tool: Tool, sources: List[Source]) -> int:
+def starting_cursor(session: LabelSession, sources: List[Source]) -> int:
     """One clip resumes exactly where you left off; a run carries on at the first frame not done."""
     if len(sources) == 1:
         return sources[0].cursor
-    return next((i for i, row in enumerate(tool.rows) if not row.reviewed), 0)
+    return next((i for i, row in enumerate(session.rows) if not row.reviewed), 0)
 
 
 def apply_settings(tool: Tool, settings: Settings) -> None:
     """The toggles the last session left in the settings file, where they still make sense."""
+    session = tool.session
     if settings.get("filter") in FILTERS:
-        tool.filter = FILTERS.index(settings["filter"])
-    tool.inset = bool(settings.get("inset", tool.inset))
-    tool.trail = bool(settings.get("trail", tool.trail))
+        session.filter = FILTERS.index(settings["filter"])
+    session.inset = bool(settings.get("inset", session.inset))
+    session.trail = bool(settings.get("trail", session.trail))
     if settings.get("grid_size") in GRID_SIZES:
-        tool.grid_size = settings["grid_size"]
+        tool.grid_view.size = settings["grid_size"]
 
 
-def announce(tool: Tool, sources: List[Source], names: List[str], uncertain: bool) -> None:
+def announce(session: LabelSession, sources: List[Source], names: List[str], uncertain: bool) -> None:
     """The opening lines: what is open, where it starts and what the walk stops on."""
     total = sum(len(source.rows) for source in sources)
     flagged = sum(source.flagged for source in sources)
@@ -112,13 +115,13 @@ def announce(tool: Tool, sources: List[Source], names: List[str], uncertain: boo
         print(f"[open] {source.video.name}: {len(source.rows)} label frames, "
               f"{sum(r.uncertain for r in source.rows)} uncertain")
     else:
-        done = sum(1 for row in tool.rows if row.reviewed)
+        done = sum(1 for row in session.rows if row.reviewed)
         print(f"[open] {len(sources)} clips as one run: {names[0]} .. {names[-1]}, {total} label frames, "
-              f"{done} already done. Starting at {tool.rows[tool.cursor].clip} "
-              f"frame {tool.rows[tool.cursor].frame}.")
+              f"{done} already done. Starting at {session.rows[session.cursor].clip} "
+              f"frame {session.rows[session.cursor].frame}.")
         print("       n/p and SPACE carry straight on into the next clip; each clip saves to its own file.")
     if uncertain:
-        print(f"[only ] stepping through {len(tool.walk)} uncertain frame(s) of {total}; "
+        print(f"[only ] stepping through {len(session.walk)} uncertain frame(s) of {total}; "
               f"n/p/SPACE move between those, everything else is left exactly as it is.")
     elif flagged:
         print(f"[flag] {flagged} frame(s) were marked doubtful by the last audit - press f to walk them; "

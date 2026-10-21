@@ -1,5 +1,6 @@
-"""The label tool and what it draws on: ``label_tool`` (the tool, run as a script: its state,
-navigation and edits), split into ``label_cli`` (its command line), ``label_store`` (a clip's rows
+"""The label tool and what it draws on: ``label_tool`` (the tool, run as a script: its actions,
+window and loop) over ``label_session`` (the one owner of a sitting's state, which every view and
+handler reads and writes), split into ``label_cli`` (its command line), ``label_store`` (a clip's rows
 and sidecars), ``label_source`` (one clip of a labelling run, and decoding ahead of the cursor),
 ``label_window`` (window plumbing and the key tables), ``label_cursor`` (parking the OS pointer on
 the ball), ``label_keys`` (what the keys do), ``label_mouse`` (what the mouse does),

@@ -9,8 +9,7 @@ from finetune.labeling.label_cursor import WHEEL_QUIET, CursorPlacer
 
 
 def placer():
-    host = SimpleNamespace(view_w=640, view_h=360, hud_h=58, pump=lambda ms: None)
-    return CursorPlacer(host)
+    return CursorPlacer(SimpleNamespace(view_w=640, view_h=360, hud_h=58), lambda ms: None)
 
 
 def test_reports_are_counted_and_a_rebuilt_window_forgets_its_map():
@@ -45,9 +44,9 @@ def test_screen_for_needs_both_a_window_and_a_measured_map():
 
 def test_await_pointer_returns_the_next_report_or_gives_up():
     mouse = placer()
-    mouse.host.pump = lambda ms: mouse.report(5, 6)
+    mouse.pump = lambda ms: mouse.report(5, 6)
     assert mouse.await_pointer(mouse.pointer_seq, 0.5) == (5, 6)
-    mouse.host.pump = lambda ms: None
+    mouse.pump = lambda ms: None
     assert mouse.await_pointer(mouse.pointer_seq, 0.01) is None
 
 
