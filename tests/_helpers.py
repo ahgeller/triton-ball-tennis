@@ -122,6 +122,19 @@ def fake_tool(*sources: SimpleNamespace, follow: bool = True):
         tool.follow_ball()
     return tool
 
+def blank_template(model, path: Path) -> Path:
+    """An .npz with the layout ``save_weights`` expects (the BatchNorm statistics), made from the
+    model's own layers; the convolutions are written by ``save_weights`` itself."""
+    arrays = {}
+    for index, layer in enumerate(model.batch_norms):
+        name = "batch_normalization" if index == 0 else f"batch_normalization_{index}"
+        for key, value in (("gamma", layer.gamma), ("beta", layer.beta), ("moving_mean", layer.mean),
+                           ("moving_variance", layer.variance)):
+            arrays[f"{name}/{name}/{key}:0"] = value.detach().numpy()
+    np.savez(path, **arrays)
+    return path
+
+
 # A detector output the metric probe returns for every five-frame unit.
 _PROBE_POINT = (100, 100)
 _PROBE_CONFIDENCE = 0.9

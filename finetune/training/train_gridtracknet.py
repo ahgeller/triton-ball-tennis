@@ -14,10 +14,13 @@ tags every clip with a source so you can pick, hold out and oversample by source
     python finetune/training/train_gridtracknet.py --from-scratch --epochs 30   # train a fresh network on everything
     python finetune/training/train_gridtracknet.py --self-test
 
-After training, the best-validation-loss checkpoint and the starting weights are
-both scored on the validation clips with the detector metric used by
-``evaluate_archive.py`` (recall / wrong-object / false-alarm), and the winner is
-copied to ``--save`` so the tracker always points at the best model.
+After every scored epoch (``--score-every``, the last epoch always) the weights are
+scored on the held-out clips with the detector metric ``evaluate_archive.py`` reports
+(recall / wrong-object / false-alarm), and ``best.npz`` is the epoch that metric
+prefers (``promotion_improves``; a tie keeps the earlier epoch), not the one with the
+lowest validation loss (kept as ``best_loss.npz`` for the record). The run ends by
+setting that best epoch against the starting weights on the same clips, and the
+winner is copied to ``--save`` so the tracker always points at the best model.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 
 import numpy as np
 import torch
@@ -48,7 +51,8 @@ from finetune.training.frame_cache import build_units, prepare_data
 from finetune.training.loop import evaluate_loss, fresh_model, gridtracknet_loss, save_weights, train_epoch
 from finetune.training.metrics import promotion_improves, score_weights
 
-SEED = 7                   # every run draws the same augmentation and sampling sequence
+SEED = 7                   # every run draws the same augmentation and sampling sequence unless --seed says otherwise
+RESULTS_COLUMNS = ("epoch", "train_loss", "val_loss", "seconds", "score_seconds", *DetectorMetrics._fields)
 
 # --------------------------------------------------------------------------- the run
 
@@ -62,40 +66,101 @@ def parse_oversample(items: Optional[List[str]]) -> Dict[str, float]:
     return weights
 
 
-def pick_winner(args: argparse.Namespace, clips: List[Clip], val_clips: List[str], best_path: Path,
-                device: torch.device) -> None:
-    """Keep the best model by the metric that matters, not just the loss: the trained weights win
-    only when they beat the starting weights on the held-out clips (see `promotion_improves`)."""
-    val_only = [entry for entry in clips if entry[0] in val_clips]
-    trained = score_weights(best_path, val_only, device)
-    print(f"[eval] trained best.npz on {val_clips}: {trained}")
-    winner, winner_stats = best_path, trained
-    if not args.from_scratch:
-        baseline = score_weights(args.weights, val_only, device)
-        print(f"[eval] starting weights on {val_clips}: {baseline}")
-        if not promotion_improves(trained, baseline):
-            winner, winner_stats = args.weights, baseline
-    copy_atomic(winner, args.save)
-    write_atomic(args.run_dir / "winner.json", json.dumps({"winner": str(winner), "metrics": winner_stats._asdict(),
-                                                           "validation_clips": val_clips}, indent=2))
-    print(f"[done] best model -> {args.save}  (from {winner.name}: {winner_stats})")
-    if winner == best_path:
-        print("[done] promote it with: python finetune/ft.py promote")
-    else:
-        print("[done] the starting weights stayed ahead on the held-out clips; nothing to promote")
-
-
 def run_config(args: argparse.Namespace, names: List[str], val_clips: List[str], oversample: Dict[str, float]) -> dict:
     """What a run was: the clips, the held-out ones and how they were chosen, and every option that
     shaped the training, as ``config.json`` records it."""
     return {"clips": names, "validation_clips": val_clips, "holdout": args.holdout, "val_clips": args.val_clips,
             "sources": args.sources, "cameras": args.cameras, "augment": args.augment, "oversample": oversample,
             "epoch_units": args.epoch_units, "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
+            "seed": args.seed, "score_every": args.score_every,
             "from_scratch": args.from_scratch, "weights": str(args.weights)}
 
 
+class Selection(NamedTuple):
+    """What the epochs left behind: the epoch the detector metric chose (``best.npz``) with its
+    metrics, and the epoch of the lowest validation loss (``best_loss.npz``), for the record."""
+    best_path: Path
+    best_epoch: int
+    best_metrics: DetectorMetrics
+    best_loss_epoch: int
+    best_loss: float
+
+
+def results_row(epoch: int, train_loss: float, val_loss: float, seconds: float, score_seconds: Optional[float],
+                metrics: Optional[DetectorMetrics]) -> List[str]:
+    """One ``results.csv`` row; the scoring columns are empty on an epoch that was not scored."""
+    row = [str(epoch), f"{train_loss:.8f}", f"{val_loss:.8f}", f"{seconds:.0f}"]
+    if metrics is None:
+        return row + [""] * (len(RESULTS_COLUMNS) - len(row))
+    return row + [f"{score_seconds:.0f}"] + [f"{value:.6f}" if isinstance(value, float) else str(value) for value in metrics]
+
+
+def fit(args: argparse.Namespace, model: torch.nn.Module, train_loader, val_loader, optimizer, scaler,
+        device: torch.device, score: Callable[[Path], DetectorMetrics]) -> Selection:
+    """Run the epochs. After each one ``last.npz`` is written and ``results.csv`` gets its row; on a
+    scored epoch (every ``--score-every``, and always the last) ``score(last.npz)`` measures the
+    held-out detector metric and ``best.npz`` follows it by ``promotion_improves`` (a tie keeps
+    the earlier epoch); ``best_loss.npz`` follows the validation loss."""
+    results = args.run_dir / "results.csv"
+    write_atomic(results, ",".join(RESULTS_COLUMNS) + "\n")
+    last_path, best_path, best_loss_path = (args.run_dir / name for name in ("last.npz", "best.npz", "best_loss.npz"))
+    best_epoch, best_metrics = 0, None
+    best_loss_epoch, best_loss = 0, math.inf
+    for epoch in range(1, args.epochs + 1):
+        started = time.perf_counter()
+        train_loss = train_epoch(model, train_loader, optimizer, scaler, device, epoch, args.epochs, args.max_train_steps)
+        val_loss = evaluate_loss(model, val_loader, device, args.max_val_steps)
+        save_weights(model, args.weights, last_path)
+        if val_loss < best_loss:
+            best_loss_epoch, best_loss = epoch, val_loss
+            copy_atomic(last_path, best_loss_path)
+        seconds = time.perf_counter() - started
+        metrics = score_seconds = None
+        if epoch % args.score_every == 0 or epoch == args.epochs:
+            scoring = time.perf_counter()
+            metrics = score(last_path)
+            score_seconds = time.perf_counter() - scoring
+            if best_metrics is None or promotion_improves(metrics, best_metrics):
+                best_epoch, best_metrics = epoch, metrics
+                copy_atomic(last_path, best_path)
+        with results.open("a", encoding="utf-8", newline="") as handle:    # one line per epoch, appended
+            csv.writer(handle).writerow(results_row(epoch, train_loss, val_loss, seconds, score_seconds, metrics))
+        scored = (f" | held-out recall={metrics.recall:.3f} wrong={metrics.wrong:.3f} falseAlarm={metrics.false_alarm:.3f}"
+                  f" ({score_seconds / 60:.1f} min)" if metrics is not None else "")
+        print(f"[train] epoch {epoch}: train={train_loss:.6f} val={val_loss:.6f} ({seconds / 60:.1f} min){scored}"
+              f" | best epoch {best_epoch}", flush=True)
+    return Selection(best_path, best_epoch, best_metrics, best_loss_epoch, best_loss)
+
+
+def pick_winner(args: argparse.Namespace, clips: List[Clip], val_clips: List[str], selection: Selection,
+                device: torch.device) -> None:
+    """Keep the best model by the metric that matters, not just the loss: the best epoch's weights
+    (already scored while training) win only when they beat the starting weights on the held-out
+    clips (see `promotion_improves`)."""
+    trained = selection.best_metrics
+    print(f"[eval] best.npz (epoch {selection.best_epoch}) on {val_clips}: {trained}")
+    winner, winner_stats = selection.best_path, trained
+    record = {"selected_by": "detector_metric", "best_epoch": selection.best_epoch,
+              "best_loss_epoch": selection.best_loss_epoch, "validation_clips": val_clips}
+    if not args.from_scratch:
+        val_only = [entry for entry in clips if entry[0] in val_clips]
+        baseline = score_weights(args.weights, val_only, device)
+        print(f"[eval] starting weights on {val_clips}: {baseline}")
+        record["starting_weights"] = {"path": str(args.weights), "metrics": baseline._asdict()}
+        if not promotion_improves(trained, baseline):
+            winner, winner_stats = args.weights, baseline
+    copy_atomic(winner, args.save)
+    write_atomic(args.run_dir / "winner.json",
+                 json.dumps({"winner": str(winner), "metrics": winner_stats._asdict(), **record}, indent=2))
+    print(f"[done] best model -> {args.save}  (from {winner.name}: {winner_stats})")
+    if winner == selection.best_path:
+        print("[done] promote it with: python finetune/ft.py promote")
+    else:
+        print("[done] the starting weights stayed ahead on the held-out clips; nothing to promote")
+
+
 def train(args: argparse.Namespace) -> None:
-    torch.manual_seed(SEED)       # the data loaders' draws derive from it too, see Augmenter
+    torch.manual_seed(args.seed)       # the data loaders' draws derive from it too, see Augmenter
     clips = find_clips(args.videos, args.labels, ClipSelection(args.sources, args.exclude_clips, args.include_excluded, args.cameras))
     names = [clip for clip, _, _, _ in clips]
     val_clips = validation_split(clips, args.labels, args.val_clips, args.holdout)
@@ -125,28 +190,14 @@ def train(args: argparse.Namespace) -> None:
     optimizer = torch.optim.Adadelta(model.parameters(), lr=args.lr, rho=0.95, eps=1e-7)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
     args.run_dir.mkdir(parents=True, exist_ok=True)
-    results = args.run_dir / "results.csv"
-    write_atomic(results, "epoch,train_loss,val_loss,seconds\n")
     write_atomic(args.run_dir / "config.json", json.dumps(run_config(args, names, val_clips, oversample), indent=2))
-    best_path = args.run_dir / "best.npz"
-    best = math.inf
-    print(f"[train] device={device} epochs={args.epochs} batch={args.batch_size} "
-          f"units/epoch={len(train_loader) * args.batch_size} val={val_clips}"
+    print(f"[train] device={device} epochs={args.epochs} batch={args.batch_size} seed={args.seed} "
+          f"units/epoch={len(train_loader) * args.batch_size} val={val_clips} score every {args.score_every}"
           + (f" oversample={oversample}" if oversample else ""))
-    for epoch in range(1, args.epochs + 1):
-        started = time.perf_counter()
-        train_loss = train_epoch(model, train_loader, optimizer, scaler, device, epoch, args.epochs, args.max_train_steps)
-        val_loss = evaluate_loss(model, val_loader, device, args.max_val_steps)
-        save_weights(model, args.weights, args.run_dir / "last.npz")
-        if val_loss < best:
-            best = val_loss
-            save_weights(model, args.weights, best_path)
-        seconds = time.perf_counter() - started
-        with results.open("a", encoding="utf-8", newline="") as handle:    # one line per epoch, appended
-            csv.writer(handle).writerow([epoch, f"{train_loss:.8f}", f"{val_loss:.8f}", f"{seconds:.0f}"])
-        print(f"[train] epoch {epoch}: train={train_loss:.6f} val={val_loss:.6f} best={best:.6f} ({seconds / 60:.1f} min)",
-              flush=True)
-    pick_winner(args, clips, val_clips, best_path, device)
+    val_only = [entry for entry in clips if entry[0] in val_clips]
+    selection = fit(args, model, train_loader, val_loader, optimizer, scaler, device,
+                    score=lambda weights: score_weights(weights, val_only, device))
+    pick_winner(args, clips, val_clips, selection, device)
 
 
 def expect(condition: bool, what: str) -> None:
@@ -188,6 +239,9 @@ def self_test() -> None:
     augmented = photometric_augment(np.full((15, 8, 8), 0.5, dtype=np.float32), Augmenter(1))
     expect(augmented.shape == (15, 8, 8) and augmented.dtype == np.float32
            and 0.0 <= augmented.min() <= augmented.max() <= 1.0, "augmentation keeps shape and range")
+    row = results_row(2, 0.5, 0.25, 90.0, 10.0, metrics_of(0.9, 0.01))
+    expect(len(row) == len(RESULTS_COLUMNS) and row[5] == "100" and row[6] == "0.900000", "a scored results row")
+    expect(results_row(1, 0.5, 0.25, 90.0, None, None)[4:] == [""] * (len(RESULTS_COLUMNS) - 4), "an unscored results row")
     model = fresh_model(torch.device("cpu"))
     expect(model(torch.zeros(1, 15, HEIGHT, WIDTH)).shape == (1, 15, GRID_ROWS, GRID_COLS), "the fresh model's output")
     print("train_gridtracknet self-test passed")
@@ -221,6 +275,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1.0, help="Adadelta lr (1.0 = upstream; 0.3 for gentle fine-tunes)")
+    parser.add_argument("--seed", type=int, default=SEED, help=f"The augmentation and sampling seed (default {SEED})")
+    parser.add_argument("--score-every", type=int, default=1, metavar="K",
+                        help="Score the held-out clips with the detector metric every K epochs (the last epoch always); "
+                             "best.npz is the scored epoch the metric prefers")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--prep-workers", type=int, default=4, help="Parallel clips while extracting the frame cache")
     parser.add_argument("--device", default="cuda")
@@ -241,6 +299,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.self_test:
         self_test()
         return 0
+    if args.score_every < 1:
+        print("[error] --score-every must be at least 1", file=sys.stderr)
+        return 1
     try:
         train(args)
     except (ValueError, OSError) as error:

@@ -1,10 +1,12 @@
 """finetune/training/train_gridtracknet.py and the modules under it: the script's own self-test, and the data
 path - which clips train, the per-clip frame cache, and the flip augmentation's label transform - on
 synthetic clips under tmp_path. No GPU, no real label or video."""
+import csv
 import json
 import os
 import random
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -12,12 +14,15 @@ import pytest
 import torch
 
 from finetune.training import train_gridtracknet as training
+from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.labels import write_labels
 from finetune.training.clips import ClipSelection, find_clips
 from finetune.training.dataset import Augmenter, UnitDataset, make_target
 from finetune.training.frame_cache import DATA_VERSION, TrainingUnit, prepare_clip, training_targets
+from finetune.training.loop import fresh_model
 from finetune.training.metrics import promotion_improves
-from tests._helpers import metric_probe, write_clip
+from tennis_tracker.gridtracknet import load_model
+from tests._helpers import blank_template, metric_probe, write_clip
 
 SIZE = (64, 36)
 
@@ -234,6 +239,106 @@ def test_flipped_label_lands_on_the_flipped_pixels(tmp_path):
 
 
 # --------------------------------------------------------------------------- the metric and the winner
+
+def scripted_run(tmp_path, argv, train_losses, val_losses, scored):
+    """``fit`` on a fresh CPU model with the epoch losses scripted and the held-out metric answered
+    from `scored` (recall per scored call, wrong 0); returns (args, selection, the metric calls)."""
+    model = fresh_model(torch.device("cpu"))
+    with torch.no_grad():
+        model.convs[0].bias.zero_()
+    template = blank_template(model, tmp_path / "template.npz")
+    args = training.build_parser().parse_args(["--run-dir", str(tmp_path / "run"), "--weights", str(template), *argv])
+    args.run_dir.mkdir()
+    calls = []
+
+    def score(weights):
+        calls.append(weights)
+        return training.metrics_of(scored[len(calls) - 1], 0.0)
+
+    def train_epoch(model, *_):
+        with torch.no_grad():
+            model.convs[0].bias += 1.0          # "training": the first bias counts the epochs, so each saved file is its epoch
+        return train_losses[int(model.convs[0].bias[0]) - 1]
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    with patch.object(training, "train_epoch", side_effect=train_epoch), \
+            patch.object(training, "evaluate_loss", side_effect=val_losses):
+        selection = training.fit(args, model, None, None, optimizer, scaler, torch.device("cpu"), score)
+    return args, selection, calls
+
+
+def results_of(run_dir):
+    with (run_dir / "results.csv").open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_best_npz_is_the_epoch_the_detector_metric_prefers_not_the_lowest_loss(tmp_path):
+    """Three epochs: the validation loss keeps falling, the held-out recall peaks at epoch 2 and
+    epoch 3 only ties it. best.npz is epoch 2 (a tie keeps the earlier epoch), best_loss.npz is
+    epoch 3, and results.csv carries both the losses and the metric of every scored epoch."""
+    args, selection, calls = scripted_run(tmp_path, ["--epochs", "3"], [0.6, 0.4, 0.3], [0.5, 0.3, 0.2], [0.80, 0.90, 0.90])
+    assert calls == [args.run_dir / "last.npz"] * 3
+    assert (selection.best_epoch, selection.best_loss_epoch) == (2, 3) and selection.best_loss == 0.2
+    assert selection.best_metrics.recall == 0.90 and selection.best_path == args.run_dir / "best.npz"
+    rows = results_of(args.run_dir)
+    assert [row["epoch"] for row in rows] == ["1", "2", "3"] and list(rows[0]) == list(training.RESULTS_COLUMNS)
+    assert [float(row["val_loss"]) for row in rows] == [0.5, 0.3, 0.2]
+    assert [float(row["recall"]) for row in rows] == [0.80, 0.90, 0.90] and rows[1]["visible"] == "100"
+    assert all(row["score_seconds"] != "" and row["seconds"] != "" for row in rows)
+    # the files are the epochs they claim (the scripted epoch counts in the first bias)
+    assert epoch_of(args.run_dir / "best.npz") == 2 and epoch_of(args.run_dir / "best_loss.npz") == 3
+    assert epoch_of(args.run_dir / "last.npz") == 3
+
+
+def epoch_of(weights: Path) -> int:
+    return int(load_model(weights, torch.device("cpu")).convs[0].bias[0])
+
+
+def test_score_every_leaves_unscored_epochs_blank_and_always_scores_the_last(tmp_path):
+    args, selection, calls = scripted_run(tmp_path, ["--epochs", "3", "--score-every", "2"], [0.6, 0.4, 0.3],
+                                          [0.5, 0.3, 0.2], [0.95, 0.90])
+    assert len(calls) == 2 and selection.best_epoch == 2                 # epochs 2 and 3 scored; 2 preferred
+    assert epoch_of(args.run_dir / "best.npz") == 2 and epoch_of(args.run_dir / "last.npz") == 3
+    rows = results_of(args.run_dir)
+    assert rows[0]["recall"] == "" and rows[0]["score_seconds"] == "" and rows[0]["val_loss"] != ""
+    assert rows[1]["recall"] == "0.950000" and rows[2]["recall"] == "0.900000"
+    assert training.main(["--score-every", "0", "--self-test"]) == 0        # the self-test needs no run
+    assert training.main(["--score-every", "0"]) == 1
+
+
+def test_pick_winner_reuses_the_best_epochs_metrics_and_records_how_it_chose(tmp_path, capsys):
+    args, selection, _ = scripted_run(tmp_path, ["--epochs", "2", "--save", str(tmp_path / "save.npz")],
+                                      [0.6, 0.4], [0.5, 0.3], [0.90, 0.85])
+    clips = [("video1", Path("v1"), Path("c1"), "custom"), ("video10", Path("v10"), Path("c10"), "custom")]
+    with patch.object(training, "score_weights", return_value=training.metrics_of(0.80, 0.0)) as baseline:
+        training.pick_winner(args, clips, ["video10"], selection, torch.device("cpu"))
+    assert baseline.call_args.args[:2] == (args.weights, clips[1:])      # the starting weights, on the held-out clips only
+    winner = json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+    assert Path(winner["winner"]) == args.run_dir / "best.npz" and winner["selected_by"] == "detector_metric"
+    assert winner["best_epoch"] == 1 and winner["best_loss_epoch"] == 2 and winner["validation_clips"] == ["video10"]
+    assert winner["metrics"]["recall"] == 0.90 and winner["starting_weights"]["metrics"]["recall"] == 0.80
+    assert epoch_of(tmp_path / "save.npz") == 1
+    assert "promote it with" in capsys.readouterr().out
+
+    with patch.object(training, "score_weights", return_value=training.metrics_of(0.95, 0.0)):
+        training.pick_winner(args, clips, ["video10"], selection, torch.device("cpu"))
+    winner = json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+    assert Path(winner["winner"]) == args.weights and winner["metrics"]["recall"] == 0.95
+    assert (tmp_path / "save.npz").read_bytes() == args.weights.read_bytes()
+    assert "stayed ahead" in capsys.readouterr().out
+    args.from_scratch = True
+    with patch.object(training, "score_weights") as never:
+        training.pick_winner(args, clips, ["video10"], selection, torch.device("cpu"))
+    assert not never.called and "starting_weights" not in json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+
+
+def test_the_seed_is_recorded_and_defaults_to_the_fixed_one():
+    parser = training.build_parser()
+    assert parser.parse_args([]).seed == training.SEED == 7
+    args = parser.parse_args(["--seed", "11", "--score-every", "2"])
+    config = training.run_config(args, [], [], {})
+    assert config["seed"] == 11 and config["score_every"] == 2
+
 
 def test_metric_counts_localization_errors():
     stats = metric_probe(5, {i: [100, 100] if i == 0 else [120, 100] for i in range(5)})

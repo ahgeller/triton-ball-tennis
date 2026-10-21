@@ -218,11 +218,18 @@ separately). `ft.py check` flags files that break this rule.
      default `basic` is the old behaviour (flip + ±15% gain).
    - Frames are cached per clip under `cache/`, so adding one clip does not
      re-extract the other 244. `--prepare-only` builds the cache and stops.
-   - The run ends by scoring the best-loss checkpoint **and** the starting
-     weights on the held-out clips with the detector metric, and only the
-     winner is written to `models/gridtracknet_best.npz`. A run that lowers
-     recall or adds wrong-object detections cannot replace a good model.
-     `runs/<tag>/winner.json` records the decision.
+   - After every scored epoch (`--score-every K`, default every epoch, the
+     last one always) the weights are scored on the held-out clips with the
+     detector metric `evaluate_archive.py` reports, and `runs/<tag>/best.npz`
+     is the epoch that metric prefers (a tie keeps the earlier epoch), not the
+     lowest validation loss (`best_loss.npz`, kept for the record);
+     `results.csv` has the losses, the metric and the timings per epoch. The
+     run ends by setting that epoch against the starting weights on the same
+     clips, and only the winner is written to `models/gridtracknet_best.npz`.
+     A run that lowers recall or adds wrong-object detections cannot replace a
+     good model. `winner.json` records the decision (`selected_by`,
+     `best_epoch`). `--seed` changes the augmentation and sampling draws
+     (default 7) for a second opinion on a narrow margin.
    - Colab: `GridTrackNet_FineTune_Colab.ipynb` runs the same trainer; put
      `videos/`, `labels/`, `clips.csv`, `models/` and `code/` under
      `MyDrive/tennis_finetune/`.
