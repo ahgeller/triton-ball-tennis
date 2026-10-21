@@ -14,8 +14,7 @@ from tennis_tracker.detectors import (
     ball_engine_output_mode,
     decode_ball_predictions,
 )
-from tennis_tracker.engine_session import _TensorRTRuntimeSession
-from tennis_tracker.utils import (
+from tennis_tracker.engine_files import (
     EngineIO,
     engine_class_names,
     find_ball_class_id_from_names,
@@ -24,6 +23,7 @@ from tennis_tracker.utils import (
     read_engine_header,
     split_engine_header,
 )
+from tennis_tracker.engine_session import _TensorRTRuntimeSession
 
 PAYLOAD = b"\x00TRT engine bytes\xff\xfe"
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from tennis_tracker.utils import iter_engine_io, read_engine_header
+from tennis_tracker.engine_files import iter_engine_io, read_engine_header
 
 _MIB = 1024 * 1024
 _MIN_WORKSPACE_MB = 256

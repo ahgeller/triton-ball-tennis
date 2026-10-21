@@ -17,13 +17,14 @@ from .config import Config
 from .court_geometry import build_court_polygon
 from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
 from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
+from .engine_files import find_ball_class_id_from_names, read_engine_class_names, resolve_engine_path
 from .export import write_tracking_json
 from .pass1 import Pass1Result, collect_pass1, erase_ghost_rois
 from .pass2 import render_pass2
 from .rendering import build_display_path
 from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
 from .summaries import print_selector_track_summary, print_timing_summary
-from .utils import check_capabilities, detect_device, find_ball_class_id_from_names, read_engine_class_names, resolve_engine_path
+from .utils import check_capabilities, detect_device
 
 _DEFAULT_FPS = 24.0                 # when the container reports none
 # The display path interpolates across at least this much time, within these frame bounds.

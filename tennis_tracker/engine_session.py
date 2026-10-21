@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from .config import Config
-from .utils import resolve_engine_path, engine_is_trt10, iter_engine_io, read_engine_header
+from .engine_files import engine_is_trt10, iter_engine_io, read_engine_header, resolve_engine_path
 
 
 def _import_tensorrt() -> Any:
