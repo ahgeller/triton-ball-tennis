@@ -16,7 +16,8 @@ from ball_in_play_selector import Detection, FrameResult, Track
 
 from .config import Config
 from .court_geometry import (
-    GroundModel, build_court_side_guides, clip_infinite_line_to_frame, court_axis_spans, homography_apply,
+    LINE_PAIRS_14, GroundModel, build_court_side_guides, clip_infinite_line_to_frame, court_axis_spans,
+    homography_apply,
 )
 from .court_overlay import PlayerBoxes
 
@@ -37,6 +38,10 @@ COLOR_PLAYER_BOX: Color = (0, 0, 255)
 COLOR_COURT_POLYGON: Color = (100, 100, 100)
 COLOR_ROI: Color = (0, 255, 0)
 COLOR_NET_LINE: Color = (0, 255, 0)
+COLOR_COURT_LINE: Color = (0, 255, 0)
+COLOR_COURT_INDEX: Color = (0, 0, 255)
+# Fewest court keypoints that are joined by lines.
+_COURT_MIN_LINE_POINTS = 4
 
 # Trail colour per FrameResult.source, before the age fade.
 _SOURCE_BASE_COLOR: Dict[str, Color] = {
@@ -210,15 +215,52 @@ def draw_homography_net_line(frame: np.ndarray, ground_model: Optional[GroundMod
     cv2.line(frame, (x1, y1), (x2, y2), COLOR_NET_LINE, 2, cv2.LINE_AA)
 
 
-def draw_court_layer(targets: Iterable[np.ndarray], court_detector: Any, court_kps: Optional[Sequence[float]],
-                     ground_model: Optional[GroundModel], court_polygon: Optional[np.ndarray],
-                     draw_court: bool) -> None:
-    """Court lines (via the court detector's own drawing), the net line and the court polygon outline."""
+def draw_court(frame: np.ndarray, keypoints: Optional[Sequence[float]], cfg: Config) -> np.ndarray:
+    """Draw court keypoints as green dots and, unless ``cfg.court_points_only``, the lines between them.
+
+    With 14 points the lines follow the detector's semantic layout
+    (``LINE_PAIRS_14``); with at least four they chain consecutive points.
+    A point at ``(0, 0)`` or below is not drawn.  ``cfg.court_draw_indices``
+    labels each dot with its index.  Returns ``frame``, drawn on in place.
+    """
+    if keypoints is None:
+        return frame
+    kps = keypoints
+    n = len(kps) // 2
+
+    for ki in range(0, len(kps) - 1, 2):
+        x, y = int(kps[ki]), int(kps[ki + 1])
+        if x > 0 or y > 0:
+            cv2.circle(frame, (x, y), 5, COLOR_COURT_LINE, -1)
+            if cfg.court_draw_indices:
+                cv2.putText(frame, str(ki // 2), (x, y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_COURT_INDEX, 2)
+
+    if cfg.court_points_only:
+        return frame
+
+    line_pairs: Sequence[Tuple[int, int]] = ()
+    if n == 14:
+        line_pairs = LINE_PAIRS_14
+    elif n >= _COURT_MIN_LINE_POINTS:
+        line_pairs = [(j, j + 1) for j in range(n - 1)]
+
+    for a, b in line_pairs:
+        if a < n and b < n:
+            ax, ay = int(kps[a * 2]), int(kps[a * 2 + 1])
+            bx, by = int(kps[b * 2]), int(kps[b * 2 + 1])
+            if (ax > 0 or ay > 0) and (bx > 0 or by > 0):
+                cv2.line(frame, (ax, ay), (bx, by), COLOR_COURT_LINE, 2)
+    return frame
+
+
+def draw_court_layer(targets: Iterable[np.ndarray], cfg: Config, court_kps: Optional[Sequence[float]],
+                     ground_model: Optional[GroundModel], court_polygon: Optional[np.ndarray]) -> None:
+    """Court keypoints and lines (when ``cfg.draw_court``), the net line and the court polygon outline."""
     targets = tuple(targets)
-    if draw_court and court_kps:
-        court_detector.keypoints = court_kps
+    if cfg.draw_court and court_kps:
         for img in targets:
-            court_detector.draw(img)
+            draw_court(img, court_kps, cfg)
     if ground_model is not None:
         for img in targets:
             draw_homography_net_line(img, ground_model)

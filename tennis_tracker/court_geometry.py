@@ -233,20 +233,29 @@ def build_ground_projection_model(kps: Optional[CourtKeypoints]) -> Optional[Gro
     return {"H_i2c": image_to_court, "H_c2i": court_to_image}
 
 
+def last_valid_court_keypoints(kps_by_frame: Sequence[Optional[CourtKeypoints]],
+                               min_values: int = MIN_KEYPOINT_VALUES) -> Optional[CourtKeypoints]:
+    """The latest frame's keypoints that hold at least ``min_values`` values, or None.
+
+    The one definition of "the court as last seen" that the court polygon, the
+    tracking JSON and pass 2 share.
+    """
+    for kps in reversed(kps_by_frame):
+        if kps is not None and len(kps) >= min_values:
+            return kps
+    return None
+
+
 def build_court_polygon(all_court_kps: Sequence[Optional[CourtKeypoints]]) -> Tuple[Optional[np.ndarray], Optional[CourtKeypoints]]:
-    """The court polygon from the last frame with keypoints, and those keypoints.
+    """The court polygon from the last frame with valid keypoints, and those keypoints.
 
     Prefers the ordered four-corner polygon; falls back to the convex hull of
     every detected point.  Reports what it built on stdout.
     """
-    last_kps = None
-    for kps in reversed(all_court_kps):
-        if kps and len(kps) >= 8:
-            last_kps = kps
-            break
-    if not last_kps:
+    last_kps = last_valid_court_keypoints(all_court_kps)
+    if last_kps is None:
         print("[court polygon] No court keypoints found")
-        return None, last_kps
+        return None, None
 
     court_poly = build_ordered_court_polygon(last_kps)
     if court_poly is not None:

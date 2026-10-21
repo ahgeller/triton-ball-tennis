@@ -144,8 +144,7 @@ def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, even
             canvas = Canvas(frame.copy(), frame.copy() if track_debug_writer is not None else None)
             model = ground_model.update(court_kps)
 
-            draw_court_layer(canvas.both, ctx.court_detector, court_kps, model,
-                             selection.court_polygon, cfg.draw_court)
+            draw_court_layer(canvas.both, cfg, court_kps, model, selection.court_polygon)
             if cfg.draw_players:
                 draw_player_boxes(canvas.both, pass1.player_boxes[fi])
             # Rejected proposals, ROIs and candidate tracks belong only in the track-debug view;

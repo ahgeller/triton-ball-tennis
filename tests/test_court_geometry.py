@@ -16,6 +16,7 @@ from tennis_tracker.court_geometry import (
     court_keypoint,
     court_keypoints_key,
     homography_apply,
+    last_valid_court_keypoints,
 )
 
 # The harness court in a 640x360 frame (tests/test_pipeline_run.py).
@@ -93,11 +94,22 @@ def test_ground_model_maps_corners_to_the_unit_court_and_back():
     assert homography_apply(np.zeros((3, 3)), 1.0, 1.0) is None
 
 
-def test_build_court_polygon_takes_the_last_frame_with_keypoints(capsys):
+def test_last_valid_court_keypoints_needs_the_eight_geometry_points():
+    corners_only = KEYPOINTS[:8]
+    assert last_valid_court_keypoints([KEYPOINTS, corners_only, None]) is KEYPOINTS
+    assert last_valid_court_keypoints([KEYPOINTS, KEYPOINTS[:MIN_KEYPOINT_VALUES]]) == KEYPOINTS[:16]
+    assert last_valid_court_keypoints([None, corners_only, []]) is None
+    assert last_valid_court_keypoints([corners_only], min_values=8) is corners_only
+    assert last_valid_court_keypoints([]) is None
+
+
+def test_build_court_polygon_takes_the_last_frame_with_valid_keypoints(capsys):
     poly, kps = build_court_polygon([None, KEYPOINTS, None])
     assert kps is KEYPOINTS and poly.shape == (4, 1, 2)
     assert "[court polygon] Ordered corners" in capsys.readouterr().out
     assert build_court_polygon([None, []]) == (None, None)
+    # Fewer than the sixteen values the JSON export and pass 2 require: no polygon either.
+    assert build_court_polygon([KEYPOINTS[:8]]) == (None, None)
 
 
 def test_court_axis_spans_fall_back_to_the_frame():

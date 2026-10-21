@@ -17,7 +17,9 @@ from tennis_tracker.court_overlay import (
     assemble_rally_legs,
     infer_kinematic_bounces,
 )
+from tennis_tracker.config import Config
 from tennis_tracker.detectors import CourtDetector
+from tennis_tracker.rendering import draw_court
 
 HD_WIDTH, HD_HEIGHT = 1920, 1080
 # A serve from the near baseline into the far service box, in court coordinates.
@@ -134,3 +136,20 @@ def test_minimap_draws_only_in_the_top_right_corner():
         60.0,
     )
     assert np.any(minibar_probe[:, 400:]) and not np.any(minibar_probe[:, :300])
+
+
+def test_draw_court_draws_what_the_court_detector_draws():
+    keypoints = [20.0 + 30.0 * i for i in range(28)]
+    keypoints[4:6] = [0.0, 0.0]       # an undetected point is skipped
+    for cfg in (Config(court_model_path=None),
+                Config(court_model_path=None, court_draw_indices=True),
+                Config(court_model_path=None, court_points_only=True)):
+        detector = CourtDetector(cfg)
+        detector.keypoints = list(keypoints)
+        by_detector = detector.draw(np.zeros((900, 900, 3), np.uint8))
+        by_function = np.zeros((900, 900, 3), np.uint8)
+        assert draw_court(by_function, keypoints, cfg) is by_function
+        assert by_function.any()
+        np.testing.assert_array_equal(by_function, by_detector)
+    untouched = np.zeros((8, 8, 3), np.uint8)
+    assert draw_court(untouched, None, Config()) is untouched and not untouched.any()

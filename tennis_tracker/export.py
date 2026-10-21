@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult, PackedMask, Track
 
+from .court_geometry import last_valid_court_keypoints
 from .pass1 import Pass1Result
 from .run_context import RunContext, Selection
 
@@ -92,15 +93,6 @@ def track_to_json(track: Optional[Track]) -> Optional[Dict[str, Any]]:
         "score_breakdown": json_safe(track.score_breakdown or {}),
         "observations": observations,
     }
-
-
-def last_valid_court_keypoints(all_court_kps: Optional[List[Any]]) -> Optional[Any]:
-    if not all_court_kps:
-        return None
-    for kps in reversed(all_court_kps):
-        if kps and len(kps) >= 16:
-            return kps
-    return None
 
 
 # ---------------------------------------------------------------------------
