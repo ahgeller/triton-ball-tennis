@@ -23,11 +23,13 @@ Controls:
   TAB                      toggle the grid: a page of crops around each ball (or launch with
                            --grid). Click a crop to correct it without moving the crop; right
                            click opens the full frame; 1-9 or , / . pick the tile the keys act on;
-                           y takes its suggestion and moves on; SPACE confirms the displayed page;
+                           y takes its suggestion and moves on, x keeps its draft instead; SPACE
+                           confirms the displayed page, hints on offer (orange crosses) included;
                            a/d change pages; z switches between 8 and 16 tiles a page
   SHIFT + i / j / k / l    nudge the selected point by 0.25 native pixels (normal keys: 1 pixel)
   left click               ball is here -> save and go to next frame
-  SPACE / ENTER / c        guess is good -> next frame
+  SPACE / ENTER / c        the mark is good -> next frame (on an unreviewed frame with a hint on
+                           offer, the mark is the hint and SPACE moves the label onto it)
   v                        ball not visible on this frame -> next frame
   r                        accept the whole run of confident guesses up to the next iffy one
   mouse wheel, + / -       smooth zoom in / out about the mouse / the ball (kept across frames)
@@ -45,6 +47,8 @@ Controls:
                            again unless the label moves
   y                        take the suggestion: move the point to the orange mark and go on, like
                            a click there (see "Suggestions" below)
+  x                        the draft is right, not the hint on offer: confirm the label where it is
+                           and go on (on a reviewed frame the same as SPACE)
   w                        trajectory sheet: the whole frame with every label of 60 label frames
                            drawn on it, joined in order, and the suggestions as orange dots - a
                            label off the ball's path stands out at once.
@@ -84,14 +88,26 @@ and around where the labels either side put the ball (finetune/refine.py). A sma
 on the frames you have checked (finetune/cnn_refiner.py; "hint model" in the finetune menu retrains
 it) then puts it where you would click: a median 0.66 px from your clicks on clips it never saw,
 against 0.79 px for the measurement alone, and says whether it is sure. Without a trained version
-the measurement is shown as it is. It is drawn as four small ticks with its distance on the bar -
-bright orange when trusted (sure), dull when only a guess - and y moves the label there. The clip
-you are in is re-measured a moment after you change or confirm a label, steered by the labels you have checked, so fixing a frame helps its neighbours. A
-frame labelled "no ball" gets one only when the video clearly shows a ball on its path. It is only
-a suggestion: nothing changes until you press y, and a label taken from it is recorded as source
-"refined". Where a trusted suggestion exists the bar says whether the label agrees: "hint ok"
-(within 3 px) or "hint differs" (further), and e walks those. Agreeing never skips a frame or
-marks it reviewed - that is still your SPACE.
+the measurement is shown as it is.
+
+On a frame you have not reviewed yet the suggestion is the mark: it is drawn as the ball circle in
+orange - bright when it is sure, dull when only a guess - the mouse parks on it, and SPACE (or a
+click without moving) takes it; the draft label it replaces is ticked in grey beside it. So an
+unreviewed frame asks one thing, "is the mark on the ball?": SPACE if it is, click where the ball
+is if not, x if the grey draft was right after all. Measured on reviewed clips seeded from their
+original drafts, with a network that never saw the clip, a sure suggestion is within 1 px of the
+hand label on 91% of frames (the draft: 26%); an unsure one is offered when it agrees with the
+draft within 3 px, where it is still the better mark (see offer_for), and the dull colour says to
+look closely. Once you have reviewed or edited a frame your label is the mark and the suggestion
+is a hint beside it, four small ticks with its distance on the bar, and y moves the label there. A
+label taken from a suggestion is recorded as source "refined". The clip you are in is re-measured
+a moment after you change or confirm a label,
+steered by the labels you have checked, so fixing a frame helps its neighbours. A frame labelled
+"no ball" gets a suggestion only when the video clearly shows a ball on its path. Where a trusted
+suggestion sits beside a label, the bar says whether they agree: "hint ok" (within 3 px) or "hint
+differs" (further), and e walks those. Agreeing never skips a frame or marks it reviewed - that is
+still your SPACE. r (accept run) confirms the detector's own guesses, not the suggestions: it is
+for frames you are not looking at.
 
 --uncertain walks only the frames that want attention - no confident guess, or flagged by
 ft.py check --audit --mark - and skips confident predictions, which may still be wrong. n/p/SPACE step
@@ -163,8 +179,13 @@ SUGGEST_MEASURE = 16      # after an edit, label frames either side re-measured 
 SUGGEST_REPLACE = 8       # ... and either side replaced (the path reaches 8 frames for its points)
 SHEET_ROWS = 60           # label frames on one trajectory sheet (w)
 GRID_SIZES = (8, 16)
-HINT_TRUSTED = (0, 150, 255)     # BGR: the suggestion's ticks when it is trusted ...
-HINT_UNSURE = (70, 110, 150)     # ... and when it is only a guess       # crops per grid page, four to a row; z switches between them
+HINT_TRUSTED = (0, 150, 255)     # BGR: the suggestion's mark when it is trusted ...
+HINT_UNSURE = (70, 110, 150)     # ... and when it is only a guess
+DRAFT_MARK = (160, 160, 160)     # the draft label's ticks while the suggestion is the mark on offer
+OFFER_UNSURE = True       # offer an unsure suggestion as the mark SPACE takes on an unreviewed frame
+                          # when it agrees with the draft (refine.AGREE_PX_1080); a sure one always
+                          # is. See offer_for for the measurement behind this
+OFFER_MIN_PX = 0.25       # a suggestion this close to the draft is not offered: SPACE confirms the draft
 VIEWPORT_CHECK = 3.0      # seconds between checks that the window's own zoom is still at x1
 WM_MOUSEWHEEL = 0x020A
 VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 37, 38, 39, 40      # what waitKeyEx gives for the arrows here
@@ -654,6 +675,8 @@ class Tool:
         self.placer = None            # the trained network placing suggestions (cnn_refiner), if any
         self.placer_model: Optional[Path] = None   # ... and the version it was loaded from
         self.disputed_key, self.disputed = None, 0   # disputed_count's cache
+        self.shown_offers: Dict[int, tuple] = {}   # row index -> the suggestion drawn as the mark on
+                                                   # offer in the last render; what SPACE takes
         self.closing = False          # tells the suggestion thread to stop
         self.render_key = None        # what the last single-frame render was drawn from, see render_state
         self.render_cache = None
@@ -858,10 +881,9 @@ class Tool:
         self.ghost = None if row.visible else self.guess_for(self.cursor)
         if not self.follow:
             return                    # auto-centring is off: leave the view and the mouse be
-        if row.visible:
-            self.center = (row.x, row.y)
-        elif self.ghost is not None:
-            self.center = self.ghost  # no guess here: look where the neighbours say the ball is
+        point = self.target_point()   # the mark on offer, the ball, or the neighbours' guess
+        if point is not None:
+            self.center = point
         self.centre_view()
         self.pending_cursor_move = True
 
@@ -895,8 +917,18 @@ class Tool:
         return None
 
     def target_point(self):
-        """The frame point this frame is about: the ball, or the ghost guess when there is no ball."""
+        """The frame point this frame is about - where the view centres and the mouse parks: the
+        suggestion on offer, else the ball, else the ghost guess when there is no ball.
+
+        Only the suggestions known at this moment count. One that arrives for the frame on screen a
+        little later (the clip's first pass, or a re-measure after an edit) is drawn as the mark on
+        offer where it is, but the view and the mouse stay put: snapping them to a point that moved
+        by a fraction of a pixel would jog the picture and pull the mouse out from under a hand on
+        its way to click. SPACE takes the drawn mark exactly, wherever the mouse sits."""
         row = self.rows[self.cursor]
+        offer = self.offer_for(self.cursor)
+        if offer is not None:
+            return (offer["x"], offer["y"])
         if row.visible:
             return (row.x, row.y)
         return self.ghost
@@ -1089,6 +1121,7 @@ class Tool:
         self.render_fresh = True
         canvas = np.zeros((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
         tiles = []
+        offers: Dict[int, tuple] = {}
         selected = self.cursor
         ui = self.ui
         band = int(round(28 * ui))                       # title strip above each tile
@@ -1113,32 +1146,51 @@ class Tool:
                     tile = enhance(tile, FILTERS[self.filter])
                 color = (70, 210, 70) if row.settled else (0, 210, 255)
                 hint = self.suggestion_for(index)
-                if hint is not None and (not row.visible or math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25):
-                    hx, hy = math.floor((hint["x"] - ox) * scale), math.floor((hint["y"] - oy) * scale)
+                offer = self.offer_for(index)
+                if offer is not None:
+                    offers[index] = (offer["x"], offer["y"])
+
+                def ticks(point, colour) -> None:
+                    hx, hy = math.floor((point[0] - ox) * scale), math.floor((point[1] - oy) * scale)
                     near, far = int(round(3 * ui)), int(round(7 * ui))
                     for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                         start, end = (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far)
                         cv2.line(tile, start, end, (0, 0, 0), max(1, int(round(ui))) + 2, cv2.LINE_AA)
-                        cv2.line(tile, start, end, HINT_TRUSTED if hint["trusted"] else HINT_UNSURE,
-                                 max(1, int(round(ui))), cv2.LINE_AA)
-                if row.visible:
-                    px = math.floor((row.x - ox) * scale)     # the tile pixel holding the ball
-                    py = math.floor((row.y - oy) * scale)
+                        cv2.line(tile, start, end, colour, max(1, int(round(ui))), cv2.LINE_AA)
+
+                # As in render: the mark is the offer (orange cross, the draft ticked grey) or the
+                # label (white cross, the suggestion ticked orange beside it)
+                if offer is not None:
+                    if row.visible:
+                        ticks((row.x, row.y), DRAFT_MARK)
+                    mark, cross = (offer["x"], offer["y"]), HINT_TRUSTED if offer["trusted"] else HINT_UNSURE
+                elif row.visible:
+                    mark, cross = (row.x, row.y), (255, 255, 255)
+                    if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= OFFER_MIN_PX:
+                        ticks((hint["x"], hint["y"]), HINT_TRUSTED if hint["trusted"] else HINT_UNSURE)
+                else:
+                    mark = None
+                if mark is not None:
+                    px = math.floor((mark[0] - ox) * scale)     # the tile pixel holding the ball
+                    py = math.floor((mark[1] - oy) * scale)
                     inner, outer = int(round(8 * ui)), int(round(17 * ui))
                     # Drawn on the tile, so a mark near its edge cannot spill onto a neighbour, and
                     # leaving the actual ball center unobstructed, including at high zoom.
                     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                         start, end = (px + dx * inner, py + dy * inner), (px + dx * outer, py + dy * outer)
                         cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
-                        cv2.line(tile, start, end, (255, 255, 255), max(1, int(round(ui))))
+                        cv2.line(tile, start, end, cross, max(1, int(round(ui))))
                 canvas[y0:bottom, left:right] = tile
                 title = (f"{slot + 1}  " if slot < 9 else "") + \
                     f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
                 if not row.visible:
                     title += "  absent"
-                verdict = self.hint_verdict(index)
-                if verdict is not None:
-                    title += "  hint ok" if verdict == "agrees" else "  hint differs"
+                if offer is not None:
+                    title += "  HINT sure" if offer["trusted"] else "  HINT unsure"
+                else:
+                    verdict = self.hint_verdict(index)
+                    if verdict is not None:
+                        title += "  hint ok" if verdict == "agrees" else "  hint differs"
                 cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
                             (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
                             color, max(1, int(ui)))
@@ -1146,15 +1198,17 @@ class Tool:
                 tiles.append((index, (left, y0, right-1, bottom-1), ox, oy, scale))
         finally:
             self.cursor = selected
-        caption = f"{self.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}  a/d=page  TAB=single"
+        caption = (f"{self.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}"
+                   f"{' (orange crosses are hints on offer)' if offers else ''}  a/d=page  TAB=single")
         thin = max(1, int(ui))
         cv2.putText(canvas, fit_text(caption, self.view_w - 12, .48 * ui, thin),
                     (6, self.view_h + int(round(21 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .48 * ui, (255, 255, 255), thin)
-        keys = ("1-9 or ,/. select | y: take hint | i/j/k/l: 1px (SHIFT 0.25px) | u: undo | v: absent | "
-                f"+/- zoom | z: {GRID_SIZES[(GRID_SIZES.index(self.grid_size) + 1) % len(GRID_SIZES)]} tiles | q: save/quit")
+        keys = ("1-9 or ,/. select | y: take hint | x: keep draft | i/j/k/l: 1px (SHIFT 0.25px) | u: undo | "
+                f"v: absent | +/- zoom | z: {GRID_SIZES[(GRID_SIZES.index(self.grid_size) + 1) % len(GRID_SIZES)]} tiles | q: save/quit")
         cv2.putText(canvas, fit_text(keys, self.view_w - 12, .42 * ui, thin),
                     (6, self.view_h + int(round(44 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .42 * ui, (200, 200, 200), thin)
         self.grid_tiles = tiles
+        self.shown_offers = offers
         self.grid_cache_key, self.grid_cache = key, canvas
         return canvas
 
@@ -1525,21 +1579,35 @@ class Tool:
                                (200, 200, 60), thin, cv2.LINE_AA)
         radius = int(max(8, 6 * self.zoom) * ui)
         hint = self.suggestion_for(self.cursor)
-        if hint is not None and (not row.visible or math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= 0.25):
-            # Four short ticks on the diagonals, leaving the suggested centre itself clear: bright
-            # orange when the suggestion is trusted, a dull orange when it is only a guess
-            hx, hy = self.to_view(hint["x"], hint["y"])
+        offer = self.offer_for(self.cursor)
+        self.shown_offers = {} if offer is None else {self.cursor: (offer["x"], offer["y"])}
+
+        def ticks(point, colour) -> None:
+            # Four short ticks on the diagonals, leaving the centre itself clear
+            hx, hy = self.to_view(*point)
             near, far = int(round(3 * ui)), int(round(7 * ui))
-            tick = HINT_TRUSTED if hint["trusted"] else HINT_UNSURE
             for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                 cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
                          (0, 0, 0), thin + 2, cv2.LINE_AA)
                 cv2.line(display, (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far),
-                         tick, thin, cv2.LINE_AA)
-        if row.visible:
+                         colour, thin, cv2.LINE_AA)
+
+        if offer is not None:
+            # The suggestion is the mark SPACE takes, drawn as the label would be, in orange - bright
+            # when it is sure, dull when only a guess; the draft label it replaces is ticked in grey
+            if row.visible:
+                ticks((row.x, row.y), DRAFT_MARK)
+            mark, colour = (offer["x"], offer["y"]), HINT_TRUSTED if offer["trusted"] else HINT_UNSURE
+        elif row.visible:
+            mark = (row.x, row.y)
             colour = ((255, 0, 255) if row.suspect else (0, 0, 255) if row.edited
                       else (0, 220, 0) if row.reviewed else (0, 255, 255))
-            cx, cy = self.to_view(row.x, row.y)
+            if hint is not None and math.hypot(hint["x"] - row.x, hint["y"] - row.y) >= OFFER_MIN_PX:
+                ticks((hint["x"], hint["y"]), HINT_TRUSTED if hint["trusted"] else HINT_UNSURE)
+        else:
+            mark = None
+        if mark is not None:
+            cx, cy = self.to_view(*mark)
             cv2.circle(display, (cx, cy), radius, colour, thin, cv2.LINE_AA)
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 cv2.line(display, (cx + dx * (radius - int(3 * ui)), cy + dy * (radius - int(3 * ui))),
@@ -1582,7 +1650,14 @@ class Tool:
         if self.walk:
             left = sum(1 for i in self.walk if not self.rows[i].settled)
             place += f"  UNCERTAIN ONLY {self.walk_pos + 1}/{len(self.walk)} ({left} left)"
-        if hint is not None and not row.visible:
+        if offer is not None:
+            sure = "sure" if offer["trusted"] else "UNSURE, look closely"
+            if row.visible:
+                gap = math.hypot(offer["x"] - row.x, offer["y"] - row.y) * 1080.0 / self.height
+                state = f"HINT ({offer['x']:.1f}, {offer['y']:.1f}) {sure}  grey draft {gap:.1f}px off"
+            else:
+                state = f"HINT ({offer['x']:.1f}, {offer['y']:.1f}) {sure}  draft: no ball"
+        elif hint is not None and not row.visible:
             state += "  hint: the video shows a ball here (y takes it)"
         elif hint is not None:
             gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.height
@@ -1595,10 +1670,12 @@ class Tool:
         line1 = (f"{place}  frame {row.frame}  {state}  "
                  f"from {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:.1f}{'  *unsaved*' if self.dirty else ''}")
         disputed = self.disputed_count()
+        keys = ("SPACE=take hint  x=keep draft  v=invisible" if offer is not None else
+                "SPACE=good  y=take hint  v=invisible")
         line2 = (f"reviewed {reviewed}/{len(self.rows)}  uncertain left {uncertain_left}  "
                  f"{('flagged left ' + str(flagged_left) + '   ') if flagged_left else '  '}"
                  f"{('hint differs ' + str(disputed) + ' (e)   ') if disputed else ''}"
-                 "SPACE=good  y=take hint  v=invisible  r=accept run  f=uncertain  q=quit")
+                 f"{keys}  r=accept run  f=uncertain  q=quit")
         # Buttons along the right end of the bar, laid out right to left and measured before the
         # two text lines, so a long clip name or a narrow window cuts the text short instead of
         # running under them. Every box is kept for on_mouse: they are all clickable.
@@ -2189,6 +2266,40 @@ class Tool:
             return None
         return hint
 
+    def offer_for(self, index: int) -> Optional[dict]:
+        """The suggestion that stands in for a frame's label until you have checked the frame: it is
+        drawn as the mark, the mouse parks on it, and SPACE takes it - so an unreviewed frame asks
+        one question, "is the mark on the ball?", instead of which of two marks is closer.
+
+        Measured on 63 reviewed clips seeded from their original drafts, each with a network that
+        never saw the clip (1080p px, against the hand label): a sure suggestion is within 1 px on
+        91% of frames and over 5 px on 0.1%, against 26% and 5% for the draft, so it is always
+        offered. An unsure one is closer than the draft on 78% of frames, but on the GridTrackNet
+        clips (drafts about 1 px off) one that moved far from the draft is usually wrong - over 5 px
+        on 28% once it moved 4-6 px, 1% within 3 px - so an unsure suggestion is offered only when
+        it agrees with the draft (within refine.AGREE_PX_1080, OFFER_UNSURE). On those clips that
+        puts the mark within 1 px of the hand label on 73% of frames (the draft: 39%) and over 5 px
+        on 3.7% (the draft: 5.3%). An unsure suggestion further away stays a dull hint beside the
+        draft, which y takes. None once you have reviewed or edited the frame (your label is then
+        the mark), when there is no suggestion worth showing, or when it is within OFFER_MIN_PX of
+        the draft (nothing to choose: SPACE confirms the draft)."""
+        row = self.rows[index]
+        if row.settled:
+            return None
+        hint = self.suggestion_for(index)
+        if hint is None:
+            return None
+        if row.visible:
+            gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y)
+            if gap < OFFER_MIN_PX:
+                return None
+            if not hint["trusted"] and not (OFFER_UNSURE and
+                                            gap * 1080.0 / self.by_clip[row.clip].height <= refine.AGREE_PX_1080):
+                return None
+        elif not hint["trusted"]:
+            return None
+        return hint
+
     def hint_verdict(self, index: int) -> Optional[str]:
         """"agrees" when the label is within AGREE_PX_1080 of a trusted suggestion, "differs" when it
         is further, None when there is no trusted suggestion to judge by. Measured on the verified
@@ -2271,9 +2382,19 @@ class Tool:
         row.reviewed = row.edited = True
         self.dirty = self.source.dirty = True
 
-    def confirm(self) -> None:
+    def confirm(self, take_offer: bool = True) -> None:
+        """SPACE: the mark on screen is right. When that mark was a suggestion on offer, the label
+        moves there (recorded as source "refined", like y); otherwise the label is confirmed where
+        it is. Only an offer that was actually drawn counts - one that arrived between the draw and
+        the key press is not taken on a frame you judged without it. `take_offer=False` confirms
+        the label as it is (x, and r's unseen frames)."""
         if self.frame_missing():
             return                    # a black placeholder is not something to say "good" to
+        offer = self.shown_offers.get(self.cursor) if take_offer else None
+        if offer is not None:
+            if self.set_point(*offer):
+                self.rows[self.cursor].source = "refined"
+            return                    # could not be stored (set_point said why): nothing confirmed
         row = self.rows[self.cursor]
         if not row.reviewed or row.suspect:
             row.snapshot()
@@ -2312,8 +2433,8 @@ class Tool:
         accepted = 0
         while not self.rows[self.cursor].uncertain:
             if not self.rows[self.cursor].reviewed and not self.frame_missing():
-                self.confirm()
-                accepted += 1
+                self.confirm(take_offer=False)    # the detector's guesses, as asked; the frames
+                accepted += 1                     # were not looked at, so no offer was judged
             previous = self.cursor
             self.move(1)
             if self.cursor == previous:
@@ -2501,6 +2622,9 @@ class Tool:
             elif self.grid and code == ord("y"):
                 if self.take_suggestion():
                     self.grid_step(1)
+            elif self.grid and code == ord("x"):
+                self.confirm(take_offer=False)
+                self.grid_step(1)
             elif code == ord("z"):
                 self.toggle_grid_size()
             elif self.grid and code == ord("r"):
@@ -2518,6 +2642,9 @@ class Tool:
             elif code == ord("y") and not self.grid:
                 if self.take_suggestion():
                     self.move(1)
+            elif code == ord("x"):
+                self.confirm(take_offer=False)    # the draft is right, not the hint on offer
+                self.move(1)
             elif code == ord("v"):
                 self.mark_invisible()
                 if not self.grid:

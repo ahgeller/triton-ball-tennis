@@ -9,6 +9,7 @@ the label tool (reviewed or edited), so retraining as you label keeps it current
     python finetune/cnn_refiner.py train        # or "hint model" in the finetune menu
     python finetune/cnn_refiner.py list
     python finetune/cnn_refiner.py use <version>
+    python finetune/cnn_refiner.py sheet <clip> [<version> <version>|centroid]   # judge two by eye
 
 Training first trains three networks that each leave a third of the clips out (TrackNet clips of
 one game together) and scores them on those: that sets how sure is sure enough (at most 0.1% of the
@@ -18,12 +19,22 @@ uses (current.txt) once it passes; `use` switches back to any older version.
 
 Measured on 66 reviewed clips, each scored by a network that never saw it: a median 0.66 px from
 your clicks against 0.79 px for refine.py's centroid alone, and 64% of frames sure with 0.09% of
-those over 5 px off (refine.py's own trust rule: 55% sure at the same 0.09%)."""
+those over 5 px off (refine.py's own trust rule: 55% sure at the same 0.09%). Placing looks at each
+window four ways (as is, mirrored, frames reversed, both) and averages: 3% closer again.
+
+What did not help (measured on 13,562 clicked frames, 2026-10-19): fitting a parabola or cubic
+through the hints of the label frames around each one and offering the fit, or a blend of it,
+moves the marks further from the clicks in every variant (0.455 -> 0.485 px median on sure frames,
+far worse at hits); the hints are no smoother along the path than the clicks themselves (both
+0.84 px from a parabola through the neighbouring clicks). Giving the network five frames instead
+of three places no closer (0.600 px median either way). Three networks averaged place 4% closer
+and cut the frames over 5 px off from 3.4% to 2.6%, at three times the training time."""
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import math
 import re
 import sys
 import time
@@ -45,6 +56,7 @@ CHECK_MEDIAN_PX, CHECK_FAR_SHARE = 1.0, 0.05   # a new version must beat these o
 SURE_PX = 2.0            # the self-check learns whether its answer is within this
 SURE_FAR_SHARE = 0.001   # ... and "sure" is set so at most this share of sure frames is over 5 px off
 FOLDS = 3
+BACKWARDS = [6, 7, 8, 3, 4, 5, 0, 1, 2]   # the 9 channels with the three frames in reverse order
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".m4v")
 
 
@@ -133,6 +145,22 @@ class Placer:
         self.threshold = saved.get("threshold") if saved.get("self_check") else None
         self.name = path.stem
 
+    def looks(self, x):
+        """The network's answer averaged over the window, its mirror image, its frames reversed and
+        both (each mapped back): 3% closer to the click than one look (0.600 -> 0.582 px median on
+        the folds). The self-check reads the plain look only, so its calibration stands."""
+        xy, logit = self.net(x)
+        xy = xy.float()
+        for mirror, back in ((True, False), (False, True), (True, True)):
+            v = x.flip(3) if mirror else x
+            v = v[:, BACKWARDS] if back else v
+            vxy, _ = self.net(v)
+            vxy = vxy.float()
+            if mirror:
+                vxy[:, 0] = WINDOW - 1 - vxy[:, 0]
+            xy = xy + vxy
+        return xy / 4.0, logit
+
     def place(self, items: List[Tuple[np.ndarray, Tuple[float, float], Tuple[float, float]]], height: int):
         import torch
         if not items:
@@ -148,7 +176,7 @@ class Placer:
             with torch.no_grad():
                 for i in range(0, len(items), 512):
                     batch = np.stack([window(items[j][0], centres[j]) for j in range(i, min(len(items), i + 512))])
-                    xy, logit = self.net(to_tensor(batch, self.device))
+                    xy, logit = self.looks(to_tensor(batch, self.device))
                     for k, (px, py) in enumerate(xy.cpu().numpy()):
                         cx, cy = centres[i + k]
                         moved.append((min(hi, max(lo, cx + px - lo)), min(hi, max(lo, cy + py - lo))))
@@ -201,10 +229,11 @@ def load_current() -> Optional[Placer]:
 # ------------------------------------------------------------------------------------ training
 def read_labels(path: Path, width: int, height: int) -> Dict[int, Optional[Tuple[float, float]]]:
     labels = {}
-    for row in csv.DictReader(open(path, encoding="utf-8-sig")):
-        frame = int(re.search(r"\d+", row["frame"]).group())
-        x, y = float(row["ball_x"]), float(row["ball_y"])
-        labels[frame] = None if (x >= width * .95 and y <= height * .05) else (x, y)
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            frame = int(re.search(r"\d+", row["frame"]).group())
+            x, y = float(row["ball_x"]), float(row["ball_y"])
+            labels[frame] = None if (x >= width * .95 and y <= height * .05) else (x, y)
     return labels
 
 
@@ -233,9 +262,11 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
     if video is None or not review.is_file():
         return None
     cached = CACHE / f"{clip}.npz"
-    stamp = max(labels_csv.stat().st_mtime, review.stat().st_mtime)
+    stamp = max(labels_csv.stat().st_mtime, review.stat().st_mtime, video.stat().st_mtime)
     if cached.is_file() and cached.stat().st_mtime >= stamp:
-        return np.load(cached)["crops"]
+        crops = np.load(cached)["crops"]
+        if crops.shape[1:] == (CROP, CROP, 9):      # not cut for an older crop size
+            return crops
     capture = cv2.VideoCapture(str(video))
     width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     labels = read_labels(labels_csv, width, height)
@@ -316,13 +347,14 @@ def to_device(parts: Sequence[np.ndarray], device):
     return out
 
 
-def batches(data, device, rng, size, flip=True):
-    """Random windows of random crops on the GPU: (inputs, targets in window pixels)."""
+def batches(data, device, rng, size, flip=True, every=False):
+    """Random windows of random crops on the GPU: (inputs, targets in window pixels). `every`
+    takes the first `size` crops in order instead of drawing them at random (scoring)."""
     import torch
     count = data.shape[0]
     span, mid = CROP - WINDOW, (CROP - 1) / 2.0
     ar = torch.arange(WINDOW, device=device)
-    idx = torch.from_numpy(rng.integers(0, count, size)).to(device)
+    idx = torch.arange(size, device=device) if every else torch.from_numpy(rng.integers(0, count, size)).to(device)
     ox = torch.from_numpy(rng.integers(0, span + 1, size)).to(device)
     oy = torch.from_numpy(rng.integers(0, span + 1, size)).to(device)
     rows, cols = (oy[:, None] + ar)[:, :, None], (ox[:, None] + ar)[:, None, :]
@@ -333,7 +365,7 @@ def batches(data, device, rng, size, flip=True):
         win = torch.where(mirror[:, None, None, None], win.flip(2), win)
         tx = torch.where(mirror, WINDOW - 1 - tx, tx)
         back = torch.from_numpy(rng.random(size) < 0.5).to(device)   # the three frames played backwards
-        win = torch.where(back[:, None, None, None], win[..., [6, 7, 8, 3, 4, 5, 0, 1, 2]], win)
+        win = torch.where(back[:, None, None, None], win[..., BACKWARDS], win)
     x = win.permute(0, 3, 1, 2).float().div_(255.0).sub_(0.5)
     if flip:
         x = x * torch.empty(size, 1, 1, 1, device=device).uniform_(0.7, 1.3)
@@ -370,14 +402,15 @@ def fit(data, epochs: int, device, rng, log, label: str):
 
 
 def score(net, data, device, rng, repeats: int = 2):
-    """Errors (window px = 1080p px) and confidences from random starts up to 16 px off."""
+    """Errors (window px = 1080p px) and confidences of every frame, `repeats` times each from a
+    random start up to 16 px off."""
     import torch
     errors, confs = [], []
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
         for _ in range(repeats):
             for i in range(0, len(data), 1024):
                 part = data[i:i + 1024]
-                x, target = batches(part, device, rng, len(part), flip=False)
+                x, target = batches(part, device, rng, len(part), flip=False, every=True)
                 xy, logit = net(x)
                 errors.append((xy.float() - target).norm(dim=1).cpu().numpy())
                 confs.append(torch.sigmoid(logit.float()).cpu().numpy())
@@ -444,6 +477,117 @@ def train(epochs: int = EPOCHS, log=None, seed: int = 0) -> Optional[Path]:
     return path
 
 
+# ---------------------------------------------------------------------------------------- sheet
+SHEET_PATCH, SHEET_ZOOM, SHEET_COLUMNS = 32, 10, 6   # a sheet tile is PATCH px (1080p) around the marks, ZOOM x
+SHEET_COLOURS = {"label": (255, 255, 255), "a": (0, 165, 255), "b": (255, 0, 255)}      # BGR: white, orange, magenta
+
+
+def placer_for(name: str):
+    """A Placer for a version name (`use`'s matching), or None for "centroid" (refine.py alone)."""
+    if name == "centroid":
+        return None
+    match = [p for p in versions() if p.stem == name or p.name == name or name in p.stem]
+    if len(match) != 1:
+        raise SystemExit(f"no single version matches {name!r}; `list` shows them")
+    return Placer(match[0])
+
+
+def cross(canvas: np.ndarray, point: Tuple[float, float], origin: Tuple[int, int], zoom: float, colour) -> None:
+    """A cross with a hole at `point` (frame coordinates) on a canvas that shows the frame from
+    `origin` zoomed `zoom` times, so the pixel under the centre stays visible."""
+    cx, cy = (point[0] - origin[0]) * zoom, (point[1] - origin[1]) * zoom
+    near, far = 0.5 * zoom, 2.2 * zoom
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        a = (int(round((cx + dx * near) * 16)), int(round((cy + dy * near) * 16)))
+        b = (int(round((cx + dx * far) * 16)), int(round((cy + dy * far) * 16)))
+        cv2.line(canvas, a, b, (0, 0, 0), 4, cv2.LINE_AA, shift=4)
+        cv2.line(canvas, a, b, colour, 2, cv2.LINE_AA, shift=4)
+
+
+def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] = None) -> Optional[Path]:
+    """A PNG of the label frames where two versions of the placer (or "centroid") put the ball
+    furthest apart, each zoomed SHEET_ZOOM times with the pixel grid intact and three crosses: your
+    label (white), the first version (orange) and the second (magenta). For judging by eye which one
+    sits on the ball; the captions give each mark's distance from your label in 1080p px."""
+    try:                                  # imported as finetune.cnn_refiner, or run as a script
+        from finetune import refine
+    except ImportError:
+        import refine
+    video, labels_csv = video_for(clip), LABELS / f"{clip}_ball.csv"
+    if video is None or not labels_csv.is_file():
+        print(f"{clip}: no video or labels under {LABELS.parent}")
+        return None
+    capture = cv2.VideoCapture(str(video))
+    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    capture.release()
+    seeds = read_labels(labels_csv, width, height)
+    if not seeds:
+        print(f"{clip}: no labels")
+        return None
+    to_1080 = 1080.0 / height
+    found = []
+    for name in names:
+        placer = placer_for(name)
+        hints = refine.suggest(video, seeds, refine.label_spacing(seeds), placer=placer)
+        found.append({f: (h["x"], h["y"]) for f, h in hints.items() if h["ball_here"]})
+        print(f"  {name}: {len(found[-1])} suggestions", flush=True)
+    shared = sorted(f for f in found[0] if f in found[1] and seeds.get(f) is not None)
+    apart = {f: math.hypot(found[0][f][0] - found[1][f][0], found[0][f][1] - found[1][f][1]) * to_1080 for f in shared}
+    frames = sorted(sorted(shared, key=lambda f: -apart[f])[:count])
+    if not frames:
+        print(f"{clip}: no frame has a label and a suggestion from both")
+        return None
+    side = max(8, int(round(SHEET_PATCH * height / 1080.0)))
+    tile, strip = SHEET_PATCH * SHEET_ZOOM, 18
+    scale = tile / float(side)                # canvas px per frame px
+    tiles = []
+    capture = cv2.VideoCapture(str(video))
+    index, wanted = 0, set(frames)
+    while wanted:
+        if index in wanted:
+            ok, image = capture.read()
+        else:
+            ok, image = capture.grab(), None
+        if not ok:
+            break
+        if image is not None:
+            f = index
+            wanted.discard(f)
+            marks = [seeds[f], found[0][f], found[1][f]]
+            mx, my = (sum(m[0] for m in marks) / 3.0), (sum(m[1] for m in marks) / 3.0)
+            x0 = min(max(0, int(math.floor(mx)) - side // 2), max(0, width - side))
+            y0 = min(max(0, int(math.floor(my)) - side // 2), max(0, height - side))
+            patch = cv2.resize(image[y0:y0 + side, x0:x0 + side], (tile, tile), interpolation=cv2.INTER_NEAREST)
+            for key, mark in reversed(list(zip(("label", "a", "b"), marks))):     # your label on top
+                cross(patch, mark, (x0, y0), scale, SHEET_COLOURS[key])
+            canvas = np.zeros((tile + strip, tile, 3), np.uint8)
+            canvas[strip:] = patch
+            da, db = (math.hypot(m[0] - seeds[f][0], m[1] - seeds[f][1]) * to_1080 for m in marks[1:])
+            cv2.putText(canvas, f"f{f}  {da:.1f} / {db:.1f} px", (3, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                        (230, 230, 230), 1, cv2.LINE_AA)
+            tiles.append(canvas)
+        index += 1
+    capture.release()
+    columns = min(SHEET_COLUMNS, len(tiles))
+    rows = (len(tiles) + columns - 1) // columns
+    header = 44
+    board = np.zeros((header + rows * (tile + strip + 4), columns * (tile + 4), 3), np.uint8)
+    cv2.putText(board, f"{clip}: the {len(tiles)} label frames where the two differ most, {SHEET_ZOOM}x, "
+                       f"frame pixels as they are", (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
+    legend = (f"white = your label   orange = {names[0]}   magenta = {names[1]}   "
+              f"caption: orange / magenta distance from your label")
+    cv2.putText(board, legend, (6, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+    for i, t in enumerate(tiles):
+        r, c = divmod(i, columns)
+        y, x = header + r * (tile + strip + 4), c * (tile + 4)
+        board[y:y + tile + strip, x:x + tile] = t
+    out = out or (CACHE.parent / "sheets" / f"{clip}_{names[0]}_vs_{names[1]}.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out), board)
+    print(f"wrote {out}")
+    return out
+
+
 def describe() -> List[str]:
     import torch
     lines, active = [], current()
@@ -471,12 +615,27 @@ def main(argv=None) -> int:
     sub.add_parser("list", help="list the versions; * is the one the label tool uses")
     chooser = sub.add_parser("use", help="make an older (or any) version the current one")
     chooser.add_argument("version")
+    viewer = sub.add_parser("sheet", help="a PNG of one clip's frames where two versions disagree most, "
+                                          "zoomed, to judge by eye which sits on the ball")
+    viewer.add_argument("clip")
+    viewer.add_argument("versions", nargs="*", help="two version names (or 'centroid'); default: the "
+                                                   "current one and the one before it")
+    viewer.add_argument("--count", type=int, default=36)
     args = parser.parse_args(argv)
     if args.command == "train":
         return 0 if train(args.epochs) else 1
     if args.command == "list":
         print("\n".join(describe()))
         return 0
+    if args.command == "sheet":
+        names = list(args.versions)
+        if not names:
+            active = current()
+            older = [p for p in versions() if p != active]
+            names = [active.stem if active else "centroid", older[-1].stem if older else "centroid"]
+        if len(names) != 2:
+            raise SystemExit("sheet takes two names")
+        return 0 if sheet(args.clip, names, args.count) else 1
     print(f"the label tool now uses {use(args.version).stem}")
     return 0
 

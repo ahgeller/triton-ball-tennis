@@ -502,12 +502,23 @@ class CnnRefinerTests(unittest.TestCase):
         self.assertTrue(47 <= peak[0] <= 48 and 47 <= peak[1] <= 48)
         placer = object.__new__(cnn_refiner.Placer)
         placer.device, placer.ROUNDS, placer.threshold = "cpu", 1, 0.5
-        lo = (cnn_refiner.WINDOW - 1) / 2.0
-        placer.net = lambda x: (torch.tensor([[lo + 3.0, lo]] * x.shape[0]),   # "the ball is 3 px right"
-                                torch.full((x.shape[0],), 2.0))                  # ... and sure (0.88)
-        (x, y, sure), = placer.place([(crop, (500.5, 300.5), (502.5, 301.5))], 720)
+
+        def net(x):                       # the label frame's bright blob, however the window is turned
+            weight = x[:, 4].double() + 0.5                                  # to_tensor took 0.5 off
+            total = weight.sum((1, 2))
+            gx, gy = torch.arange(x.shape[3]).double(), torch.arange(x.shape[2]).double()
+            return (torch.stack([(weight.sum(1) * gx).sum(1) / total, (weight.sum(2) * gy).sum(1) / total], 1),
+                    torch.full((x.shape[0],), 2.0))                           # ... and sure (0.88)
+        placer.net = net
+        (x, y, sure), = placer.place([(crop, (500.5, 300.5), (502.5, 301.5))], 720)   # start 2 px right, 1 down
         self.assertTrue(sure)
-        self.assertAlmostEqual(x, 502.5 + 3.0 * 720 / 1080, places=4)
+        self.assertAlmostEqual(x, 500.5, places=3)
+        self.assertAlmostEqual(y, 300.5, places=3)
+        lo = (cnn_refiner.WINDOW - 1) / 2.0
+        placer.net = lambda x: (torch.tensor([[lo + 3.0, lo]] * x.shape[0]),   # "3 px right" whatever it sees
+                                torch.full((x.shape[0],), 2.0))
+        (x, y, _), = placer.place([(crop, (500.5, 300.5), (502.5, 301.5))], 720)
+        self.assertAlmostEqual(x, 502.5, places=4)                            # the mirrored look cancels it
         self.assertAlmostEqual(y, 301.5, places=4)
 
     def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(self):
@@ -791,6 +802,112 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         hinted = tool.render()
         self.assertIsNot(hinted, plain)
         self.assertGreater(orange(hinted), 0)
+
+
+class OfferTests(LabelWorkflowTests.__base__):
+    """On an unreviewed frame the suggestion is the mark: SPACE takes it, x keeps the draft."""
+
+    def test_space_takes_the_offer_and_a_reviewed_label_stays_the_mark(self):
+        tool = LabelWorkflowTests.tool(self)
+        row = tool.rows[0]
+        tool.suggestions["test"] = {0: hint(row, row.x + 1.0, row.y - 0.5)}
+        tool.suggest_version += 1
+        tool.follow_ball()
+        self.assertEqual(tool.target_point(), (31.25, 24.25))    # the view and the mouse go to the offer
+        tool.render()
+        tool.confirm()
+        self.assertEqual((row.x, row.y, row.source), (31.25, 24.25, "refined"))
+        self.assertTrue(row.reviewed and row.edited)
+        tool.suggestions["test"][0] = hint(row, row.x + 2.0, row.y)   # re-measured from the new label
+        tool.suggest_version += 1
+        self.assertIsNone(tool.offer_for(0))                     # reviewed: your label is the mark
+        self.assertIsNotNone(tool.suggestion_for(0))             # the hint is still shown beside it
+        tool.render()
+        tool.confirm()
+        self.assertEqual((row.x, row.y), (31.25, 24.25))
+
+    def test_an_offer_that_was_not_drawn_is_not_taken(self):
+        tool = LabelWorkflowTests.tool(self)
+        row = tool.rows[0]
+        tool.render()                                            # judged without a suggestion
+        tool.suggestions["test"] = {0: hint(row, row.x + 1.0, row.y)}
+        tool.suggest_version += 1
+        tool.confirm()                                           # SPACE lands after it arrived
+        self.assertEqual((row.x, row.reviewed, row.edited), (30.25, True, False))
+        tool.cursor = 1
+        tool.suggestions["test"][1] = hint(tool.rows[1], tool.rows[1].x + 1.0, tool.rows[1].y)
+        tool.suggest_version += 1
+        tool.render()
+        tool.cursor = 2                                          # drawn for frame 1, pressed on 2
+        tool.confirm()
+        self.assertEqual((tool.rows[1].reviewed, tool.rows[2].edited), (False, False))
+        self.assertTrue(tool.rows[2].reviewed)
+
+    def test_x_keeps_the_draft_and_the_offer_rules(self):
+        from finetune import label_tool
+        tool = LabelWorkflowTests.tool(self)
+        row = tool.rows[0]
+        tool.suggestions["test"] = {0: hint(row, row.x + 1.0, row.y, trusted=False)}
+        tool.suggest_version += 1
+        with patch.object(label_tool, "OFFER_UNSURE", False):
+            self.assertIsNone(tool.offer_for(0))
+        self.assertIsNotNone(tool.offer_for(0))                  # unsure but near the draft: offered, dull
+        tool.suggestions["test"][0]["x"] = row.x + 2.5           # 3.75 px at 1080p: too far to offer unsure
+        tool.suggest_version += 1
+        self.assertIsNone(tool.offer_for(0))
+        self.assertIsNotNone(tool.suggestion_for(0))             # ... but still a hint beside the draft
+        tool.suggestions["test"][0]["trusted"] = True            # sure: offered wherever it is
+        tool.suggest_version += 1
+        self.assertIsNotNone(tool.offer_for(0))
+        tool.suggestions["test"][0] = hint(row, row.x + 1.0, row.y, trusted=False)
+        tool.suggest_version += 1
+        tool.render()
+        tool.confirm(take_offer=False)                           # x: the draft was right
+        self.assertEqual((row.x, row.reviewed, row.edited), (30.25, True, False))
+        other = tool.rows[1]
+        tool.suggestions["test"][1] = hint(other, other.x + 0.1, other.y)
+        tool.suggest_version += 1
+        self.assertIsNone(tool.offer_for(1))                     # nothing to choose between
+        for row in tool.rows:
+            row.conf = .9
+        tool.suggestions["test"][2] = hint(tool.rows[2], tool.rows[2].x + 1.0, tool.rows[2].y)
+        tool.suggest_version += 1
+        tool.cursor = 1
+        tool.render()
+        tool.accept_run()                                        # r confirms the drafts, unseen
+        self.assertEqual((tool.rows[2].x, tool.rows[2].edited), (52.25, False))
+        self.assertTrue(all(row.reviewed for row in tool.rows))
+
+    def test_confirm_grid_takes_the_offers_it_drew(self):
+        tool = LabelWorkflowTests.tool(self)
+        rows = tool.rows
+        tool.suggestions["test"] = {0: hint(rows[0], rows[0].x + 1.0, rows[0].y),
+                                    3: hint(rows[3], rows[3].x, rows[3].y + 1.0, trusted=False),
+                                    9: hint(rows[9], rows[9].x + 1.0, rows[9].y)}
+        tool.suggest_version += 1
+        tool.toggle_grid()
+        tool.render_grid()
+        tool.confirm_grid()
+        self.assertEqual((rows[0].x, rows[0].source), (31.25, "refined"))
+        self.assertEqual((rows[3].y, rows[3].source), (34.75, "refined"))
+        self.assertTrue(all(row.reviewed for row in rows[:8]))
+        self.assertFalse(rows[1].edited)
+        self.assertFalse(rows[9].settled)                        # next page: not drawn, not taken
+        self.assertEqual(rows[9].x, 129.25)
+
+    def test_a_no_ball_draft_with_a_sure_hint_offers_it(self):
+        tool = LabelWorkflowTests.tool(self)
+        row = tool.rows[2]
+        row.visible = False
+        tool.cursor = 2
+        tool.suggestions["test"] = {2: hint(row, 300.0, 200.0, seed=None)}
+        tool.suggest_version += 1
+        tool.follow_ball()
+        self.assertEqual(tool.target_point(), (300.0, 200.0))
+        tool.render()
+        tool.confirm()
+        self.assertTrue(row.visible)
+        self.assertEqual((row.x, row.y, row.source), (300.0, 200.0, "refined"))
 
 
 if __name__ == "__main__":

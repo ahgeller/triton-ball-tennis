@@ -13,6 +13,7 @@ interactive menu that walks through everything below. The commands remain for sc
     python finetune/ft.py promote                    make the winner the tracker's model (backs up the old one)
     python finetune/ft.py hints train                retrain the network that places the label tool's suggestions
     python finetune/ft.py hints list | use <version> its versions (all kept) and which one the tool uses
+    python finetune/ft.py hints sheet <clip> [a b]   a zoomed PNG of where two versions disagree, to judge by eye
 
 Runs itself under the training venv automatically, so plain ``python`` works from any shell
 (``.\\finetune.ps1 <command>`` does the same from PowerShell). Sub-commands pass unknown
@@ -1119,7 +1120,11 @@ def _menu_hints() -> None:
     run_script("cnn_refiner.py", ["list"])
     print()
     print("  t) train a new version now (about 10 minutes on the GPU)")
-    print("  u <version>) go back to an older version, e.g. u 20261019")
+    print("  u <version>) go back to an older version, e.g. u refiner-20261019-120547 (a date alone")
+    print("               is ambiguous once two versions share it)")
+    print("  s <clip>) a PNG of the clip's frames where the current and the previous version disagree")
+    print("            most, zoomed, to judge by eye which sits on the ball (hints sheet <clip> a b")
+    print("            compares any two; 'centroid' is refine.py alone)")
     answer = _ask("pick, or Enter for the menu: ")
     if not answer:
         return
@@ -1127,6 +1132,8 @@ def _menu_hints() -> None:
         run_script("cnn_refiner.py", ["train"])
     elif answer.lower().startswith("u "):
         run_script("cnn_refiner.py", ["use", answer[2:].strip()])
+    elif answer.lower().startswith("s "):
+        run_script("cnn_refiner.py", ["sheet"] + answer[2:].split())
     else:
         print(f"  '{answer}' is not an option")
 

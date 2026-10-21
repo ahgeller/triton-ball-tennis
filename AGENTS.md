@@ -24,10 +24,15 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `finetune/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
 - `finetune/cnn_refiner.py`: small CNN, trained only on frames the user checked, that places
-  those suggestions where the user clicks (what `y` takes). Versions live in
+  those suggestions where the user clicks. Versions live in
   `finetune/models/refiner/` (all kept, `current.txt` names the active one); retrain with
   `ft.py hints train` or menu option 10. Its self-check decides "trusted" (threshold set on
   folds of clips it never saw); refine.py still finds the ball and decides ball/no ball.
+  In the label tool an unreviewed frame's suggestion is the mark SPACE takes (sure ones
+  always, unsure ones within 3 px of the draft; see `Tool.offer_for` for the measurement);
+  `x` keeps the draft, `y` takes a hint beside a reviewed label. `ft.py hints sheet <clip>`
+  renders a zoomed PNG of where two versions disagree, for judging marks by eye. A trajectory
+  prior on the hints was measured and makes them worse (see the module docstring).
 - `finetune/ft.py`: workflow front door; `train_gridtracknet.py`: training;
   `pretrack.py`: drafts; `label_tool.py`: manual edits; `import_data.py` and
   `realign.py`: source conversion and temporal realignment.
