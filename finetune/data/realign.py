@@ -1,6 +1,6 @@
 """Put a clip's labels back in time with its video.
 
-    python finetune/realign.py <label clip> <video clip> [--preview] [--apply]
+    python finetune/data/realign.py <label clip> <video clip> [--preview] [--apply]
 
 Run this when ``ft.py check --audit`` says a clip's labels do not line up. It handles the two ways
 that happens, both of which turned up in the GridTrackNet set:
@@ -46,15 +46,15 @@ from typing import FrozenSet, List, NamedTuple, Optional, Sequence, Set, Tuple
 import numpy as np
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finetune import workspace as ws
-from finetune.alignment import Evidence, Tracks, agreement, errors_at, judged_rows
-from finetune.detect import ball_detector, detect_points
-from finetune.fileio import backup_copy
-from finetune.labels import LabelRow, format_point, is_visible, read_label_rows, reviewed_frames, write_label_cells
-from finetune.scoring import AGREE_PX, DETECTION_CONF, scale_for_width
-from finetune.workspace import VideoMeta, find_video, label_csv, require_video, video_meta
+from finetune.data import workspace as ws
+from finetune.data.alignment import Evidence, Tracks, agreement, errors_at, judged_rows
+from finetune.training.detect import ball_detector, detect_points
+from finetune.data.fileio import backup_copy
+from finetune.data.labels import LabelRow, format_point, is_visible, read_label_rows, reviewed_frames, write_label_cells
+from finetune.data.scoring import AGREE_PX, DETECTION_CONF, scale_for_width
+from finetune.data.workspace import VideoMeta, find_video, label_csv, require_video, video_meta
 
 PREVIEW_TILES = 8            # frames shown on the --preview sheet ...
 PREVIEW_CROP = 70            # ... each a crop this many pixels either side of the label ...

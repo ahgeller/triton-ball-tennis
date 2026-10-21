@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from finetune import train_gridtracknet as training
+from finetune.training import train_gridtracknet as training
 from tennis_tracker import ball_detectors
 from tennis_tracker.ball_detectors import GridTrackNetBallDetector
 from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice

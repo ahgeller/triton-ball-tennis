@@ -1,15 +1,16 @@
 """Where the workspace keeps things, its records, and the facts about a clip's video.
 
 The workspace is laid out as ``videos/<clip>.<ext>`` + ``labels/<clip>_ball.csv`` (plus the
-sidecars described in ``finetune.labels``), with ``clips.csv`` listing every imported clip,
+sidecars described in ``finetune.data.labels``), with ``clips.csv`` listing every imported clip,
 ``exclude.txt`` the clips training skips and ``review_status.json`` the review policy. Every
 script used to spell these paths out for itself; this is the one place they are defined, and
 the one place ``clips.csv`` and ``exclude.txt`` are read and written.
 
-The workspace is the ``finetune/`` folder itself unless ``TENNIS_WORKSPACE`` names another
-folder. Modules that need the paths read them from this module when called
-(``workspace.LABELS``), not at import, so a test can point the whole workspace at a
-temporary folder by patching this module alone (``tests/conftest.py: workspace_dir``).
+The workspace is the ``finetune/`` folder itself (the package this module's package sits in)
+unless ``TENNIS_WORKSPACE`` names another folder. Modules that need the paths read them from
+this module when called (``workspace.LABELS``), not at import, so a test can point the whole
+workspace at a temporary folder by patching this module alone (``tests/conftest.py:
+workspace_dir``).
 """
 from __future__ import annotations
 
@@ -19,12 +20,12 @@ import re
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Union
 
-from finetune.fileio import atomic_csv, write_atomic
+from finetune.data.fileio import atomic_csv, write_atomic
 from tennis_tracker.paths import GRIDTRACKNET_WEIGHTS
 
 WORKSPACE_VARIABLE = "TENNIS_WORKSPACE"       # names another workspace folder, for tests and spare copies
-WORKSPACE = Path(os.environ.get(WORKSPACE_VARIABLE) or Path(__file__).resolve().parent).resolve()
-ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE = Path(os.environ.get(WORKSPACE_VARIABLE) or Path(__file__).resolve().parents[1]).resolve()
+ROOT = Path(__file__).resolve().parents[2]
 VIDEOS = WORKSPACE / "videos"
 LABELS = WORKSPACE / "labels"
 MODELS = WORKSPACE / "models"

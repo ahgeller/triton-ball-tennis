@@ -13,7 +13,7 @@ def test_assets_sit_under_the_repository_models_folder():
 
 
 def test_config_defaults_and_the_workspace_use_the_same_files():
-    from finetune.workspace import REPO_WEIGHTS
+    from finetune.data.workspace import REPO_WEIGHTS
     from evaluation import archive as evaluate_archive
 
     cfg = Config()

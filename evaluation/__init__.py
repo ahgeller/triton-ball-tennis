@@ -7,7 +7,7 @@ frozen:
   pixels (presence recall, 5/10/20 px localisation buckets, absence false positives, jumps).
   ``check_parity`` gates the bundled Pomona benchmark on its numbers, so they are not to change.
 - ``evaluation.archive`` scores the raw detector or the whole pipeline on the fine-tuning
-  workspace's labelled clips with ``finetune.scoring`` (1080p-normalised hit / wrong-object /
+  workspace's labelled clips with ``finetune.data.scoring`` (1080p-normalised hit / wrong-object /
   false-alarm), the same metric training uses to pick a winner.
 
 The repository root keeps ``validate_tracking.py``, ``check_parity.py`` and ``evaluate_archive.py``

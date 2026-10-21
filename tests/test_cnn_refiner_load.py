@@ -9,7 +9,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from finetune import cnn_refiner  # noqa: E402
+from finetune.labeling import cnn_refiner  # noqa: E402
 
 
 def _write_checkpoints(tmp_path: Path):

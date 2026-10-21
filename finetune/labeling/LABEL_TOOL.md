@@ -1,12 +1,12 @@
 # The label tool
 
-`finetune/label_tool.py` corrects the detector's draft labels as fast as possible.
+`finetune/labeling/label_tool.py` corrects the detector's draft labels as fast as possible.
 
 ```powershell
-python finetune/label_tool.py <clip>                        # videos/<clip>.mp4 + labels/<clip>_ball.csv
-python finetune/label_tool.py video22..video53             # a whole run, one clip after another
-python finetune/label_tool.py video22..video53 --uncertain # only the frames worth a look
-python finetune/label_tool.py <clip> --grid                # start on the grid of crops
+python finetune/labeling/label_tool.py <clip>                        # videos/<clip>.mp4 + labels/<clip>_ball.csv
+python finetune/labeling/label_tool.py video22..video53             # a whole run, one clip after another
+python finetune/labeling/label_tool.py video22..video53 --uncertain # only the frames worth a look
+python finetune/labeling/label_tool.py <clip> --grid                # start on the grid of crops
 ```
 
 `ft.py label <clip>` runs the same thing with the paths filled in, and pre-labels
@@ -83,8 +83,8 @@ out at once. Click a point to open that frame; `a` / `d` move to the stretch bef
 While you work, the tool measures each label frame's ball from the video itself:
 the centre of what moved between that frame and its neighbours, looked for around
 the current label and around where the labels either side put the ball
-(`finetune/refine.py`). A small network trained on the frames you have checked
-(`finetune/cnn_refiner.py`; "hint model" in the finetune menu retrains it) then puts
+(`finetune/labeling/refine.py`). A small network trained on the frames you have checked
+(`finetune/labeling/cnn_refiner.py`; "hint model" in the finetune menu retrains it) then puts
 it where you would click and says whether it is sure. Without a trained version the
 measurement is shown as it is.
 
@@ -96,7 +96,7 @@ mark on the ball?": SPACE if it is, click where the ball is if not, `x` if the g
 draft was right after all. A sure suggestion is always offered; an unsure one is
 offered only when it agrees with the draft within 3 px, where it is still the better
 mark, and the dull colour says to look closely. The measurements behind those rules
-are in `Suggestions.offer_for` (`finetune/label_hints.py`).
+are in `Suggestions.offer_for` (`finetune/labeling/label_hints.py`).
 
 Once you have reviewed or edited a frame your label is the mark and the suggestion
 is a hint beside it, four small ticks with its distance on the bar, and `y` moves the

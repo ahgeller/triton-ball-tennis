@@ -9,13 +9,13 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Tuple
 
-from finetune import cnn_refiner, refine
-from finetune.label_store import Row
-from finetune.refine import Suggestion
-from finetune.scoring import REFERENCE_HEIGHT
+from finetune.labeling import cnn_refiner, refine
+from finetune.labeling.label_store import Row
+from finetune.labeling.refine import Suggestion
+from finetune.data.scoring import REFERENCE_HEIGHT
 
 if TYPE_CHECKING:
-    from finetune.label_source import Source
+    from finetune.labeling.label_source import Source
 
 SUGGEST_SETTLE = 0.3      # seconds a clip's labels stay put before its suggestions are re-measured
 SUGGEST_MEASURE = 16      # after an edit, label frames either side re-measured ...

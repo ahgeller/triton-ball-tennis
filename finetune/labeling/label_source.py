@@ -14,9 +14,9 @@ from typing import Dict, List, Optional, Set
 import cv2
 import numpy as np
 
-from finetune.label_store import Row, load_review, load_rows, load_suspects
-from finetune.labels import LabelFormatError
-from finetune.workspace import draft_csv, find_video, label_csv, natural_key, review_json, video_meta
+from finetune.labeling.label_store import Row, load_review, load_rows, load_suspects
+from finetune.data.labels import LabelFormatError
+from finetune.data.workspace import draft_csv, find_video, label_csv, natural_key, review_json, video_meta
 
 CACHE_BYTES = 400_000_000  # decoded frames kept in memory, as a budget: 1080p frames are 6 MB each
 CACHE_FRAMES_MAX = 96      # ... and never more than this many, nor fewer than CACHE_FRAMES_MIN
@@ -296,7 +296,7 @@ def build_source(clip: str, videos: Path, labels: Path) -> Optional[Source]:
     final, draft = label_csv(clip, labels), draft_csv(clip, labels)
     from_file = final if final.is_file() else draft
     if not from_file.is_file():
-        print(f"[skip] {clip}: no labels; run  python finetune/pretrack.py --clips {clip}")
+        print(f"[skip] {clip}: no labels; run  python finetune/training/pretrack.py --clips {clip}")
         return None
     try:
         rows = load_rows(from_file, width, height, "det" if draft.is_file() else "csv")

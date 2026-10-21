@@ -10,8 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-from finetune import ft, workspace
-from finetune.labels import write_labels
+from finetune import ft
+from finetune.data import workspace
+from finetune.data.labels import write_labels
 from tests._helpers import write_clip
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,8 +28,8 @@ class Blocker(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Blocker())
 import finetune.ft
 assert not any(name.split(".")[0] in BLOCKED for name in sys.modules), sorted(sys.modules)
-for light in ("finetune.label_audit", "finetune.labels", "finetune.workspace", "finetune.data_policy",
-              "finetune.scoring", "finetune.fileio"):
+for light in ("finetune.data.label_audit", "finetune.data.labels", "finetune.data.workspace", "finetune.data.data_policy",
+              "finetune.data.scoring", "finetune.data.fileio"):
     assert light in sys.modules, light
 print("light")
 """
@@ -136,13 +137,14 @@ def test_commands_hand_their_arguments_to_the_right_script(workspace_dir):
         assert ft.run_cli(["prelabel", "--clips", "x"]) == 0
         assert ft.run_cli(["eval", "--clips", "video13", "--weights", "w.npz"]) == 0
         assert ft.run_cli(["label", "video10", "--zoom", "3", "video11"]) == 0      # two clips: one run
-    assert launched[:4] == [("train_gridtracknet.py", ["--epochs", "3", "--lr", "0.3"]), ("import_data.py", ["all"]),
-                            ("cnn_refiner.py", ["list"]), ("pretrack.py", ["--clips", "x"])]
+    assert launched[:4] == [("training/train_gridtracknet.py", ["--epochs", "3", "--lr", "0.3"]),
+                            ("data/import_data.py", ["all"]), ("labeling/cnn_refiner.py", ["list"]),
+                            ("training/pretrack.py", ["--clips", "x"])]
     module, arguments = launched[4]
     assert module == "evaluation.archive"
     assert arguments[:6] == ["--mode", "raw", "--models", "gridtracknet", "--archive", str(workspace.WORKSPACE)]
     assert arguments[6:] == ["--gridtracknet-weights", str(Path("w.npz").resolve()), "--clips", "video13"]
-    assert launched[5] == ("label_tool.py", ["video10", "video11", "--zoom", "3.0"])
+    assert launched[5] == ("labeling/label_tool.py", ["video10", "video11", "--zoom", "3.0"])
 
 
 def test_label_pre_labels_a_clip_that_has_no_labels_yet(workspace_dir, capsys):
@@ -151,16 +153,16 @@ def test_label_pre_labels_a_clip_that_has_no_labels_yet(workspace_dir, capsys):
     with patch.object(ft, "run_script", lambda script, arguments: launched.append((script, arguments)) or 0):
         assert ft.run_cli(["label", "fresh"]) == 0
         assert ft.run_cli(["label", "missing"]) == 1
-    assert launched == [("pretrack.py", ["--clips", "fresh"]), ("label_tool.py", ["fresh"])]
+    assert launched == [("training/pretrack.py", ["--clips", "fresh"]), ("labeling/label_tool.py", ["fresh"])]
     assert "No video named missing.*" in capsys.readouterr().out
 
 
 def test_scripts_run_from_the_package_folder_and_modules_from_the_root():
     ran = []
     with patch.object(ft, "wait_child", lambda command, **kwargs: ran.append((command, kwargs)) or 0):
-        ft.run_script("pretrack.py", ["--clips", "a"])
+        ft.run_script("training/pretrack.py", ["--clips", "a"])
         ft.run_module("evaluation.archive", ["--help"])
-    assert ran[0][0] == [sys.executable, str(ft.SCRIPTS / "pretrack.py"), "--clips", "a"]
+    assert ran[0][0] == [sys.executable, str(ft.SCRIPTS / "training" / "pretrack.py"), "--clips", "a"]
     assert ran[1][0] == [sys.executable, "-m", "evaluation.archive", "--help"]
     assert all(kwargs == {"cwd": str(ft.ROOT)} for _, kwargs in ran)
     assert ft.SCRIPTS == ROOT / "finetune"

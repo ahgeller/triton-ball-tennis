@@ -23,10 +23,10 @@ may start on an odd frame: GridTrackNet's own set was extracted from frames 1, 3
 its 60 FPS videos, so label k of a 60 FPS grid match is video frame 2k+1 (verified by matching
 the shipped PNGs against the videos).
 
-    python finetune/import_data.py all
-    python finetune/import_data.py archive tracknetv2
-    python finetune/import_data.py grid --dry-run
-    python finetune/import_data.py tracknet --src D:\\downloads\\TrackNet_tennis
+    python finetune/data/import_data.py all
+    python finetune/data/import_data.py archive tracknetv2
+    python finetune/data/import_data.py grid --dry-run
+    python finetune/data/import_data.py tracknet --src D:\\downloads\\TrackNet_tennis
 """
 
 from __future__ import annotations
@@ -46,13 +46,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 import cv2
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finetune.fileio import backup_copy, copy_atomic
-from finetune.labels import LabelPoint, read_label_rows, read_labels, reviewed_frames, write_labels
-from finetune import workspace as ws
-from finetune.workspace import (DEFAULT_SOURCES, MANIFEST_COLUMNS, VIDEO_SUFFIXES, clip_of, label_csv, natural_key,
-                                read_manifest, video_meta, write_manifest)
+from finetune.data.fileio import backup_copy, copy_atomic
+from finetune.data.labels import LabelPoint, read_label_rows, read_labels, reviewed_frames, write_labels
+from finetune.data import workspace as ws
+from finetune.data.workspace import (DEFAULT_SOURCES, MANIFEST_COLUMNS, VIDEO_SUFFIXES, clip_of, label_csv, natural_key,
+                                     read_manifest, video_meta, write_manifest)
 from tennis_tracker.frame_rate import require_phase_stride
 
 ENCODE_TIMEOUT_S = 3600          # an ffmpeg encode of one clip that takes longer than this is stuck

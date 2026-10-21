@@ -2,7 +2,7 @@
 
 Both the label audit (``ft.py check --audit``) and ``realign.py`` ask the same question - at
 this offset between label frames and video frames, how many labels does the detector agree
-with? - so they ask it here, with one set of thresholds (``finetune.scoring``). The labels are a
+with? - so they ask it here, with one set of thresholds (``finetune.data.scoring``). The labels are a
 ``Tracks`` bundle (frame, position, and whether the ball moved enough since the previous row to
 tell one offset from the next); what the detector saw is an ``Evidence`` bundle of per-frame
 lookup tables. Only a moving ball can separate one offset from the next - a slow ball stays
@@ -15,7 +15,7 @@ from typing import Mapping, NamedTuple, Sequence, Tuple, Union
 
 import numpy as np
 
-from finetune.scoring import AGREE_PX, FAST_PX, MIN_FAST
+from finetune.data.scoring import AGREE_PX, FAST_PX, MIN_FAST
 
 Offsets = Union[int, np.ndarray]     # one offset for every row, or an array with one per row
 

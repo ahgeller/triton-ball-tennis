@@ -12,11 +12,11 @@ if str(ROOT) not in sys.path:
 
 @pytest.fixture
 def workspace_dir(tmp_path, monkeypatch):
-    """Point the fine-tuning workspace (``finetune.workspace``) at a fresh folder under tmp_path,
+    """Point the fine-tuning workspace (``finetune.data.workspace``) at a fresh folder under tmp_path,
     with empty ``labels/`` and ``videos/``. The finetune modules read the paths from that module
     when called, so this is the only place to patch; no real label, video or model is touched.
     Returns the folder."""
-    from finetune import workspace
+    from finetune.data import workspace
 
     root = tmp_path / "workspace"
     (root / "labels").mkdir(parents=True)

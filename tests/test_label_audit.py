@@ -1,4 +1,4 @@
-"""finetune.label_audit on synthetic label files in a temporary workspace; no workspace file is read."""
+"""finetune.data.label_audit on synthetic label files in a temporary workspace; no workspace file is read."""
 import contextlib
 import io
 import json
@@ -8,12 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-from finetune import label_audit
-from finetune.label_audit import (AUDIT_MIN_COVERAGE, ClipAudit, audit_labels, check_label_file,
-                                  outstanding_flags, open_flags, shift_labels, flag_frames)
-from finetune.labels import read_labels
-from finetune.scoring import MIN_FAST
-from finetune.workspace import VideoMeta
+from finetune.data import label_audit
+from finetune.data.label_audit import (AUDIT_MIN_COVERAGE, ClipAudit, audit_labels, check_label_file,
+                                       outstanding_flags, open_flags, shift_labels, flag_frames)
+from finetune.data.labels import read_labels
+from finetune.data.scoring import MIN_FAST
+from finetune.data.workspace import VideoMeta
 
 WIDTH, HEIGHT = 1920, 1080
 
@@ -208,8 +208,8 @@ class AuditLabelsTests(Workspace):
         output = io.StringIO()
         with patch.object(label_audit, "videos_in", lambda *_: {"clip": self.folder / "clip.mp4"}), \
                 patch.object(label_audit, "video_meta", lambda *_: VideoMeta(30.0, WIDTH, HEIGHT, 40)), \
-                patch("finetune.detect.ball_detector", lambda *_: object()), \
-                patch("finetune.detect.detect_points", lambda *_: detector), \
+                patch("finetune.training.detect.ball_detector", lambda *_: object()), \
+                patch("finetune.training.detect.detect_points", lambda *_: detector), \
                 contextlib.redirect_stdout(output):
             suspects = audit_labels(None, None, **options)
         return suspects, output.getvalue()

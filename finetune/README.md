@@ -29,9 +29,10 @@ The same actions exist as commands for scripts and power use:
 | `ft.py promote` | make the winner the tracker's model (`models/gridtracknet_weights_torch.npz`, old one backed up) |
 | `ft.py paths` | which python, which folders |
 
-Everything that is not `ft.py` is still callable directly (`pretrack.py`,
-`label_tool.py`, `train_gridtracknet.py`, `import_data.py`); `ft.py` just picks
-the interpreter and fills in the paths. Unknown options pass straight through
+Everything that is not `ft.py` is still callable directly (`training/pretrack.py`,
+`labeling/label_tool.py`, `training/train_gridtracknet.py`, `data/import_data.py`,
+`data/realign.py`, run from the repository root); `ft.py` just picks the
+interpreter and fills in the paths. Unknown options pass straight through
 (`ft.py train --epochs 3 --lr 0.3`).
 
 ## Layout
@@ -83,10 +84,8 @@ When a clip will not shift into place, `realign.py` is the next thing to try —
 that is not always what is wrong:
 
 ```powershell
-.inetune.ps1 ... ; python finetune
-ealign.py grid_match49 grid_match47 --preview
-python finetune
-ealign.py grid_match49 grid_match47 --apply
+.\finetune.ps1 ... ; python finetune\data\realign.py grid_match49 grid_match47 --preview
+python finetune\data\realign.py grid_match49 grid_match47 --apply
 ```
 
 It searches a rate and a per-row offset, so it also catches labels that belong to
@@ -172,7 +171,7 @@ separately). `ft.py check` flags files that break this rule.
    - the window is resizable — drag it, maximise it, or press **m** for full
      screen; the picture is redrawn at whatever size you give it
    - `i j k l` nudge one pixel, `u` undo, `n`/`p` step, `s` save, `q` save + quit
-   - to get through a lot of clips, give a range: `.inetune.ps1 label video22..video53`
+   - to get through a lot of clips, give a range: `.\finetune.ps1 label video22..video53`
      runs them as one session. Add `--uncertain` (or type `video22..video53 u` at the
      menu's clip prompt) to stop only on the frames that still want a decision — on the
      prof clips that is about 6% of them

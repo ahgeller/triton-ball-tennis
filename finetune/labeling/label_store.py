@@ -1,5 +1,5 @@
 """What the label tool reads and writes: a clip's rows, the review and flag sidecars, and the
-settings file. The on-disk formats are those of ``finetune.labels``; this module turns them into
+settings file. The on-disk formats are those of ``finetune.data.labels``; this module turns them into
 ``Row`` objects and back. ``load_*`` functions read and return; ``apply_*`` functions write
 what a sidecar says onto the rows they are given."""
 from __future__ import annotations
@@ -8,9 +8,9 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from finetune.fileio import write_atomic
-from finetune.labels import (Flags, answered_point, format_point, frame_list, is_visible, read_flags, read_label_rows,
-                             read_review, write_flags, write_label_cells)
+from finetune.data.fileio import write_atomic
+from finetune.data.labels import (Flags, answered_point, format_point, frame_list, is_visible, read_flags, read_label_rows,
+                                  read_review, write_flags, write_label_cells)
 
 CONFIDENT_CONF = 0.70       # a draft at or above this confidence is not "uncertain"
 SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: filter, inset, trail

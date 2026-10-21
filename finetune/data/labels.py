@@ -24,8 +24,8 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Literal, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict
 
-from finetune.fileio import atomic_csv, write_atomic
-from finetune.workspace import review_json
+from finetune.data.fileio import atomic_csv, write_atomic
+from finetune.data.workspace import review_json
 
 COLUMNS = ("frame", "ball_x", "ball_y")
 FRAME_PATTERN = re.compile(r"frame_(\d+)")

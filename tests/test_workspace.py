@@ -1,4 +1,4 @@
-"""finetune.workspace: the workspace layout, its two records (clips.csv, exclude.txt) and the
+"""finetune.data.workspace: the workspace layout, its two records (clips.csv, exclude.txt) and the
 TENNIS_WORKSPACE override, on folders under tmp_path. No real workspace file is read."""
 import os
 import subprocess
@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from finetune import workspace
-from finetune.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, find_video, label_csv,
-                                label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
-                                require_video, review_json, suspect_json, videos_in, write_manifest)
+from finetune.data import workspace
+from finetune.data.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, find_video, label_csv,
+                                     label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
+                                     require_video, review_json, suspect_json, videos_in, write_manifest)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,7 +85,7 @@ def test_the_default_paths_follow_the_patched_workspace(workspace_dir):
 
 def test_tennis_workspace_relocates_the_workspace_without_touching_the_code_paths(tmp_path):
     env = dict(os.environ, TENNIS_WORKSPACE=str(tmp_path))
-    code = ("from finetune import workspace as w; "
+    code = ("from finetune.data import workspace as w; "
             "print(w.WORKSPACE); print(w.LABELS); print(w.MANIFEST); print(w.ROOT); print(w.REPO_WEIGHTS)")
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
     lines = out.stdout.splitlines()

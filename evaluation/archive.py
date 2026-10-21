@@ -2,7 +2,7 @@
 
 The label set holds ``videoN.mp4`` + ``videoN_ball.csv`` pairs labelled with the
 click tool: one row per labelled frame, with invisible balls parked in the
-top-right corner (see ``finetune/labels.py``). ``--archive`` picks it; the
+top-right corner (see ``finetune/data/labels.py``). ``--archive`` picks it; the
 default is ``$TENNIS_ARCHIVE`` when that is set, else this repo's own
 ``finetune/`` workspace. Pass ``--archive finetune`` explicitly for workspace
 runs, as AGENTS.md asks.
@@ -28,11 +28,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
-from finetune.data_policy import is_verified, read_review_status
-from finetune.detect import ball_detector, detect_points
-from finetune.labels import read_labels
-from finetune.scoring import HIT_PX, WRONG_PX, score, scale_for_width
-from finetune.workspace import WORKSPACE, clip_of, find_video, natural_key, video_meta
+from finetune.data.data_policy import is_verified, read_review_status
+from finetune.training.detect import ball_detector, detect_points
+from finetune.data.labels import read_labels
+from finetune.data.scoring import HIT_PX, WRONG_PX, score, scale_for_width
+from finetune.data.workspace import WORKSPACE, clip_of, find_video, natural_key, video_meta
 from tennis_tracker.court_geometry import LINE_PAIRS_14, MIN_KEYPOINT_VALUES, last_valid_court_keypoints
 from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
 

@@ -1,4 +1,4 @@
-"""finetune/train_gridtracknet.py: the script's own self-test, and the data path - which clips
+"""finetune/training/train_gridtracknet.py: the script's own self-test, and the data path - which clips
 train, the per-clip frame cache, and the flip augmentation's label transform - on synthetic clips
 under tmp_path. No GPU, no real label or video."""
 import json
@@ -11,10 +11,10 @@ import numpy as np
 import pytest
 import torch
 
-from finetune import train_gridtracknet as training
-from finetune.labels import write_labels
-from finetune.train_gridtracknet import (DATA_VERSION, Augmenter, TrainingUnit, UnitDataset, better, find_clips,
-                                         make_target, prepare_clip, training_targets)
+from finetune.training import train_gridtracknet as training
+from finetune.data.labels import write_labels
+from finetune.training.train_gridtracknet import (DATA_VERSION, Augmenter, TrainingUnit, UnitDataset, better, find_clips,
+                                                  make_target, prepare_clip, training_targets)
 from tests._helpers import metric_probe, write_clip
 
 SIZE = (64, 36)

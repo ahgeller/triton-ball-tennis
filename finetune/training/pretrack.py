@@ -15,10 +15,10 @@ Two draft sources:
 Invisible/unknown frames are parked in the top-right corner (``W-1, 0``),
 the convention the trainer and evaluate_archive.py already read.
 
-    python finetune/pretrack.py                          # all unlabelled clips, raw GridTrackNet
-    python finetune/pretrack.py --clips rally7           # one clip
-    python finetune/pretrack.py --weights my_finetune.npz
-    python finetune/pretrack.py --source pipeline
+    python finetune/training/pretrack.py                          # all unlabelled clips, raw GridTrackNet
+    python finetune/training/pretrack.py --clips rally7           # one clip
+    python finetune/training/pretrack.py --weights my_finetune.npz
+    python finetune/training/pretrack.py --source pipeline
 """
 
 from __future__ import annotations
@@ -29,13 +29,13 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finetune.detect import ball_detector, detect_points
-from finetune.fileio import atomic_csv
-from finetune.labels import COLUMNS, frame_name, sentinel
-from finetune.workspace import (LABELS, REPO_WEIGHTS, ROOT, RUNS, VIDEOS, VideoMeta, draft_csv, label_csv,
-                                video_meta, videos_in)
+from finetune.training.detect import ball_detector, detect_points
+from finetune.data.fileio import atomic_csv
+from finetune.data.labels import COLUMNS, frame_name, sentinel
+from finetune.data.workspace import (LABELS, REPO_WEIGHTS, ROOT, RUNS, VIDEOS, VideoMeta, draft_csv, label_csv,
+                                     video_meta, videos_in)
 from tennis_tracker.frame_rate import require_phase_stride
 
 RAW_DRAFT_CONF = 0.25          # raw drafts keep guesses down to this confidence, so nearly every frame has one
@@ -133,7 +133,7 @@ def main() -> int:
             rows = pipeline_rows(video, weights, args.conf, args.device, RUNS / f"{video.stem}_{weights.stem}.json")
         visible = write_draft(rows, draft, stride, meta.width, meta.height, meta.total)
         print(f"[draft] {draft.name}: {visible} guessed frames of {len(range(0, meta.total, stride))} label frames "
-              f"-> python finetune/label_tool.py {video.stem}")
+              f"-> python finetune/labeling/label_tool.py {video.stem}")
     return 0
 
 

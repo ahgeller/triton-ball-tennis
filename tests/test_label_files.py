@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from finetune import data_policy, fileio, labels, workspace
-from finetune.import_data import ReviewedLabelsError, convert_rows, protect_existing, read_tracknet_csv
-from finetune.workspace import VideoMeta, video_meta
+from finetune.data import data_policy, fileio, labels, workspace
+from finetune.data.import_data import ReviewedLabelsError, convert_rows, protect_existing, read_tracknet_csv
+from finetune.data.workspace import VideoMeta, video_meta
 from tests._helpers import write_clip
 
 
@@ -88,7 +88,7 @@ def test_review_sidecar_missing_is_none_and_damaged_is_an_error(tmp_path):
 def test_review_frame_lists_are_validated_once_for_every_reader(tmp_path):
     """reviewed_frames and label_store.apply_review share frame_list, so a sidecar whose frame
     list is not one is the same LabelFormatError naming the file for both; null lists are empty."""
-    from finetune.label_store import Row, apply_review
+    from finetune.labeling.label_store import Row, apply_review
 
     path = tmp_path / "clip_ball.review.json"
     path.write_text(json.dumps({"reviewed": None, "edited": None}), encoding="utf-8")

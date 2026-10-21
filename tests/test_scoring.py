@@ -1,7 +1,7 @@
-"""finetune/scoring.py: the (label, prediction) metric and the 1080p scale factors."""
+"""finetune/data/scoring.py: the (label, prediction) metric and the 1080p scale factors."""
 import math
 
-from finetune.scoring import HIT_PX, WRONG_PX, scale_for_height, scale_for_width, score
+from finetune.data.scoring import HIT_PX, WRONG_PX, scale_for_height, scale_for_width, score
 
 
 def test_scale_factors_take_a_frame_to_1080p():

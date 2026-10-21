@@ -170,15 +170,15 @@ models/                                  Player and court TensorRT engines
 sample/                                  Sample video and validation annotations
 finetune.bat / finetune.ps1              Front door for the fine-tuning workspace
 finetune/ft.py                           Front door for the labelling and training workflow
-finetune/label_tool.py                   Manual label editing (label_store, label_source,
+finetune/labeling/label_tool.py          Manual label editing (label_store, label_source,
                                          label_window and label_hints hold its pieces)
-finetune/labels.py                       Label file format; label_audit.py checks labels
-finetune/refine.py, cnn_refiner.py       Sub-pixel label suggestions and the CNN that places them
-finetune/pretrack.py, detect.py          Drafts from the raw GridTrackNet prepass
-finetune/train_gridtracknet.py           Training; scoring.py is the detector metric
-finetune/import_data.py, realign.py      Source conversion and temporal realignment
-finetune/workspace.py, fileio.py         Workspace layout, clip facts, atomic writes
-finetune/data_policy.py                  Which clips may be trained, validated or scored on
+finetune/labeling/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
+finetune/data/labels.py                  Label file format; label_audit.py checks labels
+finetune/data/workspace.py, fileio.py    Workspace layout, clip facts, atomic writes
+finetune/data/data_policy.py             Which clips may be trained, validated or scored on
+finetune/data/import_data.py, realign.py Source conversion and temporal realignment
+finetune/training/train_gridtracknet.py  Training; data/scoring.py is the detector metric
+finetune/training/pretrack.py, detect.py Drafts from the raw GridTrackNet prepass
 finetune/labels/                         Hand-corrected own-camera labels
 tests/                                   Synthetic regression tests (pytest)
 audit/                                   Review reports, logs and verification scripts

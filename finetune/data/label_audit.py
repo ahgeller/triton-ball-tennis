@@ -10,7 +10,7 @@ agree with nothing go into ``exclude.txt`` (``add_exclusion``).
 Two things are "suspect" in different senses, so they are named apart: a *clip* whose labels
 disagree with the detector (``ClipAudit.verdict``, ``audit_labels`` counts them), and a *frame*
 an audit flagged for a person to look at. The flags live in the flag sidecar
-(``<clip>_ball.suspect.json``, see ``finetune.labels``) and are read by the label tool:
+(``<clip>_ball.suspect.json``, see ``finetune.data.labels``) and are read by the label tool:
 ``flag_frames`` records them, ``open_flags`` reads them and ``outstanding_flags`` is what is
 still worth a look. Only ``audit_labels`` needs the detector; it imports it when called, so
 ``ft.py`` stays importable without cv2 or torch.
@@ -23,17 +23,17 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from finetune.fileio import backup_copy
-from finetune.labels import (FLAG_ANSWER_DECIMALS, FlagKind, Flags, LabelFormatError, Labels, read_flags, read_label_rows,
-                             read_labels, write_flags, write_labels)
-from finetune.scoring import AGREE_PX, DETECTION_CONF, MIN_FAST, REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
-from finetune import workspace as ws
-from finetune.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, suspect_json,
-                                video_meta, videos_in, write_manifest)
+from finetune.data.fileio import backup_copy
+from finetune.data.labels import (FLAG_ANSWER_DECIMALS, FlagKind, Flags, LabelFormatError, Labels, read_flags, read_label_rows,
+                                  read_labels, write_flags, write_labels)
+from finetune.data.scoring import AGREE_PX, DETECTION_CONF, MIN_FAST, REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
+from finetune.data import workspace as ws
+from finetune.data.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, suspect_json,
+                                     video_meta, videos_in, write_manifest)
 from tennis_tracker.frame_rate import phase_stride
 
 if TYPE_CHECKING:
-    from finetune.alignment import Evidence, Tracks
+    from finetune.data.alignment import Evidence, Tracks
 
 LABEL_COVERAGE = 0.9         # check: fewer labelled frames than this share of the span is a gap
 
@@ -176,12 +176,12 @@ def outstanding_flags(clip: str) -> Dict[str, List[int]]:
 class ClipAudit:
     """One clip's labels against the raw detector: how well they agree as they stand, and the
     temporal shift (in label frames) that would make them agree best. The agreement itself is
-    ``finetune.alignment``'s, the same one realign.py solves with, so the two never disagree about
+    ``finetune.data.alignment``'s, the same one realign.py solves with, so the two never disagree about
     a clip."""
 
     def __init__(self, visible: Dict[int, Tuple[float, float]], confident: Dict[int, Tuple[float, float]],
                  stride: int, scale: float, total: int):
-        from finetune.alignment import Evidence, Tracks, agreement, errors_at, judges_fast   # numpy: not at ft.py's import
+        from finetune.data.alignment import Evidence, Tracks, agreement, errors_at, judges_fast   # numpy: not at ft.py's import
 
         self.stride, self.scale = stride, scale
         frames = sorted(visible)
@@ -276,7 +276,7 @@ def _fix_clip(clip: str, audit: ClipAudit, stride: int, meta: VideoMeta) -> None
 
 def _audit_one(clip: str, video: Path, detector, fix: bool, mark: bool) -> bool:
     """Audit one clip against the detector and print its row; True when its labels disagree with it."""
-    from finetune.detect import detect_points
+    from finetune.training.detect import detect_points
 
     meta = video_meta(video)
     stride = _audit_stride(clip, meta.fps)
@@ -298,7 +298,7 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
     """Cross-check every label file against the raw detector: agreement at offset 0, and the best temporal
     shift. Catches public clips whose labels were made on a different cut of the video. Returns how
     many clips disagree."""
-    from finetune.detect import ball_detector   # the lazy GPU import: ft.py must load without torch
+    from finetune.training.detect import ball_detector   # the lazy GPU import: ft.py must load without torch
 
     videos = videos_in()
     clips = _audit_clips(patterns, read_manifest())

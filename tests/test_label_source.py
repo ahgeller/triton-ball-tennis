@@ -1,10 +1,10 @@
-"""finetune.label_source: decoding keeps sequential frame identity (the rest of the label tool's
+"""finetune.labeling.label_source: decoding keeps sequential frame identity (the rest of the label tool's
 tests live in test_label_workflow.py)."""
 from types import SimpleNamespace
 
 import numpy as np
 
-from finetune.label_source import Source
+from finetune.labeling.label_source import Source
 from tests._helpers import Capture
 
 

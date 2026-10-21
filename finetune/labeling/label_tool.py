@@ -1,12 +1,12 @@
 """Correct the detector's draft labels as fast as possible.
 
-    python finetune/label_tool.py <clip>                 # videos/<clip>.mp4 + labels/<clip>_ball.csv
-    python finetune/label_tool.py video22..video53      # a whole run, one clip after another
-    python finetune/label_tool.py video22..video53 --uncertain   # only the frames worth a look
+    python finetune/labeling/label_tool.py <clip>                 # videos/<clip>.mp4 + labels/<clip>_ball.csv
+    python finetune/labeling/label_tool.py video22..video53      # a whole run, one clip after another
+    python finetune/labeling/label_tool.py video22..video53 --uncertain   # only the frames worth a look
 
 Every label frame comes up with the mark drawn and the mouse on it: SPACE if the mark is on the
 ball, a click where the ball is if not, v if there is no ball. Every key, the grid and sheet
-views, and what the marks, hints and badges mean: finetune/LABEL_TOOL.md (the bar at the bottom
+views, and what the marks, hints and badges mean: finetune/labeling/LABEL_TOOL.md (the bar at the bottom
 of the window names the keys that matter on the frame you are on). Output is
 labels/<clip>_ball.csv, with progress in labels/<clip>_ball.review.json, autosaved.
 """
@@ -24,18 +24,18 @@ import cv2
 import numpy as np
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finetune import label_window as win
-from finetune.label_hints import OFFER_MIN_PX, Suggestions
-from finetune.label_source import Source, build_source, expand   # noqa: F401 - the tool's parts, by name
-from finetune.label_store import (SETTINGS_NAME, Row, load_review, load_rows, load_settings,  # noqa: F401
-                                  load_suspects, save_review, save_rows, save_settings, save_suspects)
-from finetune.label_window import KEYS_NEXT, KEYS_PREV, WINDOW
-from finetune.labels import LabelFormatError, is_visible
-from finetune.refine import Point, Suggestion
-from finetune.scoring import REFERENCE_HEIGHT
-from finetune.workspace import LABELS, VIDEOS
+from finetune.labeling import label_window as win
+from finetune.labeling.label_hints import OFFER_MIN_PX, Suggestions
+from finetune.labeling.label_source import Source, build_source, expand   # noqa: F401 - the tool's parts, by name
+from finetune.labeling.label_store import (SETTINGS_NAME, Row, load_review, load_rows, load_settings,  # noqa: F401
+                                           load_suspects, save_review, save_rows, save_settings, save_suspects)
+from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV, WINDOW
+from finetune.data.labels import LabelFormatError, is_visible
+from finetune.labeling.refine import Point, Suggestion
+from finetune.data.scoring import REFERENCE_HEIGHT
+from finetune.data.workspace import LABELS, VIDEOS
 
 HUD = 58
 MAX_UPSCALE = 2.0         # cap on drawing the frame bigger than it is: past this it only costs time

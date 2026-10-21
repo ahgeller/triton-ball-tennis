@@ -12,7 +12,7 @@ from typing import Iterator, List, Set
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = ROOT / "finetune" / "GridTrackNet_FineTune_Colab.ipynb"
 PACKAGES = ("finetune", "tennis_tracker")
-TRAINER = "finetune.train_gridtracknet"
+TRAINER = "finetune.training.train_gridtracknet"
 
 
 def module_path(name: str) -> Path:
@@ -43,9 +43,9 @@ def import_closure(module: str) -> Set[str]:
             continue
         seen.add(name)
         pending.extend(internal_imports(module_path(name)))
-    for package in PACKAGES:                     # importing a submodule imports its package
-        if any(name.startswith(package + ".") for name in seen):
-            seen.add(package)
+    for name in list(seen):                      # importing a submodule imports every package above it
+        parts = name.split(".")
+        seen.update(".".join(parts[:depth]) for depth in range(1, len(parts)))
     return seen
 
 
@@ -73,6 +73,6 @@ def test_the_notebook_stages_the_trainers_whole_import_closure():
 def test_the_notebook_runs_the_trainer_as_a_module_from_the_staged_code():
     notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     code = "".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
-    assert "'-m', 'finetune.train_gridtracknet'" in code
+    assert "'-m', 'finetune.training.train_gridtracknet'" in code
     assert "cwd=str(CODE)" in code
     assert "CODE / 'train_gridtracknet.py'" not in code        # no longer copied to code/ on its own

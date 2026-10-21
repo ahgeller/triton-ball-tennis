@@ -6,10 +6,10 @@ the label frames either side cut 64x64 around that point, and says how sure it i
 predicting whether its own answer is within 2 px). It learns only from frames you have checked in
 the label tool (reviewed or edited), so retraining as you label keeps it current:
 
-    python finetune/cnn_refiner.py train        # or "hint model" in the finetune menu
-    python finetune/cnn_refiner.py list
-    python finetune/cnn_refiner.py use <version>
-    python finetune/cnn_refiner.py sheet <clip> [<version> <version>|centroid]   # judge two by eye
+    python finetune/labeling/cnn_refiner.py train        # or "hint model" in the finetune menu
+    python finetune/labeling/cnn_refiner.py list
+    python finetune/labeling/cnn_refiner.py use <version>
+    python finetune/labeling/cnn_refiner.py sheet <clip> [<version> <version>|centroid]   # judge two by eye
 
 Training first trains three networks that each leave a third of the clips out (TrackNet clips of
 one game together) and scores them on those: that sets how sure is sure enough (at most 0.1% of the
@@ -47,15 +47,15 @@ if TYPE_CHECKING:
     from torch import nn
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finetune import refine
-from finetune.fileio import write_atomic
-from finetune.labels import Labels, read_labels, reviewed_frames
-from finetune.scoring import REFERENCE_HEIGHT
-from finetune.workspace import (MANIFEST, WORKSPACE as HERE, find_video, label_csv, labelled_clips, read_manifest,
-                                review_json, video_meta)
-from finetune.workspace import CACHE as WORKSPACE_CACHE, MODELS as WORKSPACE_MODELS
+from finetune.labeling import refine
+from finetune.data.fileio import write_atomic
+from finetune.data.labels import Labels, read_labels, reviewed_frames
+from finetune.data.scoring import REFERENCE_HEIGHT
+from finetune.data.workspace import (MANIFEST, WORKSPACE as HERE, find_video, label_csv, labelled_clips, read_manifest,
+                                     review_json, video_meta)
+from finetune.data.workspace import CACHE as WORKSPACE_CACHE, MODELS as WORKSPACE_MODELS
 
 MODELS = WORKSPACE_MODELS / "refiner"
 CACHE = WORKSPACE_CACHE / "refiner"

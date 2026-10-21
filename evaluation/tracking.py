@@ -1,7 +1,7 @@
 """Validate exported tennis tracking JSON against hand-labeled frames.
 
 Errors are native pixels and the summary's numbers are what ``check_parity`` freezes, so this
-scorer stays as it is; the detector metric lives in ``finetune.scoring``.
+scorer stays as it is; the detector metric lives in ``finetune.data.scoring``.
 """
 
 from __future__ import annotations

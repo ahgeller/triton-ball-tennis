@@ -1,4 +1,4 @@
-"""finetune/realign.py on synthetic detections and labels in a temporary folder.
+"""finetune/data/realign.py on synthetic detections and labels in a temporary folder.
 
 The end-to-end tests are an oracle of what ``main()`` prints, writes and returns for one fixture:
 a 240-row label file whose ball the (stubbed) detector sees three video frames later. They were
@@ -17,9 +17,9 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from finetune import labels, realign
-from finetune.alignment import Evidence, Tracks
-from finetune.workspace import VideoMeta
+from finetune.data import labels, realign
+from finetune.data.alignment import Evidence, Tracks
+from finetune.data.workspace import VideoMeta
 
 CLIP = "synthetic_clip"
 ROWS = 240                   # candidates() needs chunks of 20+ rows and main() asks for 8 chunks
@@ -66,7 +66,7 @@ def bound_to(root: Path) -> Iterator[None]:
     with patch.object(realign, "detections", lambda clip: detections), \
          patch.object(realign, "require_video", lambda clip: root / "videos" / f"{clip}.mp4"), \
          patch.object(realign, "video_meta", lambda path: META), \
-         patch.multiple("finetune.workspace", WORKSPACE=root, LABELS=root / "labels", VIDEOS=root / "videos"):
+         patch.multiple("finetune.data.workspace", WORKSPACE=root, LABELS=root / "labels", VIDEOS=root / "videos"):
         yield
 
 
@@ -191,7 +191,7 @@ def test_the_video_the_labels_belong_to_is_swapped_in_whatever_its_container(tmp
     videos.mkdir()
     (videos / f"{CLIP}.mov").write_bytes(b"wrong")
     (videos / "other_clip.mkv").write_bytes(b"right")
-    with patch.multiple("finetune.workspace", WORKSPACE=tmp_path, LABELS=tmp_path / "labels", VIDEOS=videos), \
+    with patch.multiple("finetune.data.workspace", WORKSPACE=tmp_path, LABELS=tmp_path / "labels", VIDEOS=videos), \
             redirect_stdout(io.StringIO()):
         realign.swap_video(CLIP, "other_clip")
     assert (videos / f"{CLIP}.mkv").read_bytes() == b"right"

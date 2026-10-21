@@ -1,11 +1,11 @@
-"""finetune/detect.py: detect_points keeps each frame's best detection as a centre and confidence.
+"""finetune/training/detect.py: detect_points keeps each frame's best detection as a centre and confidence.
 
 ball_detector itself needs the CUDA backend and is not built here.
 """
 from pathlib import Path
 
-from finetune.detect import detect_points
-from finetune.workspace import VideoMeta
+from finetune.training.detect import detect_points
+from finetune.data.workspace import VideoMeta
 
 
 class StubDetector:

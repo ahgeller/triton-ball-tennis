@@ -1,4 +1,4 @@
-"""finetune/import_data.py's importers on synthetic datasets under tmp_path, into the
+"""finetune/data/import_data.py's importers on synthetic datasets under tmp_path, into the
 ``workspace_dir`` fixture's workspace: the frame-phase and pixel mapping of each source, and
 the provenance that lands in clips.csv. No real dataset, label or video is read."""
 import io
@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from finetune import import_data
-from finetune.import_data import (GRID_LABEL_CANVAS, ImportOptions, Manifest, Provenance, cadence_frame, canvas_scale,
-                                  grid_frame, import_archive, import_grid, import_tracknetv2)
-from finetune.labels import LabelFormatError, read_labels
-from finetune.workspace import read_manifest
+from finetune.data import import_data
+from finetune.data.import_data import (GRID_LABEL_CANVAS, ImportOptions, Manifest, Provenance, cadence_frame, canvas_scale,
+                                       grid_frame, import_archive, import_grid, import_tracknetv2)
+from finetune.data.labels import LabelFormatError, read_labels
+from finetune.data.workspace import read_manifest
 from tests._helpers import write_clip
 
 SIZE = (64, 36)      # the synthetic videos' frame size; GridTrackNet's label canvas is 1280x720, 20x bigger

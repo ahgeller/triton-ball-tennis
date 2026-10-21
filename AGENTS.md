@@ -33,9 +33,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `tennis_tracker/motion.py`, `tracking.py`: CUDA motion masks and ROI tracking.
 - `tennis_tracker/court_overlay.py`: CatBoost/kinematic bounce candidates,
   player contacts and schematic rally legs.
-- `finetune/refine.py`: model-free sub-pixel ball suggestions for the label tool
+- `finetune/labeling/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
-- `finetune/cnn_refiner.py`: small CNN, trained only on frames the user checked, that places
+- `finetune/labeling/cnn_refiner.py`: small CNN, trained only on frames the user checked, that places
   those suggestions where the user clicks. Versions live in
   `finetune/models/refiner/` (all kept, `current.txt` names the active one); retrain with
   `ft.py hints train` or menu option 10. Its self-check decides "trusted" (threshold set on
@@ -45,23 +45,25 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `x` keeps the draft, `y` takes a hint beside a reviewed label. `ft.py hints sheet <clip>`
   renders a zoomed PNG of where two versions disagree, for judging marks by eye. A trajectory
   prior on the hints was measured and makes them worse (see the module docstring).
-- `finetune/ft.py`: workflow front door; `train_gridtracknet.py`: training;
-  `pretrack.py`: drafts; `label_tool.py`: manual edits; `import_data.py` and
-  `realign.py`: source conversion and temporal realignment. The label tool is
-  split into `label_store.py` (a clip's rows and sidecars), `label_source.py`
-  (one clip of a labelling run), `label_window.py` (window plumbing) and
-  `label_hints.py` (the suggestions). `labels.py`: the label file format;
-  `label_audit.py`: checks labels against the video and the raw detector;
-  `workspace.py`: where the workspace keeps things and a clip's video facts;
-  `scoring.py`: the detector metric; `detect.py`: the raw prepass over a clip;
-  `data_policy.py`: which clips may be trained, validated or scored on;
-  `fileio.py`: atomic workspace writes. `workspace.py` is also the one place
-  `clips.csv` and `exclude.txt` are read and written (`TENNIS_WORKSPACE` relocates
-  the workspace); `alignment.py`: the one label-vs-detector agreement the audit
-  and `realign.py` share.
+- `finetune/ft.py`: workflow front door. The rest of the package is three
+  subpackages. `finetune/labeling/`: `label_tool.py` (manual edits), split into
+  `label_store.py` (a clip's rows and sidecars), `label_source.py` (one clip of a
+  labelling run), `label_window.py` (window plumbing) and `label_hints.py` (the
+  suggestions), with `refine.py` and `cnn_refiner.py` above. `finetune/data/`: `labels.py`, the label
+  file format; `label_audit.py`, checks labels against the video and the raw
+  detector; `workspace.py`, where the workspace keeps things and a clip's video
+  facts, and the one place `clips.csv` and `exclude.txt` are read and written
+  (`TENNIS_WORKSPACE` relocates the workspace); `scoring.py`, the detector metric;
+  `data_policy.py`, which clips may be trained, validated or scored on;
+  `fileio.py`, atomic workspace writes; `alignment.py`, the one label-vs-detector
+  agreement the audit and `realign.py` share; `import_data.py` and `realign.py`,
+  source conversion and temporal realignment. `finetune/training/`:
+  `train_gridtracknet.py` (training; `finetune/train_gridtracknet.py` at the old
+  path only hands over to it, for the command below), `detect.py` (the raw
+  prepass over a clip) and `pretrack.py` (drafts).
 - `evaluation/`: `tracking.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
-  the pipeline on workspace clips with `finetune/scoring.py`, `parity.py` is the
+  the pipeline on workspace clips with `finetune/data/scoring.py`, `parity.py` is the
   Pomona gate. `validate_tracking.py`, `evaluate_archive.py` and `check_parity.py`
   at the root are thin entry points to them.
 

@@ -21,7 +21,7 @@ peak; and `ball_here`, which is false where nothing ball-like moved (an invisibl
 the hand-verified clips video13-53, seeded from the detector's drafts: median 0.79 px from the hand
 label; the trusted ones (61%) are more than 3 px off 2% of the time and more than 5 px off 0.1%.
 
-With a `placer` (finetune/cnn_refiner.py, a small network trained on your own clicks) the chosen
+With a `placer` (finetune/labeling/cnn_refiner.py, a small network trained on your own clicks) the chosen
 blob is then placed where you would click it, and a placer with a self-check decides `trusted` by
 its own confidence (where a ball is here at all); finding the ball and choosing between blobs stay
 this model-free measurement. Without one this runs on the CPU, no model.
@@ -36,7 +36,7 @@ from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tu
 import cv2
 import numpy as np
 
-from finetune.scoring import REFERENCE_HEIGHT
+from finetune.data.scoring import REFERENCE_HEIGHT
 
 Point = Tuple[float, float]
 

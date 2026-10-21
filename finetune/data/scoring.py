@@ -4,7 +4,7 @@ which a label and a raw detection are said to agree.
 Distances are measured in 1080p pixels (a 1920-wide frame as it is; a smaller frame scaled up),
 so clips of different sizes pool. ``score`` is used by evaluate_archive.py and by
 train_gridtracknet.py to pick the better of the trained and the starting weights; the agreement
-thresholds by ``finetune.alignment`` (the label audit and realign.py).
+thresholds by ``finetune.data.alignment`` (the label audit and realign.py).
 """
 from __future__ import annotations
 

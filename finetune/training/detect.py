@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
-from finetune.workspace import VideoMeta
+from finetune.data.workspace import VideoMeta
 
 if TYPE_CHECKING:
     from tennis_tracker.ball_detectors import GridTrackNetBallDetector

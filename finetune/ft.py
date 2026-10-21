@@ -40,21 +40,21 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 
 # Only stdlib-backed finetune modules at the top: ft.py must import without cv2, numpy or torch so
 # ensure_interpreter can hand over to an interpreter that has them.
-from finetune.data_policy import OWN_SOURCES, evaluation_clips, read_review_status
-from finetune.fileio import backup_copy, copy_atomic, write_atomic
-from finetune.label_audit import audit_labels, check_label_file, matches_any, open_flags, outstanding_flags
-from finetune.labels import LabelFormatError, read_labels, reviewed_frames
-from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
-from finetune import workspace as ws
-from finetune.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_csv, label_csv, label_files, natural_key,
-                                read_exclusions, read_manifest, review_json, video_meta, videos_in, write_manifest)
+from finetune.data.data_policy import OWN_SOURCES, evaluation_clips, read_review_status
+from finetune.data.fileio import backup_copy, copy_atomic, write_atomic
+from finetune.data.label_audit import audit_labels, check_label_file, matches_any, open_flags, outstanding_flags
+from finetune.data.labels import LabelFormatError, read_labels, reviewed_frames
+from finetune.data.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
+from finetune.data import workspace as ws
+from finetune.data.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_csv, label_csv, label_files, natural_key,
+                                     read_exclusions, read_manifest, review_json, video_meta, videos_in, write_manifest)
 from tennis_tracker.frame_rate import phase_stride
 
 # cheapest first: cv2 rules out most interpreters fast. Exit 3 means usable for training but with an
 # OpenCV whose windows are not Qt's, which the label tool refuses (see label_tool.highgui_backend).
 TRAINING_IMPORTS = ("import sys, cv2, numpy, torch; sys.exit(0 if any(line.strip().startswith('GUI:') "
                     "and 'QT' in line.upper() for line in cv2.getBuildInformation().splitlines()) else 3)")
-SCRIPTS = Path(__file__).resolve().parent           # where the sibling scripts live (not the data workspace)
+SCRIPTS = Path(__file__).resolve().parent           # the package folder the scripts live under (not the data workspace)
 PYTHON_CACHE = SCRIPTS / ".training-python"
 PROBE_TIMEOUT_S = 120              # an interpreter that takes longer than this to import torch is not usable
 QT_NEEDED_EXIT = 3                 # probe_interpreter's "usable, but its cv2 is not the Qt build"
@@ -182,7 +182,8 @@ def run_command(command: List[str]) -> int:
 
 
 def run_script(script: str, arguments: List[str]) -> int:
-    """Run one of the sibling finetune scripts under this interpreter."""
+    """Run one of the finetune scripts (its path under the package folder, e.g. ``training/pretrack.py``)
+    under this interpreter."""
     return run_command([sys.executable, str(SCRIPTS / script), *arguments])
 
 
@@ -333,7 +334,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
-    return run_script("import_data.py", args.rest)
+    return run_script("data/import_data.py", args.rest)
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -362,12 +363,12 @@ def cmd_add(args: argparse.Namespace) -> int:
             print(f"[add ] {destination.name}: {width}x{height} @{fps:.2f} FPS, {total} frames")
         added.append(name)
     if added and not args.no_prelabel:
-        return run_script("pretrack.py", ["--clips", *added, *args.rest])
+        return run_script("training/pretrack.py", ["--clips", *added, *args.rest])
     return 0
 
 
 def cmd_prelabel(args: argparse.Namespace) -> int:
-    return run_script("pretrack.py", args.rest)
+    return run_script("training/pretrack.py", args.rest)
 
 
 def cmd_label(args: argparse.Namespace) -> int:
@@ -381,7 +382,7 @@ def cmd_label(args: argparse.Namespace) -> int:
     args.rest = [*options, *args.rest]
     if len(clips) > 1 or ".." in clips[0]:
         # a run across several clips: label_tool expands the range and keeps each clip's files apart
-        return run_script("label_tool.py", [*clips, *args.rest])
+        return run_script("labeling/label_tool.py", [*clips, *args.rest])
     clip = clips[0]
     if clip in read_exclusions():
         print(f"[warn] {clip} is in exclude.txt: its labels belong to a different cut of the video,"
@@ -391,11 +392,11 @@ def cmd_label(args: argparse.Namespace) -> int:
         return 1
     if not label_csv(clip).is_file() and not draft_csv(clip).is_file():
         print(f"[label] no labels for {clip} yet; pre-labelling first")
-        code = run_script("pretrack.py", ["--clips", clip])
+        code = run_script("training/pretrack.py", ["--clips", clip])
         if code:
             return code
     before = reviewed_frames(clip)       # a damaged review file is an error naming it, never an empty answer
-    code = run_script("label_tool.py", [clip, *args.rest])
+    code = run_script("labeling/label_tool.py", [clip, *args.rest])
     offer_realign(clip, before)
     return code
 
@@ -421,7 +422,7 @@ def offer_realign(clip: str, reviewed_before: Set[int]) -> None:
           f"frames stay exactly where you put them.")
     answer = _ask("       re-time them now? it re-runs the detector on this clip [y/N] ")
     if answer and answer.lower().startswith("y"):
-        if run_script("realign.py", [clip, clip, "--apply"]) == 0:
+        if run_script("data/realign.py", [clip, clip, "--apply"]) == 0:
             run_cli(["check", "--audit", "--mark", "--clips", clip])
 
 
@@ -474,11 +475,11 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_train(args: argparse.Namespace) -> int:
-    return run_script("train_gridtracknet.py", args.rest)
+    return run_script("training/train_gridtracknet.py", args.rest)
 
 
 def cmd_hints(args: argparse.Namespace) -> int:
-    return run_script("cnn_refiner.py", args.rest or ["list"])
+    return run_script("labeling/cnn_refiner.py", args.rest or ["list"])
 
 
 def cmd_promote(args: argparse.Namespace) -> int:
@@ -811,7 +812,7 @@ def _menu_hints() -> None:
     print("(bright orange). Retrain it after labelling more; every version is kept and the new one")
     print("is used from the label tool's next start.")
     print()
-    run_script("cnn_refiner.py", ["list"])
+    run_script("labeling/cnn_refiner.py", ["list"])
     print()
     print("  t) train a new version now (about 10 minutes on the GPU)")
     print("  u <version>) go back to an older version, e.g. u refiner-20261019-120547 (a date alone")
@@ -823,11 +824,11 @@ def _menu_hints() -> None:
     if not answer:
         return
     if answer.lower() in ("t", "train"):
-        run_script("cnn_refiner.py", ["train"])
+        run_script("labeling/cnn_refiner.py", ["train"])
     elif answer.lower().startswith("u "):
-        run_script("cnn_refiner.py", ["use", answer[2:].strip()])
+        run_script("labeling/cnn_refiner.py", ["use", answer[2:].strip()])
     elif answer.lower().startswith("s "):
-        run_script("cnn_refiner.py", ["sheet"] + answer[2:].split())
+        run_script("labeling/cnn_refiner.py", ["sheet"] + answer[2:].split())
     else:
         print(f"  '{answer}' is not an option")
 

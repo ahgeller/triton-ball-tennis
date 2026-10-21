@@ -4,7 +4,7 @@ inferred from a clip's source or file name alone.
 Three records say different things. ``review_status.json`` (``verified_clips`` and
 ``verified_video_min``) names the clips whose labels a person has checked; without it an
 external archive is taken at its word. ``exclude.txt`` lists clips whose labels do not belong
-to their video (``ft.py check --audit --fix`` writes it; ``finetune.workspace`` reads it).
+to their video (``ft.py check --audit --fix`` writes it; ``finetune.data.workspace`` reads it).
 ``clips.csv`` tags each clip with a source; two sources are never trusted for training because
 nobody has checked their labels.
 """
@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from finetune.workspace import REVIEW_STATUS_NAME
+from finetune.data.workspace import REVIEW_STATUS_NAME
 
 OWN_SOURCES = ("custom", "custom-uncorrected")                     # the user's own camera
 UNTRUSTED_SOURCES = frozenset({"custom-uncorrected", "unknown"})   # machine labels nobody checked

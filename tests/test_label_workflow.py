@@ -9,10 +9,10 @@ from unittest.mock import DEFAULT, Mock, call, patch
 import cv2
 import numpy as np
 
-from finetune import label_window as win
-from finetune.label_store import Row, load_review, load_rows, load_suspects, save_review
-from finetune.label_tool import ZOOM_STEP, Tool
-from finetune.label_window import KEYS_NEXT, KEYS_PREV
+from finetune.labeling import label_window as win
+from finetune.labeling.label_store import Row, load_review, load_rows, load_suspects, save_review
+from finetune.labeling.label_tool import ZOOM_STEP, Tool
+from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV
 
 
 def source(clip, count=10, width=1280, height=720):
@@ -290,7 +290,7 @@ class LabelWorkflowTests(unittest.TestCase):
             def release(self):
                 pass
 
-        from finetune.label_source import Source
+        from finetune.labeling.label_source import Source
         rows = [Row(i, 10., 10., True, "csv", 0.) for i in range(1, 60, 2)]   # odd phase, as 60 FPS clips
         with patch.object(cv2, "VideoCapture", lambda path: Capture()):
             clip = Source("c", Path("c.mp4"), rows, 64, 36, Path("c_ball.csv"), Path("c_ball.review.json"))
@@ -333,7 +333,7 @@ class LabelWorkflowTests(unittest.TestCase):
         repay.assert_called_once_with(120)
 
     def test_window_rebuilds_stop_when_the_check_keeps_failing(self):
-        from finetune import label_window
+        from finetune.labeling import label_window
         tool = self.tool()
         with patch.object(label_window, "_user32", None), patch.object(cv2, "destroyWindow"), \
                 patch.object(cv2, "waitKey"), patch.object(tool, "create_window"), patch.object(tool, "show"):
@@ -345,7 +345,7 @@ class LabelWorkflowTests(unittest.TestCase):
         self.assertFalse(tool.viewport.reset_needed)
 
     def test_function_keys_do_not_pass_for_letters(self):
-        from finetune import label_window
+        from finetune.labeling import label_window
         held = {0x71}                                # F2, which reads as "q"
         fake = SimpleNamespace(GetKeyState=lambda vk: 0x8000 if vk in held else 0)
         with patch.object(label_window, "_user32", fake):
@@ -355,7 +355,7 @@ class LabelWorkflowTests(unittest.TestCase):
             self.assertFalse(label_window.non_character_key(ord("d")))
 
     def test_save_survives_a_locked_file_and_keeps_the_edits(self):
-        import finetune.label_tool as label_tool
+        import finetune.labeling.label_tool as label_tool
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             a, b = source("a", 2), source("b", 2)
@@ -380,7 +380,7 @@ class LabelWorkflowTests(unittest.TestCase):
             self.assertTrue((directory / "a_ball.unsaved.csv").is_file())
 
     def test_legacy_flag_list_survives_a_save(self):
-        from finetune.label_tool import save_suspects, load_suspects
+        from finetune.labeling.label_tool import save_suspects, load_suspects
         with tempfile.TemporaryDirectory() as directory:
             flags = Path(directory) / "clip_ball.suspect.json"
             flags.write_text(json.dumps({"frames": [1, 3]}))
@@ -412,19 +412,19 @@ class LabelWorkflowTests(unittest.TestCase):
         self.assertTrue(row.suspect)                 # undo puts the question back
 
     def test_a_later_audit_does_not_reask_an_answered_frame(self):
-        from finetune import label_audit
+        from finetune.data import label_audit
         with tempfile.TemporaryDirectory() as directory:
             labels = Path(directory)
             (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")
             (labels / "clip_ball.suspect.json").write_text(json.dumps(
                 {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
-            with patch.multiple("finetune.workspace", LABELS=labels, MANIFEST=labels / "clips.csv"):
+            with patch.multiple("finetune.data.workspace", LABELS=labels, MANIFEST=labels / "clips.csv"):
                 label_audit.flag_frames("clip", "check", [1, 3], "audit")
                 self.assertEqual(label_audit.open_flags("clip")["check"], [3])   # 3's label moved since
                 self.assertEqual(label_audit.outstanding_flags("clip")["check"], [3])
 
     def test_damaged_review_file_is_an_error_that_names_it_and_is_never_replaced(self):
-        from finetune.label_tool import LabelFormatError, build_source
+        from finetune.labeling.label_tool import LabelFormatError, build_source
         with tempfile.TemporaryDirectory() as directory:
             review = Path(directory) / "clip_ball.review.json"
             rows = source("clip", 3).rows
@@ -440,13 +440,13 @@ class LabelWorkflowTests(unittest.TestCase):
             # The tool skips such a clip rather than open it on a fresh review file.
             labels = Path(directory)
             (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,20,30\n")
-            with patch("finetune.label_source.find_video", return_value=labels / "clip.mp4"), \
-                    patch("finetune.label_source.video_meta", return_value=(30.0, 640, 360, 10)):
+            with patch("finetune.labeling.label_source.find_video", return_value=labels / "clip.mp4"), \
+                    patch("finetune.labeling.label_source.video_meta", return_value=(30.0, 640, 360, 10)):
                 self.assertIsNone(build_source("clip", labels, labels))
             self.assertEqual(review.read_text(), "{not json")
 
     def test_ranges_include_clips_that_only_have_a_draft(self):
-        from finetune.label_tool import expand
+        from finetune.labeling.label_tool import expand
         with tempfile.TemporaryDirectory() as directory:
             labels = Path(directory)
             for name in ("v1_ball.csv", "v2_ball.csv.draft", "v3_ball.csv", "v4_ball.unsaved.csv"):
@@ -486,7 +486,7 @@ def ball_frames(positions, size=(360, 640)):
 
 class SuggestionTests(unittest.TestCase):
     def test_centroid_finds_the_ball_in_label_coordinates(self):
-        from finetune.refine import motion_centroid
+        from finetune.labeling.refine import motion_centroid
         previous, current, following = ball_frames([(40, 30), (50, 40), (60, 50)])
         x, y = motion_centroid(previous, current, following, (52.0, 38.0), 9)
         self.assertAlmostEqual(x, 50.5, places=4)    # pixel 50's centre is 50.5 in label files
@@ -495,7 +495,7 @@ class SuggestionTests(unittest.TestCase):
         self.assertIsNone(motion_centroid(still, still, still, (50.5, 40.5), 9))
 
     def test_suggest_reads_a_video_and_scores_trust(self):
-        from finetune import refine
+        from finetune.labeling import refine
         path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]   # an exact parabola
         with tempfile.TemporaryDirectory() as directory:
             video = write_clip(Path(directory) / "clip.avi", ball_frames(path_of))
@@ -510,7 +510,7 @@ class SuggestionTests(unittest.TestCase):
         self.assertLess(found[5]["path"], 1.0)
 
     def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(self):
-        from finetune import cnn_refiner, refine
+        from finetune.labeling import cnn_refiner, refine
         path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]
         seen = []
 
@@ -548,7 +548,7 @@ class SuggestionTests(unittest.TestCase):
 class CnnRefinerTests(unittest.TestCase):
     def test_cut_centres_the_point_and_place_maps_window_pixels_back(self):
         import torch
-        from finetune import cnn_refiner
+        from finetune.labeling import cnn_refiner
         image = np.zeros((720, 1280, 3), np.uint8)
         image[300, 500] = 255
         crop = cnn_refiner.cut_crop([image] * 3, (500.5, 300.5), 720)     # pixel 500's centre, 720p -> 1080p scale
@@ -577,7 +577,7 @@ class CnnRefinerTests(unittest.TestCase):
         self.assertAlmostEqual(y, 301.5, places=4)
 
     def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(self):
-        from finetune import cnn_refiner
+        from finetune.labeling import cnn_refiner
         confs = np.linspace(1.0, 0.0, 3000)
         errors = np.where(np.arange(3000) >= 2000, 9.0, 0.5)       # the least confident third is wrong
         threshold = cnn_refiner.sure_threshold(errors, confs)
@@ -598,7 +598,7 @@ class CnnRefinerTests(unittest.TestCase):
 
     def test_a_version_from_before_the_self_check_still_loads(self):
         import torch
-        from finetune import cnn_refiner
+        from finetune.labeling import cnn_refiner
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "refiner-20261019-120547.pt"
             torch.save({"state": cnn_refiner.build_network(False).state_dict(), "trained": "then"}, path)
@@ -609,7 +609,7 @@ class CnnRefinerTests(unittest.TestCase):
         self.assertIsNone(sure)                                      # refine.py's own rule decides
 
     def test_versions_newest_is_current_until_one_is_chosen_and_old_ones_stay(self):
-        from finetune import cnn_refiner
+        from finetune.labeling import cnn_refiner
         with tempfile.TemporaryDirectory() as directory:
             models = Path(directory)
             with patch.object(cnn_refiner, "MODELS", models):     # current.txt is looked up under it
@@ -631,8 +631,8 @@ class CnnRefinerTests(unittest.TestCase):
         tool = LabelWorkflowTests.tool(self)
         first, second = Path("refiner-a.pt"), Path("refiner-b.pt")
         loaded = []
-        with patch("finetune.label_hints.cnn_refiner.current", side_effect=[first, first, second, None]), \
-                patch("finetune.label_hints.cnn_refiner.load_current",
+        with patch("finetune.labeling.label_hints.cnn_refiner.current", side_effect=[first, first, second, None]), \
+                patch("finetune.labeling.label_hints.cnn_refiner.load_current",
                       side_effect=lambda: loaded.append(1) or SimpleNamespace(name=f"v{len(loaded)}")):
             self.assertEqual(tool.hints.current_placer().name, "v1")
             self.assertEqual(tool.hints.current_placer().name, "v1")       # unchanged: not loaded again
@@ -742,8 +742,8 @@ class TrajectorySheetTests(unittest.TestCase):
 
 class DraftTests(unittest.TestCase):
     def test_drafts_use_the_unshifted_detector_point(self):
-        from finetune import pretrack
-        from finetune.workspace import VideoMeta
+        from finetune.training import pretrack
+        from finetune.data.workspace import VideoMeta
         from tennis_tracker import ball_detectors
         seen = {}
 
@@ -831,10 +831,10 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
     def test_a_changed_label_is_remeasured_with_checked_labels_steering(self):
         tool = LabelWorkflowTests.tool(self)
         calls = []
-        with patch("finetune.label_hints.refine.suggest",
+        with patch("finetune.labeling.label_hints.refine.suggest",
                    side_effect=lambda video, seeds, spacing, stop, confirmed, only, placer:
                    calls.append((seeds, confirmed, only)) or {}), \
-                patch("finetune.label_hints.cnn_refiner.current", return_value=None):
+                patch("finetune.labeling.label_hints.cnn_refiner.current", return_value=None):
             tool.source.video = Path("clip.mp4")
             tool.hints.suggest_clip(tool.source)
             self.assertEqual(calls[-1][1], [])                     # nothing checked yet
@@ -904,7 +904,7 @@ class OfferTests(LabelWorkflowTests.__base__):
         self.assertTrue(tool.rows[2].reviewed)
 
     def test_x_keeps_the_draft_and_the_offer_rules(self):
-        from finetune import label_hints
+        from finetune.labeling import label_hints
         tool = LabelWorkflowTests.tool(self)
         row = tool.rows[0]
         tool.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y, trusted=False)}
