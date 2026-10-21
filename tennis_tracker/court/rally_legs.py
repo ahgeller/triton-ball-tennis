@@ -29,6 +29,8 @@ from .court_scene import (
     CourtKeypoints,
     CourtPoint,
     CourtScene,
+    EventOrigin,
+    EventPosition,
     EventQuality,
     LegOutcome,
     LegPhase,
@@ -63,6 +65,9 @@ class _PlacedBounce(NamedTuple):
     point: CourtPoint
     quality: Optional[EventQuality]
     score: float
+    # Where the landing came from; None for the volley pseudo-bounce, which is no landing.
+    origin: Optional[EventOrigin] = None
+    position: Optional[EventPosition] = None
 
 
 class _PlacedContact(NamedTuple):
@@ -133,7 +138,8 @@ def _place_bounces(
     for event in confirmed:
         point = project(event.frame, event.x, event.y)
         if point is not None and _within(point, _CONFIRMED_BOUNCE_BOUNDS):
-            placed.append(_PlacedBounce(int(event.frame), point, "confirmed", float(event.score)))
+            placed.append(_PlacedBounce(int(event.frame), point, "confirmed", float(event.score),
+                                        event.origin, event.position))
 
     confirmed_frames = {int(event.frame) for event in confirmed}
     merge = seconds_to_frames(EVENT_MERGE_S, fps)
@@ -142,7 +148,8 @@ def _place_bounces(
             continue
         point = project(event.frame, event.x, event.y)
         if point is not None and _within(point, _INFERRED_BOUNCE_BOUNDS):
-            placed.append(_PlacedBounce(int(event.frame), point, "inferred", float(event.score)))
+            placed.append(_PlacedBounce(int(event.frame), point, "inferred", float(event.score),
+                                        event.origin, event.position))
     placed.sort(key=lambda event: event.frame)
     return placed
 
@@ -347,6 +354,9 @@ def _link_legs(
             "outcome": outcome,
             "quality": landing.quality,
             "start_quality": "inferred" if contact.source == "inferred" else "confirmed",
+            "start_source": contact.source,
+            "landing_origin": landing.origin,
+            "landing_position": landing.position,
         })
         last_leg_end = landing.frame
     return legs

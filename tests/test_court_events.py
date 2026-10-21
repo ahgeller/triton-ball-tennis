@@ -14,20 +14,37 @@ from tests.test_pipeline_run import (  # noqa: F401
 from tennis_tracker.court import bounce_events
 from tennis_tracker.court.bounce_events import infer_kinematic_bounces, predict_bounce_events
 from tennis_tracker.court.contact_events import detect_player_contacts
-from tennis_tracker.court.court_scene import BounceEvent, BouncePrediction, ContactEvent, CourtScene
+from tennis_tracker.court.court_scene import (
+    BallPoint, BounceEvent, BouncePrediction, ContactEvent, CourtScene, ball_point,
+)
 from tennis_tracker.court.rally_legs import assemble_rally_legs
 
 # Court corners TL, TR, BL, BR in a 120x220 image: unit court = (x-10)/100, (y-10)/200.
 KEYPOINTS = [10, 10, 110, 10, 10, 210, 110, 210] + [0] * 20
 
 
+def _measured(cx: float, cy: float, moved_by: float = 0.0) -> FrameResult:
+    """A detected frame whose measurement sits ``moved_by`` pixels left of the selected point."""
+    return FrameResult(cx=cx, cy=cy, conf=0.9, source="det", measurement=(cx - moved_by, cy))
+
+
 def test_events_are_tuple_compatible_named_tuples():
     bounce = BounceEvent(12, 1.0, 2.0, 0.7)
     contact = ContactEvent(3, 4.0, 5.0, 1, 9.0, "kink")
-    assert bounce == (12, 1.0, 2.0, 0.7) and bounce.frame == 12
-    assert contact == (3, 4.0, 5.0, 1, 9.0, "kink") and contact.player_id == 1
+    assert bounce == (12, 1.0, 2.0, 0.7, "model", "filtered") and bounce.frame == 12
+    assert contact == (3, 4.0, 5.0, 1, 9.0, "kink", None) and contact.player_id == 1
+    gap = BounceEvent(12, 1.0, 2.0, 0.7, "gap", "extrapolated")
+    assert (gap.origin, gap.position) == ("gap", "extrapolated")
+    held = ContactEvent(3, 4.0, 5.0, 1, 9.0, "gap", BallPoint(6.0, 7.0, "extrapolated"))
+    assert held.ball == (6.0, 7.0, "extrapolated") and held.ball.position == "extrapolated"
     confirmed, candidates = BouncePrediction([bounce], [])
     assert confirmed == [bounce] and candidates == []
+
+
+def test_ball_point_reports_the_track_position_and_its_kind():
+    assert ball_point(_measured(10.0, 20.0)) == BallPoint(10.0, 20.0, "measurement")
+    assert ball_point(_measured(10.0, 20.0, moved_by=0.5)) == BallPoint(10.0, 20.0, "filtered")
+    assert ball_point(FrameResult(cx=10.0, cy=20.0, source="interp")) == BallPoint(10.0, 20.0, "recovered")
 
 
 def test_kinematic_bounce_is_a_bounce_event():
@@ -37,6 +54,16 @@ def test_kinematic_bounce_is_a_bounce_event():
     ]
     (event,) = infer_kinematic_bounces(CourtScene(track, [{}] * len(track), 30.0, 1920, 1080))
     assert isinstance(event, BounceEvent) and event.frame == 2
+
+
+def test_kink_and_gap_bounces_say_where_their_position_came_from():
+    kink_track = [_measured(10.0 + frame, y, moved_by=0.5) for frame, y in enumerate((0, 4, 10, 6, 4))]
+    (kink,) = infer_kinematic_bounces(CourtScene(kink_track, [{}] * 5, 30.0, 1920, 1080))
+    assert (kink.origin, kink.position) == ("kink", "filtered") and (kink.x, kink.y) == (12.0, 10.0)
+    gap_track = _gap_bounce_track(60.0, vx=60.0, descent=240.0, rise=150.0)
+    (gap,) = infer_kinematic_bounces(CourtScene(gap_track, [{}] * len(gap_track), 60.0, 1920, 1080))
+    assert (gap.origin, gap.position) == ("gap", "extrapolated")
+    assert gap_track[gap.frame] is None                              # the landing was hidden
 
 
 def test_kinematic_bounces_are_clustered_in_frame_order(monkeypatch):
@@ -93,6 +120,7 @@ def test_contacts_need_a_nearby_player():
     assert contacts and all(isinstance(event, ContactEvent) for event in contacts)
     assert {event.player_id for event in contacts} == {1}
     assert contacts[0].y == 360.0  # anchored at the player's feet
+    assert contacts[0].ball == ball_point(track[contacts[0].frame])  # the ball sample it was judged at
     assert detect_player_contacts(CourtScene(track, far, 30.0, 1920, 1080)) == []
 
 
@@ -103,13 +131,16 @@ def test_gap_contact_skips_a_player_without_a_box():
     track += [None] * 4                                                   # frames 10-13 hidden
     track += [FrameResult(cx=260.0 - 20 * step, cy=100.0, conf=0.9, source="det") for step in range(6)]
     boxes = [{7: None, 8: (270.0, 50.0, 330.0, 200.0)}] * len(track)
-    contacts = detect_player_contacts(CourtScene(track, boxes, 30.0, 1920, 1080))
-    assert contacts == [ContactEvent(11, 300.0, 200.0, 8, 1040.0, "gap")]
+    (contact,) = detect_player_contacts(CourtScene(track, boxes, 30.0, 1920, 1080))
+    assert contact._replace(ball=None) == ContactEvent(11, 300.0, 200.0, 8, 1040.0, "gap")
+    # The ball sample is the incoming path extrapolated into the gap.
+    assert contact.ball.position == "extrapolated"
+    np.testing.assert_allclose((contact.ball.x, contact.ball.y), (320.0, 100.0), atol=1e-6)
 
 
 def test_assemble_links_a_contact_to_its_confirmed_landing():
     contacts = [ContactEvent(0, 60.0, 205.0, 1, 10.0, "kink")]
-    confirmed = [BounceEvent(30, 40.0, 60.0, 0.9)]
+    confirmed = [BounceEvent(30, 40.0, 60.0, 0.9, "model", "measurement")]
     keypoints = [KEYPOINTS] * 80
     legs = assemble_rally_legs(
         CourtScene([None] * 80, [{}] * 80, 30.0, 120, 220), keypoints, contacts,
@@ -120,6 +151,22 @@ def test_assemble_links_a_contact_to_its_confirmed_landing():
     assert (leg["start_frame"], leg["end_frame"]) == (0, 30)
     assert leg["outcome"] == "bounce" and leg["quality"] == "confirmed"
     np.testing.assert_allclose(leg["end"], (0.30, 0.25), atol=1e-6)
+    # The leg says how its contact was found and where its landing came from.
+    assert (leg["start_quality"], leg["start_source"]) == ("confirmed", "kink")
+    assert (leg["landing_origin"], leg["landing_position"]) == ("model", "measurement")
+
+
+def test_a_volley_leg_has_no_landing_provenance():
+    # A near-side stroke answered at the far side close to the net, with no landing between:
+    # the leg ends in a volley, which is a contact and so has no landing origin or position.
+    contacts = [ContactEvent(0, 60.0, 205.0, 1, 10.0, "kink"), ContactEvent(20, 40.0, 70.0, 2, 10.0, "gap")]
+    (leg,) = assemble_rally_legs(
+        CourtScene([None] * 80, [{}] * 80, 30.0, 120, 220), [KEYPOINTS] * 80, contacts,
+        BouncePrediction([], []), [],
+    )
+    assert (leg["start_frame"], leg["end_frame"], leg["outcome"], leg["quality"]) == (0, 20, "volley", None)
+    assert leg["start_source"] == "kink"
+    assert leg["landing_origin"] is None and leg["landing_position"] is None
 
 
 def test_court_keypoints_key_rejects_short_and_non_finite_sets():
@@ -181,6 +228,12 @@ def test_bounce_model_scores_windows_and_clusters_one_landing(bounce_model):
     assert [event.frame for event in prediction.confirmed] == [15]
     assert prediction.confirmed[0].x == track[15].cx and prediction.confirmed[0].y == 200.0
     assert prediction.candidates == prediction.confirmed            # nothing scored in between
+    # A model bounce reports its origin and the track position's kind: this track has no
+    # measurements, so its points are "recovered"; a measured one says "measurement".
+    assert (prediction.confirmed[0].origin, prediction.confirmed[0].position) == ("model", "recovered")
+    measured = [_measured(point.cx, point.cy) for point in track]
+    (landing,) = predict_bounce_events(CourtScene(measured, [{}] * len(track), 30.0, 120, 220), str(bounce_model)).confirmed
+    assert (landing.origin, landing.position) == ("model", "measurement")
     on_player = [{1: (track[15].cx - 10, 150.0, track[15].cx + 10, 205.0)}] * len(track)
     assert predict_bounce_events(CourtScene(track, on_player, 30.0, 120, 220), str(bounce_model)).confirmed == []
 

@@ -2,9 +2,11 @@
 JSON keeps the measurement apart from the fitted position."""
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
-from ball_in_play_selector import FrameResult
+from ball_in_play_selector import FrameResult, models
 from ball_in_play_selector.core import frame_result
+from tennis_tracker import tracking_schema
 from tennis_tracker.export import RunResult, frame_result_to_json
 
 
@@ -28,8 +30,16 @@ def test_run_result_frame_rows_match_the_tracking_json_layout():
 def test_export_preserves_measurement_after_position_changes():
     detection = SimpleNamespace(cx=100., cy=103., conf=.9, x1=98, y1=101, x2=102, y2=105)
     result = frame_result(100, 103, "det", detection=detection)
+    assert frame_result_to_json(0, result)["position_kind"] == "measurement"
     result.cy = 100.5
     row = frame_result_to_json(0, result)
     assert row["measurement"]["y"] == 103.
     assert row["y"] == 100.5
-    assert row["position_kind"] == "filtered"
+    assert row["position_kind"] == result.position_kind == "filtered"
+    assert frame_result_to_json(1, frame_result(5, 6, "interp"))["position_kind"] == "recovered"
+
+
+def test_the_schema_s_position_kinds_are_the_frame_result_s():
+    """``tracking_schema`` imports only ``typing``, so it spells ``PositionKind`` itself; the
+    two must name the same values."""
+    assert get_args(tracking_schema.PositionKind) == get_args(models.PositionKind)

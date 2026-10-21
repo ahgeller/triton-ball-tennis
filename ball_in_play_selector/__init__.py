@@ -9,7 +9,7 @@ timeline chain, the refit) are imported from their modules.
 
 from .config import REFERENCE_DIAG_PX, SelectorConfig
 from .core import select_ball_in_play
-from .models import Detection, FrameResult, RawDetection, Source, Track
+from .models import Detection, FrameResult, PositionKind, RawDetection, Source, Track
 from .physics import predict_projectile
 from .utils import PackedMask
 
@@ -20,6 +20,7 @@ __all__ = [
     "RawDetection",
     "Detection",
     "FrameResult",
+    "PositionKind",
     "Source",
     "Track",
     "predict_projectile",

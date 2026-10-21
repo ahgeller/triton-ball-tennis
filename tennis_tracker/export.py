@@ -74,10 +74,7 @@ def frame_result_to_json(frame_index: int, result: Optional[FrameResult]) -> Fra
              "conf": float(result.conf), "bbox": json_safe(result.bbox)}
             if result.measurement is not None else None
         ),
-        "position_kind": (
-            "measurement" if result.measurement == (result.cx, result.cy)
-            else "filtered" if result.measurement is not None else "recovered"
-        ),
+        "position_kind": result.position_kind,
         "search": {
             "x": float(result.search_cx),
             "y": float(result.search_cy),

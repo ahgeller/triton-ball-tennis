@@ -165,6 +165,12 @@ class Track:
 #              point the trajectory refit relocated too far to still call raw
 Source = Literal["det", "motion", "interp"]
 
+# Where a frame's position stands relative to the detector's measurement:
+#   'measurement' = the detector's own point
+#   'filtered'    = a detected frame whose point the refit or the filter moved
+#   'recovered'   = no detection this frame: a motion blob or a fitted fill
+PositionKind = Literal["measurement", "filtered", "recovered"]
+
 
 @dataclass
 class FrameResult:
@@ -185,3 +191,14 @@ class FrameResult:
     source_reason: str = ""
     # Immutable detector location, separate from the selected/refitted coordinates.
     measurement: Optional[Tuple[float, float]] = None
+
+    @property
+    def position_kind(self) -> PositionKind:
+        """Where ``(cx, cy)`` stands relative to the detector's measurement.
+
+        A property, not a stored field: the trajectory refit moves ``cx, cy`` after the
+        row is built, and a value recorded then would be stale.
+        """
+        if self.measurement is None:
+            return "recovered"
+        return "measurement" if self.measurement == (self.cx, self.cy) else "filtered"

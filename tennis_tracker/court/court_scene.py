@@ -70,19 +70,45 @@ PlacedContactSource = Literal["kink", "gap", "inferred"]
 EventQuality = Literal["confirmed", "inferred"]
 LegPhase = Literal["serve", "rally", "fault"]
 LegOutcome = Literal["bounce", "volley"]
+# Which stage found a landing: the bounce model, a visible kink in the ball
+# track, or a fit across a short gap in it.
+EventOrigin = Literal["model", "kink", "gap"]
+# Where an event's ball position came from: the ball track's own position kind
+# (``FrameResult.position_kind``), or a point extrapolated across a gap.
+EventPosition = Literal["measurement", "filtered", "recovered", "extrapolated"]
+
+
+class BallPoint(NamedTuple):
+    """A ball position in image pixels and where it came from."""
+
+    x: float
+    y: float
+    position: EventPosition
+
+
+def ball_point(result: FrameResult) -> BallPoint:
+    """The ball track's position at one frame, as an event reports it."""
+    return BallPoint(float(result.cx), float(result.cy), result.position_kind)
 
 
 class BounceEvent(NamedTuple):
-    """A ball landing in image pixels; ``score`` is model or kink strength."""
+    """A ball landing in image pixels; ``score`` is model or kink strength.
+
+    ``origin`` says which stage found it and ``position`` where its point came
+    from; the defaults describe a model bounce on a refitted track.
+    """
 
     frame: int
     x: float
     y: float
     score: float
+    origin: EventOrigin = "model"
+    position: EventPosition = "filtered"
 
 
 class ContactEvent(NamedTuple):
-    """A racket contact anchored at the player's feet."""
+    """A racket contact anchored at the player's feet (``x``, ``y``); ``ball`` is
+    the ball position the contact was judged at, None when the stage had none."""
 
     frame: int
     x: float
@@ -90,6 +116,7 @@ class ContactEvent(NamedTuple):
     player_id: Hashable
     score: float
     source: ContactSource
+    ball: Optional[BallPoint] = None
 
 
 class BouncePrediction(NamedTuple):
@@ -113,6 +140,9 @@ class RallyLeg(_RallyLegRequired, total=False):
     """One completed contact-to-landing leg in unit court coordinates."""
 
     start_quality: EventQuality  # the origin contact's
+    start_source: PlacedContactSource  # how the origin contact was found
+    landing_origin: Optional[EventOrigin]  # the landing's; None for a volley
+    landing_position: Optional[EventPosition]
 
 
 def seconds_to_frames(seconds: float, fps: float) -> int:

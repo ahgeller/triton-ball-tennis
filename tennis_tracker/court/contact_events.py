@@ -12,10 +12,12 @@ from .ball_turns import det_windows, extrapolate_incoming, gap_turns, turn_metri
 from .court_scene import (
     EVENT_MERGE_S,
     LOWER_BODY_FRACTION,
+    BallPoint,
     ContactEvent,
     CourtScene,
     PlayerBox,
     PlayerBoxes,
+    ball_point,
     box_distance,
     nearest_player,
     seconds_to_frames,
@@ -69,7 +71,7 @@ def _kink_contacts(scene: CourtScene) -> List[ContactEvent]:
             continue
         player_id, box = striker
         x1, _, x2, y2 = map(float, box[:4])
-        contacts.append(ContactEvent(frame, 0.5 * (x1 + x2), y2, player_id, score, "kink"))
+        contacts.append(ContactEvent(frame, 0.5 * (x1 + x2), y2, player_id, score, "kink", ball_point(points[2])))
     return contacts
 
 
@@ -116,7 +118,9 @@ def _gap_contacts(scene: CourtScene) -> List[ContactEvent]:
         ):
             continue  # a down-to-up turn at the feet is a bounce
         score = _GAP_CONTACT_SCORE_BONUS + (1.0 - cosine) * min(in_speed, out_speed)
-        contacts.append(ContactEvent(midpoint, 0.5 * (x1 + x2), y2, player_id, score, "gap"))
+        ball = (None if impact_point is None
+                else BallPoint(float(impact_point[0]), float(impact_point[1]), "extrapolated"))
+        contacts.append(ContactEvent(midpoint, 0.5 * (x1 + x2), y2, player_id, score, "gap", ball))
     return contacts
 
 

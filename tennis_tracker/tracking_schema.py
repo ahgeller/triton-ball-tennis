@@ -11,6 +11,8 @@ from typing import Dict, List, Literal, Optional, TypedDict, Union
 
 
 JsonValue = Union[None, bool, int, float, str, List["JsonValue"], Dict[str, "JsonValue"]]
+# ``ball_in_play_selector.models.PositionKind``, spelled again so this module stays typing-only;
+# ``tests/test_export.py`` pins the two to each other.
 PositionKind = Literal["measurement", "filtered", "recovered"]
 
 

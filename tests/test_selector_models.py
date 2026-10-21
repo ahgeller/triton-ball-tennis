@@ -1,9 +1,20 @@
-"""ball_in_play_selector.models.Track.update: the Kalman filter starts with the first observation,
-and a track whose observations were assigned directly cannot be updated."""
+"""ball_in_play_selector.models: Track.update (the Kalman filter starts with the first
+observation, and a track whose observations were assigned directly cannot be updated) and
+FrameResult.position_kind."""
 import pytest
 
 from ball_in_play_selector.config import SelectorConfig
-from ball_in_play_selector.models import Detection, Track
+from ball_in_play_selector.models import Detection, FrameResult, Track
+
+
+def test_position_kind_follows_the_measurement_as_the_position_moves():
+    """Read when asked, not stored: the refit moves ``cx, cy`` after the row is built."""
+    filled = FrameResult(cx=10.0, cy=20.0, source="interp")
+    assert filled.position_kind == "recovered"
+    detected = FrameResult(cx=10.0, cy=20.0, conf=0.9, source="det", measurement=(10.0, 20.0))
+    assert detected.position_kind == "measurement"
+    detected.cx = 10.25
+    assert detected.position_kind == "filtered"
 
 
 def _cfg() -> SelectorConfig:

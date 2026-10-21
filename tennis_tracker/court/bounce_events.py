@@ -17,6 +17,7 @@ from .court_scene import (
     BounceEvent,
     BouncePrediction,
     CourtScene,
+    ball_point,
     inside_player,
     nearest_player,
 )
@@ -100,9 +101,9 @@ def _off_player_events(pairs: Iterable[Tuple[int, float]], scene: CourtScene) ->
         point = scene.per_frame[frame]
         if point is None:
             continue
-        x, y = float(point.cx), float(point.cy)
-        if not inside_player(x, y, scene.player_boxes(frame)):
-            result.append(BounceEvent(frame, x, y, score))
+        ball = ball_point(point)
+        if not inside_player(ball.x, ball.y, scene.player_boxes(frame)):
+            result.append(BounceEvent(frame, ball.x, ball.y, score, "model", ball.position))
     return result
 
 
@@ -165,7 +166,8 @@ def _kink_bounces(scene: CourtScene) -> List[BounceEvent]:
         ):
             continue
         score = float(prominence * (1.0 - cosine))
-        bounces.append(BounceEvent(frame, float(points[2].cx), float(points[2].cy), score))
+        ball = ball_point(points[2])
+        bounces.append(BounceEvent(frame, ball.x, ball.y, score, "kink", ball.position))
     return bounces
 
 
@@ -209,7 +211,7 @@ def _gap_bounces(scene: CourtScene) -> List[BounceEvent]:
             if impact_point[1] < y2 - LOWER_BODY_FRACTION * max(y2 - y1, 1.0):
                 continue
         score = float(prominence * (1.0 - cosine))
-        bounces.append(BounceEvent(event_frame, impact_x, impact_y, score))
+        bounces.append(BounceEvent(event_frame, impact_x, impact_y, score, "gap", "extrapolated"))
     return bounces
 
 
