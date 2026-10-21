@@ -7,12 +7,13 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import cv2
 import torch
 import numpy as np
 
 from tests._helpers import Capture, metric_probe
 from finetune.train_gridtracknet import better
-from tennis_tracker import detectors
+from tennis_tracker import ball_detectors
 from tennis_tracker.config import Config
 from tennis_tracker.detectors import GridTrackNetBallDetector
 from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
@@ -46,7 +47,7 @@ class CpuGridTrackNet(GridTrackNetBallDetector):
         with patch.object(torch.cuda, "is_available", return_value=True), \
              patch.object(torch, "device", return_value=_CPU), \
              patch.object(torch.cuda, "synchronize"), \
-             patch.object(detectors, "load_model", return_value=model):
+             patch.object(ball_detectors, "load_model", return_value=model):
             super().__init__("unused.npz", cfg)
         self._decode = decode
         self._frame_tensor = frame_tensor
@@ -222,7 +223,7 @@ class FixTests(unittest.TestCase):
                     frame_tensor=lambda frame, device: torch.tensor([float(frame[0, 0, 0])]),
                     on_publish=publish,
                 )
-                with patch.object(detectors.cv2, "VideoCapture", return_value=Capture(count)), \
+                with patch.object(cv2, "VideoCapture", return_value=Capture(count)), \
                      patch.object(torch.cuda, "synchronize"):
                     results = detector.detect_clip(Path("synthetic.mp4"), _FPS_FOR_STRIDE[stride], 1920, 1080, count)
                 self.assertEqual(len(results), count)
