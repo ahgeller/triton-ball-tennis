@@ -26,6 +26,18 @@ def test_training_self_test_passes():
     training.self_test()
 
 
+def test_main_reports_a_run_that_cannot_start_as_status_1(tmp_path, capsys):
+    """No clips, or an option the clips cannot satisfy: one line on stderr and exit status 1, the
+    same as the other scripts' setup errors, before any cache or run folder is written."""
+    videos, labels = workspace(tmp_path, ["a", "b"])
+    folders = ["--data-dir", str(tmp_path / "cache"), "--run-dir", str(tmp_path / "run")]
+    assert training.main(["--videos", str(videos), "--labels", str(tmp_path / "empty"), *folders]) == 1
+    assert "[error] No *_ball.csv files" in capsys.readouterr().err
+    assert training.main(["--videos", str(videos), "--labels", str(labels), "--cameras", "fixed", *folders]) == 1
+    assert "[error] --cameras needs camera tags" in capsys.readouterr().err
+    assert not (tmp_path / "cache").exists() and not (tmp_path / "run").exists()
+
+
 # --------------------------------------------------------------------------- which clips train
 
 def workspace(root: Path, clips, manifest=None, exclude=(), review_status=None) -> tuple:

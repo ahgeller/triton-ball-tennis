@@ -225,11 +225,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """0 when the self-test or the run finished (whichever weights won), 1 when the clips, the
+    labels, the frame cache or an option cannot make a run: the ValueError or OSError the
+    training modules raise for those is reported in one line, not as a traceback."""
     args = build_parser().parse_args(argv)
     if args.self_test:
         self_test()
         return 0
-    train(args)
+    try:
+        train(args)
+    except (ValueError, OSError) as error:
+        print(f"[error] {error}", file=sys.stderr)
+        return 1
     return 0
 
 
