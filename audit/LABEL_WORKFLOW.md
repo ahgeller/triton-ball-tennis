@@ -6,14 +6,17 @@ tools rather than automatically smoothing, propagating or accepting coordinates.
 
 ## Use
 
-Launch the existing labeling tool with `--grid`, for example:
+Launch the labeling tool through the workspace front door with `--grid`, for
+example:
 
 ```powershell
-& 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' finetune/label_tool.py video13 --grid
+& 'C:\Users\Andrew\.conda\envs\tennis-analysis\python.exe' finetune/ft.py label video13 --grid
 ```
 
-The same option passes through `finetune/ft.py label <clip> --grid`.
-Substitute the clip you actually want to edit; this example does not run itself.
+`finetune/ft.py` with no arguments offers the same through its menu, and the
+tool can also be run directly as `finetune/labeling/label_tool.py video13 --grid`
+(it moved there from `finetune/label_tool.py`). Substitute the clip you actually
+want to edit; this example does not run itself.
 
 - **Tab:** switch between one full-frame view and eight enlarged crops.
 - **Grid left click:** correct that tile's ball center without advancing or
@@ -49,10 +52,10 @@ each page stays within one clip and saves native coordinates to its own CSV.
   resolution, and switching clips releases the previous clip's decoded cache.
 - Rendered crop pages are reused until their content or geometry changes.
 
-`audit/test_label_workflow.py` contains 10 passing synthetic tests for zoomed
-navigation, queued clicks, resizing, wheel handling, crop coordinate mapping,
-unseen/missing pages, mixed resolutions, undo, evidence persistence and multi-clip
-acceptance. The existing 16 regression checks also pass. A synthetic sharp/blurred
+`audit/test_label_workflow.py` (now `tests/test_label_workflow.py`) contained
+10 passing synthetic tests for zoomed navigation, queued clicks, resizing, wheel
+handling, crop coordinate mapping, unseen/missing pages, mixed resolutions, undo,
+evidence persistence and multi-clip acceptance. The existing 16 regression checks also pass. A synthetic sharp/blurred
 crop preview was rendered and inspected. No real label files were modified by
 these tests, and no unfinished clips were used for comparisons or model selection.
 
