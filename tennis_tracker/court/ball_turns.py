@@ -3,6 +3,8 @@ occlusion gaps the bounce and contact stages score.
 
 ``det_windows`` yields 30 FPS-spaced sample windows with enough detections; ``gap_turns`` yields
 short selector gaps whose flanking samples fit a turn.  Both read a ``court_scene.CourtScene``.
+Every velocity, fit and extrapolation here reads each frame at ``court_scene.sample_xy``: the
+detector's measurement when there is one, else the selected position.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import numpy as np
 
 from ball_in_play_selector import FrameResult
 
-from .court_scene import BallTrack, CourtScene, usable_point
+from .court_scene import BallTrack, CourtScene, sample_xy, usable_point
 
 
 _MIN_DET_IN_WINDOW = 3  # detections required in a five-sample window
@@ -61,16 +63,8 @@ def det_windows(
 
 def window_velocities(points: Sequence[FrameResult]) -> Tuple[np.ndarray, np.ndarray]:
     """Per-sample velocity into and out of the window centre."""
-    centre = points[2]
-    incoming = np.array([
-        float(centre.cx) - float(points[0].cx),
-        float(centre.cy) - float(points[0].cy),
-    ]) / 2.0
-    outgoing = np.array([
-        float(points[4].cx) - float(centre.cx),
-        float(points[4].cy) - float(centre.cy),
-    ]) / 2.0
-    return incoming, outgoing
+    first, centre, last = (np.asarray(sample_xy(points[index])) for index in (0, 2, 4))
+    return (centre - first) / 2.0, (last - centre) / 2.0
 
 
 def turn_metrics(incoming: np.ndarray, outgoing: np.ndarray) -> Tuple[float, float, float]:
@@ -88,8 +82,8 @@ def _fit_gap_turn(
     branches run parallel and so fit no turn."""
     (frame_a, point_a), (frame_b, point_b) = before
     (frame_c, point_c), (frame_d, point_d) = after
-    incoming = np.array([point_b.cx - point_a.cx, point_b.cy - point_a.cy]) / max(1, frame_b - frame_a)
-    outgoing = np.array([point_d.cx - point_c.cx, point_d.cy - point_c.cy]) / max(1, frame_d - frame_c)
+    incoming = (np.asarray(sample_xy(point_b)) - np.asarray(sample_xy(point_a))) / max(1, frame_b - frame_a)
+    outgoing = (np.asarray(sample_xy(point_d)) - np.asarray(sample_xy(point_c))) / max(1, frame_d - frame_c)
     slope = incoming - outgoing
     # A descending-then-ascending pair always meets on the height axis; any
     # other pair must differ in velocity to meet at all.
@@ -106,8 +100,9 @@ def extrapolate_incoming(samples: Sequence[_Sample], frame: int) -> Optional[np.
     times = np.asarray([float(item[0]) - anchor for item in samples])
     degree = min(2, len(samples) - 1)
     target = float(frame) - anchor
-    x_coeff = np.polyfit(times, [float(item[1].cx) for item in samples], degree)
-    y_coeff = np.polyfit(times, [float(item[1].cy) for item in samples], degree)
+    xs, ys = zip(*(sample_xy(item[1]) for item in samples))
+    x_coeff = np.polyfit(times, xs, degree)
+    y_coeff = np.polyfit(times, ys, degree)
     return np.array([
         float(np.polyval(x_coeff, target)),
         float(np.polyval(y_coeff, target)),

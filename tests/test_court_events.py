@@ -50,6 +50,39 @@ def test_ball_point_is_the_measurement_when_there_is_one():
     assert ball_point(FrameResult(cx=10.0, cy=20.0, source="interp")) == BallPoint(10.0, 20.0, "recovered")
 
 
+def test_turns_are_judged_on_the_measurements_not_the_refitted_path():
+    """A landing the refit smoothed away: the selected points run straight while the
+    measurements descend and rise. The velocities, the bounce features and the kink stage all
+    read the measurements, so the landing is found; the same track without measurements is not."""
+    from tennis_tracker.court.ball_turns import window_velocities
+    from tennis_tracker.court.bounce_events import _build_bounce_features
+    from tennis_tracker.court.court_scene import sample_xy
+
+    smoothed = [FrameResult(cx=10.0 + frame, cy=5.0, conf=0.9, source="det", measurement=(10.0 + frame, y))
+                for frame, y in enumerate((0.0, 4.0, 10.0, 6.0, 4.0))]
+    assert sample_xy(smoothed[2]) == (12.0, 10.0) and sample_xy(FrameResult(cx=1.0, cy=2.0, source="interp")) == (1.0, 2.0)
+    incoming, outgoing = window_velocities(smoothed)
+    np.testing.assert_allclose(incoming, (1.0, 5.0))
+    np.testing.assert_allclose(outgoing, (1.0, -3.0))
+    features, frames = _build_bounce_features(CourtScene(smoothed, [{}] * 5, 30.0, 1280, 720))
+    assert frames == [2] and features[0, 6] < 0 and features[0, 8] < 0            # previous and next samples above the centre
+    assert infer_kinematic_bounces(CourtScene(smoothed, [{}] * 5, 30.0, 1920, 1080))[0].frame == 2
+    flat = [FrameResult(cx=point.cx, cy=point.cy, conf=0.9, source="det") for point in smoothed]
+    assert infer_kinematic_bounces(CourtScene(flat, [{}] * 5, 30.0, 1920, 1080)) == []
+
+
+def test_the_striking_player_is_found_at_the_measurement():
+    """The refit pulled the selected point off the player's box; the detector saw the ball on it."""
+    track = [FrameResult(cx=100.0 + 20 * frame, cy=300.0, conf=0.9, source="det") for frame in range(5)]
+    track += [FrameResult(cx=track[-1].cx - 20 * step, cy=300.0 - 2 * step, conf=0.9, source="det") for step in range(1, 6)]
+    far_box = [{1: (900.0, 250.0, 940.0, 360.0)}] * len(track)
+    assert detect_player_contacts(CourtScene(track, far_box, 30.0, 1920, 1080)) == []
+    for point in track:
+        point.measurement = (point.cx + 760.0, point.cy)                     # what the detector saw: on the far player
+    (contact,) = detect_player_contacts(CourtScene(track, far_box, 30.0, 1920, 1080))
+    assert contact.player_id == 1 and contact.ball.position == "measurement" and contact.ball.x == track[contact.frame].cx + 760.0
+
+
 def test_kinematic_bounce_is_a_bounce_event():
     track = [
         FrameResult(cx=10 + frame, cy=y, conf=0.9, source="det")

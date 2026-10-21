@@ -86,14 +86,21 @@ class BallPoint(NamedTuple):
     position: EventPosition
 
 
-def ball_point(result: FrameResult) -> BallPoint:
-    """The ball track's position at one frame, as an event reports it: the detector's own
-    measurement when the frame has one (the trajectory refit moves ``cx, cy`` towards a smooth
-    path, which at a landing or a stroke smooths the very turn being reported), else the
-    selected point with its kind."""
+def sample_xy(result: FrameResult) -> Tuple[float, float]:
+    """The point the event stages judge a frame at: the detector's own measurement when the
+    frame has one, else the selected position (a motion blob or a fill). The trajectory refit
+    moves ``cx, cy`` towards a smooth path, which at a landing or a stroke smooths the very
+    turn being measured; the bounce model was trained on raw detector output."""
     if result.measurement is not None:
-        return BallPoint(float(result.measurement[0]), float(result.measurement[1]), "measurement")
-    return BallPoint(float(result.cx), float(result.cy), result.position_kind)
+        return float(result.measurement[0]), float(result.measurement[1])
+    return float(result.cx), float(result.cy)
+
+
+def ball_point(result: FrameResult) -> BallPoint:
+    """The ball track's position at one frame, as an event reports it (``sample_xy``) and where
+    it came from."""
+    x, y = sample_xy(result)
+    return BallPoint(x, y, "measurement" if result.measurement is not None else result.position_kind)
 
 
 class BounceEvent(NamedTuple):
