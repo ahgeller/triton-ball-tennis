@@ -1,11 +1,11 @@
-"""evaluate_archive.py helpers on synthetic inputs: no GPU, no real archive, never finetune/labels."""
+"""evaluation.archive (evaluate_archive.py) helpers on synthetic inputs: no GPU, no real archive, never finetune/labels."""
 import json
 from pathlib import Path
 
 import pytest
 
-import evaluate_archive
-from evaluate_archive import (
+from evaluation import archive as evaluate_archive
+from evaluation.archive import (
     LINE_PX, _inside_player, _near_court_line, _segment_distance, list_clips, score_pipeline_clip,
 )
 

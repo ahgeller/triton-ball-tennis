@@ -176,10 +176,19 @@ def ensure_interpreter() -> Optional[int]:
     return wait_child([str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env=env)
 
 
-def run_script(script: str, arguments: List[str]) -> int:
-    command = [sys.executable, str(SCRIPTS / script if not script.startswith("..") else ROOT / script[3:]), *arguments]
+def run_command(command: List[str]) -> int:
     print("$", " ".join(f'"{part}"' if " " in part else part for part in command), flush=True)
     return wait_child(command, cwd=str(ROOT))
+
+
+def run_script(script: str, arguments: List[str]) -> int:
+    """Run one of the sibling finetune scripts under this interpreter."""
+    return run_command([sys.executable, str(SCRIPTS / script), *arguments])
+
+
+def run_module(module: str, arguments: List[str]) -> int:
+    """Run a repository module (``python -m``) under this interpreter."""
+    return run_command([sys.executable, "-m", module, *arguments])
 
 
 # --------------------------------------------------------------------------- workspace facts
@@ -461,7 +470,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         command += ["--gridtracknet-weights", str(Path(args.weights).resolve())]
     if clips:
         command += ["--clips", *clips]
-    return run_script("../evaluate_archive.py", command + args.rest)
+    return run_module("evaluation.archive", command + args.rest)
 
 
 def cmd_train(args: argparse.Namespace) -> int:

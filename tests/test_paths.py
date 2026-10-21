@@ -14,7 +14,7 @@ def test_assets_sit_under_the_repository_models_folder():
 
 def test_config_defaults_and_the_workspace_use_the_same_files():
     from finetune.workspace import REPO_WEIGHTS
-    import evaluate_archive
+    from evaluation import archive as evaluate_archive
 
     cfg = Config()
     assert (cfg.model_path, cfg.player_model_path, cfg.court_model_path) == (
