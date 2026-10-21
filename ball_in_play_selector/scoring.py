@@ -431,9 +431,18 @@ def _court_fractions(
       near_court_frac: inside polygon or within expand_px margin (used for scoring).
       far_outside_frac: farther than 2x expand_px outside polygon.
       strict_inside_frac: strictly inside polygon (dist >= 0).
+
+    Without a court polygon nothing is known about where the ball is, so the
+    scoring fraction is 1: the court term then neither ranks tracks (every
+    track in the clip shares it) nor pushes them under the absolute score
+    density gates in ``core.selected_tracks`` and the timeline, which a
+    "neutral" 0.5 did on every court-less clip. The band fractions stay 0.5,
+    between the "mostly outside" and "mostly inside" bands the selector reads.
     """
-    if court_poly is None or len(track.observations) == 0:
-        return 0.5, 0.5, 0.5  # neutral
+    if len(track.observations) == 0:
+        return 0.5, 0.5, 0.5
+    if court_poly is None:
+        return 1.0, 0.5, 0.5
 
     near_court = 0
     far_outside = 0
@@ -547,7 +556,8 @@ def score_tracks(
       - span_add = w_span * (span / total_frames)
       - inside_mult = near-court fraction: inside the polygon or within
         court_expand_px of it (strict inside is recorded but not multiplied,
-        so near-edge detections do not destroy a track's score)
+        so near-edge detections do not destroy a track's score); 1 when the
+        clip has no court polygon, so a missing court is not evidence
       - motion_mult = motion evidence: max(mask overlap fraction,
         physics.kinematic_motion_frac estimate)
       - near_player_mult = 0.70 + 0.30 * near-player fraction (weaker term)

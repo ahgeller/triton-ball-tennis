@@ -66,6 +66,31 @@ def test_moving_ball_is_selected_on_every_frame():
     assert sum(result is not None for result in results) == len(detections)
 
 
+def test_missing_court_is_not_evidence_against_the_ball():
+    # grid_match26 (no court detected): the rally's longest track, 248 detections
+    # with 74% on the motion mask, reached a score density of 0.47 and fell under the
+    # 0.5 gate only because a missing polygon multiplied every score by a "neutral"
+    # 0.5. The same rally scores the same with no court as with a court around it.
+    frames = 1000
+    detections, masks = _moving_ball(50)
+    detections += [[] for _ in range(frames - 50)]
+    masks += [_empty_mask() for _ in range(frames - 50)]
+    players = [{1: (600, 300, 640, 360)}] * frames          # a player far from the ball
+    court = np.array([[[0, 0]], [[639, 0]], [[639, 359]], [[0, 359]]], dtype=np.int32)
+    with_court = select_ball_in_play(
+        detections, 30.0, WIDTH, HEIGHT, court_polygon=court,
+        boost_masks=masks, raw_motions=masks, player_boxes_by_frame=players,
+    )
+    without_court = select_ball_in_play(
+        detections, 30.0, WIDTH, HEIGHT,
+        boost_masks=masks, raw_motions=masks, player_boxes_by_frame=players,
+    )
+    assert with_court[1] is not None and without_court[1] is not None
+    assert [result is not None for result in with_court[0]] == [result is not None for result in without_court[0]]
+    assert without_court[1].score_value("inside_mult") == 1.0
+    assert without_court[1].score_value("inside_strict_frac") == 0.5
+
+
 def test_first_internal_gap_is_filled_between_real_endpoints():
     # The first internal gap is safe to fill because both real endpoints exist.
     detections, masks = _moving_ball()
