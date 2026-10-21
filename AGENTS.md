@@ -72,8 +72,11 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   agreement the audit and `realign.py` share; `import_data.py` (its importers;
   `import_sources.py` holds what they share) and `realign.py`,
   source conversion and temporal realignment. `finetune/training/`:
-  `train_gridtracknet.py` (training; `finetune/train_gridtracknet.py` at the old
-  path only hands over to it, for the command below), `clips.py` (which clips
+  `train_gridtracknet.py` (the training run: its command line, data, epochs and
+  the winner; `finetune/train_gridtracknet.py` at the old path only hands over
+  to it, for the command below), `loop.py` (the loss, one epoch, the validation
+  loss and saving weights), `metrics.py` (the detector metric a run is judged
+  by and the winner rule), `clips.py` (which clips
   it trains on and holds out), `frame_cache.py` (the per-clip cache of frames
   and training units), `dataset.py` (targets, augmentation, the Dataset and
   the sampler), `detect.py` (the raw prepass over a clip) and `pretrack.py`
