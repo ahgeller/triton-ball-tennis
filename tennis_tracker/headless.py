@@ -10,7 +10,8 @@ from typing import Optional
 
 from .config import Config
 from .paths import COURT_ENGINE, PLAYER_ENGINE
-from .export import RunResult, TrackingFrames
+from .export import RunResult
+from .tracking_schema import TrackingFrames
 
 
 def headless_config(video: Path, *, model_path: Path, conf: float, device: str, tracking_json: Path,

@@ -28,8 +28,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   events, reports. `run_context.py`: data the stages pass each other. `pass1.py`
   (with `frame_window.py`): decoding, background/motion state, ROI collection,
   detector calls. `pass2.py`: rendering pass. `export.py`: `RunResult`, what a
-  run returns, and the tracking JSON. `motion.py`, `roi_tracking.py`: CUDA
-  motion masks and ROI tracking.
+  run returns, and the tracking JSON writer. `tracking_schema.py`: the tracking
+  JSON's shape (TypedDicts, typing only), which the writer and the scorers
+  share. `motion.py`, `roi_tracking.py`: CUDA motion masks and ROI tracking.
 - `tennis_tracker/court/`: `court_geometry.py`, keypoints, side guides, polygon,
   homography; `court_events.py`, CatBoost/kinematic bounce candidates, player
   contacts and schematic rally legs, each stage reading one `CourtScene`;

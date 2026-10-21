@@ -11,12 +11,9 @@ import json
 import math
 import statistics
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, TypedDict, TypeGuard, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict, TypeGuard, Union
 
-if TYPE_CHECKING:
-    # The tracking JSON's shape is defined where it is written.  Imported for the type checker
-    # only, so this scorer stays importable without the tracker's CUDA and TensorRT stack.
-    from tennis_tracker.export import FrameRow, SummaryJson, TrackingJson
+from tennis_tracker.tracking_schema import FrameRow, SummaryJson, TrackingJson
 
 
 class _LabelAlways(TypedDict):

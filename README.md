@@ -160,6 +160,7 @@ tennis_tracker/pass1.py                  Decode, motion evidence, ROIs and detec
 tennis_tracker/frame_window.py           Previous/current/next frames for pass 1's temporal gate
 tennis_tracker/pass2.py                  Render the tracking and debug videos
 tennis_tracker/export.py                 What a run returns, and the tracking JSON export
+tennis_tracker/tracking_schema.py        The tracking JSON's shape, shared by the writer and the scorers
 tennis_tracker/motion.py                 CUDA background model and motion masks
 tennis_tracker/roi_tracking.py           ROI tracking for motion search
 tennis_tracker/headless.py               Running the tracker from another program, nothing drawn

@@ -5,15 +5,11 @@ the frames worth a look."""
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from finetune.data.detector_metrics import HIT_PX, WRONG_PX, DetectorMetrics, scale_for_width
 from tennis_tracker.court.court_geometry import LINE_PAIRS_14, MIN_KEYPOINT_VALUES, last_valid_court_keypoints
-
-if TYPE_CHECKING:
-    # The tracking JSON's shape, defined where it is written; for the type checker only, so
-    # this scorer does not import the tracker's CUDA and TensorRT stack.
-    from tennis_tracker.export import FrameRow, TrackingFrames
+from tennis_tracker.tracking_schema import FrameRow, TrackingFrames
 
 LINE_PX = 10.0  # "on a court line" if within this many 1080p pixels of one
 
