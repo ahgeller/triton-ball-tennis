@@ -105,7 +105,11 @@ class UnitDataset(Dataset):
         images = self.read_frames(sample, flip)
         points = sample["points"]
         if flip:
-            points = [None if point is None else [width - 1 - point[0], point[1]] for point in points]
+            # Labels are frame coordinates with pixel k's centre at k + 0.5 (the label tool's
+            # convention, which the grid encode and decode share); cv2.flip sends pixel k to
+            # width - 1 - k, so a point x lands at width - x. "width - 1 - x" mirrored pixel
+            # indices and taught the target one pixel left of the mirrored ball.
+            points = [None if point is None else [width - point[0], point[1]] for point in points]
         if jitter:
             images = np.clip(images * gain, 0.0, 1.0)
         elif self.augment and self.strength == "strong" and rng.draws.random() < 0.8:

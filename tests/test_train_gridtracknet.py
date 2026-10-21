@@ -175,14 +175,33 @@ def test_flip_mirrors_the_frames_and_the_labels_about_the_image_width(tmp_path):
     forced(flipped, 0.0)
     images, target = flipped[0]
     assert float(images[0, 0, -1]) > 0.5 and float(images[0, 0, 0]) < 0.5           # the stripe is on the right now
-    mirrored = [None if p is None else [1920 - 1 - p[0], p[1]] for p in unit["points"]]
+    mirrored = [None if p is None else [1920 - p[0], p[1]] for p in unit["points"]]
     assert torch.equal(target, make_target(mirrored, 1920, 1080))
-    assert mirrored[2] == [0.0, 0.0] and mirrored[3] == [1919.0, 1079.0]           # pixel 0 <-> pixel width-1
+    assert mirrored[2] == [1.0, 0.0] and mirrored[3] == [1920.0, 1079.0]   # the left edge of pixel 0 <-> the right edge of pixel 1919
 
     unflipped = UnitDataset(tmp_path, [unit], augment=True)
     forced(unflipped, 1.0)
     images, target = unflipped[0]
     assert float(images[0, 0, 0]) > 0.9 and torch.equal(target, make_target(unit["points"], 1920, 1080))
+
+
+def test_flipped_label_lands_on_the_flipped_pixels(tmp_path):
+    # The stripe covers pixels 0-9 of the 768-wide cache (0-24 at the unit's 1920), so its
+    # centre is 12.5 in frame coordinates (pixel k's centre is k + 0.5). After the flip the
+    # pixels sit at 758-767 and the label must follow them, to 1907.5: mirroring pixel
+    # indices (1920 - 1 - 12.5) would put it a pixel to the left.
+    unit = unit_on_disk(tmp_path)
+    unit["points"] = [[12.5, 200.0], None, None, None, None]
+    dataset = UnitDataset(tmp_path, [unit], augment=True)
+    forced(dataset, 0.0)
+    images, target = dataset[0]
+    red = images[0].numpy().sum(axis=0)                                            # red mass per cached column
+    columns = np.arange(training.WIDTH) + 0.5
+    stripe_centre = float((red * columns).sum() / red.sum()) * 1920 / training.WIDTH
+    row, col = np.argwhere(target[0].numpy() == 1)[0]
+    decoded_x = (col + float(target[1, row, col])) * 1920 / training.GRID_COLS
+    assert abs(stripe_centre - 1907.5) < 0.05
+    assert decoded_x == pytest.approx(1907.5) and decoded_x == pytest.approx(stripe_centre, abs=0.05)
 
 
 # --------------------------------------------------------------------------- the metric and the winner
