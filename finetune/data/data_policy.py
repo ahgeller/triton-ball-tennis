@@ -10,6 +10,12 @@ to their video (``ft.py check --audit --fix`` writes it; ``finetune.data.workspa
 such labels are ground truth for nothing, so training and evaluation both leave them out.
 ``clips.csv`` tags each clip with a source (``clip_source`` is the one reading of it); two
 sources are never trusted for training because nobody has checked their labels.
+
+The label tool's suggestion network (``finetune.refiner.refiner_training``) is the one trainer
+that does not ask here. Its trust signal is per frame: the frames a person confirmed or edited,
+from each clip's review sidecar, on top of the workspace exclusion list (``exclude.txt``, read
+through ``finetune.data.workspace``). It never selects clips by source, so the trainable and
+scorable clip rules below do not apply to it.
 """
 from __future__ import annotations
 

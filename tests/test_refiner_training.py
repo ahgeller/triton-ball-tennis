@@ -1,12 +1,17 @@
 """finetune/refiner/refiner_training.py on synthetic clips and arrays: the one-pass crop walk, the
-training batches and the self-check threshold. No workspace file, no GPU."""
+training batches, the self-check threshold and which clips it gathers. No real workspace file
+(``workspace_dir`` is a temporary one), no GPU."""
+import json
+
 import numpy as np
 import pytest
 import torch
 
+from finetune.data.labels import write_labels
+from finetune.data.workspace import add_exclusion, label_csv, review_json
 from finetune.refiner.cnn_refiner import CROP, WINDOW
 from finetune.refiner.refiner_training import (FAR_PX, SURE_FAR_SHARE, crops_from_video, cut_label, frame_users,
-                                                sample_batch, sure_threshold, to_device)
+                                                gather_crops, sample_batch, sure_threshold, to_device)
 from tests._helpers import write_clip
 
 SIZE = (160, 90)
@@ -55,3 +60,15 @@ def test_sure_threshold_keeps_far_misses_rare():
     sure = confs >= threshold
     assert np.mean(errors[sure] > FAR_PX) <= SURE_FAR_SHARE and sure.sum() > 1990
     assert sure_threshold(np.array([9.0, 9.0]), np.array([0.9, 0.8])) == 1.0    # nothing is ever sure
+
+
+def test_gather_crops_skips_clips_listed_in_exclude_txt(workspace_dir):
+    for clip in ("clip_a", "clip_b"):
+        write_clip(workspace_dir / "videos" / f"{clip}.avi", 8, SIZE)
+        write_labels(label_csv(clip), {f: (80.0, 45.0) for f in range(8)}, *SIZE)
+        review_json(clip).write_text(json.dumps({"reviewed": [2, 3, 4, 5]}), encoding="utf-8")
+    add_exclusion("clip_b", "labels belong to another video")
+    lines = []
+    crops = gather_crops(lambda *parts: lines.append(" ".join(map(str, parts))))
+    assert sorted(crops) == ["clip_a"] and len(crops["clip_a"]) == 4
+    assert any("clip_b" in line and "exclude.txt" in line for line in lines)
