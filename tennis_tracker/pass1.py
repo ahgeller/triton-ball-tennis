@@ -163,7 +163,8 @@ class _Pass1Collector:
     # -- per-frame steps -------------------------------------------------------
 
     def _should_detect(self, frame_idx: int) -> bool:
-        """Skip-frame detection: every Nth frame, and between them only while the ball is visible."""
+        """Skip-frame detection: every Nth frame, and between them only while no
+        ROI track has the ball in sight (so a lost ball is reacquired at once)."""
         if self.skip_n <= 1 or frame_idx % self.skip_n == 0:
             return True
         if not self.cfg.skip_frame_require_roi:
@@ -428,7 +429,7 @@ def erase_ghost_rois(result: Pass1Result) -> int:
 
     A ghost ROI is the coasting region of an ROI track that timed out without
     reacquiring the ball; motion in it was never ball evidence.  Returns the
-    number of frames touched.
+    number of frames whose masks changed.
     """
     print("[pass 1] Executing batched ghost ROI deletion...")
     t0 = time.perf_counter()
@@ -440,7 +441,6 @@ def erase_ghost_rois(result: Pass1Result) -> int:
         boost = result.boost_masks[fr_idx] if fr_idx < len(result.boost_masks) else None
         if raw is None and boost is None:
             continue
-        erased_frames += 1
         raw_u8 = raw.unpack() if raw is not None else None
         boost_u8 = boost.unpack() if boost is not None else None
         changed = False
@@ -451,6 +451,7 @@ def erase_ghost_rois(result: Pass1Result) -> int:
                     changed = True
         if not changed:
             continue
+        erased_frames += 1
         if raw_u8 is not None:
             result.raw_motions[fr_idx] = PackedMask.pack(raw_u8, roi=raw.roi)
         if boost_u8 is not None:

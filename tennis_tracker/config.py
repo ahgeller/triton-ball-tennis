@@ -42,7 +42,6 @@ class Config:
     court_draw_indices: bool = False
     player_conf: float = 0.21
     player_iou: float = 0.10
-    player_bbox_pad: int = 10
     draw_players: bool = True
     draw_court: bool = True
     draw_court_minimap: bool = False

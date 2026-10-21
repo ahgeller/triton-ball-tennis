@@ -43,14 +43,16 @@ def test_erase_clears_motion_inside_ghost_rois_and_repacks(capsys):
     assert "cleaned 2 frames" in capsys.readouterr().out
 
 
-def test_erase_drops_a_mask_that_becomes_empty_and_skips_frames_without_change():
+def test_erase_drops_a_mask_that_becomes_empty_and_skips_frames_without_change(capsys):
     result = _result(
         raw_boxes_by_frame=[[(20, 20, 26, 26)], [(5, 5, 9, 9)]],
         ghost_rois_by_frame=[[(18, 18, 30, 30)], [(18, 18, 30, 30)]],
     )
-    assert erase_ghost_rois(result) == 2          # both frames had a mask to inspect
+    untouched = result.raw_motions[1]
+    assert erase_ghost_rois(result) == 1          # frame 1's ghost ROI held no motion: not counted
     assert result.raw_motions[0] is None and result.boost_masks[0] is None
-    assert result.raw_motions[1].unpack()[6, 6] == 255
+    assert result.raw_motions[1] is untouched and untouched.unpack()[6, 6] == 255
+    assert "cleaned 1 frames" in capsys.readouterr().out
 
 
 def test_erase_ignores_frames_with_no_masks():
