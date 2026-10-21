@@ -21,18 +21,43 @@ def module_path(name: str) -> Path:
     return path if path.is_file() else ROOT / name.replace(".", "/") / "__init__.py"
 
 
+def module_name(path: Path) -> str:
+    """The dotted name of a module file under the repository (``tennis_tracker/config.py`` ->
+    ``tennis_tracker.config``; a package's ``__init__.py`` is the package)."""
+    parts = path.relative_to(ROOT).with_suffix("").parts
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def import_nodes(tree: ast.Module) -> Iterator[ast.AST]:
+    """Every node of `tree` except those inside a module-level ``__getattr__``: a PEP 562 lazy
+    attribute hook (``tennis_tracker.__getattr__`` imports the pipeline for ``tennis_tracker.run``)
+    runs only when that attribute is read, which the trainer never does."""
+    lazy_hooks = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "__getattr__"]
+    skipped = {id(inner) for hook in lazy_hooks for inner in ast.walk(hook)}
+    return (node for node in ast.walk(tree) if id(node) not in skipped)
+
+
 def internal_imports(path: Path) -> Iterator[str]:
-    """Every finetune.* / tennis_tracker.* module `path` imports, at module level or inside a function."""
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+    """Every finetune.* / tennis_tracker.* module `path` imports, at module level or inside a
+    function, relative imports (``from .config import Config``) resolved against `path`."""
+    for node in import_nodes(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.split(".")[0] in PACKAGES:
                     yield alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] in PACKAGES:
-            yield node.module
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:                       # relative: the package `path` sits in, `level - 1` levels up
+                package = module_name(path.parent / "__init__.py").split(".")
+                base = ".".join(package[:len(package) - (node.level - 1)])
+                module = f"{base}.{node.module}" if node.module else base
+            else:
+                module = node.module or ""
+            if not module or module.split(".")[0] not in PACKAGES:
+                continue
+            yield module
             for alias in node.names:            # `from finetune import refine` names a module too
-                if (ROOT / node.module.replace(".", "/") / f"{alias.name}.py").is_file():
-                    yield f"{node.module}.{alias.name}"
+                if (ROOT / module.replace(".", "/") / f"{alias.name}.py").is_file():
+                    yield f"{module}.{alias.name}"
 
 
 def import_closure(module: str) -> Set[str]:

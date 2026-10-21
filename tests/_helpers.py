@@ -11,9 +11,11 @@ import pytest
 import torch
 
 from finetune.data.detector_metrics import DetectorMetrics
+from finetune.data.workspace import VideoMeta
 from finetune.training import metrics
 from tennis_tracker import ball_detectors
 from tennis_tracker.ball_detectors import GridTrackNetBallDetector
+from tennis_tracker.config import Config
 from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
 from tennis_tracker.video_io import VideoWriter
 
@@ -104,16 +106,24 @@ class Capture:
         """Nothing to release; present because callers always release captures."""
 
 
+def cpu_detector(decode, conf: float = 0.5, frame_tensor=None) -> "CpuGridTrackNet":
+    """A GridTrackNet backend on the CPU whose model is the identity and whose decoder is
+    ``decode(output, width, height, threshold)``; each frame's tensor is its first pixel's value
+    unless ``frame_tensor`` says otherwise."""
+    return CpuGridTrackNet(Config(device="0", conf=conf), model=lambda batch: batch, decode=decode,
+                           frame_tensor=frame_tensor or (lambda frame, device: torch.tensor([float(frame[0, 0, 0])])))
+
+
 def metric_probe(count: int, labels: Dict[int, Optional[List[float]]]) -> DetectorMetrics:
-    """``score_weights`` on a ``count``-frame synthetic clip whose detector always fires at (100, 100)."""
+    """``score_weights`` on a ``count``-frame synthetic clip whose detector always fires at (100, 100),
+    run through the real prepass (``GridTrackNetBallDetector.detect_clip``) on the CPU."""
     width, height = _PROBE_SIZE
-    with patch.object(metrics, "load_model", return_value=lambda _: None), \
-         patch.object(metrics, "video_meta", return_value=(_PROBE_FPS, width, height, count)), \
+    detector = cpu_detector(lambda output, w, h, threshold: [(_PROBE_POINT, _PROBE_CONFIDENCE)] * (5 * output.reshape(-1, 5).shape[0]))
+    with patch.object(metrics, "ball_detector", return_value=detector), \
+         patch.object(metrics, "video_meta", return_value=VideoMeta(_PROBE_FPS, width, height, count)), \
          patch.object(metrics, "training_targets", return_value=labels), \
-         patch.object(metrics.cv2, "VideoCapture", side_effect=lambda _: Capture(count)), \
-         patch.object(metrics, "frame_tensor", return_value=torch.zeros(3, 1, 1)), \
-         patch.object(metrics, "decode_predictions",
-                      return_value=[(_PROBE_POINT, _PROBE_CONFIDENCE)] * 5):
+         patch.object(ball_detectors.cv2, "VideoCapture", side_effect=lambda _: Capture(count)), \
+         patch.object(torch.cuda, "synchronize"):
         return metrics.score_weights(
             Path("unused"), [("probe", Path("unused"), Path("unused"), "custom")], torch.device("cpu")
         )
