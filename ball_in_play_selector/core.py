@@ -7,20 +7,74 @@ trajectory and deliberately has no hidden handoff state.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 
-from .config import SelectorConfig
+from .config import REFERENCE_DIAG_PX, REFERENCE_FPS, SelectorConfig
 from .models import Detection, FrameResult, Source, Track
-from .physics import _predict_projectile
-from .scoring import _is_near_player, _select_timeline_chain, _stitch_track_chain, score_tracks
+from .physics import predict_projectile
+from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
 from .tracking import build_detections, build_tracks
-from .utils import _ensure_mask_u8
+from .utils import ensure_mask_u8
+
+# -- Tuned constants (30 FPS, 1080p reference unless stated) ----------------
+# Longest internal gap, and longest tail, the selector will fill: 0.30 s.
+_FILL_WINDOW_SEC = 0.30
+_FILL_WINDOW_MIN_FRAMES = 3
+# A fill is only plausible for a ball moving at least this fast (px/frame at
+# 30 FPS); slower "gaps" are a static object the detector flickers on.
+_MIN_FILL_SPEED_PXPF = 10.0
+# Beside a player a fill needs a faster ball still: a slow point there is
+# usually the racket or a hand.
+_NEAR_PLAYER_FILL_SPEED_PXPF = 15.0
+# Incoming and outgoing segments must agree in direction this well (cosine)
+# for a straight fill to be believable.
+_FILL_DIRECTION_COS_MIN = 0.8
+# Detector confidence both anchors of a fill must reach.
+_STRONG_ANCHOR_CONF = 0.5
+# A motion blob may be at most 4x the interpolated detection area.
+_FILL_AREA_RATIO_MAX = 4.0
+# How far a blob pulls the interpolated point towards itself, how fast that
+# pull decays on blobless frames, and how much of it the frame before the
+# right anchor keeps (the anchor itself is exact).
+_BLOB_PULL = 0.75
+_BLOB_PULL_DECAY = 0.5
+_ENDPOINT_PULL_WEIGHT = 0.5
+# A tail may run into the next track only if its projectile prediction lands
+# within max(40 px at 1080p, 5.5% of the diagonal) of that track's start.
+_HANDOVER_GATE_PX = 40.0
+_HANDOVER_GATE_MIN_PX = 12.0
+_HANDOVER_GATE_DIAG_FRAC = 0.055
+# A ball that left over the top edge (last two points in the top 5% / 15% of
+# the frame) is waited for at its exit point instead of being projected.
+_TOP_EXIT_FRAC = 0.05
+_TOP_REENTRY_FRAC = 0.15
+# One missing frame between two strong detections is closed when the implied
+# step is below 1.5% of the diagonal per frame.
+_SINGLE_HOLE_MAX_STEP_DIAG_FRAC = 0.015
+# A non-detector point further than max(120 px, 5.5% of the diagonal) from
+# its predecessor is dropped: better one missing row than a cross-court line.
+_JUMP_GATE_MIN_PX = 120.0
+_JUMP_GATE_DIAG_FRAC = 0.055
+# Shortest continuous run the trajectory refit will touch.
+_MIN_REFIT_RUN = 9
+# Refit weight per source: a detector point anchors the fit, a motion blob is a
+# coarse observation, a fitted fill carries almost no information of its own.
+_REFINE_SOURCE_WEIGHT = {"det": 1.0, "motion": 0.30, "interp": 0.15}
+# Past this much correction a "det" point is no longer where the detector
+# fired, so it stops being reported as one (~44 px at 1080p).
+_REFINE_DET_RELABEL_FRAC = 0.02
 
 
-def _selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
+def _pxpf_at(base_pxpf_30fps: float, fps: float) -> float:
+    """A 30 FPS px/frame speed at `fps` (unclamped, unlike config.fps_scale)."""
+    return base_pxpf_30fps * REFERENCE_FPS / max(float(fps), 1.0)
+
+
+def selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
     """Keep established shots, reacquisitions, airborne balls, and slow in-court rolls."""
     selected = []
     for track in tracks:
@@ -83,7 +137,7 @@ def _neighbor_frames(fps: float) -> int:
     return max(2, int(round(float(fps) * 0.05)))
 
 
-def _trajectory_observations(track: Track, fps: float):
+def trajectory_observations(track: Track, fps: float) -> List[Detection]:
     """Drop lone detections that cannot anchor a visible trajectory.
 
     A weak, motionless detection needs a neighbour within ~0.05 s.  Any
@@ -136,7 +190,7 @@ def _trajectory_observations(track: Track, fps: float):
     return kept
 
 
-def _motion_near(
+def motion_near(
     mask_obj: Any,
     x: float,
     y: float,
@@ -144,7 +198,12 @@ def _motion_near(
     gate: float,
     area_ratio_max: float,
 ) -> Optional[Dict[str, Any]]:
-    mask = _ensure_mask_u8(mask_obj)
+    """Nearest motion component within `gate` px of (x, y), or None.
+
+    Returns ``{"x", "y", "bbox", "area"}`` for the closest component whose
+    pixel area lies in ``[2, area_ratio_max * reference_area]``.
+    """
+    mask = ensure_mask_u8(mask_obj)
     if mask is None or not cv2.countNonZero(mask):
         return None
 
@@ -187,25 +246,25 @@ def _motion_candidate(
     x: float,
     y: float,
     area: float,
-    boost_masks,
-    raw_motions,
+    boost_masks: Optional[Sequence[Any]],
+    raw_motions: Optional[Sequence[Any]],
     gate: float,
     area_ratio_max: float,
-):
+) -> Optional[Dict[str, Any]]:
     for masks in (boost_masks, raw_motions):
         if masks is None or frame >= len(masks):
             continue
-        candidate = _motion_near(masks[frame], x, y, max(area, 1.0), gate, area_ratio_max)
+        candidate = motion_near(masks[frame], x, y, max(area, 1.0), gate, area_ratio_max)
         if candidate is not None:
             return candidate
     return None
 
 
-def _segment_speed(first, second) -> float:
+def _segment_speed(first: Detection, second: Detection) -> float:
     return math.hypot(second.cx - first.cx, second.cy - first.cy) / max(1, second.frame - first.frame)
 
 
-def _segment_cosine(a, b, c, d) -> float:
+def _segment_cosine(a: Detection, b: Detection, c: Detection, d: Detection) -> float:
     """Cosine between the incoming segment a->b and the outgoing segment c->d."""
     ax, ay = b.cx - a.cx, b.cy - a.cy
     bx, by = d.cx - c.cx, d.cy - c.cy
@@ -213,7 +272,8 @@ def _segment_cosine(a, b, c, d) -> float:
     return 0.0 if scale < 1e-6 else (ax * bx + ay * by) / scale
 
 
-def _direction_cosine(first, second, third) -> float:
+def direction_cosine(first: Detection, second: Detection, third: Detection) -> float:
+    """Cosine between the per-frame velocities first->second and second->third."""
     first_dt = max(1, second.frame - first.frame)
     second_dt = max(1, third.frame - second.frame)
     ax = (second.cx - first.cx) / first_dt
@@ -231,7 +291,7 @@ _SOURCE_REASON: Dict[str, str] = {
 }
 
 
-def _result(
+def frame_result(
     x: float,
     y: float,
     source: Source,
@@ -239,6 +299,7 @@ def _result(
     motion: Optional[Dict[str, Any]] = None,
     search_radius: float = 0.0,
 ) -> FrameResult:
+    """Build one output row; `detection` or `motion` supplies bbox/confidence."""
     bbox = None
     confidence = 0.0
     if detection is not None:
@@ -261,15 +322,6 @@ def _result(
         search_radius=float(search_radius),
         source_reason=_SOURCE_REASON[source],
     )
-
-
-# Refit weight per source: a detector point anchors the fit, a motion blob is a
-# coarse observation, a fitted fill carries almost no information of its own.
-_REFINE_SOURCE_WEIGHT = {"det": 1.0, "motion": 0.30, "interp": 0.15}
-_REFERENCE_DIAG = 2203.0        # diagonal of 1920x1080
-# Past this much correction a "det" point is no longer where the detector
-# fired, so it stops being reported as one (~44 px at 1080p).
-_REFINE_DET_RELABEL_FRAC = 0.02
 
 
 def _find_trajectory_kinks(x: np.ndarray, y: np.ndarray) -> List[int]:
@@ -329,7 +381,32 @@ def _find_spikes(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return spikes
 
 
-def _refine_run(results, start: int, end: int, diag: float = _REFERENCE_DIAG) -> None:
+def _refit_bound(
+    index: int,
+    spikes: np.ndarray,
+    is_strong_det: np.ndarray,
+    source: str,
+    residual: np.ndarray,
+    local: int,
+    base_w: np.ndarray,
+) -> Optional[float]:
+    """How far the refit may move point `index`; None means unbounded."""
+    if spikes[index]:
+        return None
+    if is_strong_det[index]:
+        det_mask = base_w >= 0.6
+        det_mask[local] = False
+        if det_mask.any():
+            other_residual = float(np.median(residual[det_mask]))
+            if residual[local] > max(9.0, 4.0 * other_residual):
+                return None
+        return 3.0
+    if source == "motion":
+        return 6.0
+    return 12.0
+
+
+def _refine_run(results: List[FrameResult], start: int, end: int, diag: float = REFERENCE_DIAG_PX) -> None:
     """Robust weighted local polynomial refit of one continuous trajectory run."""
     points = results[start:end]
     m = len(points)
@@ -396,20 +473,7 @@ def _refine_run(results, start: int, end: int, diag: float = _REFERENCE_DIAG) ->
             robust = np.minimum(1.0, huber_px / np.maximum(residual, 1e-9))
             fit_x, fit_y = coeffs[-1, 0], coeffs[-1, 1]
         local = i - lo
-        if spikes[i]:
-            bound = None
-        elif is_strong_det[i]:
-            bound = 3.0
-            det_mask = base_w >= 0.6
-            det_mask[local] = False
-            if det_mask.any():
-                other_residual = float(np.median(residual[det_mask]))
-                if residual[local] > max(9.0, 4.0 * other_residual):
-                    bound = None
-        elif points[i].source == "motion":
-            bound = 6.0
-        else:
-            bound = 12.0
+        bound = _refit_bound(i, spikes, is_strong_det, points[i].source, residual, local, base_w)
         dx = fit_x - x[i]
         dy = fit_y - y[i]
         distance = math.hypot(dx, dy)
@@ -437,7 +501,8 @@ def _refine_run(results, start: int, end: int, diag: float = _REFERENCE_DIAG) ->
             item.source_reason = "refit_relocated_detection"
 
 
-def _refine_trajectory(results, diag: float = _REFERENCE_DIAG) -> None:
+def refine_trajectory(results: List[Optional[FrameResult]], diag: float = REFERENCE_DIAG_PX) -> None:
+    """Refit every continuous run of at least 9 rows in place (see _refine_run)."""
     frame = 0
     while frame < len(results):
         if results[frame] is None:
@@ -446,8 +511,311 @@ def _refine_trajectory(results, diag: float = _REFERENCE_DIAG) -> None:
         start = frame
         while frame < len(results) and results[frame] is not None:
             frame += 1
-        if frame - start >= 9:
+        if frame - start >= _MIN_REFIT_RUN:
             _refine_run(results, start, frame, diag)
+
+
+@dataclass(frozen=True)
+class _Scene:
+    """Inputs shared by the fill phases of select_ball_in_play."""
+    cfg: SelectorConfig
+    fps: float
+    total: int
+    width: int
+    height: int
+    boost_masks: Optional[Sequence[Any]]
+    raw_motions: Optional[Sequence[Any]]
+    player_boxes_by_frame: Optional[Sequence[Any]]
+    fill_frames: int        # longest gap or tail the selector fills
+    min_fill_speed: float   # px/frame at this fps
+
+    def motion_candidate(
+        self, frame: int, x: float, y: float, area: float, steps: int, speed: float
+    ) -> Tuple[Optional[Dict[str, Any]], float]:
+        """Nearest usable blob to (x, y) at `frame`, with the radius searched."""
+        radius = _motion_search_radius(self.cfg, steps, speed)
+        blob = _motion_candidate(
+            frame, x, y, area, self.boost_masks, self.raw_motions,
+            gate=radius, area_ratio_max=_FILL_AREA_RATIO_MAX,
+        )
+        return blob, radius
+
+
+def _place_detections(
+    results: List[Optional[FrameResult]], selected: List[Track],
+    selected_observations: Dict[int, List[Detection]],
+) -> None:
+    """Stronger tracks win overlapping detector observations."""
+    for track in sorted(selected, key=lambda item: item.score, reverse=True):
+        for detection in selected_observations[id(track)]:
+            current = results[detection.frame]
+            if current is None or detection.conf > current.conf:
+                results[detection.frame] = frame_result(
+                    detection.cx, detection.cy, "det", detection=detection
+                )
+
+
+def _gap_is_supported(
+    scene: _Scene, observations: List[Detection], index: int, speed: float, direction_supported: bool
+) -> bool:
+    """Whether a straight fill between observations[index] and [index+1] is a safe claim."""
+    left, right = observations[index], observations[index + 1]
+    gap = right.frame - left.frame
+    strong_anchors = left.conf >= _STRONG_ANCHOR_CONF and right.conf >= _STRONG_ANCHOR_CONF
+    # A long fill (> ~0.1 s) is a physics claim: both anchors must be
+    # corroborated by a same-track neighbour, and the ball may not change
+    # speed by more than the configured ratio across the gap.  A free-flying
+    # ball cannot triple its speed in the same direction; a detector jump to
+    # a static object after a long miss looks exactly like that.
+    isolation_frames = _isolation_frames(scene.fps)
+    if gap > isolation_frames:
+        corroborated = (
+            index > 0
+            and left.frame - observations[index - 1].frame <= isolation_frames
+            and index + 2 < len(observations)
+            and observations[index + 2].frame - right.frame <= isolation_frames
+        )
+        speed_consistent = all(
+            scene.cfg.fill_speed_ratio_min
+            <= speed / max(_segment_speed(first, second), 1e-6)
+            <= scene.cfg.fill_speed_ratio_max
+            for first, second in (
+                (observations[index - 1], left) if index > 0 else (None, None),
+                (right, observations[index + 2]) if index + 2 < len(observations) else (None, None),
+            )
+            if first is not None
+        )
+        strong_anchors = strong_anchors and corroborated and speed_consistent
+    return (
+        strong_anchors
+        and direction_supported
+        and (gap == 2 or speed >= scene.min_fill_speed)
+    )
+
+
+def _fill_gap(
+    scene: _Scene, results: List[Optional[FrameResult]], observations: List[Detection], index: int
+) -> None:
+    """Fill the frames between observations[index] and [index+1] where evidence allows."""
+    left, right = observations[index], observations[index + 1]
+    gap = right.frame - left.frame
+    speed = math.hypot(right.cx - left.cx, right.cy - left.cy) / gap
+    direction_supported = (
+        index > 0
+        and direction_cosine(observations[index - 1], left, right) >= _FILL_DIRECTION_COS_MIN
+    ) or (
+        index + 2 < len(observations)
+        and direction_cosine(left, right, observations[index + 2]) >= _FILL_DIRECTION_COS_MIN
+    )
+    # Opposite incoming and outgoing directions mean a hit happened inside
+    # the gap; a straight fill would cut the vertex off.  That rules out
+    # interpolation, but not a motion blob: a blob is an observation of where
+    # the ball actually was, and bounces are exactly where the detector loses it.
+    vertex_in_gap = (
+        gap >= 3
+        and index > 0
+        and index + 2 < len(observations)
+        and _segment_cosine(observations[index - 1], left, right, observations[index + 2]) < 0.0
+    )
+    # Judged once for the whole gap, but re-read per frame below: a single
+    # frame vetoed beside a player must not disqualify the rest of the gap.
+    gap_pair_supported = _gap_is_supported(scene, observations, index, speed, direction_supported)
+    near_player_slow = speed < _pxpf_at(_NEAR_PLAYER_FILL_SPEED_PXPF, scene.fps)
+    cfg = scene.cfg
+    offset_x = offset_y = 0.0
+    offset_active = False
+    for frame in range(left.frame + 1, right.frame):
+        if results[frame] is not None:
+            continue
+        alpha = (frame - left.frame) / float(gap)
+        base_x = left.cx + alpha * (right.cx - left.cx)
+        base_y = left.cy + alpha * (right.cy - left.cy)
+        base_y += (
+            0.5
+            * cfg.gravity_px_per_frame2
+            * (frame - left.frame)
+            * (frame - right.frame)
+        )
+        area = left.area + alpha * (right.area - left.area)
+        motion, search_radius = scene.motion_candidate(
+            frame, base_x, base_y, area, frame - left.frame, speed
+        )
+        pair_supported = gap_pair_supported and not vertex_in_gap
+        motion_supported = (
+            motion is not None
+            and (direction_supported or gap == 2)
+            and (gap == 2 or speed >= scene.min_fill_speed)
+        )
+        if (
+            is_near_player(base_x, base_y, scene.player_boxes_by_frame, frame, margin=0)
+            and near_player_slow
+        ):
+            pair_supported = False
+            # A motion blob between adjacent sampled detections is direct
+            # evidence, even when the ball is slow beside a player.
+            if gap != 2:
+                motion_supported = False
+        if not pair_supported and not motion_supported:
+            offset_x = offset_y = 0.0
+            offset_active = False
+            continue
+        if motion is not None:
+            target_x = _BLOB_PULL * (motion["x"] - base_x)
+            target_y = _BLOB_PULL * (motion["y"] - base_y)
+            if offset_active:
+                offset_x = _BLOB_PULL_DECAY * (offset_x + target_x)
+                offset_y = _BLOB_PULL_DECAY * (offset_y + target_y)
+            else:
+                offset_x, offset_y = target_x, target_y
+                offset_active = True
+        elif offset_active:
+            offset_x *= _BLOB_PULL_DECAY
+            offset_y *= _BLOB_PULL_DECAY
+        endpoint_weight = _ENDPOINT_PULL_WEIGHT if frame == right.frame - 1 else 1.0
+        x = base_x + endpoint_weight * offset_x
+        y = base_y + endpoint_weight * offset_y
+        results[frame] = frame_result(
+            x, y, "motion" if motion else "interp", motion=motion,
+            search_radius=search_radius,
+        )
+
+
+def _fill_internal_gaps(
+    scene: _Scene, results: List[Optional[FrameResult]], selected: List[Track],
+    selected_observations: Dict[int, List[Detection]],
+) -> None:
+    """Fill internal paths only when a future real detection anchors the endpoint."""
+    for track in sorted(selected, key=lambda item: item.score, reverse=True):
+        observations = selected_observations[id(track)]
+        for index in range(len(observations) - 1):
+            gap = observations[index + 1].frame - observations[index].frame
+            if gap <= 1 or gap - 1 > scene.fill_frames:
+                continue
+            _fill_gap(scene, results, observations, index)
+
+
+def _extend_tail(
+    scene: _Scene, results: List[Optional[FrameResult]], selected: List[Track],
+    observations: List[Detection],
+) -> None:
+    """Continue one track's end only while nearby motion proves the ball is still there."""
+    cfg = scene.cfg
+    left, right = observations[-2:]
+    dt = max(1, right.frame - left.frame)
+    vx = (right.cx - left.cx) / dt
+    vy = (right.cy - left.cy) / dt
+    next_track = min(
+        (other for other in selected if other.first_frame > right.frame),
+        key=lambda other: other.first_frame,
+        default=None,
+    )
+    next_start = next_track.first_frame if next_track is not None else scene.total
+    if next_track is not None and next_start <= right.frame + scene.fill_frames + 1:
+        next_dt = next_start - right.frame
+        predicted_x, predicted_y = predict_projectile((right.cx, right.cy), (vx, vy), next_dt, cfg)
+        next_observation = next_track.observations[0]
+        handover_gate = max(_HANDOVER_GATE_MIN_PX, _HANDOVER_GATE_PX * (cfg.diag / REFERENCE_DIAG_PX))
+        if math.hypot(
+            predicted_x - next_observation.cx,
+            predicted_y - next_observation.cy,
+        ) > max(handover_gate, _HANDOVER_GATE_DIAG_FRAC * cfg.diag):
+            return
+    top_reentry = (
+        dt > scene.fill_frames
+        and left.cy < _TOP_EXIT_FRAC * scene.height
+        and right.cy < _TOP_REENTRY_FRAC * scene.height
+    )
+    if not top_reentry and math.hypot(vx, vy) < scene.min_fill_speed:
+        return
+    # A tail cannot help association here; tracks were already built above.
+    # Emit it only while every current frame contains nearby strict motion.
+    reentry_x, reentry_y = right.cx, right.cy
+    tail_speed = math.hypot(vx, vy)
+    misses = 0
+    for step in range(1, scene.fill_frames + 1):
+        frame = right.frame + step
+        if frame >= min(scene.total, next_start):
+            break
+        if top_reentry:
+            base_x, base_y = reentry_x, reentry_y
+        else:
+            base_x, base_y = predict_projectile((right.cx, right.cy), (vx, vy), step, cfg)
+        motion, search_radius = scene.motion_candidate(
+            frame, base_x, base_y, right.area, step, tail_speed
+        )
+        if motion is None:
+            # A single blobless frame is a dropped mask, not proof the ball
+            # is gone; keep coasting on the prediction for a moment. The
+            # run still ends the moment the evidence runs out for good.
+            misses += 1
+            if misses > cfg.motion_tail_miss_budget:
+                break
+            continue
+        misses = 0
+        if results[frame] is None:
+            results[frame] = frame_result(
+                motion["x"], motion["y"], "motion", motion=motion,
+                search_radius=search_radius,
+            )
+        if top_reentry:
+            reentry_x, reentry_y = motion["x"], motion["y"]
+
+
+def _close_single_frame_holes(scene: _Scene, results: List[Optional[FrameResult]]) -> None:
+    """One missing source frame between strong, fast detector anchors is safer
+    to close than leaving the bottom of a bounce visibly disconnected."""
+    max_step = _SINGLE_HOLE_MAX_STEP_DIAG_FRAC * scene.cfg.diag
+    for frame in range(1, scene.total - 1):
+        left, right = results[frame - 1], results[frame + 1]
+        speed = (
+            math.hypot(right.cx - left.cx, right.cy - left.cy) / 2.0
+            if left is not None and right is not None
+            else 0.0
+        )
+        if (
+            results[frame] is None
+            and left is not None and right is not None
+            and left.source == right.source == "det"
+            and left.conf >= _STRONG_ANCHOR_CONF and right.conf >= _STRONG_ANCHOR_CONF
+            and scene.min_fill_speed <= speed <= max_step
+            and not is_near_player(
+                0.5 * (left.cx + right.cx),
+                0.5 * (left.cy + right.cy),
+                scene.player_boxes_by_frame,
+                frame,
+                margin=0,
+            )
+        ):
+            results[frame] = frame_result(
+                0.5 * (left.cx + right.cx),
+                0.5 * (left.cy + right.cy),
+                "interp",
+            )
+
+
+def _drop_implausible_fills(scene: _Scene, results: List[Optional[FrameResult]]) -> None:
+    """Remove fitted rows that left the frame or jumped across the court.
+
+    One missing row is safer than connecting two balls across the court.
+    """
+    jump_gate = max(_JUMP_GATE_MIN_PX, _JUMP_GATE_DIAG_FRAC * scene.cfg.diag)
+    previous = None
+    for frame, result in enumerate(results):
+        if (
+            result is not None
+            and result.source != "det"
+            and not (0.0 <= result.cx < scene.width and 0.0 <= result.cy < scene.height)
+        ):
+            results[frame] = None
+            result = None
+        if result is not None and previous is not None:
+            if (
+                result.source != "det"
+                and math.hypot(result.cx - previous.cx, result.cy - previous.cy) > jump_gate
+            ):
+                results[frame] = None
+                result = None
+        previous = result
 
 
 def select_ball_in_play(
@@ -473,10 +841,14 @@ def select_ball_in_play(
     and every scored track for diagnostics.
     """
     total = len(detections_by_frame)
-    cfg = SelectorConfig(fps=fps, width=width, height=height).auto_scale()
-    resolution_scale = cfg.diag / 2203.0
-    fill_frames = max(3, int(round(float(fps) * 0.30)))
-    motion_gate = max(12.0, 40.0 * resolution_scale)
+    cfg = SelectorConfig(fps=fps, width=width, height=height)
+    scene = _Scene(
+        cfg=cfg, fps=fps, total=total, width=width, height=height,
+        boost_masks=boost_masks, raw_motions=raw_motions,
+        player_boxes_by_frame=player_boxes_by_frame,
+        fill_frames=max(_FILL_WINDOW_MIN_FRAMES, int(round(float(fps) * _FILL_WINDOW_SEC))),
+        min_fill_speed=_pxpf_at(_MIN_FILL_SPEED_PXPF, fps),
+    )
     detections = build_detections(detections_by_frame, boost_masks)
     tracks = score_tracks(
         build_tracks(detections, cfg),
@@ -485,269 +857,25 @@ def select_ball_in_play(
         player_boxes_by_frame=player_boxes_by_frame,
         total_frames=total,
     )
-    selected = _select_timeline_chain(_selected_tracks(tracks, fps), cfg, total)
-    chosen = _stitch_track_chain(selected, cfg)
+    selected = select_timeline_chain(selected_tracks(tracks, fps), cfg, total)
+    chosen = stitch_track_chain(selected, cfg)
     selected_observations = {
-        id(track): _trajectory_observations(track, fps) for track in selected
+        id(track): trajectory_observations(track, fps) for track in selected
     }
     if chosen is not None:
-        chosen.observations = _trajectory_observations(chosen, fps)
+        chosen.observations = trajectory_observations(chosen, fps)
     results: List[Optional[FrameResult]] = [None] * total
 
-    # Stronger tracks win overlapping detector observations.
-    for track in sorted(selected, key=lambda item: item.score, reverse=True):
-        for detection in selected_observations[id(track)]:
-            current = results[detection.frame]
-            if current is None or detection.conf > current.conf:
-                results[detection.frame] = _result(
-                    detection.cx, detection.cy, "det", detection=detection
-                )
-
-    # Fill internal paths only when a future real detection anchors the endpoint.
+    _place_detections(results, selected, selected_observations)
+    _fill_internal_gaps(scene, results, selected, selected_observations)
     for track in sorted(selected, key=lambda item: item.score, reverse=True):
         observations = selected_observations[id(track)]
-        for index, (left, right) in enumerate(zip(observations, observations[1:])):
-            gap = right.frame - left.frame
-            if gap <= 1 or gap - 1 > fill_frames:
-                continue
-            speed = math.hypot(right.cx - left.cx, right.cy - left.cy) / gap
-            minimum_speed = 10.0 * 30.0 / max(float(fps), 1.0)
-            direction_supported = (
-                index > 0
-                and _direction_cosine(observations[index - 1], left, right) >= 0.8
-            ) or (
-                index + 2 < len(observations)
-                and _direction_cosine(left, right, observations[index + 2]) >= 0.8
-            )
-            strong_anchors = left.conf >= 0.5 and right.conf >= 0.5
-            # Opposite incoming and outgoing directions mean a hit happened
-            # inside the gap; a straight fill would cut the vertex off.  That
-            # rules out interpolation, but not a motion blob: a blob is an
-            # observation of where the ball actually was, and bounces are
-            # exactly where the detector loses it.
-            vertex_in_gap = (
-                gap >= 3
-                and index > 0
-                and index + 2 < len(observations)
-                and _segment_cosine(observations[index - 1], left, right, observations[index + 2]) < 0.0
-            )
-            # A long fill (> ~0.1 s) is a physics claim: both anchors must be
-            # corroborated by a same-track neighbour, and the ball may not
-            # change speed by more than 2x across the gap.  A free-flying ball
-            # cannot triple its speed in the same direction; a detector jump to
-            # a static object after a long miss looks exactly like that.
-            long_gap = gap > _isolation_frames(fps)
-            if long_gap:
-                corroborated = (
-                    index > 0
-                    and left.frame - observations[index - 1].frame <= _isolation_frames(fps)
-                    and index + 2 < len(observations)
-                    and observations[index + 2].frame - right.frame <= _isolation_frames(fps)
-                )
-                speed_consistent = all(
-                    cfg.fill_speed_ratio_min
-                    <= speed / max(_segment_speed(first, second), 1e-6)
-                    <= cfg.fill_speed_ratio_max
-                    for first, second in (
-                        (observations[index - 1], left) if index > 0 else (None, None),
-                        (right, observations[index + 2]) if index + 2 < len(observations) else (None, None),
-                    )
-                    if first is not None
-                )
-                strong_anchors = strong_anchors and corroborated and speed_consistent
-            # Judged once for the whole gap, but re-read per frame below: a single
-            # frame vetoed beside a player must not disqualify the rest of the gap.
-            gap_pair_supported = (
-                strong_anchors
-                and direction_supported
-                and (gap == 2 or speed >= minimum_speed)
-            )
-            offset_x = offset_y = 0.0
-            offset_active = False
-            for frame in range(left.frame + 1, right.frame):
-                if results[frame] is not None:
-                    continue
-                alpha = (frame - left.frame) / float(gap)
-                base_x = left.cx + alpha * (right.cx - left.cx)
-                base_y = left.cy + alpha * (right.cy - left.cy)
-                base_y += (
-                    0.5
-                    * cfg.gravity_px_per_frame2
-                    * (frame - left.frame)
-                    * (frame - right.frame)
-                )
-                area = left.area + alpha * (right.area - left.area)
-                motion = _motion_candidate(
-                    frame, base_x, base_y, area, boost_masks, raw_motions,
-                    gate=_motion_search_radius(cfg, frame - left.frame, speed),
-                    area_ratio_max=4.0,
-                )
-                pair_supported = gap_pair_supported and not vertex_in_gap
-                motion_supported = (
-                    motion is not None
-                    and (direction_supported or gap == 2)
-                    and (gap == 2 or speed >= minimum_speed)
-                )
-                if (
-                    _is_near_player(base_x, base_y, player_boxes_by_frame, frame, margin=0)
-                    and speed < 15.0 * 30.0 / max(float(fps), 1.0)
-                ):
-                    pair_supported = False
-                    # A motion blob between adjacent sampled detections is direct
-                    # evidence, even when the ball is slow beside a player.
-                    if gap != 2:
-                        motion_supported = False
-                if not pair_supported and not motion_supported:
-                    offset_x = offset_y = 0.0
-                    offset_active = False
-                    continue
-                if motion is not None:
-                    target_x = 0.75 * (motion["x"] - base_x)
-                    target_y = 0.75 * (motion["y"] - base_y)
-                    if offset_active:
-                        offset_x = 0.5 * (offset_x + target_x)
-                        offset_y = 0.5 * (offset_y + target_y)
-                    else:
-                        offset_x, offset_y = target_x, target_y
-                        offset_active = True
-                elif offset_active:
-                    offset_x *= 0.5
-                    offset_y *= 0.5
-                endpoint_weight = 0.5 if frame == right.frame - 1 else 1.0
-                x = base_x + endpoint_weight * offset_x
-                y = base_y + endpoint_weight * offset_y
-                results[frame] = _result(
-                    x, y, "motion" if motion else "interp", motion=motion,
-                    search_radius=_motion_search_radius(cfg, frame - left.frame, speed),
-                )
-
-    # Continue a segment only after nearby motion proves the tail still exists.
-    for track in sorted(selected, key=lambda item: item.score, reverse=True):
-        observations = selected_observations[id(track)]
-        if len(observations) < 2:
-            continue
-        left, right = observations[-2:]
-        dt = max(1, right.frame - left.frame)
-        vx = (right.cx - left.cx) / dt
-        vy = (right.cy - left.cy) / dt
-        next_track = min(
-            (other for other in selected if other.first_frame > right.frame),
-            key=lambda other: other.first_frame,
-            default=None,
-        )
-        next_start = next_track.first_frame if next_track is not None else total
-        if next_track is not None and next_start <= right.frame + fill_frames + 1:
-            next_dt = next_start - right.frame
-            predicted_x, predicted_y = _predict_projectile(
-                (right.cx, right.cy),
-                (vx, vy),
-                next_dt,
-                cfg,
-            )
-            next_observation = next_track.observations[0]
-            if math.hypot(
-                predicted_x - next_observation.cx,
-                predicted_y - next_observation.cy,
-            ) > max(motion_gate, 0.055 * cfg.diag):
-                continue
-        top_reentry = (
-            dt > fill_frames
-            and left.cy < 0.05 * height
-            and right.cy < 0.15 * height
-        )
-        if not top_reentry and math.hypot(vx, vy) < 10.0 * 30.0 / max(float(fps), 1.0):
-            continue
-        # A tail cannot help association here; tracks were already built above.
-        # Emit it only while every current frame contains nearby strict motion.
-        reentry_x, reentry_y = right.cx, right.cy
-        tail_speed = math.hypot(vx, vy)
-        misses = 0
-        for step in range(1, fill_frames + 1):
-            frame = right.frame + step
-            if frame >= min(total, next_start):
-                break
-            if top_reentry:
-                base_x, base_y = reentry_x, reentry_y
-            else:
-                base_x, base_y = _predict_projectile(
-                    (right.cx, right.cy),
-                    (vx, vy),
-                    step,
-                    cfg,
-                )
-            motion = _motion_candidate(
-                frame, base_x, base_y, right.area, boost_masks, raw_motions,
-                gate=_motion_search_radius(cfg, step, tail_speed),
-                area_ratio_max=4.0,
-            )
-            if motion is None:
-                # A single blobless frame is a dropped mask, not proof the ball
-                # is gone; keep coasting on the prediction for a moment. The
-                # run still ends the moment the evidence runs out for good.
-                misses += 1
-                if misses > cfg.motion_tail_miss_budget:
-                    break
-                continue
-            misses = 0
-            if results[frame] is None:
-                results[frame] = _result(
-                    motion["x"], motion["y"], "motion", motion=motion,
-                    search_radius=_motion_search_radius(cfg, step, tail_speed),
-                )
-            if top_reentry:
-                reentry_x, reentry_y = motion["x"], motion["y"]
-
-    # One missing source frame between strong, fast detector anchors is safer
-    # to close than leaving the bottom of a bounce visibly disconnected.
-    minimum_speed = 10.0 * 30.0 / max(float(fps), 1.0)
-    for frame in range(1, total - 1):
-        left, right = results[frame - 1], results[frame + 1]
-        speed = (
-            math.hypot(right.cx - left.cx, right.cy - left.cy) / 2.0
-            if left is not None and right is not None
-            else 0.0
-        )
-        if (
-            results[frame] is None
-            and left is not None and right is not None
-            and left.source == right.source == "det"
-            and left.conf >= 0.5 and right.conf >= 0.5
-            and minimum_speed <= speed <= 0.015 * cfg.diag
-            and not _is_near_player(
-                0.5 * (left.cx + right.cx),
-                0.5 * (left.cy + right.cy),
-                player_boxes_by_frame,
-                frame,
-                margin=0,
-            )
-        ):
-            results[frame] = _result(
-                0.5 * (left.cx + right.cx),
-                0.5 * (left.cy + right.cy),
-                "interp",
-            )
-
-    _refine_trajectory(results, cfg.diag)
+        if len(observations) >= 2:
+            _extend_tail(scene, results, selected, observations)
+    _close_single_frame_holes(scene, results)
+    refine_trajectory(results, cfg.diag)
 
     if debug:
         print(f"[clean selector] selected tracks: {[track.track_id for track in selected]}")
-    # ponytail: one missing row is safer than connecting two balls across the court.
-    jump_gate = max(120.0, 0.055 * cfg.diag)
-    previous = None
-    for frame, result in enumerate(results):
-        if (
-            result is not None
-            and result.source != "det"
-            and not (0.0 <= result.cx < width and 0.0 <= result.cy < height)
-        ):
-            results[frame] = None
-            result = None
-        if result is not None and previous is not None:
-            if (
-                result.source != "det"
-                and math.hypot(result.cx - previous.cx, result.cy - previous.cy) > jump_gate
-            ):
-                results[frame] = None
-                result = None
-        previous = result
+    _drop_implausible_fills(scene, results)
     return results, chosen, tracks

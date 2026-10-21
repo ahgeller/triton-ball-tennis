@@ -24,8 +24,8 @@ from tennis_tracker.detectors import GridTrackNetBallDetector
 from tennis_tracker.video_io import VideoWriter
 from tennis_tracker.motion import preprocess_frame_cuda, refine_raw_motion_temporal_cpu
 from ball_in_play_selector.config import SelectorConfig
-from ball_in_play_selector.physics import BallKalmanFilter, _predict_projectile, _predict_projectile_vel
-from ball_in_play_selector.core import _motion_near, _refine_trajectory
+from ball_in_play_selector.physics import BallKalmanFilter, predict_projectile, predict_projectile_velocity
+from ball_in_play_selector.core import motion_near, refine_trajectory
 from ball_in_play_selector.models import FrameResult
 from validate_tracking import validate
 
@@ -73,15 +73,15 @@ def main():
 
     cfg30 = SelectorConfig(fps=30).auto_scale()
     cfg60 = SelectorConfig(fps=60).auto_scale()
-    v30 = _predict_projectile_vel((100, 0), 30, cfg30)[0] / 100
-    v60 = _predict_projectile_vel((50, 0), 60, cfg60)[0] / 50
+    v30 = predict_projectile_velocity((100, 0), 30, cfg30)[0] / 100
+    v60 = predict_projectile_velocity((50, 0), 60, cfg60)[0] / 50
     assert abs(v30 - v60) > .2
     findings["fps_drag"] = {"one_second_speed_retained_30fps": v30, "one_second_speed_retained_60fps": v60}
 
     kf = BallKalmanFilter(100, 100, cfg30)
     kf.kf.x[2:, 0] = [30, -10]
     a = kf.predict_dt(5)
-    b = _predict_projectile((100, 100), (30, -10), 5, cfg30)
+    b = predict_projectile((100, 100), (30, -10), 5, cfg30)
     assert np.linalg.norm(np.array(a) - b) > 2
     findings["prediction_order"] = {"kalman": a, "projectile": b}
 
@@ -89,12 +89,12 @@ def main():
     mask[49:52, 49:52] = 255
     radius = .003 * np.hypot(1920, 1080)
     area = (2 * radius) ** 2
-    assert _motion_near(mask, 50, 50, area, 20, 4) is None
+    assert motion_near(mask, 50, 50, area, 20, 4) is None
     findings["small_blob_rejection"] = {"ball_pixels": 9, "contour_area": 4, "minimum_contour_area": .2 * area}
 
     results = [FrameResult(cx=float(i * 10), cy=100., conf=.9) for i in range(15)]
     results[7].cy = 103.
-    _refine_trajectory(results, 2203.)
+    refine_trajectory(results, 2203.)
     assert results[7].source == "det" and abs(results[7].cy - 103.) > .01
     findings["raw_provenance"] = {"raw_y": 103., "export_y": results[7].cy, "source": results[7].source}
 

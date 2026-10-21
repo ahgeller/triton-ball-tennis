@@ -22,13 +22,13 @@ from tennis_tracker.detectors import GridTrackNetBallDetector
 from tennis_tracker.video_io import VideoWriter
 from tennis_tracker.motion import preprocess_frame_cuda, refine_raw_motion_temporal_cpu, filter_boost_mask
 from ball_in_play_selector.config import SelectorConfig
-from ball_in_play_selector.physics import BallKalmanFilter, _predict_projectile, _predict_projectile_vel
-from ball_in_play_selector.core import _motion_near
+from ball_in_play_selector.physics import BallKalmanFilter, predict_projectile, predict_projectile_velocity
+from ball_in_play_selector.core import motion_near
 from finetune import label_tool, realign
 from finetune import ft
 from finetune.data_policy import is_verified
 from validate_tracking import validate
-from ball_in_play_selector.core import _result
+from ball_in_play_selector.core import frame_result
 from tennis_tracker.pipeline import _frame_result_to_json
 
 
@@ -70,7 +70,7 @@ class FixTests(unittest.TestCase):
 
     def test_export_preserves_measurement_after_position_changes(self):
         detection = SimpleNamespace(cx=100., cy=103., conf=.9, x1=98, y1=101, x2=102, y2=105)
-        result = _result(100, 103, "det", detection=detection)
+        result = frame_result(100, 103, "det", detection=detection)
         result.cy = 100.5
         row = _frame_result_to_json(0, result)
         self.assertEqual(row["measurement"]["y"], 103.)
@@ -104,14 +104,14 @@ class FixTests(unittest.TestCase):
     def test_projectile_equal_timestamps_and_filter_consistency(self):
         cfg30 = SelectorConfig(fps=30).auto_scale()
         cfg60 = SelectorConfig(fps=60).auto_scale()
-        np.testing.assert_allclose(_predict_projectile((100, 100), (30, -10), 30, cfg30),
-                                   _predict_projectile((100, 100), (15, -5), 60, cfg60), rtol=1e-10)
-        np.testing.assert_allclose(_predict_projectile_vel((30, -10), 30, cfg30),
-                                   np.array(_predict_projectile_vel((15, -5), 60, cfg60)) * 2, rtol=1e-10)
+        np.testing.assert_allclose(predict_projectile((100, 100), (30, -10), 30, cfg30),
+                                   predict_projectile((100, 100), (15, -5), 60, cfg60), rtol=1e-10)
+        np.testing.assert_allclose(predict_projectile_velocity((30, -10), 30, cfg30),
+                                   np.array(predict_projectile_velocity((15, -5), 60, cfg60)) * 2, rtol=1e-10)
         kf = BallKalmanFilter(100, 100, cfg30)
         kf.kf.x[2:, 0] = [30, -10]
         predicted = kf.predict_dt(5)
-        np.testing.assert_allclose(predicted, _predict_projectile((100, 100), (30, -10), 5, cfg30))
+        np.testing.assert_allclose(predicted, predict_projectile((100, 100), (30, -10), 5, cfg30))
         for _ in range(5):
             actual = kf.predict()
         np.testing.assert_allclose(predicted, actual)
@@ -120,9 +120,9 @@ class FixTests(unittest.TestCase):
     def test_small_motion_component_uses_pixel_area(self):
         mask = np.zeros((100, 100), np.uint8)
         mask[49:52, 49:52] = 255
-        result = _motion_near(mask, 50, 50, 175., 20., 4.)
+        result = motion_near(mask, 50, 50, 175., 20., 4.)
         self.assertEqual((result["x"], result["y"], result["area"]), (50., 50., 9.))
-        self.assertIsNone(_motion_near(mask, 0, 0, 175., 20., 4.))
+        self.assertIsNone(motion_near(mask, 0, 0, 175., 20., 4.))
 
     def test_motion_retains_non_yellow_evidence(self):
         frame = np.zeros((32, 32, 3), np.uint8)

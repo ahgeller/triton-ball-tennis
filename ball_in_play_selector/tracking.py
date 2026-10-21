@@ -4,14 +4,14 @@ from typing import Optional, List, Tuple
 
 from .config import SelectorConfig
 from .models import Detection, Track
-from .utils import _cfg_diag, _fps_norm_pxpf, _ensure_mask_u8
-from .physics import _xy_dist
+from .utils import cfg_diag, fps_norm_pxpf, ensure_mask_u8
+from .physics import xy_dist
 
 
 def _static_speed_threshold(cfg: SelectorConfig, diag: float) -> float:
     """Static-speed threshold in px/frame, capped to avoid over-scaling with resolution."""
     diag_based = float(cfg.assoc_static_speed_frac) * float(diag) * 0.95
-    fps_capped = _fps_norm_pxpf(4.0, cfg)
+    fps_capped = fps_norm_pxpf(4.0, cfg)
     return max(1.2, min(diag_based, fps_capped))
 
 
@@ -28,7 +28,7 @@ def build_detections(
         if frame_dets and has_motion and t < len(raw_motions):
             bm = raw_motions[t]
             if bm is not None:
-                mask = _ensure_mask_u8(bm)
+                mask = ensure_mask_u8(bm)
         for bbox, conf in frame_dets:
             x1, y1, x2, y2 = bbox
             cx = (x1 + x2) / 2.0
@@ -87,7 +87,7 @@ def _association_plausible(
     if len(recent) == 8 and bool(det.on_motion):
         recent_dt = max(recent[-1].frame - recent[0].frame, 1)
         recent_speed = sum(
-            _xy_dist(a.cx, a.cy, b.cx, b.cy)
+            xy_dist(a.cx, a.cy, b.cx, b.cy)
             for a, b in zip(recent, recent[1:])
         ) / recent_dt
         recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
@@ -97,7 +97,7 @@ def _association_plausible(
 
     exp_vx, exp_vy = trk.last_vel
     exp_speed = math.sqrt(exp_vx * exp_vx + exp_vy * exp_vy)
-    min_speed_for_dir = _fps_norm_pxpf(cfg.assoc_min_speed_for_dir, cfg)
+    min_speed_for_dir = fps_norm_pxpf(cfg.assoc_min_speed_for_dir, cfg)
 
     if exp_speed >= min_speed_for_dir:
         speed_ratio = obs_speed / max(exp_speed, 1e-6)
@@ -124,7 +124,7 @@ def build_tracks(
     active: List[Track] = []
     finished: List[Track] = []
     next_id = 0
-    diag = _cfg_diag(cfg)
+    diag = cfg_diag(cfg)
     dt_cap = max(int(cfg.assoc_gate_growth_cap_frames), 1)
     stitch_enable = bool(cfg.trail_stitch_enable)
     stitch_gap_frames = max(1, int(cfg.trail_stitch_gap_frames))
@@ -216,13 +216,13 @@ def build_tracks(
                         recent = trk_prev.observations[-8:]
                         recent_dt = max(recent[-1].frame - recent[0].frame, 1)
                         recent_distance = sum(
-                            _xy_dist(a.cx, a.cy, b.cx, b.cy)
+                            xy_dist(a.cx, a.cy, b.cx, b.cy)
                             for a, b in zip(recent, recent[1:])
                         )
                         recent_speed = recent_distance / float(recent_dt)
                         recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
                         if (
-                            recent_speed < _fps_norm_pxpf(1.0, cfg)
+                            recent_speed < fps_norm_pxpf(1.0, cfg)
                             and recent_motion < 0.25
                         ):
                             continue

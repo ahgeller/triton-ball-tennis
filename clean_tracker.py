@@ -13,13 +13,13 @@ import numpy as np
 from ball_in_play_selector import select_ball_in_play
 from ball_in_play_selector.config import SelectorConfig
 from ball_in_play_selector.core import (
-    _direction_cosine,
-    _refine_trajectory,
-    _selected_tracks,
-    _trajectory_observations,
+    direction_cosine,
+    refine_trajectory,
+    selected_tracks,
+    trajectory_observations,
 )
 from ball_in_play_selector.models import Detection, FrameResult, Track
-from ball_in_play_selector.scoring import _select_timeline_chain
+from ball_in_play_selector.scoring import select_timeline_chain
 from ball_in_play_selector.tracking import build_tracks
 from tennis_tracker.config import Config
 from tennis_tracker.detectors import CourtDetector
@@ -123,9 +123,9 @@ def _self_test() -> None:
         Detection(frame, float(frame * 10), 20.0, 0, 0, 4, 4, 0.9, 16.0, True)
         for frame in range(3)
     ]
-    assert _direction_cosine(*straight) == 1.0
+    assert direction_cosine(*straight) == 1.0
     straight[2].cx = 0.0
-    assert _direction_cosine(*straight) == -1.0
+    assert direction_cosine(*straight) == -1.0
 
     # The robust refit repairs a short target-switch block. The repair itself is
     # unbounded, but a detection dragged that far is no longer where the detector
@@ -136,7 +136,7 @@ def _self_test() -> None:
         for frame in range(15)
     ]
     smooth[7].cy = smooth[8].cy = 180.0
-    _refine_trajectory(smooth, 734.0)
+    refine_trajectory(smooth, 734.0)
     assert max(abs(smooth[frame].cy - 100.0) for frame in (7, 8)) < 10.0
     assert all(smooth[frame].source == "interp" for frame in (7, 8))
     assert all(smooth[frame].source == "det" for frame in range(15) if frame not in (7, 8))
@@ -147,7 +147,7 @@ def _self_test() -> None:
         for frame in range(15)
     ]
     nudged[7].cy = 103.0
-    _refine_trajectory(nudged, 734.0)
+    refine_trajectory(nudged, 734.0)
     assert all(result.source == "det" for result in nudged)
 
     # One broad motion hit may support one physics point, never a blue tail
@@ -175,7 +175,7 @@ def _self_test() -> None:
             (20, 0.9, True), (21, 0.9, True),
         )
     ]
-    assert [item.frame for item in _trajectory_observations(isolated, 30.0)] == [0, 1, 20, 21]
+    assert [item.frame for item in trajectory_observations(isolated, 30.0)] == [0, 1, 20, 21]
 
     # A confident detection reconnected 11 frames after the ball vanished (the
     # van case) is unverifiable: it may not end the trail or anchor a fill.
@@ -184,7 +184,7 @@ def _self_test() -> None:
         Detection(frame, 1000.0 + 4.0 * frame, 300.0, 0, 0, 4, 4, 0.95, 16.0, True)
         for frame in range(30)
     ] + [Detection(41, 1260.0, 230.0, 0, 0, 4, 4, 0.6, 16.0, True)]
-    assert [item.frame for item in _trajectory_observations(stale_tail, 60.0)][-1] == 29
+    assert [item.frame for item in trajectory_observations(stale_tail, 60.0)][-1] == 29
 
     # A ball track living inside another track's span (the ball changed track
     # at a bounce and changed back) is the only evidence for its frames and
@@ -205,8 +205,8 @@ def _self_test() -> None:
     outer = holed_track(5, list(range(0, 40)) + list(range(61, 100)), 100.0, 50.0)
     inner = holed_track(6, list(range(40, 61)), 100.0, 20.0)
     far = holed_track(7, list(range(40, 61)), 900.0, 20.0)
-    assert [track.track_id for track in _select_timeline_chain([outer, inner], chain_cfg, 200)] == [5, 6]
-    assert [track.track_id for track in _select_timeline_chain([outer, far], chain_cfg, 200)] == [5]
+    assert [track.track_id for track in select_timeline_chain([outer, inner], chain_cfg, 200)] == [5, 6]
+    assert [track.track_id for track in select_timeline_chain([outer, far], chain_cfg, 200)] == [5]
 
     # Weak detector endpoints do not create blue interpolation without motion.
     weak_anchor_detections = detections[:10] + [[], [([54, 20, 58, 24], 0.4)]]
@@ -233,7 +233,7 @@ def _self_test() -> None:
         "inside_strict_frac": 0.9,
         "extent_px": 29.0,
     }
-    assert rolling in _selected_tracks([rolling], 30.0)
+    assert rolling in selected_tracks([rolling], 30.0)
 
     # Ten off-court detections sprinkled over seventy frames (a bystander) are
     # not a reacquired ball; the same ten on consecutive frames are.
@@ -249,8 +249,8 @@ def _self_test() -> None:
 
     bystander = sparse_track(102, [0, 2, 30, 55, 56, 59, 69, 70, 71, 72])
     reacquired_ball = sparse_track(103, list(range(10)))
-    assert bystander not in _selected_tracks([bystander], 60.0)
-    assert reacquired_ball in _selected_tracks([reacquired_ball], 60.0)
+    assert bystander not in selected_tracks([bystander], 60.0)
+    assert reacquired_ball in selected_tracks([reacquired_ball], 60.0)
 
     fast_short = Track(track_id=101, cfg=selector_cfg)
     fast_short.observations = [
@@ -259,7 +259,7 @@ def _self_test() -> None:
     ]
     fast_short.score = 15.0
     fast_short.score_breakdown = {"motion_frac_raw": 1.0}
-    assert fast_short in _selected_tracks([fast_short], 60.0)
+    assert fast_short in selected_tracks([fast_short], 60.0)
 
     # A lobbed ball crossing the baseline sits in neither court-fraction band
     # (0.1 < inside_strict < 0.5) and the boost mask only catches it 39% of the
@@ -282,14 +282,14 @@ def _self_test() -> None:
         return track
 
     lobbed_ball = airborne_track(104, 1.0, 663.0)
-    assert lobbed_ball in _selected_tracks([lobbed_ball], 60.0)
+    assert lobbed_ball in selected_tracks([lobbed_ball], 60.0)
     # The kinematic route is not a free pass: a wide but slow footprint scores at
     # most 0.60 from the extent term alone, which must stay below the gate.
     wide_and_slow = airborne_track(105, 0.60, 663.0)
-    assert wide_and_slow not in _selected_tracks([wide_and_slow], 60.0)
+    assert wide_and_slow not in selected_tracks([wide_and_slow], 60.0)
     # ... and a genuinely fast ball still needs to travel to qualify.
     fast_but_tiny = airborne_track(106, 1.0, 40.0)
-    assert fast_but_tiny not in _selected_tracks([fast_but_tiny], 60.0)
+    assert fast_but_tiny not in selected_tracks([fast_but_tiny], 60.0)
 
     def timeline_track(track_id, start, end, x_offset, score):
         track = Track(track_id=track_id, cfg=selector_cfg)
@@ -306,7 +306,7 @@ def _self_test() -> None:
     false_overlap = timeline_track(2, 18, 40, 202.0, 45.0)
     real_overlap = timeline_track(3, 18, 35, 100.0, 20.0)
     reset_segment = timeline_track(4, 36, 59, 400.0, 45.0)
-    assert [track.track_id for track in _select_timeline_chain(
+    assert [track.track_id for track in select_timeline_chain(
         [prior, false_overlap, real_overlap, reset_segment], selector_cfg, 60
     )] == [1, 3, 4]
 
@@ -318,7 +318,7 @@ def _self_test() -> None:
     after = timeline_track(30, 2920, 3022, -1946.2, 38.7)
     for track in (before, middle, after):
         track.cfg = ucsd_cfg
-    assert [track.track_id for track in _select_timeline_chain(
+    assert [track.track_id for track in select_timeline_chain(
         [before, middle, after], ucsd_cfg, 3674
     )] == [22, 24, 30]
 

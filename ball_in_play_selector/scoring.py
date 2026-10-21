@@ -4,8 +4,8 @@ from typing import Optional, List, Tuple, Dict
 
 from .config import SelectorConfig
 from .models import Detection, Track
-from .utils import _cfg_diag
-from .physics import _kinematic_motion_frac, _xy_dist
+from .utils import cfg_diag
+from .physics import kinematic_motion_frac, xy_dist
 
 # Timeline handover: below ~1.5% of the diagonal per frame a track's velocity
 # is too uncertain to compare speeds across a handover.
@@ -83,7 +83,7 @@ def _track_extent(trk: Track) -> float:
     return math.sqrt((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2)
 
 
-def _is_near_player(x, y, player_boxes_by_frame, frame_idx, margin=80):
+def is_near_player(x, y, player_boxes_by_frame, frame_idx, margin=80):
     """Check if (x,y) is near any player bbox at given frame."""
     if player_boxes_by_frame is None or frame_idx >= len(player_boxes_by_frame):
         return False
@@ -104,7 +104,7 @@ def _is_near_player(x, y, player_boxes_by_frame, frame_idx, margin=80):
     return False
 
 
-def _select_timeline_chain(
+def select_timeline_chain(
     tracks: List[Track],
     cfg: SelectorConfig,
     total_frames: int
@@ -120,7 +120,7 @@ def _select_timeline_chain(
     if len(eligible) == 1:
         return [eligible[0]]
 
-    diag = _cfg_diag(cfg)
+    diag = cfg_diag(cfg)
     tden = max(total_frames, 1)
     max_gap = max(1, int(round(max(0.0, cfg.timeline_max_gap_frac) * tden)))
     overlap_tol = max(0, int(round(max(0.0, cfg.timeline_overlap_tol_frac) * tden)))
@@ -177,7 +177,7 @@ def _select_timeline_chain(
                 ti_by_frame = {obs.frame: obs for obs in ti.observations}
                 tj_by_frame = {obs.frame: obs for obs in tj.observations}
                 shared_distances = sorted(
-                    _xy_dist(
+                    xy_dist(
                         ti_by_frame[frame].cx,
                         ti_by_frame[frame].cy,
                         tj_by_frame[frame].cx,
@@ -191,8 +191,8 @@ def _select_timeline_chain(
             else:
                 pred_x = i_end.cx + ti.last_vel[0] * dt
                 pred_y = i_end.cy + ti.last_vel[1] * dt
-                d_raw = _xy_dist(i_end.cx, i_end.cy, j_start.cx, j_start.cy)
-                d_pred = _xy_dist(pred_x, pred_y, j_start.cx, j_start.cy)
+                d_raw = xy_dist(i_end.cx, i_end.cy, j_start.cx, j_start.cy)
+                d_pred = xy_dist(pred_x, pred_y, j_start.cx, j_start.cy)
                 d = min(d_raw, d_pred)
             dfrac = d / max(diag, 1.0)
 
@@ -283,7 +283,7 @@ def _select_timeline_chain(
                 for frame in (edge.frame - offset, edge.frame + offset):
                     other = chain_obs.get(frame)
                     if other is not None:
-                        return _xy_dist(edge.cx, edge.cy, other.cx, other.cy) <= handover_dist
+                        return xy_dist(edge.cx, edge.cy, other.cx, other.cy) <= handover_dist
         return False
 
     for candidate in sorted(ordered, key=lambda track: track.score, reverse=True):
@@ -302,7 +302,7 @@ def _select_timeline_chain(
                 chain_obs.setdefault(obs.frame, obs)
     return sorted(chain, key=lambda track: (track.first_frame, track.last_obs_frame))
 
-def _stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Track]:
+def stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Track]:
     """Merge a timeline chain into one track: per frame, the most confident observation."""
     if not chain:
         return None
@@ -466,7 +466,7 @@ def score_tracks(
             near_player_count = 0
             near_player_court_count = 0
             for o in obs:
-                near_player = _is_near_player(
+                near_player = is_near_player(
                     o.cx, o.cy, player_boxes_by_frame, o.frame, margin=60
                 )
                 if near_player:
@@ -486,8 +486,8 @@ def score_tracks(
         extent = _track_extent(trk)
         jump_penalty_raw = _jump_penalty(trk)
         motion_smooth = _motion_consistency(trk)
-        motion_kin_frac = _kinematic_motion_frac(
-            avg_speed, peak_speed, extent, near_player_frac, cfg, _cfg_diag(cfg)
+        motion_kin_frac = kinematic_motion_frac(
+            avg_speed, peak_speed, extent, near_player_frac, cfg, cfg_diag(cfg)
         )
         # Motion evidence: the mask overlap, or the kinematic estimate when the
         # mask misses a small, distant or slow ball.  Stored as "motion_frac".

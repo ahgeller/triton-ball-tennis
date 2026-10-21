@@ -1,6 +1,6 @@
 import math
 from typing import List, Tuple
-from ball_in_play_selector import _predict_projectile, SelectorConfig
+from ball_in_play_selector import predict_projectile, SelectorConfig
 from .config import Config
 
 
@@ -18,9 +18,9 @@ class ROITrack:
 
     def predict_roi(self, dt: int, phys_cfg: SelectorConfig) -> Tuple[float, float]:
         """Predict ball position using the same gravity+drag projectile model as
-        the carry/blue-line path (ball_in_play_selector.physics._predict_projectile),
+        the carry/blue-line path (ball_in_play_selector.physics.predict_projectile),
         so the ROI box and the blue carry trail agree on where the ball is going."""
-        return _predict_projectile(self.last_pos, self.last_vel, dt, phys_cfg)
+        return predict_projectile(self.last_pos, self.last_vel, dt, phys_cfg)
         
     def predicted_center(self, phys_cfg: SelectorConfig) -> Tuple[float, float]:
         dt = max(self.frames_since_det, 1)

@@ -7,10 +7,10 @@ except ImportError:
     KalmanFilter = None
 
 from .config import SelectorConfig
-from .utils import _fps_norm_pxpf, _clamp01
+from .utils import fps_norm_pxpf, clamp01
 
 
-def _kinematic_motion_frac(
+def kinematic_motion_frac(
     avg_speed: float,
     peak_speed: float,
     extent_px: float,
@@ -19,21 +19,21 @@ def _kinematic_motion_frac(
     diag: float
 ) -> float:
     """Estimate motion evidence from kinematics when mask overlap is weak/noisy."""
-    weak = _fps_norm_pxpf(1.6, cfg)
-    strong = _fps_norm_pxpf(4.6, cfg)
-    peak_ref = _fps_norm_pxpf(8.0, cfg)
+    weak = fps_norm_pxpf(1.6, cfg)
+    strong = fps_norm_pxpf(4.6, cfg)
+    peak_ref = fps_norm_pxpf(8.0, cfg)
     extent_ref = max(0.08 * diag, 1.0)
 
-    avg_term = _clamp01((avg_speed - weak) / max(strong - weak, 1e-6))
-    peak_term = _clamp01((peak_speed - (1.6 * weak)) / max(peak_ref - (1.6 * weak), 1e-6))
-    extent_term = _clamp01(extent_px / extent_ref)
+    avg_term = clamp01((avg_speed - weak) / max(strong - weak, 1e-6))
+    peak_term = clamp01((peak_speed - (1.6 * weak)) / max(peak_ref - (1.6 * weak), 1e-6))
+    extent_term = clamp01(extent_px / extent_ref)
 
     kin = max(avg_term, 0.80 * peak_term, 0.60 * extent_term)
     if near_player_frac >= 0.10 and avg_speed >= 0.85 * weak:
         kin = max(kin, 0.30)
-    return _clamp01(kin)
+    return clamp01(kin)
 
-def _xy_dist(ax: float, ay: float, bx: float, by: float) -> float:
+def xy_dist(ax: float, ay: float, bx: float, by: float) -> float:
     return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
 
 def _projectile_matrices(cfg: SelectorConfig, dt: float = 1.0):
@@ -53,7 +53,7 @@ def _projectile_matrices(cfg: SelectorConfig, dt: float = 1.0):
     B = np.array([[0.], [fall], [0.], [travel]])
     return F, B
 
-def _predict_projectile(
+def predict_projectile(
     pos: Tuple[float, float],
     vel: Tuple[float, float],
     dt: int,
@@ -73,7 +73,7 @@ def _predict_projectile(
     state = F @ np.array([*pos, *vel]) + B[:, 0] * cfg.gravity_px_per_frame2
     return float(state[0]), float(state[1])
 
-def _predict_projectile_vel(
+def predict_projectile_velocity(
     vel: Tuple[float, float],
     dt: int,
     cfg: SelectorConfig,
