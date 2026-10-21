@@ -9,17 +9,11 @@ import pytest
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court.court_geometry import court_keypoints_key
 from tests.test_pipeline_run import FULL_OVERRIDES, clip, load_golden, render_env, run_pipeline  # noqa: F401
-from tennis_tracker.court import court_events
-from tennis_tracker.court.court_events import (
-    BounceEvent,
-    BouncePrediction,
-    ContactEvent,
-    CourtScene,
-    assemble_rally_legs,
-    detect_player_contacts,
-    infer_kinematic_bounces,
-    predict_bounce_events,
-)
+from tennis_tracker.court import bounce_events
+from tennis_tracker.court.bounce_events import infer_kinematic_bounces, predict_bounce_events
+from tennis_tracker.court.contact_events import detect_player_contacts
+from tennis_tracker.court.court_scene import BounceEvent, BouncePrediction, ContactEvent, CourtScene
+from tennis_tracker.court.rally_legs import assemble_rally_legs
 
 # Court corners TL, TR, BL, BR in a 120x220 image: unit court = (x-10)/100, (y-10)/200.
 KEYPOINTS = [10, 10, 110, 10, 10, 210, 110, 210] + [0] * 20
@@ -115,7 +109,7 @@ class FakeBounceModel:
 def bounce_model(monkeypatch, tmp_path):
     """The bounce-model file and the loader patched to the fake regressor."""
     FakeBounceModel.loaded = []
-    monkeypatch.setattr(court_events, "_catboost_regressor", lambda: FakeBounceModel)
+    monkeypatch.setattr(bounce_events, "_catboost_regressor", lambda: FakeBounceModel)
     path = tmp_path / "bounce.cbm"
     path.write_bytes(b"")
     return path

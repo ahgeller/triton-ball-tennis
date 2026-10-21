@@ -7,17 +7,9 @@ import numpy as np
 
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court.court_minimap import _visible_completed_legs, draw_court_minimap
-from tennis_tracker.court.court_events import (
-    BouncePrediction,
-    ContactEvent,
-    CourtScene,
-    _build_bounce_features,
-    _cluster_bounce_candidates,
-    _inside_player,
-    _is_service_leg,
-    assemble_rally_legs,
-    infer_kinematic_bounces,
-)
+from tennis_tracker.court.bounce_events import _build_bounce_features, _cluster_bounce_candidates, infer_kinematic_bounces
+from tennis_tracker.court.court_scene import BouncePrediction, ContactEvent, CourtScene, inside_player
+from tennis_tracker.court.rally_legs import _is_service_leg, assemble_rally_legs
 from tennis_tracker.config import Config
 from tennis_tracker.court.court_geometry import LINE_PAIRS_14
 from tennis_tracker.engines.court_detector import CourtDetector
@@ -76,8 +68,8 @@ def test_bounce_candidates_cluster_to_the_strongest_per_window():
 
 def test_padded_player_box_reaches_above_and_beside_but_not_below_the_feet():
     strike_box = {1: (100, 100, 140, 200)}
-    assert _inside_player(70, 90, strike_box)
-    assert not _inside_player(120, 210, strike_box)
+    assert inside_player(70, 90, strike_box)
+    assert not inside_player(120, 210, strike_box)
 
 
 def test_service_leg_must_land_in_the_service_box():

@@ -177,7 +177,11 @@ tennis_tracker/engines/                  The TensorRT engines and the detector b
   engine_boxes.py                          Decoding detection-engine outputs into boxes
 tennis_tracker/court/                    The court and what happens on it:
   court_geometry.py                        Court keypoints, side guides, polygon, homography
-  court_events.py                          Bounces, player contacts, rally legs
+  court_scene.py                           CourtScene, the event types and the player-box queries
+  ball_turns.py                            Where the ball track turns: sample windows, short gaps
+  bounce_events.py                         CatBoost bounces and kinematic landing candidates
+  contact_events.py                        Player contacts
+  rally_legs.py                            Schematic rally legs on the court plane
   court_drawing.py                         Court keypoints, lines, net line and polygon
   court_minimap.py                         Court minimap drawing
 tennis_tracker/render/                   Drawing for pass 2:

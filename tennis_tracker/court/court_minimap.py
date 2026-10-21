@@ -1,6 +1,6 @@
 """The optional top-right court minimap: completed rally legs and player positions.
 
-Drawing only. The legs come from ``court_events.assemble_rally_legs`` and the
+Drawing only. The legs come from ``rally_legs.assemble_rally_legs`` and the
 image-to-court homography from ``court_geometry.build_ground_projection_model``.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .court_geometry import (
     SINGLES_INSET,
     homography_apply,
 )
-from .court_events import Color, ContactEvent, CourtPoint, PlayerBoxes, RallyLeg
+from .court_scene import Color, ContactEvent, CourtPoint, PlayerBoxes, RallyLeg
 
 # --- Minimap drawing ----------------------------------------------------------
 _PANEL_BG: Color = (42, 42, 42)

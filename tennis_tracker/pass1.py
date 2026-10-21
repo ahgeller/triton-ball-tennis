@@ -18,7 +18,7 @@ import torch
 from ball_in_play_selector import PackedMask, RawDetection
 
 from .court.court_geometry import court_keypoints_key
-from .court.court_events import PlayerBoxes
+from .court.court_scene import PlayerBoxes
 from .engines.ball_detectors import FrameInput
 from .engines.player_detector import PlayerPending
 from .frame_window import FrameWindow

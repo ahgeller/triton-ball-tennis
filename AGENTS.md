@@ -32,8 +32,11 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   JSON's shape (TypedDicts, typing only), which the writer and the scorers
   share. `motion.py`, `roi_tracking.py`: CUDA motion masks and ROI tracking.
 - `tennis_tracker/court/`: `court_geometry.py`, keypoints, side guides, polygon,
-  homography; `court_events.py`, CatBoost/kinematic bounce candidates, player
-  contacts and schematic rally legs, each stage reading one `CourtScene`;
+  homography; the court-event stages, each reading one `CourtScene`:
+  `court_scene.py` (`CourtScene`, the event types and the player-box queries),
+  `ball_turns.py` (where the ball track turns: sample windows and short gaps),
+  `bounce_events.py` (CatBoost/kinematic bounce candidates), `contact_events.py`
+  (player contacts) and `rally_legs.py` (schematic rally legs);
   `court_drawing.py`, the court layers; `court_minimap.py`, the minimap.
 - `tennis_tracker/render/`: `rendering.py` draws only: the canvas, colours,
   markers and HUD, with `trails.py` (ball, display-path and candidate trails),
