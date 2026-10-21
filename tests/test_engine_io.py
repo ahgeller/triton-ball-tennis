@@ -8,12 +8,8 @@ import torch
 
 from tennis_tracker import engine_session
 from tennis_tracker.config import Config
-from tennis_tracker.detectors import (
-    TensorRTBallPending,
-    TensorRTRuntimeBallDetector,
-    ball_engine_output_mode,
-    decode_ball_predictions,
-)
+from tennis_tracker.ball_detectors import TensorRTBallPending, TensorRTRuntimeBallDetector, decode_ball_predictions
+from tennis_tracker.engine_boxes import engine_output_mode
 from tennis_tracker.engine_files import (
     EngineIO,
     engine_class_names,
@@ -23,7 +19,7 @@ from tennis_tracker.engine_files import (
     read_engine_header,
     split_engine_header,
 )
-from tennis_tracker.engine_session import _TensorRTRuntimeSession
+from tennis_tracker.engine_session import TensorRTRuntimeSession
 
 PAYLOAD = b"\x00TRT engine bytes\xff\xfe"
 
@@ -213,8 +209,8 @@ def cuda_available(monkeypatch):
 def _session_for(monkeypatch, engine, tmp_path, **kwargs):
     engine_file = tmp_path / "fake.engine"
     engine_file.write_bytes(_with_header({"names": ["ball"]}))
-    monkeypatch.setattr(engine_session, "_import_tensorrt", lambda: _fake_trt(engine))
-    return _TensorRTRuntimeSession(str(engine_file), device=torch.device("cpu"), async_execute=False, **kwargs)
+    monkeypatch.setattr(engine_session, "import_tensorrt", lambda: _fake_trt(engine))
+    return TensorRTRuntimeSession(str(engine_file), device=torch.device("cpu"), async_execute=False, **kwargs)
 
 
 def test_session_binds_tensors_and_runs_with_slot_buffers(monkeypatch, tmp_path, cuda_available):
@@ -291,7 +287,7 @@ def test_session_preprocesses_cuda_layouts(monkeypatch, tmp_path, cuda_available
 
 def test_ball_output_mode_and_decoding():
     rows = torch.tensor([[[10.0, 20.0, 30.0, 40.0, 0.9, 0.0], [1.0, 1.0, 2.0, 2.0, 0.2, 0.0], [5.0, 5.0, 6.0, 6.0, 0.8, 1.0]]])
-    assert ball_engine_output_mode(rows) == "postprocessed"
+    assert engine_output_mode(rows) == "postprocessed"
     assert decode_ball_predictions(rows, (2.0, 0.5), 0.5, [0], "postprocessed") == [([20.0, 10.0, 60.0, 20.0], pytest.approx(0.9))]
     assert len(decode_ball_predictions(rows, (1.0, 1.0), 0.5, None, "postprocessed")) == 2
 
@@ -299,7 +295,7 @@ def test_ball_output_mode_and_decoding():
     raw[0, :, 0] = torch.tensor([10.0, 10.0, 4.0, 4.0, 0.9])
     raw[0, :, 1] = torch.tensor([10.0, 10.0, 4.0, 4.0, 0.7])  # suppressed duplicate
     raw[0, :, 2] = torch.tensor([50.0, 50.0, 2.0, 2.0, 0.3])  # below threshold
-    assert ball_engine_output_mode(raw) == "raw_nms"
+    assert engine_output_mode(raw) == "raw_nms"
     assert decode_ball_predictions(raw, (1.0, 1.0), 0.5, None, "raw_nms") == [([8.0, 8.0, 12.0, 12.0], pytest.approx(0.9))]
 
 
@@ -310,7 +306,7 @@ def test_ball_engine_backend_runs_through_the_shared_session(monkeypatch, tmp_pa
     ])
     engine_file = tmp_path / "ball.engine"
     engine_file.write_bytes(_with_header({"names": ["ball"]}))
-    monkeypatch.setattr(engine_session, "_import_tensorrt", lambda: _fake_trt(engine))
+    monkeypatch.setattr(engine_session, "import_tensorrt", lambda: _fake_trt(engine))
     cfg = Config(conf=0.5, trt_async_execute=False)
     detector = TensorRTRuntimeBallDetector(str(engine_file), cfg, ball_cls_id=0, device=torch.device("cpu"))
     assert detector.output_mode == "postprocessed"

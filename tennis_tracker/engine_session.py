@@ -22,7 +22,7 @@ from .config import Config
 from .engine_files import iter_engine_io, read_engine_header, resolve_engine_path
 
 
-def _import_tensorrt() -> Any:
+def import_tensorrt() -> Any:
     """tensorrt is only needed by the engine backends, so it is imported here."""
     try:
         import tensorrt as trt  # type: ignore
@@ -59,7 +59,7 @@ class _Binding(NamedTuple):
     ptr: int
 
 
-class _TensorRTRuntimeSession:
+class TensorRTRuntimeSession:
     """A deserialized TensorRT engine with device buffers and GPU preprocessing.
 
     Uses the TensorRT 10 tensor API (``iter_engine_io`` rejects a TensorRT 8
@@ -77,7 +77,7 @@ class _TensorRTRuntimeSession:
     ):
         if not torch.cuda.is_available():
             raise RuntimeError("TensorRT session requires CUDA-enabled torch.")
-        trt = _import_tensorrt()
+        trt = import_tensorrt()
         self.device = device if device is not None else torch.device("cuda:0")
         self.engine, self.context = _deserialize_engine(trt, engine_path)
 
@@ -256,7 +256,7 @@ class _TensorRTRuntimeSession:
             torch.cuda.current_stream(device=self.device).wait_stream(self.stream)
 
 
-def _open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> Optional[_TensorRTRuntimeSession]:
+def open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> Optional[TensorRTRuntimeSession]:
     """Apply the engine policy for the player and court detectors.
 
     No configured path: print one message and return None.  A configured
@@ -269,7 +269,7 @@ def _open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> 
     engine_path = resolve_engine_path(model_path)
     if engine_path is None:
         raise FileNotFoundError(f"[{label}] TensorRT engine not found for '{model_path}'")
-    session = _TensorRTRuntimeSession(
+    session = TensorRTRuntimeSession(
         str(engine_path),
         device=torch.device(f"cuda:{int(cfg.device)}"),
         async_execute=bool(cfg.trt_async_execute),

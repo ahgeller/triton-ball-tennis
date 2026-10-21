@@ -18,7 +18,6 @@ from .ball_detectors import (  # noqa: F401
     GridTrackNetBallDetector,
     TensorRTBallPending,
     TensorRTRuntimeBallDetector,
-    ball_engine_output_mode,
     decode_ball_predictions,
 )
 from .court_detector import CourtDetector  # noqa: F401

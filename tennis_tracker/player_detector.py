@@ -1,6 +1,6 @@
 """TensorRT player detection with ByteTrack association.
 
-Engine policy: see ``engine_session._open_engine_session``.  boxmot is optional;
+Engine policy: see ``engine_session.open_engine_session``.  boxmot is optional;
 without it the detector is disabled with one message, since the boxes are only
 useful tracked.
 """
@@ -12,9 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from .ball_detectors import _POSTPROCESSED_COLUMNS, nms_xyxy, xywh_to_xyxy
 from .config import Config
-from .engine_session import _TensorRTRuntimeSession, _open_engine_session
+from .engine_boxes import POSTPROCESSED_COLUMNS, decode_engine_boxes, engine_output_mode
+from .engine_session import TensorRTRuntimeSession, open_engine_session
+
+_PLAYER_CLASS = 0  # the player ("person") class of the player engine
 
 
 def _load_bytetrack() -> Tuple[Optional[type], Optional[str]]:
@@ -50,7 +52,7 @@ class PlayerPending:
 class PlayerDetector:
     """TensorRT player detection with ByteTrack association (no ReID).
 
-    Engine policy: see ``_open_engine_session``.  Without boxmot the detector
+    Engine policy: see ``open_engine_session``.  Without boxmot the detector
     is disabled with one message, since the boxes are only useful tracked.
     ``detect_async_start`` returns None while disabled and
     ``detect_async_finish`` then returns no boxes.
@@ -61,7 +63,7 @@ class PlayerDetector:
         self.court_kps = court_keypoints
         self.cached_boxes: List[List[float]] = []
         self._frame_diag = 1.0
-        self.session: Optional[_TensorRTRuntimeSession] = None
+        self.session: Optional[TensorRTRuntimeSession] = None
         self.tracker: Optional[Any] = None
         # Detection cadence is controlled by the CLI/config, while ByteTrack
         # still receives an update every frame and coasts on empty detections.
@@ -76,7 +78,7 @@ class PlayerDetector:
         if bytetrack is None:
             print(f"[player] boxmot not found ({reason}); player tracking disabled. Run 'pip install boxmot'")
             return
-        self.session = _open_engine_session("player", cfg.player_model_path, cfg)
+        self.session = open_engine_session("player", cfg.player_model_path, cfg)
         self.tracker = bytetrack(
             min_conf=0.1,
             track_thresh=0.3,
@@ -93,53 +95,16 @@ class PlayerDetector:
         self.court_kps = court_keypoints
 
     def _decode_player_boxes(self, pred_t: torch.Tensor, frame_w: int, frame_h: int) -> np.ndarray:
-        """Engine output -> ``[x1, y1, x2, y2, conf, cls]`` rows in frame pixels."""
-        pred = pred_t.detach().float()
-        if pred.dim() == 3 and pred.shape[-1] == _POSTPROCESSED_COLUMNS:
-            rows = pred[0].cpu().numpy()
-            if rows.size == 0:
-                return np.empty((0, 6))
-            conf = rows[:, 4]
-            keep = conf >= float(self.cfg.player_conf)
-            rows = rows[keep]
-            return rows
-
-        if pred.dim() == 3:
-            p = pred[0]
-            if p.shape[0] <= p.shape[1]:
-                p = p.transpose(0, 1)
-            p = p.cpu().numpy()
-        else:
-            return np.empty((0, 6))
-
-        if p.shape[1] < 5:
-            return np.empty((0, 6))
-
-        boxes_xyxy = xywh_to_xyxy(p[:, :4].astype(np.float32))
-        scores = p[:, 4].astype(np.float32)
-        keep = scores >= float(self.cfg.player_conf)
-        boxes_xyxy = boxes_xyxy[keep]
-        scores = scores[keep]
-
-        if boxes_xyxy.shape[0] == 0:
-            return np.empty((0, 6))
-
-        keep_idx = nms_xyxy(boxes_xyxy, scores, float(self.cfg.player_iou))
-        boxes_xyxy = boxes_xyxy[keep_idx]
-        scores = scores[keep_idx]
-
-        sx = frame_w / float(max(self.session.input_w, 1))
-        sy = frame_h / float(max(self.session.input_h, 1))
-        boxes_xyxy[:, [0, 2]] *= sx
-        boxes_xyxy[:, [1, 3]] *= sy
-        boxes_xyxy[:, 0] = np.clip(boxes_xyxy[:, 0], 0, frame_w - 1)
-        boxes_xyxy[:, 2] = np.clip(boxes_xyxy[:, 2], 0, frame_w - 1)
-        boxes_xyxy[:, 1] = np.clip(boxes_xyxy[:, 1], 0, frame_h - 1)
-        boxes_xyxy[:, 3] = np.clip(boxes_xyxy[:, 3], 0, frame_h - 1)
-
-        # Format for boxmot: [x1, y1, x2, y2, conf, class_id]
-        class_ids = np.zeros_like(scores)  # Usually 0 for 'person'
-        return np.column_stack((boxes_xyxy, scores, class_ids))
+        """Engine output -> ``[x1, y1, x2, y2, conf, cls]`` rows in frame pixels,
+        clipped to the frame, for boxmot.  Class ``_PLAYER_CLASS`` only."""
+        scale = (frame_w / float(max(self.session.input_w, 1)), frame_h / float(max(self.session.input_h, 1)))
+        rows = decode_engine_boxes(pred_t, scale, float(self.cfg.player_conf), float(self.cfg.player_iou),
+                                   engine_output_mode(pred_t), cls_filter=[_PLAYER_CLASS])
+        if rows.shape[0] == 0:
+            return np.empty((0, POSTPROCESSED_COLUMNS))
+        rows[:, [0, 2]] = np.clip(rows[:, [0, 2]], 0, frame_w - 1)
+        rows[:, [1, 3]] = np.clip(rows[:, [1, 3]], 0, frame_h - 1)
+        return rows
 
     def detect_async_start(self, frame: np.ndarray, frame_idx: int,
                            frame_gpu_t: Optional[torch.Tensor] = None) -> Optional[PlayerPending]:
@@ -182,7 +147,7 @@ class PlayerDetector:
 
         if pending.outputs is None:
             # Pass empty detections to tell the tracker to coast the boxes forward.
-            dets = np.empty((0, 6))
+            dets = np.empty((0, POSTPROCESSED_COLUMNS))
         else:
             self.session.wait()
             dets = self._decode_player_boxes(pending.outputs[0], pending.width, pending.height)
@@ -190,7 +155,7 @@ class PlayerDetector:
             if pending.court_kps and len(dets) > self.cfg.num_players:
                 dets = self._keep_nearest_to_court(dets, pending.court_kps)
             if len(dets) == 0:
-                dets = np.empty((0, 6))
+                dets = np.empty((0, POSTPROCESSED_COLUMNS))
 
         # tracked_objects rows: [x1, y1, x2, y2, track_id, conf, cls, ind]
         tracked_objects = self.tracker.update(dets, pending.frame)

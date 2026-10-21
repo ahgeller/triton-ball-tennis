@@ -4,7 +4,7 @@ Both sit behind ``BallDetectorBackend``: GridTrackNet (the default, a
 five-frame temporal model run as a whole-clip prepass; ``_prepass`` keeps
 source-frame indices and temporal order) and the single-frame Ultralytics
 TensorRT engine (``Config.model_path`` ending in ``.engine``), driven through
-``_TensorRTRuntimeSession`` from ``engine_session``.
+``TensorRTRuntimeSession`` from ``engine_session``.
 """
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ import numpy as np
 import torch
 
 from .config import Config
-from .engine_session import _TensorRTRuntimeSession
+from .engine_boxes import decode_engine_boxes, engine_output_mode
+from .engine_session import TensorRTRuntimeSession
 from .frame_rate import require_phase_stride
 from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
 
@@ -31,9 +32,6 @@ Detection = Tuple[List[float], float]
 FrameInput = Union[np.ndarray, torch.Tensor]
 
 _BALL_NMS_IOU = 0.45
-_POSTPROCESSED_COLUMNS = 6  # x1, y1, x2, y2, conf, cls rows from an NMS-exporting engine
-_OUTPUT_MODE_POSTPROCESSED = "postprocessed"
-_OUTPUT_MODE_RAW = "raw_nms"
 # GridTrackNet gives a point; the box handed to the selector is this fraction
 # of the frame diagonal around it, and its vertical offset is set at 1080p.
 _BOX_RADIUS_FRAC = 0.003
@@ -304,57 +302,6 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         return pending.detections
 
 
-def xywh_to_xyxy(boxes_xywh: np.ndarray) -> np.ndarray:
-    """Centre/size boxes as corner boxes (rows of ``[x1, y1, x2, y2, ...]``)."""
-    out = boxes_xywh.copy()
-    out[:, 0] = boxes_xywh[:, 0] - boxes_xywh[:, 2] * 0.5
-    out[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] * 0.5
-    out[:, 2] = boxes_xywh[:, 0] + boxes_xywh[:, 2] * 0.5
-    out[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] * 0.5
-    return out
-
-
-def nms_xyxy(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -> np.ndarray:
-    """Indices of the boxes greedy non-maximum suppression keeps, best score first."""
-    if boxes_xyxy.size == 0 or scores.size == 0:
-        return np.empty((0,), dtype=np.int32)
-    x1 = boxes_xyxy[:, 0]
-    y1 = boxes_xyxy[:, 1]
-    x2 = boxes_xyxy[:, 2]
-    y2 = boxes_xyxy[:, 3]
-    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
-    order = np.argsort(scores)[::-1]
-    keep = []
-    while order.size > 0:
-        i = int(order[0])
-        keep.append(i)
-        if order.size == 1:
-            break
-        rest = order[1:]
-        xx1 = np.maximum(x1[i], x1[rest])
-        yy1 = np.maximum(y1[i], y1[rest])
-        xx2 = np.minimum(x2[i], x2[rest])
-        yy2 = np.minimum(y2[i], y2[rest])
-        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
-        union = areas[i] + areas[rest] - inter + 1e-6
-        iou = inter / union
-        order = rest[iou <= float(iou_thres)]
-    return np.asarray(keep, dtype=np.int32)
-
-
-def _rescale_box(det: Any, scale: Tuple[float, float]) -> List[float]:
-    sx, sy = scale
-    return [float(det[0]) * sx, float(det[1]) * sy, float(det[2]) * sx, float(det[3]) * sy]
-
-
-def ball_engine_output_mode(pred: torch.Tensor) -> str:
-    """``postprocessed`` for engines that export NMS'd ``[x1, y1, x2, y2, conf, cls]``
-    rows, ``raw_nms`` for raw ``[xywh, class scores...]`` heads."""
-    if pred.dim() == 3 and pred.shape[-1] == _POSTPROCESSED_COLUMNS:
-        return _OUTPUT_MODE_POSTPROCESSED
-    return _OUTPUT_MODE_RAW
-
-
 def decode_ball_predictions(
     preds: torch.Tensor,
     scale: Tuple[float, float],
@@ -363,51 +310,8 @@ def decode_ball_predictions(
     output_mode: str,
 ) -> List[Detection]:
     """Turn one engine output tensor into ``(xyxy_box, confidence)`` pairs in source pixels."""
-    dets: List[Detection] = []
-    if output_mode == _OUTPUT_MODE_POSTPROCESSED:
-        if preds.dim() == 3:
-            preds = preds[0]
-        rows = preds.detach().float().cpu().numpy()
-        if rows.size == 0 or rows.shape[1] < _POSTPROCESSED_COLUMNS:
-            return dets
-        for det in rows:
-            conf = float(det[4])
-            if conf < conf_threshold:
-                continue
-            cls_id = int(det[5])
-            if cls_filter is not None and cls_id not in cls_filter:
-                continue
-            dets.append((_rescale_box(det, scale), conf))
-        return dets
-
-    if preds.dim() != 3:
-        return dets
-    p = preds[0]
-    if p.shape[0] <= p.shape[1]:
-        p = p.transpose(0, 1)
-    p = p.detach().float().cpu().numpy()
-    if p.size == 0 or p.shape[1] <= 4:
-        return dets
-    boxes = xywh_to_xyxy(p[:, :4].astype(np.float32))
-    cls_scores = p[:, 4:].astype(np.float32)
-    if cls_scores.shape[1] > 1:
-        cls_ids = np.argmax(cls_scores, axis=1)
-        scores = cls_scores[np.arange(cls_scores.shape[0]), cls_ids]
-    else:
-        cls_ids = np.zeros((cls_scores.shape[0],), dtype=np.int32)
-        scores = cls_scores[:, 0]
-    keep = scores >= float(conf_threshold)
-    boxes, scores, cls_ids = boxes[keep], scores[keep], cls_ids[keep]
-    if boxes.shape[0] == 0:
-        return dets
-    keep_idx = nms_xyxy(boxes, scores, _BALL_NMS_IOU)
-    boxes, scores, cls_ids = boxes[keep_idx], scores[keep_idx], cls_ids[keep_idx]
-    for i in range(boxes.shape[0]):
-        cls_id = int(cls_ids[i])
-        if cls_filter is not None and cls_id not in cls_filter:
-            continue
-        dets.append((_rescale_box(boxes[i], scale), float(scores[i])))
-    return dets
+    rows = decode_engine_boxes(preds, scale, conf_threshold, _BALL_NMS_IOU, output_mode, cls_filter)
+    return [([float(row[0]), float(row[1]), float(row[2]), float(row[3])], float(row[4])) for row in rows]
 
 
 @dataclass
@@ -449,7 +353,7 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         self.cls_filter = [ball_cls_id] if ball_cls_id is not None else None
         if device is None:
             device = torch.device(f"cuda:{cfg.device}") if str(cfg.device).isdigit() else torch.device("cuda:0")
-        self.session = _TensorRTRuntimeSession(
+        self.session = TensorRTRuntimeSession(
             engine_path,
             device=device,
             async_execute=bool(cfg.trt_async_execute),
@@ -466,7 +370,7 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         )
         outputs = self.session.forward_tensor(probe, out_slot=0)
         self.session.wait()
-        self.output_mode = ball_engine_output_mode(outputs[0])
+        self.output_mode = engine_output_mode(outputs[0])
         print(
             f"[detector] TensorRT ball engine, {self.output_mode} "
             f"(fp16={self.session.fp16}, async={self.use_async}, slots={self.async_slots}, "

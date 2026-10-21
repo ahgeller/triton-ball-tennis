@@ -1,6 +1,6 @@
 """The court keypoint TensorRT engine, run every N frames with the last good result cached.
 
-Engine policy: see ``engine_session._open_engine_session``.
+Engine policy: see ``engine_session.open_engine_session``.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import numpy as np
 
 from .config import Config
 from .court_geometry import LINE_PAIRS_14
-from .engine_session import _open_engine_session
+from .engine_session import open_engine_session
 
 _NEVER = -10**9
 
@@ -20,7 +20,7 @@ _NEVER = -10**9
 class CourtDetector:
     """Runs the court keypoint TensorRT engine every N frames and caches the last good result.
 
-    Engine policy: see ``_open_engine_session``; while disabled ``detect``
+    Engine policy: see ``open_engine_session``; while disabled ``detect``
     returns None and ``draw`` leaves the frame alone.
     """
     _MODEL_TO_SEMANTIC_14 = (0, 4, 6, 1, 2, 5, 7, 3, 8, 12, 9, 11, 13, 10)
@@ -33,7 +33,7 @@ class CourtDetector:
         self.cfg = cfg
         self.keypoints: Optional[List[float]] = None
         self.last_run_frame = _NEVER
-        self.session = _open_engine_session("court", cfg.court_model_path, cfg)
+        self.session = open_engine_session("court", cfg.court_model_path, cfg)
         if self.session is not None:
             remap = "enabled" if cfg.court_remap_semantic_14 else "disabled (raw model order)"
             print(f"[court] 14-point semantic remap: {remap}")
