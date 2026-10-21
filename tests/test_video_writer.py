@@ -1,4 +1,4 @@
-"""Encoder choice, the FFmpeg command builder and VideoWriter's fallback chain."""
+"""Encoder choice, the FFmpeg command builder, VideoWriter's fallback chain and the frame reader."""
 import io
 
 import numpy as np
@@ -15,7 +15,8 @@ from tennis_tracker.utils import (
     print_platform_report,
     resolve_runtime,
 )
-from tennis_tracker.video_io import VideoWriter, ffmpeg_command
+from tennis_tracker.video_io import ThreadedFrameReader, VideoWriter, ffmpeg_command
+from tests._helpers import Capture
 
 
 def _ffmpeg_with(monkeypatch, path, encoders):
@@ -163,3 +164,35 @@ def test_writer_defaults_to_opencv_without_use_nvenc(tmp_path):
     writer.write(np.zeros((32, 64, 3), dtype=np.uint8))
     writer.close()
     assert out.exists()
+
+
+class FailingCapture(Capture):
+    """A capture whose decoder raises on frame ``fail_at``."""
+
+    def __init__(self, count, fail_at):
+        super().__init__(count)
+        self.fail_at = fail_at
+
+    def read(self):
+        if self.index == self.fail_at:
+            raise MemoryError("decoder out of memory")
+        return super().read()
+
+
+def test_frame_reader_hands_frames_over_in_order_then_none():
+    reader = ThreadedFrameReader(Capture(3), prefetch=2)
+    frames = [reader.read() for _ in range(3)]
+    assert [int(frame[0, 0, 0]) for frame in frames] == [0, 1, 2]
+    assert reader.read() is None and reader.read() is None
+    reader.release()
+
+
+def test_frame_reader_raises_the_decoder_error_instead_of_blocking():
+    reader = ThreadedFrameReader(FailingCapture(5, fail_at=2), prefetch=2)
+    assert int(reader.read()[0, 0, 0]) == 0
+    assert int(reader.read()[0, 0, 0]) == 1
+    with pytest.raises(RuntimeError, match="frame reader failed") as info:
+        reader.read()
+    assert isinstance(info.value.__cause__, MemoryError)
+    assert reader.read() is None     # the reader is finished, not stuck
+    reader.release()

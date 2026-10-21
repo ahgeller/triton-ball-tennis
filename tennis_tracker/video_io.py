@@ -281,22 +281,32 @@ def _close_pipes(proc: subprocess.Popen) -> None:
 
 
 class ThreadedFrameReader:
-    """Prefetch frames in a background thread to overlap decode with GPU work."""
+    """Prefetch frames in a background thread to overlap decode with GPU work.
+
+    ``read`` returns the next frame, None at the end of the clip, and raises
+    ``RuntimeError`` from the decoder's exception if the reader thread died:
+    the failure is handed over, not left as a read that never returns.
+    """
 
     def __init__(self, cap: cv2.VideoCapture, prefetch: int = 4):
         self._cap = cap
         self._q: queue.Queue = queue.Queue(maxsize=prefetch)
         self._done = False
+        self._error: Optional[BaseException] = None
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
 
     def _read_loop(self) -> None:
-        while True:
-            ret, frame = self._cap.read()
-            if not ret:
-                self._q.put(None)
-                break
-            self._q.put(frame)
+        try:
+            while True:
+                ret, frame = self._cap.read()
+                if not ret:
+                    break
+                self._q.put(frame)
+        except BaseException as error:  # noqa: BLE001 - handed to read() on the consumer thread
+            self._error = error
+        finally:
+            self._q.put(None)
 
     def read(self) -> Optional[np.ndarray]:
         if self._done:
@@ -304,6 +314,8 @@ class ThreadedFrameReader:
         frame = self._q.get()
         if frame is None:
             self._done = True
+            if self._error is not None:
+                raise RuntimeError("frame reader failed") from self._error
         return frame
 
     def release(self) -> None:
