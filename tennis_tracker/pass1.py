@@ -382,9 +382,11 @@ class _Pass1Collector:
             if cfg.enable_preprocess:
                 pre, prev_pending = self._preprocess_frame(frame_index, frame, court_kps, detect_this_frame, prev_pending)
             if player_pending is not None:
+                # The wait for the player engine and its result's trip to the host, apart from the
+                # launch, so the timing report shows how much of a frame pass 1 spends waiting.
                 aux_t0 = timing.start()
                 self.player_detector.detect_async_finish(player_pending)
-                timing.add("pass1_aux_detect", aux_t0)
+                timing.add("pass1_aux_wait", aux_t0)
             timing.add("pass1_preprocess", pre_t0)
 
             if prev_pending is not None:
