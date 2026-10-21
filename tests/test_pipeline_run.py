@@ -514,9 +514,9 @@ def test_disabling_preprocess_runs_on_detections_alone(tmp_path, monkeypatch, fa
     assert result["json"] == load_golden()["no_preprocess_json"]
 
 
-def test_zero_frame_video_prints_and_returns_none(tmp_path, monkeypatch, fake_cuda, capsys):
-    """Current behaviour: an openable clip with no frames is reported on stdout
-    and ``run`` returns None without writing any output."""
+def test_zero_frame_video_raises_and_opens_no_writer(tmp_path, monkeypatch, fake_cuda, capsys):
+    """An openable clip with no frames is an error like an unopenable one, and
+    no output writer is opened (so no encoder process is leaked)."""
     empty = tmp_path / "empty.avi"
     writer = cv2.VideoWriter(str(empty), cv2.VideoWriter_fourcc(*"FFV1"), FPS, (WIDTH, HEIGHT))
     assert writer.isOpened()
@@ -528,17 +528,13 @@ def test_zero_frame_video_prints_and_returns_none(tmp_path, monkeypatch, fake_cu
 
     install_fakes(monkeypatch)
     cfg = make_config(tmp_path, empty, **FULL_OVERRIDES)
-    assert pipeline.run(cfg) is None
+    with pytest.raises(RuntimeError, match="No frames in video"):
+        pipeline.run(cfg)
     out = capsys.readouterr().out
-    assert "[error] No frames in video" in out
     assert "[pass 1] Collecting detections" not in out
     assert not Path(cfg.tracking_json).exists()
     assert FakeGridTrackNet.instances[-1].prepared["total"] == 0
-    # The debug writers were already opened before the early return; nothing
-    # was written to them and (current behaviour) they are never closed.
-    debug_writers = CapturingVideoWriter.streams
-    assert set(debug_writers) == {cfg.output_debug_path, cfg.output_detector_input_debug_path, cfg.output_track_debug_path}
-    assert all(writer.hashes == [] and not writer.closed for writer in debug_writers.values())
+    assert CapturingVideoWriter.streams == {}
 
 
 def test_skip_frame_detection_hands_the_detector_the_true_frame_index(tmp_path, monkeypatch, fake_cuda, clip):

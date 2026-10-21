@@ -562,6 +562,18 @@ def run(cfg):
         or cfg.save_motion_debug
         or cfg.save_track_debug_video
     )
+    print("[preprocess] CUDA S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
+
+    # Threaded frame reader - overlaps decode with GPU inference
+    reader = ThreadedFrameReader(cap, prefetch=max(2, int(cfg.frame_reader_prefetch)))
+    frame_curr = reader.read()
+    frame_next = reader.read() if frame_curr is not None else None
+    if frame_curr is None:
+        reader.release()
+        raise RuntimeError(f"No frames in video: {input_path}")
+
+    # Debug writers open only once the clip is known to have frames, so an
+    # empty clip leaks no encoder process.
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
         dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg, encoder=encoder)
@@ -571,17 +583,6 @@ def run(cfg):
     if cfg.save_track_debug_video:
         os.makedirs(os.path.dirname(cfg.output_track_debug_path) or ".", exist_ok=True)
         track_debug_writer = VideoWriter(cfg.output_track_debug_path, fps, w, h, cfg, encoder=encoder)
-
-    print("[preprocess] CUDA S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
-
-    # Threaded frame reader - overlaps decode with GPU inference
-    reader = ThreadedFrameReader(cap, prefetch=max(2, int(cfg.frame_reader_prefetch)))
-    frame_curr = reader.read()
-    frame_next = reader.read() if frame_curr is not None else None
-    if frame_curr is None:
-        print("[error] No frames in video")
-        cap.release()
-        return
 
     window = FrameWindow(cuda_device, cfg.enable_preprocess, frame_curr, frame_next)
     background = BackgroundModel(cfg, cuda_device)
