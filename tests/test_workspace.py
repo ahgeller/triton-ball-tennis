@@ -112,3 +112,28 @@ def test_tennis_workspace_reaches_the_label_tool_and_pretrack(tmp_path):
     assert out.stdout.splitlines() == [str(videos), str(labels), f"No videos to track in {videos}"]
     assert videos.is_dir() and labels.is_dir()                   # made under the relocated workspace
 
+
+def test_the_layout_is_one_object_and_every_module_name_reads_it_when_asked(tmp_path, monkeypatch):
+    """No path is stored at import: ``ws.LABELS`` and the rest answer from ``current()`` on every
+    access, so replacing ``current`` (what ``workspace_dir`` does) moves all of them, the tracker's
+    weights included, and the environment is read as it is now."""
+    layout = workspace.Workspace(tmp_path, repo_weights=tmp_path / "tracker.npz")
+    assert layout.videos == tmp_path / "videos" and layout.labels == tmp_path / "labels"
+    assert layout.manifest == tmp_path / workspace.MANIFEST_NAME and layout.exclude_file == tmp_path / workspace.EXCLUDE_NAME
+    assert layout.review_status == tmp_path / workspace.REVIEW_STATUS_NAME
+    assert layout.best_weights == tmp_path / "models" / workspace.BEST_WEIGHTS_NAME
+    assert set(workspace._LAYOUT_NAMES) == {"WORKSPACE", "VIDEOS", "LABELS", "MODELS", "RUNS", "CACHE", "MANIFEST",
+                                            "EXCLUDE_FILE", "REVIEW_STATUS", "BEST_WEIGHTS", "REPO_WEIGHTS"}
+    assert not any(name in vars(workspace) for name in workspace._LAYOUT_NAMES)
+    monkeypatch.setattr(workspace, "current", lambda: layout)
+    assert workspace.WORKSPACE == tmp_path and workspace.LABELS == layout.labels
+    assert workspace.REPO_WEIGHTS == layout.repo_weights and workspace.BEST_WEIGHTS == layout.best_weights
+    with pytest.raises(AttributeError):
+        workspace.NOT_A_PATH
+    monkeypatch.undo()
+    monkeypatch.setenv(workspace.WORKSPACE_VARIABLE, str(tmp_path / "elsewhere"))
+    assert workspace.current().root == (tmp_path / "elsewhere").resolve()
+    assert workspace.current().repo_weights == ROOT / "models" / "gridtracknet_weights_torch.npz"
+    monkeypatch.delenv(workspace.WORKSPACE_VARIABLE)
+    assert workspace.current().root == ROOT / "finetune"
+

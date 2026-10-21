@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import pytest
 
+from finetune.data.workspace import Workspace
 from finetune.labeling import label_window as win
 from finetune.labeling.label_draw import ZOOM_STEP
 from finetune.labeling.label_grid import GridView
@@ -443,11 +444,12 @@ def test_new_audit_flag_reopens_a_reviewed_frame_until_answered():
 
 def test_a_later_audit_does_not_reask_an_answered_frame(tmp_path):
     from finetune.data import label_audit
-    labels = tmp_path
+    labels = tmp_path / "labels"
+    labels.mkdir()
     (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")
     (labels / "clip_ball.suspect.json").write_text(json.dumps(
         {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
-    with patch.multiple("finetune.data.workspace", LABELS=labels, MANIFEST=labels / "clips.csv"):
+    with patch("finetune.data.workspace.current", lambda: Workspace(labels.parent)):
         label_audit.flag_frames("clip", "check", [1, 3], "audit")
         assert label_audit.open_flags("clip")["check"] == [3]   # 3's label moved since
         assert label_audit.outstanding_flags("clip")["check"] == [3]
@@ -599,7 +601,7 @@ def test_sure_threshold_keeps_far_misses_rare_and_folds_keep_a_game_together(tmp
                         "video13,C:\\prof\\Dataset\\game2\\Clip1\n"
                         "video14,C:\\prof\\Dataset\\game2\\Clip2\n"
                         "video1,C:\\archive\\video1.mp4\n", encoding="utf-8")
-    with patch("finetune.data.workspace.MANIFEST", manifest):
+    with patch("finetune.data.workspace.current", lambda: Workspace(manifest.parent)):
         fold_of = refiner_training.folds(["video13", "video14", "video1", "grid_match4"],
                                          {"video13": 300, "video14": 200, "video1": 400, "grid_match4": 600})
     assert fold_of["video13"] == fold_of["video14"]

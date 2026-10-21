@@ -32,7 +32,8 @@ from finetune.data.data_policy import is_verified, read_review_status
 from finetune.training.detect import ball_detector, detect_points
 from finetune.data.labels import read_labels
 from finetune.data.scoring import HIT_PX, score, scale_for_width
-from finetune.data.workspace import WORKSPACE, clip_of, find_video, natural_key, video_meta
+from finetune.data import workspace as ws
+from finetune.data.workspace import clip_of, find_video, natural_key, video_meta
 from evaluation.pipeline_score import score_pipeline_clip
 from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
 
@@ -54,7 +55,7 @@ def default_archive() -> Path:
     """Hand-labelled clips: $TENNIS_ARCHIVE when set, else the in-repo workspace. Resolved when
     asked, not at import, so the environment and the folder are read as they are now."""
     override = os.environ.get(ARCHIVE_VARIABLE)
-    return Path(override) if override else WORKSPACE
+    return Path(override) if override else ws.current().root
 
 
 def list_clips(names: Optional[List[str]], archive: Path) -> List[ClipPair]:

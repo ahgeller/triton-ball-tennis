@@ -6,17 +6,31 @@ sidecars described in ``finetune.data.labels``), with ``clips.csv`` listing ever
 script used to spell these paths out for itself; this is the one place they are defined, and
 the one place ``clips.csv`` and ``exclude.txt`` are read and written.
 
-The workspace is the ``finetune/`` folder itself (the package this module's package sits in)
-unless ``TENNIS_WORKSPACE`` names another folder. Modules that need the paths read them from
-this module when called (``workspace.LABELS``), not at import, so a test can point the whole
-workspace at a temporary folder by patching this module alone (``tests/conftest.py:
-workspace_dir``).
+The layout is a ``Workspace``: one root folder, every other path a property derived from it.
+``current()`` builds it when asked, from ``TENNIS_WORKSPACE`` as the environment has it at that
+moment (else the ``finetune/`` folder this package sits in), so nothing here is fixed at import.
+The contract for every module that needs a path:
+
+- read it when called, never at import: ``ws.current().labels``, or the module-level names
+  (``ws.LABELS``, ``ws.MODELS``, ...), which ``__getattr__`` answers from ``current()`` on every
+  access and which exist for the many call sites written before ``Workspace`` did;
+- never bind a path to a module constant (``MODELS = ws.MODELS / "x"`` snapshots the workspace
+  of import time), and never ``from finetune.data.workspace import LABELS``;
+- a test points the whole workspace somewhere else by replacing ``current`` alone
+  (``tests/conftest.py: workspace_dir``); there is no second thing to patch.
+
+``ROOT`` (the repository) is not a workspace path and stays a constant. ``REPO_WEIGHTS`` (the weights
+the tracker runs, in the repository's ``models/``) is not under the workspace either, but promotion
+writes it, so ``Workspace.repo_weights`` carries it and a test redirects it with the rest.
 """
 from __future__ import annotations
 
 import csv
 import os
 import re
+import sys
+import types
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Union
 
@@ -24,21 +38,12 @@ from finetune.data.fileio import atomic_csv, write_atomic
 from tennis_tracker.paths import GRIDTRACKNET_WEIGHTS
 
 WORKSPACE_VARIABLE = "TENNIS_WORKSPACE"       # names another workspace folder, for tests and spare copies
-WORKSPACE = Path(os.environ.get(WORKSPACE_VARIABLE) or Path(__file__).resolve().parents[1]).resolve()
+DEFAULT_WORKSPACE = Path(__file__).resolve().parents[1]     # the finetune/ folder itself
 ROOT = Path(__file__).resolve().parents[2]
-VIDEOS = WORKSPACE / "videos"
-LABELS = WORKSPACE / "labels"
-MODELS = WORKSPACE / "models"
-RUNS = WORKSPACE / "runs"
-CACHE = WORKSPACE / "cache"
 MANIFEST_NAME = "clips.csv"
 EXCLUDE_NAME = "exclude.txt"
 REVIEW_STATUS_NAME = "review_status.json"
-MANIFEST = WORKSPACE / MANIFEST_NAME
-EXCLUDE_FILE = WORKSPACE / EXCLUDE_NAME
-REVIEW_STATUS = WORKSPACE / REVIEW_STATUS_NAME
-REPO_WEIGHTS = GRIDTRACKNET_WEIGHTS                                  # the weights the tracker runs
-BEST_WEIGHTS = MODELS / "gridtracknet_best.npz"                      # the last training winner
+BEST_WEIGHTS_NAME = "gridtracknet_best.npz"   # the last training winner, under models/
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".avi", ".m4v"})
 
 LABEL_SUFFIX = "_ball.csv"
@@ -60,6 +65,90 @@ DEFAULT_SOURCES = {
     "grid": DESKTOP / "V5Test" / "archive" / "Match-Data-20260716T144245Z-1-001" / "Match-Data",
     "prof": DESKTOP / "prof" / "Dataset",
 }
+
+
+# --------------------------------------------------------------------------- the layout
+
+@dataclass(frozen=True)
+class Workspace:
+    """One workspace folder and where it keeps things. Every path is derived from ``root`` when
+    asked, so a ``Workspace`` is the whole layout in one value."""
+    root: Path
+    repo_weights: Path = GRIDTRACKNET_WEIGHTS    # the weights the tracker runs: not under root, promoted to from it
+
+    @property
+    def videos(self) -> Path:
+        return self.root / "videos"
+
+    @property
+    def labels(self) -> Path:
+        return self.root / "labels"
+
+    @property
+    def models(self) -> Path:
+        return self.root / "models"
+
+    @property
+    def runs(self) -> Path:
+        return self.root / "runs"
+
+    @property
+    def cache(self) -> Path:
+        return self.root / "cache"
+
+    @property
+    def manifest(self) -> Path:
+        return self.root / MANIFEST_NAME
+
+    @property
+    def exclude_file(self) -> Path:
+        return self.root / EXCLUDE_NAME
+
+    @property
+    def review_status(self) -> Path:
+        return self.root / REVIEW_STATUS_NAME
+
+    @property
+    def best_weights(self) -> Path:
+        return self.models / BEST_WEIGHTS_NAME
+
+
+def current() -> Workspace:
+    """The workspace as the environment names it now: ``TENNIS_WORKSPACE``, else ``finetune/``.
+    Read on every call; tests replace this function to relocate everything at once."""
+    override = os.environ.get(WORKSPACE_VARIABLE)
+    return Workspace(Path(override).resolve() if override else DEFAULT_WORKSPACE)
+
+
+# The module-level names many call sites read (``ws.LABELS``): each one is ``current()``'s
+# matching path, looked up on every access, never a stored value.
+_LAYOUT_NAMES = {
+    "WORKSPACE": "root", "VIDEOS": "videos", "LABELS": "labels", "MODELS": "models", "RUNS": "runs",
+    "CACHE": "cache", "MANIFEST": "manifest", "EXCLUDE_FILE": "exclude_file", "REVIEW_STATUS": "review_status",
+    "BEST_WEIGHTS": "best_weights", "REPO_WEIGHTS": "repo_weights",
+}
+
+
+def __getattr__(name: str) -> Path:
+    attribute = _LAYOUT_NAMES.get(name)
+    if attribute is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(current(), attribute)
+
+
+class _LayoutModule(types.ModuleType):
+    """This module's type: assigning one of the layout names (``workspace.LABELS = ...``, what a
+    test written for the old constants would do) is refused, because the helpers read
+    ``current()`` and would ignore it silently."""
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in _LAYOUT_NAMES:
+            raise AttributeError(f"workspace.{name} is read from workspace.current() when asked; to relocate the "
+                                 "workspace replace current() (tests/conftest.py: workspace_dir)")
+        super().__setattr__(name, value)
+
+
+sys.modules[__name__].__class__ = _LayoutModule
 
 
 class VideoMeta(NamedTuple):
@@ -99,28 +188,36 @@ def clip_of(label_csv: Path) -> str:
     return label_csv.name.split(LABEL_SUFFIX, 1)[0]
 
 
+def _labels_dir(labels: Optional[Path]) -> Path:
+    return current().labels if labels is None else labels
+
+
+def _videos_dir(videos: Optional[Path]) -> Path:
+    return current().videos if videos is None else videos
+
+
 def label_csv(clip: str, labels: Optional[Path] = None) -> Path:
-    return (LABELS if labels is None else labels) / f"{clip}{LABEL_SUFFIX}"
+    return _labels_dir(labels) / f"{clip}{LABEL_SUFFIX}"
 
 
 def draft_csv(clip: str, labels: Optional[Path] = None) -> Path:
-    return (LABELS if labels is None else labels) / f"{clip}{DRAFT_SUFFIX}"
+    return _labels_dir(labels) / f"{clip}{DRAFT_SUFFIX}"
 
 
 def review_json(clip: str, labels: Optional[Path] = None) -> Path:
-    return (LABELS if labels is None else labels) / f"{clip}{REVIEW_SUFFIX}"
+    return _labels_dir(labels) / f"{clip}{REVIEW_SUFFIX}"
 
 
 def suspect_json(clip: str, labels: Optional[Path] = None) -> Path:
-    return (LABELS if labels is None else labels) / f"{clip}{SUSPECT_SUFFIX}"
+    return _labels_dir(labels) / f"{clip}{SUSPECT_SUFFIX}"
 
 
 def unsaved_csv(clip: str, labels: Optional[Path] = None) -> Path:
-    return (LABELS if labels is None else labels) / f"{clip}{UNSAVED_SUFFIX}"
+    return _labels_dir(labels) / f"{clip}{UNSAVED_SUFFIX}"
 
 
 def _files_ending(suffix: str, labels: Optional[Path]) -> List[Path]:
-    labels = LABELS if labels is None else labels
+    labels = _labels_dir(labels)
     if not labels.is_dir():
         return []
     return sorted(labels.glob(f"*{suffix}"), key=lambda path: natural_key(clip_of(path)))
@@ -142,7 +239,7 @@ def labelled_clips(labels: Optional[Path] = None) -> List[str]:
 
 def find_video(clip: str, videos: Optional[Path] = None) -> Optional[Path]:
     """The clip's video in `videos`, whatever its container, or None."""
-    videos = VIDEOS if videos is None else videos
+    videos = _videos_dir(videos)
     return next((p for p in sorted(videos.glob(f"{clip}.*")) if p.suffix.lower() in VIDEO_SUFFIXES), None)
 
 
@@ -150,13 +247,13 @@ def require_video(clip: str, videos: Optional[Path] = None) -> Path:
     """``find_video``, or a FileNotFoundError that says where it looked."""
     video = find_video(clip, videos)
     if video is None:
-        raise FileNotFoundError(f"No video named {clip}.* in {VIDEOS if videos is None else videos}")
+        raise FileNotFoundError(f"No video named {clip}.* in {_videos_dir(videos)}")
     return video
 
 
 def videos_in(videos: Optional[Path] = None) -> Dict[str, Path]:
     """clip -> video for every video in the folder."""
-    videos = VIDEOS if videos is None else videos
+    videos = _videos_dir(videos)
     if not videos.is_dir():
         return {}
     return {p.stem: p for p in sorted(videos.iterdir()) if p.suffix.lower() in VIDEO_SUFFIXES}
@@ -167,7 +264,7 @@ def videos_in(videos: Optional[Path] = None) -> Dict[str, Path]:
 def read_manifest(path: Optional[Path] = None) -> Dict[str, dict]:
     """clip -> clips.csv row (every MANIFEST_COLUMNS key, missing ones empty); empty when no
     manifest has been written."""
-    path = MANIFEST if path is None else path
+    path = current().manifest if path is None else path
     if not path.is_file():
         return {}
     with path.open(newline="", encoding="utf-8") as handle:
@@ -176,7 +273,7 @@ def read_manifest(path: Optional[Path] = None) -> Dict[str, dict]:
 
 def write_manifest(rows: Dict[str, dict], path: Optional[Path] = None) -> None:
     """Write clip -> row as clips.csv, atomically, in natural clip order."""
-    with atomic_csv(MANIFEST if path is None else path) as writer:
+    with atomic_csv(current().manifest if path is None else path) as writer:
         writer.writerow(MANIFEST_COLUMNS)
         for clip in sorted(rows, key=natural_key):
             writer.writerow([rows[clip].get(key, "") for key in MANIFEST_COLUMNS])
@@ -184,9 +281,13 @@ def write_manifest(rows: Dict[str, dict], path: Optional[Path] = None) -> None:
 
 # --------------------------------------------------------------------------- exclude.txt
 
+def _exclude_file(workspace: Optional[Path]) -> Path:
+    return current().exclude_file if workspace is None else workspace / EXCLUDE_NAME
+
+
 def read_exclusions(workspace: Optional[Path] = None) -> List[str]:
     """Clip stems listed in the workspace's exclude.txt (a ``#`` starts a comment)."""
-    path = EXCLUDE_FILE if workspace is None else workspace / EXCLUDE_NAME
+    path = _exclude_file(workspace)
     if not path.is_file():
         return []
     return [line.split("#", 1)[0].strip() for line in path.read_text(encoding="utf-8").splitlines()
@@ -197,7 +298,7 @@ def add_exclusion(clip: str, reason: str, workspace: Optional[Path] = None) -> N
     """Append `clip` to exclude.txt with `reason` as its comment; a clip already listed is left alone."""
     if clip in read_exclusions(workspace):
         return
-    path = EXCLUDE_FILE if workspace is None else workspace / EXCLUDE_NAME
+    path = _exclude_file(workspace)
     lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     if not lines:
         lines = [EXCLUDE_HEADER]

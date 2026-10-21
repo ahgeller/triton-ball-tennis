@@ -17,7 +17,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from finetune.data import labels, realign, realign_solve
+from finetune.data import labels, realign, realign_solve, workspace
 from finetune.data.alignment import Evidence, Tracks
 from finetune.data.workspace import VideoMeta
 
@@ -66,7 +66,7 @@ def bound_to(root: Path) -> Iterator[None]:
     with patch.object(realign, "detections", lambda clip: detections), \
          patch.object(realign, "require_video", lambda clip: root / "videos" / f"{clip}.mp4"), \
          patch.object(realign, "video_meta", lambda path: META), \
-         patch.multiple("finetune.data.workspace", WORKSPACE=root, LABELS=root / "labels", VIDEOS=root / "videos"):
+         patch.object(workspace, "current", lambda: workspace.Workspace(root)):
         yield
 
 
@@ -191,8 +191,7 @@ def test_the_video_the_labels_belong_to_is_swapped_in_whatever_its_container(tmp
     videos.mkdir()
     (videos / f"{CLIP}.mov").write_bytes(b"wrong")
     (videos / "other_clip.mkv").write_bytes(b"right")
-    with patch.multiple("finetune.data.workspace", WORKSPACE=tmp_path, LABELS=tmp_path / "labels", VIDEOS=videos), \
-            redirect_stdout(io.StringIO()):
+    with patch.object(workspace, "current", lambda: workspace.Workspace(tmp_path)), redirect_stdout(io.StringIO()):
         realign.swap_video(CLIP, "other_clip")
     assert (videos / f"{CLIP}.mkv").read_bytes() == b"right"
     assert (videos / f"{CLIP}_wrong_video.mov.bak").read_bytes() == b"wrong"
