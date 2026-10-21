@@ -3,7 +3,7 @@
 Two scorers live here on purpose, because they answer different questions and one of them is
 frozen:
 
-- ``evaluation.tracking`` scores an exported tracking JSON against an annotation JSON in native
+- ``evaluation.validate`` scores an exported tracking JSON against an annotation JSON in native
   pixels (presence recall, 5/10/20 px localisation buckets, absence false positives, jumps).
   ``check_parity`` gates the bundled Pomona benchmark on its numbers, so they are not to change.
 - ``evaluation.archive`` scores the raw detector or the whole pipeline on the fine-tuning

@@ -1,5 +1,5 @@
-"""evaluation.tracking (validate_tracking.py): the tracking-JSON scorer on synthetic payloads."""
-from evaluation.tracking import summary_lines, validate
+"""evaluation.validate (validate_tracking.py): the tracking-JSON scorer on synthetic payloads."""
+from evaluation.validate import summary_lines, validate
 
 
 def test_localization_recall_counts_wrong_positions_and_misses():

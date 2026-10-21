@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from evaluation.tracking import validate
+from evaluation.validate import validate
 
 _SHA_BLOCK_BYTES = 1 << 20
 # A full tracker run on the benchmark clip takes minutes; this only stops a hung run.

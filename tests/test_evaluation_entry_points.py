@@ -14,12 +14,12 @@ def test_root_scripts_front_the_package_modules():
     import check_parity
     import evaluate_archive
     import validate_tracking
-    from evaluation import archive, parity, tracking
+    from evaluation import archive, parity, validate
 
-    assert validate_tracking.validate is tracking.validate and validate_tracking.main is tracking.main
+    assert validate_tracking.validate is validate.validate and validate_tracking.main is validate.main
     assert check_parity.check is parity.check and check_parity.BASELINE is parity.BASELINE
     assert evaluate_archive.main is archive.main
-    assert parity.validate is tracking.validate              # check_parity gates on the tracking scorer
+    assert parity.validate is validate.validate              # check_parity gates on the tracking scorer
 
 
 def test_every_script_main_takes_argv_and_returns_a_status():
@@ -27,10 +27,10 @@ def test_every_script_main_takes_argv_and_returns_a_status():
     script without patching sys.argv, and the exit status is the return value, never implicit."""
     import ast
     import inspect
-    from evaluation import archive, parity, tracking
+    from evaluation import archive, parity, validate
     from finetune.data import import_data, realign
     from finetune.training import pretrack, train_gridtracknet
-    for module in (archive, parity, tracking, import_data, realign, pretrack, train_gridtracknet):
+    for module in (archive, parity, validate, import_data, realign, pretrack, train_gridtracknet):
         signature = inspect.signature(module.main)
         assert list(signature.parameters) == ["argv"] and signature.return_annotation in (int, "int"), module.__name__
         source = Path(module.__file__).read_text(encoding="utf-8")

@@ -149,7 +149,7 @@ python evaluate_archive.py --archive finetune --mode raw --clips video13
 clean_tracker.py                         Command-line entry point
 evaluate_archive.py                      Detector/pipeline scoring on hand-labelled clips (evaluation/archive.py,
                                          pipeline_score.py scores one pipeline run's clip)
-validate_tracking.py                     Tracking JSON vs. hand labels (evaluation/tracking.py)
+validate_tracking.py                     Tracking JSON vs. hand labels (evaluation/validate.py)
 check_parity.py                          Frozen Pomona benchmark gate (evaluation/parity.py)
 evaluation/                              The scorers behind those three entry points
 build_trt_engines.py                     YOLO checkpoint -> ONNX -> TensorRT engine builder

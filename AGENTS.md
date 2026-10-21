@@ -89,7 +89,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   it trains on and holds out), `frame_cache.py` (the per-clip cache of frames
   and training units), `dataset.py` (targets, augmentation, the Dataset and
   the sampler) and `pretrack.py` (drafts).
-- `evaluation/`: `tracking.py` scores a tracking JSON against annotations in native
+- `evaluation/`: `validate.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
   the pipeline on workspace clips with `finetune/data/detector_metrics.py` (`pipeline_score.py`
   scores one pipeline run's clip), `parity.py` is the Pomona gate. `validate_tracking.py`, `evaluate_archive.py` and `check_parity.py`
