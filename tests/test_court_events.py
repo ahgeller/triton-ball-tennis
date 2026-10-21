@@ -39,6 +39,20 @@ def test_kinematic_bounce_is_a_bounce_event():
     assert isinstance(event, BounceEvent) and event.frame == 2
 
 
+def test_kinematic_bounces_are_clustered_in_frame_order(monkeypatch):
+    # Gap bounces were appended after every visible kink; a gap bounce early in the clip then
+    # sat "within" the last kink's merge radius (a negative frame difference) and the stronger
+    # of two landings a quarter of a minute apart dropped the other.
+    kink, gap = BounceEvent(500, 1.0, 2.0, 0.9), BounceEvent(8, 3.0, 4.0, 0.5)
+    monkeypatch.setattr(bounce_events, "_kink_bounces", lambda scene: [kink])
+    monkeypatch.setattr(bounce_events, "_gap_bounces", lambda scene: [gap])
+    scene = CourtScene([], [], 30.0, 1920, 1080)
+    assert infer_kinematic_bounces(scene) == [gap, kink]
+    near = BounceEvent(503, 1.5, 2.5, 0.4)                     # within 0.15 s of the kink: one landing
+    monkeypatch.setattr(bounce_events, "_gap_bounces", lambda scene: [near, gap])
+    assert infer_kinematic_bounces(scene) == [gap, kink]
+
+
 def test_contacts_need_a_nearby_player():
     track = [
         FrameResult(cx=100.0 + 20 * frame, cy=300.0, conf=0.9, source="det")

@@ -214,8 +214,11 @@ def _gap_bounces(scene: CourtScene) -> List[BounceEvent]:
 
 def infer_kinematic_bounces(scene: CourtScene) -> List[BounceEvent]:
     """Find strict down-to-up ground kinks missed by the bounce model."""
-    # Candidates stay in detection order (kinks, then gaps), as tuned.
-    candidates = _kink_bounces(scene) + _gap_bounces(scene)
+    # Kinks and gap bounces are found separately; clustering compares each candidate with the
+    # one before it, so the two lists are merged by frame first. Appended unsorted, a gap bounce
+    # earlier than the last kink had a negative frame difference, joined that kink's cluster
+    # and the stronger of two unrelated landings dropped the other.
+    candidates = sorted(_kink_bounces(scene) + _gap_bounces(scene), key=lambda item: item.frame)
     clustered: List[List[BounceEvent]] = []
     radius = max(1, scene.frames(EVENT_MERGE_S))
     for candidate in candidates:
