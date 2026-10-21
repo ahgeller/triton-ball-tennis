@@ -4,13 +4,15 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import DEFAULT, Mock, call, patch
 
 import cv2
 import numpy as np
 
+from finetune import label_window as win
 from finetune.label_store import Row, load_review, load_rows, load_suspects, save_review
-from finetune.label_tool import Tool
+from finetune.label_tool import ZOOM_STEP, Tool
+from finetune.label_window import KEYS_NEXT, KEYS_PREV
 
 
 def source(clip, count=10, width=1280, height=720):
@@ -953,6 +955,142 @@ class OfferTests(LabelWorkflowTests.__base__):
         tool.confirm()
         self.assertTrue(row.visible)
         self.assertEqual((row.x, row.y, row.source), (300.0, 200.0, "refined"))
+
+
+# Every Tool method a key can reach, replaced by a mock while a key is pressed, so a key that
+# calls the wrong one, or one too many, fails the table below.
+KEY_HANDLERS = ("save", "toggle_sheet", "toggle_grid", "toggle_grid_size", "confirm", "confirm_grid", "move",
+                "jump", "jump_disputed", "take_suggestion", "mark_invisible", "accept_run", "nudge", "zoom_key",
+                "toggle_fullscreen", "remember_settings", "toggle_follow", "cycle_filter", "toggle_inset",
+                "follow_ball", "grid_page", "grid_step", "grid_select", "prepare_grid", "sheet_page")
+FORWARD = sorted({ord("n"), ord("d"), *KEYS_NEXT})
+BACKWARD = sorted({ord("p"), ord("a"), *KEYS_PREV})
+
+
+def keys(*names):
+    return [ord(name) if isinstance(name, str) else name for name in names]
+
+
+def nudges(step, letters="ijkl"):
+    return [(ord(letter), [call.nudge(dx * step, dy * step)])
+            for letter, (dx, dy) in zip(letters, ((0, -1), (-1, 0), (0, 1), (1, 0)))]
+
+
+# (key, the calls it must make, in order) per mode. `move` is tested at step 1, the default.
+PLAIN_BINDINGS = (
+    [(key, [call.save()]) for key in keys("q", 27)]
+    + [(ord("w"), [call.toggle_sheet()]), (9, [call.toggle_grid()])]
+    + [(key, [call.confirm(), call.move(1)]) for key in keys(" ", 13, "c")]
+    + [(ord("e"), [call.jump_disputed(1)]),
+       (ord("y"), [call.take_suggestion(), call.move(1)]),
+       (ord("x"), [call.confirm(take_offer=False), call.move(1)]),
+       (ord("v"), [call.mark_invisible(), call.move(1)]),
+       (ord("r"), [call.accept_run()])]
+    + [(key, [call.move(1)]) for key in FORWARD] + [(key, [call.move(-1)]) for key in BACKWARD]
+    + [(key, []) for key in keys("1", "2", "4", "6", "8")]       # the step, checked below
+    + [(ord("f"), [call.jump(1)]), (ord("b"), [call.jump(-1)]), (ord("u"), [call.follow_ball()])]
+    + nudges(1.0) + nudges(.25, "IJKL")
+    + [(key, [call.zoom_key(1.0)]) for key in keys("+", "=")] + [(key, [call.zoom_key(-1.0)]) for key in keys("-", "_")]
+    + [(ord("m"), [call.toggle_fullscreen()]), (ord("t"), [call.remember_settings()]), (ord("g"), [call.toggle_follow()]),
+       (ord("h"), [call.cycle_filter()]), (ord("o"), [call.toggle_inset()]), (ord("s"), [call.save()]),
+       (ord("z"), [call.toggle_grid_size()])]
+)
+GRID_BINDINGS = (
+    [(key, [call.save()]) for key in keys("q", 27)]
+    + [(ord("w"), [call.toggle_sheet()]), (9, [call.toggle_grid()])]
+    + [(key, [call.confirm_grid()]) for key in keys(" ", 13, "c")]
+    + [(key, [call.grid_page(1)]) for key in FORWARD] + [(key, [call.grid_page(-1)]) for key in BACKWARD]
+    + [(ord(","), [call.grid_step(-1)]), (ord("."), [call.grid_step(1)])]
+    + [(ord(digit), [call.grid_select(slot)]) for slot, digit in enumerate("123456789")]
+    + [(ord("y"), [call.take_suggestion(), call.grid_step(1)]),
+       (ord("x"), [call.confirm(take_offer=False), call.grid_step(1)]),
+       (ord("z"), [call.toggle_grid_size()]),
+       (ord("r"), []),
+       (ord("e"), [call.jump_disputed(1), call.prepare_grid(0)]),
+       (ord("v"), [call.mark_invisible()]),
+       (ord("f"), [call.jump(1), call.prepare_grid(0)]), (ord("b"), [call.jump(-1), call.prepare_grid(0)]),
+       (ord("u"), [call.follow_ball()])]
+    + nudges(1.0) + nudges(.25, "IJKL")
+    + [(key, []) for key in keys("+", "=", "-", "_")]            # the grid's own zoom, checked below
+    + [(ord("m"), [call.toggle_fullscreen()]), (ord("t"), [call.remember_settings()]), (ord("g"), [call.toggle_follow()]),
+       (ord("h"), [call.cycle_filter()]), (ord("o"), [call.toggle_inset()]), (ord("s"), [call.save()])]
+)
+SHEET_BINDINGS = (
+    [(key, [call.save()]) for key in keys("q", 27)]
+    + [(ord("w"), [call.toggle_sheet()]), (9, [call.toggle_sheet(), call.toggle_grid()])]
+    + [(key, [call.sheet_page(1)]) for key in FORWARD] + [(key, [call.sheet_page(-1)]) for key in BACKWARD]
+    + [(key, []) for key in keys(" ", 13, "c", "e", "y", "x", "v", "r", "1", "f", "b", "u", "i", "I", "+", "-",
+                                 "m", "t", "g", "h", "o", "s", "z", ",", ".")]
+)
+BINDINGS = {"plain": PLAIN_BINDINGS, "grid": GRID_BINDINGS, "sheet": SHEET_BINDINGS}
+
+
+class KeyBindingTests(unittest.TestCase):
+    """handle_key against the table: what each key does in each view, with every handler mocked."""
+
+    def press(self, mode, key, returns=None, shift=False, ready=True):
+        """(the handler calls the key made, whether the tool wants to quit, the tool)."""
+        tool = Tool([source("test")])
+        tool.grid, tool.sheet = mode == "grid", mode == "sheet"
+        calls = Mock()
+        with patch.multiple(Tool, **{name: DEFAULT for name in KEY_HANDLERS}) as mocks, \
+                patch.object(Tool, "view_ready", return_value=ready), patch.object(Row, "undo"), \
+                patch.object(win, "shift_held", return_value=shift), patch.object(win, "non_character_key", return_value=False):
+            for name, mock in mocks.items():
+                calls.attach_mock(mock, name)
+            for name, value in {"take_suggestion": True, "jump_disputed": True, "accept_run": 0, **(returns or {})}.items():
+                mocks[name].return_value = value          # what the real ones answer, so the chain reads them
+            quit_ = tool.handle_key(key)
+        return calls.mock_calls, quit_, tool
+
+    def test_every_binding_in_every_view(self):
+        for mode, bindings in BINDINGS.items():
+            self.assertEqual(len({key for key, _ in bindings}), len(bindings), mode)   # one row per key
+            for key, expected in bindings:
+                with self.subTest(mode=mode, key=key):
+                    self.assertEqual(self.press(mode, key)[0], expected)
+
+    def test_q_quits_unless_unsaved_labels_have_not_been_warned_about(self):
+        for mode in BINDINGS:
+            self.assertTrue(self.press(mode, ord("q"))[1])
+            self.assertFalse(self.press(mode, ord("w"))[1])
+        tool = Tool([source("test")])
+        tool.dirty = True
+        with patch.multiple(Tool, **{name: DEFAULT for name in KEY_HANDLERS}), \
+                patch.object(win, "non_character_key", return_value=False), patch("builtins.print"):
+            self.assertFalse(tool.handle_key(ord("q")))           # once: the warning
+            self.assertTrue(tool.quit_warned)
+            self.assertTrue(tool.handle_key(27))                  # again: quits anyway
+
+    def test_y_moves_on_only_when_a_suggestion_was_taken(self):
+        self.assertEqual(self.press("plain", ord("y"), returns={"take_suggestion": False})[0], [call.take_suggestion()])
+        self.assertEqual(self.press("grid", ord("y"), returns={"take_suggestion": False})[0], [call.take_suggestion()])
+
+    def test_shift_reverses_e_and_makes_a_nudge_fine(self):
+        self.assertEqual(self.press("plain", ord("e"), shift=True)[0], [call.jump_disputed(-1)])
+        self.assertEqual(self.press("plain", ord("i"), shift=True)[0], [call.nudge(0.0, -0.25)])
+        with patch("builtins.print") as printed:
+            self.press("plain", ord("e"), returns={"jump_disputed": False})
+        self.assertIn("no more frames", printed.call_args[0][0])
+
+    def test_keys_that_change_state_rather_than_call_a_handler(self):
+        for digit in "12468":
+            self.assertEqual(self.press("plain", ord(digit))[2].step, int(digit))
+        self.assertFalse(self.press("plain", ord("t"))[2].trail)
+        tool = self.press("plain", ord("u"))[2]
+        self.assertTrue(tool.dirty and tool.source.dirty)
+        for key, factor in ((ord("+"), ZOOM_STEP), (ord("="), ZOOM_STEP), (ord("-"), 1 / ZOOM_STEP), (ord("_"), 1 / ZOOM_STEP)):
+            self.assertAlmostEqual(self.press("grid", key)[2].grid_zoom, factor)
+
+    def test_guards_swallow_function_keys_and_keys_ahead_of_the_view(self):
+        tool = Tool([source("test")])
+        with patch.multiple(Tool, **{name: DEFAULT for name in KEY_HANDLERS}) as mocks, \
+                patch.object(win, "non_character_key", return_value=True):
+            self.assertFalse(tool.handle_key(0x70))                  # F1 reads as p; it is not p
+        self.assertFalse(any(mock.called for mock in mocks.values()))
+        self.assertEqual(self.press("plain", ord(" "), ready=False)[0], [])    # the view lags: not SPACE
+        self.assertEqual(self.press("plain", ord("q"), ready=False)[0], [call.save()])   # but q still saves
+        self.assertEqual(self.press("grid", ord(" "), ready=False)[0], [call.confirm_grid()])   # no single frame to lag
 
 
 if __name__ == "__main__":

@@ -298,6 +298,7 @@ class Tool:
         self.render_fresh = True      # did the last render() draw anything new?
         self.shown = None             # the image last handed to imshow, so an unchanged one is not re-sent
         self.direction = 1            # which way the last move went, so prefetch runs ahead of a or d
+        self.quit_warned = False      # q with unsaved labels warns once, then quits
 
     # ---------------------------------------------------------------- the clip we are in
     @property
@@ -1557,7 +1558,6 @@ class Tool:
                 print(f"[error] {source.clip}: unsaved labels lost, {rescue.name} failed too: {error}")
 
     def loop(self) -> None:
-        quit_warned = False
         while True:
             if self.viewport.reset_needed:
                 self.reset_window()
@@ -1595,113 +1595,120 @@ class Tool:
                 if not gliding and not self.mouse.scrolling() and not self.mouse.calibrating:
                     self.viewport.check(self.view_w, self.view_h + self.hud_h)   # whole picture, at x1?
                 continue
-            code = key & 0xFF if key < 0x10000 else key
-            if win.non_character_key(code):
-                continue              # F1 is not p, F2 is not q: see NON_CHARACTER_KEYS
-            if not self.overview and not self.view_ready() and code not in (ord("q"), 27):
-                continue  # a mouse callback may have advanced while waitKey dispatched events
-            # Arrows: this build hands back the bare virtual-key codes (37/39), older Win32 builds
-            # pack them above bit 16, GTK and Qt have codes of their own. Match them all; none of
-            # them collide with a printable key the tool uses.
-            forward = code in (ord("n"), ord("d")) or key in KEYS_NEXT or code in KEYS_NEXT
-            backward = code in (ord("p"), ord("a")) or key in KEYS_PREV or code in KEYS_PREV
-            if code in (ord("q"), 27):
-                self.save()
-                if self.dirty and not quit_warned:
-                    quit_warned = True
-                    print("[warn] some labels could not be saved (see above). Close the file in the other "
-                          "program and press q again; quitting anyway keeps them in <clip>_ball.unsaved.csv")
-                    continue
+            if self.handle_key(key):
                 break
-            elif self.sheet:              # the sheet only finds frames: its own few keys, nothing else
-                if code in (ord("w"), 9):
-                    self.toggle_sheet()
-                    if code == 9:
-                        self.toggle_grid()
-                elif forward or backward:
-                    self.sheet_page(-1 if backward else 1)
-            elif code == ord("w"):
-                self.toggle_sheet()
-            elif code == 9:
-                self.toggle_grid()
-            elif self.grid and code in (ord(" "), 13, ord("c")):
-                self.confirm_grid()
-            elif self.grid and (forward or backward):
-                self.grid_page(-1 if backward else 1)
-            elif self.grid and code in (ord(","), ord(".")):
-                self.grid_step(-1 if code == ord(",") else 1)
-            elif self.grid and ord("1") <= code <= ord("9"):
-                self.grid_select(code - ord("1"))
-            elif self.grid and code == ord("y"):
-                if self.take_suggestion():
-                    self.grid_step(1)
-            elif self.grid and code == ord("x"):
-                self.confirm(take_offer=False)
-                self.grid_step(1)
-            elif code == ord("z"):
-                self.toggle_grid_size()
-            elif self.grid and code == ord("r"):
-                continue  # only the displayed group can be batch-confirmed
-            elif self.grid and code in (ord("+"), ord("="), ord("-"), ord("_")):
-                self.grid_zoom = min(4., max(.5, self.grid_zoom * (ZOOM_STEP if code in (ord("+"), ord("=")) else 1/ZOOM_STEP)))
-            elif code in (ord(" "), 13, ord("c")):
-                self.confirm()
-                self.move(1)
-            elif code == ord("e"):
-                if not self.jump_disputed(-1 if win.shift_held() else 1):
-                    print("[hint] no more frames the suggestions disagree with that way")
-                elif self.grid:
-                    self.prepare_grid(self.cursor)
-            elif code == ord("y") and not self.grid:
-                if self.take_suggestion():
-                    self.move(1)
-            elif code == ord("x"):
-                self.confirm(take_offer=False)    # the draft is right, not the hint on offer
-                self.move(1)
-            elif code == ord("v"):
-                self.mark_invisible()
-                if not self.grid:
-                    self.move(1)
-            elif code == ord("r"):
-                accepted = self.accept_run()
-                print(f"[run ] accepted {accepted} confident frame(s); stopped at frame "
-                      f"{self.rows[self.cursor].frame}")
-            elif forward:
-                self.move(self.step)
-            elif backward:
-                self.move(-self.step)
-            elif code in (ord("1"), ord("2"), ord("4"), ord("6"), ord("8")):
-                self.step = code - ord("0")
-            elif code in (ord("f"), ord("b")):
-                self.jump(1 if code == ord("f") else -1)
-                if self.grid:
-                    self.prepare_grid(self.cursor)   # bring the page along, not just the cursor
-            elif code == ord("u"):
-                self.rows[self.cursor].undo()
-                self.dirty = self.source.dirty = True
-                self.follow_ball()
-            elif code in map(ord, "ijklIJKL"):
-                dx, dy = {"i": (0, -1), "j": (-1, 0), "k": (0, 1), "l": (1, 0)}[chr(code).lower()]
-                step = .25 if (chr(code).isupper() or win.shift_held()) else 1.
-                self.nudge(dx * step, dy * step)
-            elif code in (ord("+"), ord("=")):
-                self.zoom_key(1.0)
-            elif code in (ord("-"), ord("_")):
-                self.zoom_key(-1.0)
-            elif code == ord("m"):
-                self.toggle_fullscreen()
-            elif code == ord("t"):
-                self.trail = not self.trail
-                self.remember_settings()
-            elif code == ord("g"):
-                self.toggle_follow()
-            elif code == ord("h"):
-                self.cycle_filter()
-            elif code == ord("o"):
-                self.toggle_inset()
-            elif code == ord("s"):
-                self.save()
 
+    def handle_key(self, key: int) -> bool:
+        """One key from waitKeyEx, as the main view, the grid or the sheet reads it; True when the
+        tool should quit."""
+        code = key & 0xFF if key < 0x10000 else key
+        if win.non_character_key(code):
+            return False          # F1 is not p, F2 is not q: see NON_CHARACTER_KEYS
+        if not self.overview and not self.view_ready() and code not in (ord("q"), 27):
+            return False  # a mouse callback may have advanced while waitKey dispatched events
+        # Arrows: this build hands back the bare virtual-key codes (37/39), older Win32 builds
+        # pack them above bit 16, GTK and Qt have codes of their own. Match them all; none of
+        # them collide with a printable key the tool uses.
+        forward = code in (ord("n"), ord("d")) or key in KEYS_NEXT or code in KEYS_NEXT
+        backward = code in (ord("p"), ord("a")) or key in KEYS_PREV or code in KEYS_PREV
+        if code in (ord("q"), 27):
+            self.save()
+            if self.dirty and not self.quit_warned:
+                self.quit_warned = True
+                print("[warn] some labels could not be saved (see above). Close the file in the other "
+                      "program and press q again; quitting anyway keeps them in <clip>_ball.unsaved.csv")
+                return False
+            return True
+        elif self.sheet:              # the sheet only finds frames: its own few keys, nothing else
+            if code in (ord("w"), 9):
+                self.toggle_sheet()
+                if code == 9:
+                    self.toggle_grid()
+            elif forward or backward:
+                self.sheet_page(-1 if backward else 1)
+        elif code == ord("w"):
+            self.toggle_sheet()
+        elif code == 9:
+            self.toggle_grid()
+        elif self.grid and code in (ord(" "), 13, ord("c")):
+            self.confirm_grid()
+        elif self.grid and (forward or backward):
+            self.grid_page(-1 if backward else 1)
+        elif self.grid and code in (ord(","), ord(".")):
+            self.grid_step(-1 if code == ord(",") else 1)
+        elif self.grid and ord("1") <= code <= ord("9"):
+            self.grid_select(code - ord("1"))
+        elif self.grid and code == ord("y"):
+            if self.take_suggestion():
+                self.grid_step(1)
+        elif self.grid and code == ord("x"):
+            self.confirm(take_offer=False)
+            self.grid_step(1)
+        elif code == ord("z"):
+            self.toggle_grid_size()
+        elif self.grid and code == ord("r"):
+            return False  # only the displayed group can be batch-confirmed
+        elif self.grid and code in (ord("+"), ord("="), ord("-"), ord("_")):
+            self.grid_zoom = min(4., max(.5, self.grid_zoom * (ZOOM_STEP if code in (ord("+"), ord("=")) else 1/ZOOM_STEP)))
+        elif code in (ord(" "), 13, ord("c")):
+            self.confirm()
+            self.move(1)
+        elif code == ord("e"):
+            if not self.jump_disputed(-1 if win.shift_held() else 1):
+                print("[hint] no more frames the suggestions disagree with that way")
+            elif self.grid:
+                self.prepare_grid(self.cursor)
+        elif code == ord("y") and not self.grid:
+            if self.take_suggestion():
+                self.move(1)
+        elif code == ord("x"):
+            self.confirm(take_offer=False)    # the draft is right, not the hint on offer
+            self.move(1)
+        elif code == ord("v"):
+            self.mark_invisible()
+            if not self.grid:
+                self.move(1)
+        elif code == ord("r"):
+            accepted = self.accept_run()
+            print(f"[run ] accepted {accepted} confident frame(s); stopped at frame "
+                  f"{self.rows[self.cursor].frame}")
+        elif forward:
+            self.move(self.step)
+        elif backward:
+            self.move(-self.step)
+        elif code in (ord("1"), ord("2"), ord("4"), ord("6"), ord("8")):
+            self.step = code - ord("0")
+        elif code in (ord("f"), ord("b")):
+            self.jump(1 if code == ord("f") else -1)
+            if self.grid:
+                self.prepare_grid(self.cursor)   # bring the page along, not just the cursor
+        elif code == ord("u"):
+            self.rows[self.cursor].undo()
+            self.dirty = self.source.dirty = True
+            self.follow_ball()
+        elif code in map(ord, "ijklIJKL"):
+            dx, dy = {"i": (0, -1), "j": (-1, 0), "k": (0, 1), "l": (1, 0)}[chr(code).lower()]
+            step = .25 if (chr(code).isupper() or win.shift_held()) else 1.
+            self.nudge(dx * step, dy * step)
+        elif code in (ord("+"), ord("=")):
+            self.zoom_key(1.0)
+        elif code in (ord("-"), ord("_")):
+            self.zoom_key(-1.0)
+        elif code == ord("m"):
+            self.toggle_fullscreen()
+        elif code == ord("t"):
+            self.trail = not self.trail
+            self.remember_settings()
+        elif code == ord("g"):
+            self.toggle_follow()
+        elif code == ord("h"):
+            self.cycle_filter()
+        elif code == ord("o"):
+            self.toggle_inset()
+        elif code == ord("s"):
+            self.save()
+
+        return False
 
 def main() -> int:
     backend = win.highgui_backend()
