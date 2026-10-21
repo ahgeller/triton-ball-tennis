@@ -33,7 +33,7 @@ from finetune.label_store import (SETTINGS_NAME, Row, load_review, load_rows, lo
                                   load_suspects, save_review, save_rows, save_settings, save_suspects)
 from finetune.label_window import KEYS_NEXT, KEYS_PREV, WINDOW
 from finetune.labels import LabelFormatError, is_visible
-from finetune.refine import Suggestion
+from finetune.refine import Point, Suggestion
 from finetune.scoring import REFERENCE_HEIGHT
 from finetune.workspace import LABELS, VIDEOS
 
@@ -110,7 +110,6 @@ def hit(box, x: int, y: int) -> bool:
 
 
 Colour = Tuple[int, int, int]
-Point = Tuple[float, float]
 
 
 def hint_colour(hint: Suggestion) -> Colour:
