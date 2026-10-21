@@ -40,8 +40,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `court_drawing.py`, the court layers; `court_minimap.py`, the minimap.
 - `tennis_tracker/render/`: `rendering.py` draws only: the canvas, colours,
   markers and HUD, with `trails.py` (ball, display-path and candidate trails),
-  `display_path.py` (the chosen track's display path) and `motion_debug.py`
-  (the motion-debug video) beside it. `summaries.py`: the console track table
+  `display_path.py` (the chosen track's display path), `motion_debug.py`
+  (the motion-debug video's masks and selected ball) and `motion_trails.py` (its
+  raw-motion trails) beside it. `summaries.py`: the console track table
   and timing report.
 - `ball_in_play_selector/`: candidate association (`association.py`), Kalman
   state, track scoring, timeline selection, bounded recovery, trajectory refit.

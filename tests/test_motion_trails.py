@@ -1,10 +1,10 @@
-"""tennis_tracker.render.motion_debug: raw-motion trails fall back to straight segments only when scipy
+"""tennis_tracker.render.motion_trails: raw-motion trails fall back to straight segments only when scipy
 cannot fit a spline; a bug in the drawing itself is not swallowed."""
 import numpy as np
 import pytest
 
-from tennis_tracker.render import motion_debug
-from tennis_tracker.render.motion_debug import RawMotionTrails, _fit_spline_trail
+from tennis_tracker.render import motion_trails
+from tennis_tracker.render.motion_trails import RawMotionTrails, _fit_spline_trail
 
 scipy = pytest.importorskip("scipy")
 
@@ -24,8 +24,8 @@ def test_trail_falls_back_to_straight_segments_when_the_fit_fails(monkeypatch):
     trails = RawMotionTrails(frame_w=640)
     vis = np.zeros((64, 64, 3), np.uint8)
     straight = []
-    monkeypatch.setattr(motion_debug, "_draw_straight_trail", lambda v, f, pts: straight.append(len(pts)))
-    monkeypatch.setattr(motion_debug, "_fit_spline_trail", lambda frame, pts: None)
+    monkeypatch.setattr(motion_trails, "_draw_straight_trail", lambda v, f, pts: straight.append(len(pts)))
+    monkeypatch.setattr(motion_trails, "_fit_spline_trail", lambda frame, pts: None)
     trails._draw_trail(vis, 3, _samples([(10, 10), (20, 14), (30, 20), (40, 28)]))
     assert straight == [4]
 
@@ -37,7 +37,7 @@ def test_a_drawing_error_is_not_swallowed(monkeypatch):
     def broken(v, spline):
         raise IndexError("a bug in the drawing")
 
-    monkeypatch.setattr(motion_debug, "_draw_spline_trail", broken)
+    monkeypatch.setattr(motion_trails, "_draw_spline_trail", broken)
     with pytest.raises(IndexError, match="a bug in the drawing"):
         trails._draw_trail(vis, 3, _samples([(10, 10), (20, 14), (30, 20), (40, 28)]))
 

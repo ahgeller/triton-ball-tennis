@@ -188,7 +188,8 @@ tennis_tracker/render/                   Drawing for pass 2:
   rendering.py                             Frame drawing: canvas, markers, HUD
   trails.py                                Ball, display-path and candidate-track trails
   display_path.py                          The chosen track's display path
-  motion_debug.py                          Motion-debug video drawing
+  motion_debug.py                          Motion-debug video drawing: masks, selected ball
+  motion_trails.py                         Motion-debug video's raw-motion trails
   summaries.py                             Console summaries printed at the end of a run
 ball_in_play_selector/                   Track construction, scoring, and recovery
 models/gridtracknet_weights_torch.npz    GridTrackNet inference weights

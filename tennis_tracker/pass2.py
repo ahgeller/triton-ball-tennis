@@ -17,7 +17,8 @@ import numpy as np
 from .court.court_geometry import MIN_KEYPOINT_VALUES, build_ground_projection_model, court_keypoints_key
 from .court.court_minimap import draw_court_minimap
 from .motion import build_court_side_protect_mask
-from .render.motion_debug import RawMotionTrails, draw_motion_masks, draw_selected_ball
+from .render.motion_debug import draw_motion_masks, draw_selected_ball
+from .render.motion_trails import RawMotionTrails
 from .pass1 import Pass1Result
 from .court.court_drawing import draw_court_layer
 from .render.rendering import (
