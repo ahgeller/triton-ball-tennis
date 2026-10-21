@@ -715,6 +715,7 @@ def run(cfg):
         det_pending = None
         player_pending = None
         roi_for_pack = None
+        rois = rois_visual = None   # set by the ROI tracker when preprocessing runs
 
         if cache_pass2_frames is not None:
             try:

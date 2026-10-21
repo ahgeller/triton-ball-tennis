@@ -413,8 +413,11 @@ def load_golden() -> Dict[str, Any]:
         return json.load(f)
 
 
-def maybe_update_golden(golden: Dict[str, Any]) -> None:
+def maybe_update_golden(section: Dict[str, Any]) -> None:
+    """With UPDATE_PIPELINE_GOLDEN=1, replace these sections of the fixture and keep the rest."""
     if os.environ.get(UPDATE_ENV) == "1":
+        golden = dict(load_golden()) if FIXTURE_PATH.exists() else {}
+        golden.update(section)
         FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with FIXTURE_PATH.open("w", encoding="utf-8") as f:
             json.dump(golden, f, indent=1, sort_keys=True)
@@ -495,14 +498,20 @@ def test_json_only_run_matches_golden_without_rendering(tmp_path, monkeypatch, f
     assert result["json"] == expected
 
 
-def test_disabling_preprocess_currently_raises(tmp_path, monkeypatch, fake_cuda, clip):
-    """Current behaviour, pinned so a fix is a deliberate change: with
-    ``enable_preprocess=False`` pass 1 reads ``rois_visual`` before anything
-    assigned it (it is only set inside the preprocessing branch)."""
-    install_fakes(monkeypatch)
-    cfg = make_config(tmp_path, clip, **JSON_ONLY_OVERRIDES, enable_preprocess=False)
-    with pytest.raises(UnboundLocalError, match="rois_visual"):
-        pipeline.run(cfg)
+def test_disabling_preprocess_runs_on_detections_alone(tmp_path, monkeypatch, fake_cuda, capsys, clip):
+    """``enable_preprocess=False`` skips the motion masks and ROI tracking;
+    the selector then works from detections only (no 'motion' fills).  The
+    JSON is the third golden section, ``no_preprocess_json``."""
+    result = run_pipeline(tmp_path, monkeypatch, clip, **JSON_ONLY_OVERRIDES, enable_preprocess=False)
+    out = capsys.readouterr().out
+    assert "[preprocess] disabled" in out
+    frames = result["json"]["frames"]
+    assert len(frames) == FRAMES
+    sources = {row.get("source") for row in frames if row.get("present")}
+    assert "det" in sources and "motion" not in sources
+    assert result["json"]["motion_diagnostics"]["summary"]["mask_source_counts"] == {"none": FRAMES}
+    maybe_update_golden({"no_preprocess_json": result["json"]})
+    assert result["json"] == load_golden()["no_preprocess_json"]
 
 
 def test_zero_frame_video_prints_and_returns_none(tmp_path, monkeypatch, fake_cuda, capsys):
