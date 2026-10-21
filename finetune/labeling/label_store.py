@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union, get_args
 
 from finetune.data.fileio import write_atomic
-from finetune.data.labels import (Flags, answered_point, format_point, frame_list, is_visible, read_flags, read_label_rows,
-                                  read_review, write_flags, write_label_cells)
+from finetune.data.labels import (FlagKind, Flags, answered_point, format_point, frame_list, is_visible, read_flags,
+                                  read_label_rows, read_review, write_flags, write_label_cells)
 from finetune.data.workspace import unsaved_csv
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 CONFIDENT_CONF = 0.70       # a draft at or above this confidence is not "uncertain"
 SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: filter, inset, trail
-FLAG_KINDS = ("unplaceable", "check")                  # the two kinds of frame flag an audit raises
+FLAG_KINDS: Tuple[FlagKind, ...] = get_args(FlagKind)  # the kinds of frame flag an audit raises
 
 
 class Row:
@@ -110,17 +110,18 @@ def save_flags(path: Path, rows: List[Row]) -> None:
         return
     flags: Flags = read_flags(path)
     kept, answered = _answered_flags(flags, rows)
-    if kept["unplaceable"] == flags["unplaceable"] and kept["check"] == flags["check"] and answered == flags["answered"]:
+    if all(kept[kind] == flags[kind] for kind in FLAG_KINDS) and answered == flags["answered"]:
         return
-    write_flags(path, {**flags, "unplaceable": kept["unplaceable"], "check": kept["check"], "answered": answered})
+    write_flags(path, {**flags, **kept, "answered": answered})
 
 
-def _answered_flags(flags: Flags, rows: List[Row]) -> Tuple[Dict[str, List[int]], Dict[str, Optional[List[float]]]]:
+def _answered_flags(flags: Flags, rows: List[Row]) -> Tuple[Dict[FlagKind, List[int]], Dict[str, Optional[List[float]]]]:
     """(the flags of each kind still open on these rows, the answers so far plus the ones the
     rows give). A flag on a frame the rows do not hold stays open."""
     by_frame = {row.frame: row for row in rows}
     open_now = {row.frame for row in rows if row.suspect}
-    kept = {kind: [f for f in flags[kind] if f in open_now or f not in by_frame] for kind in FLAG_KINDS}
+    kept: Dict[FlagKind, List[int]] = {kind: [f for f in flags[kind] if f in open_now or f not in by_frame]
+                                       for kind in FLAG_KINDS}
     answered = dict(flags["answered"])
     flagged = {frame for kind in FLAG_KINDS for frame in flags[kind]}
     for frame in sorted(flagged & (set(by_frame) - open_now)):      # flagged, held, and no longer open: answered

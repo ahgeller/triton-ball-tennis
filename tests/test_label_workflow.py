@@ -443,7 +443,8 @@ def test_a_later_audit_does_not_reask_an_answered_frame(tmp_path):
 
 
 def test_damaged_review_file_is_an_error_that_names_it_and_is_never_replaced(tmp_path):
-    from finetune.labeling.label_tool import LabelFormatError, build_source
+    from finetune.data.labels import LabelFormatError
+    from finetune.labeling.label_source import build_source
     review = tmp_path / "clip_ball.review.json"
     rows = source("clip", 3).rows
     for odd in ('{"reviewed": null, "edited": null}',             # parseable: tolerated field by field
@@ -465,10 +466,10 @@ def test_damaged_review_file_is_an_error_that_names_it_and_is_never_replaced(tmp
 
 
 def test_ranges_include_clips_that_only_have_a_draft(tmp_path):
-    from finetune.labeling.label_tool import expand
+    from finetune.labeling.label_source import expand_clip_ranges
     for name in ("v1_ball.csv", "v2_ball.csv.draft", "v3_ball.csv", "v4_ball.unsaved.csv"):
         (tmp_path / name).write_text("frame,ball_x,ball_y\n")
-    assert expand(["v1..v3"], tmp_path) == ["v1", "v2", "v3"]
+    assert expand_clip_ranges(["v1..v3"], tmp_path) == ["v1", "v2", "v3"]
 
 
 # --------------------------------------------------------------------------- suggestions

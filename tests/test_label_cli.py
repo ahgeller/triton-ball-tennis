@@ -47,7 +47,7 @@ def test_qt_backend_says_what_to_install_when_the_windows_are_not_qts(capsys):
 
 def test_open_sources_keeps_the_names_and_drops_clips_that_are_not_ready(tmp_path):
     ready = source("b")
-    with patch.object(label_cli, "expand", return_value=["a", "b"]), \
+    with patch.object(label_cli, "expand_clip_ranges", return_value=["a", "b"]), \
             patch.object(label_cli, "build_source", side_effect=lambda name, videos, labels: ready if name == "b" else None):
         names, sources = open_sources(build_parser().parse_args(["a..b"]))
     assert names == ["a", "b"] and sources == [ready]

@@ -40,21 +40,33 @@ def test_wheel_notches_come_from_the_packed_delta_with_a_fallback():
     assert MouseHandler.wheel_notches(1) == 1.0 and MouseHandler.wheel_notches(0) == -1.0   # no packed delta: one notch
 
 
-def test_guarded_events_are_the_tools_own_wheel_and_anything_while_calibrating():
+def test_guarded_is_a_pure_test_of_calibrating_the_overview_and_a_lagging_view():
     tool = shown_tool()
     pointer = tool.pointer
-    assert not pointer.guarded(cv2.EVENT_LBUTTONDOWN, 10, 10, 0)
-    with patch.object(tool.viewport, "absorb_wheel", return_value=True):
-        assert pointer.guarded(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16)
+    assert not pointer.guarded(cv2.EVENT_LBUTTONDOWN) and not pointer.guarded(cv2.EVENT_MOUSEWHEEL)
     tool.mouse.calibrating = True
-    assert pointer.guarded(cv2.EVENT_LBUTTONDOWN, 10, 10, 0)
-    assert not pointer.guarded(cv2.EVENT_MOUSEMOVE, 10, 10, 0)              # moves are what calibration reads
-    with patch.object(tool.viewport, "repay_wheel") as repay:
-        assert pointer.guarded(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16)
-    repay.assert_called_once_with(120)
+    assert pointer.guarded(cv2.EVENT_LBUTTONDOWN) and pointer.guarded(cv2.EVENT_MOUSEWHEEL)
+    assert not pointer.guarded(cv2.EVENT_MOUSEMOVE)                          # moves are what calibration reads
     tool.mouse.calibrating = False
+    tool.grid = True                                                         # the overview: no wheel, clicks are its own
+    assert pointer.guarded(cv2.EVENT_MOUSEWHEEL) and not pointer.guarded(cv2.EVENT_LBUTTONDOWN)
+    tool.grid = False
     tool.cursor = 3                                                          # the view lags the cursor
-    assert pointer.guarded(cv2.EVENT_LBUTTONDOWN, 10, 10, 0) and not pointer.guarded(cv2.EVENT_MOUSEMOVE, 10, 10, 0)
+    assert pointer.guarded(cv2.EVENT_LBUTTONDOWN) and not pointer.guarded(cv2.EVENT_MOUSEMOVE)
+
+
+def test_every_event_notes_the_pointer_and_an_unused_wheel_is_settled():
+    tool = shown_tool()
+    tool.on_mouse(cv2.EVENT_MOUSEMOVE, 7, 9, 0, None)
+    assert tool.mouse.pointer == (7, 9)                                      # note_pointer, before any guard
+    with patch.object(tool.viewport, "absorb_wheel", return_value=True), patch.object(tool.viewport, "repay_wheel") as repay:
+        tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16, None)         # the tool's own wheel: swallowed
+    assert tool.mouse.pointer == (7, 9) and not repay.called
+    tool.mouse.calibrating = True
+    with patch.object(tool.viewport, "repay_wheel") as repay:
+        tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 10, 10, 120 << 16, None)         # guarded: settled, not zoomed
+    repay.assert_called_once_with(120)
+    assert tool.mouse.pointer == (10, 10) and tool.zoom_target == 1.0
 
 
 def test_a_left_click_places_the_ball_and_moves_on_a_right_click_recentres():

@@ -32,7 +32,7 @@ from finetune.labeling.label_frame_view import FrameView
 from finetune.labeling.label_hints import Suggestions
 from finetune.labeling.label_keys import KeyHandler
 from finetune.labeling.label_mouse import MouseHandler
-from finetune.labeling.label_source import Prefetcher, Source, build_source, expand   # noqa: F401 - the tool's parts, by name
+from finetune.labeling.label_source import Prefetcher, Source
 from finetune.labeling.label_store import Row, rescue_unsaved, save_flags, save_review, save_rows, save_settings
 from finetune.labeling.label_grid import GridView
 from finetune.labeling.label_sheet import SheetView
@@ -520,19 +520,6 @@ class Tool:
             save_settings(self.settings_path, {"filter": self.filter_name, "inset": self.inset,
                                                "grid_size": self.grid_size,
                                                "trail": self.trail})
-
-    def wheel_notches(flags: int) -> float:
-        """Wheel movement in notches, sign included.
-
-        highgui packs the wheel delta into the top 16 bits of flags as a signed short, so an
-        arithmetic shift gets it back; cv2.getMouseWheelDelta is C++-only in this build. One
-        detent is 120, but a free-spinning wheel or a precision trackpad sends less than that,
-        and following those fractions is most of what makes a zoom feel continuous.
-        """
-        delta = (flags >> 16) / 120.0
-        if delta == 0:                       # a build that does not pack a delta: one notch it is
-            delta = 1.0 if flags > 0 else -1.0
-        return max(-4.0, min(4.0, delta))
 
     def zoom_at(self, notches: float, vx: float, vy: float) -> None:
         """Aim the zoom at a new level about the view point (vx, vy). The glide there happens in

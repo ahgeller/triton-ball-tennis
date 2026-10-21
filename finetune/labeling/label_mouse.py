@@ -22,7 +22,12 @@ class MouseHandler:
 
     def on_mouse(self, event: int, x: int, y: int, flags: int, param: object = None) -> None:
         tool = self.tool
-        if self.guarded(event, x, y, flags):
+        if event == cv2.EVENT_MOUSEWHEEL and tool.viewport.absorb_wheel(x, y, flags, tool.view_w):
+            return                                  # a wheel the tool sent itself, not the hand's
+        self.note_pointer(x, y)
+        if self.guarded(event):
+            if event == cv2.EVENT_MOUSEWHEEL:
+                self.settle_wheel(flags)
             return
         if tool.sheet:
             tool.sheet_mouse(event, x, y)
@@ -54,22 +59,27 @@ class MouseHandler:
             tool.zoom_at(self.wheel_notches(flags), x + 0.5, y + 0.5)
             tool.viewport.repay_wheel(flags >> 16)
 
-    def guarded(self, event: int, x: int, y: int, flags: int) -> bool:
-        """True for a mouse event the tool must not act on: a wheel it posted itself, anything
-        while it is moving the pointer, a wheel or click ahead of the displayed view."""
+    def note_pointer(self, x: int, y: int) -> None:
+        """Every event says where the pointer is: where the last warp landed, which the placer's
+        check_placement reads, so this comes before any guard."""
+        self.tool.mouse.report(x, y)
+
+    def settle_wheel(self, flags: int) -> None:
+        """A wheel the tool does not act on still zoomed Qt's own viewport: cancel that, or the
+        next viewport check finds it and rebuilds the window."""
+        self.tool.viewport.repay_wheel(flags >> 16)
+
+    def guarded(self, event: int) -> bool:
+        """True for a mouse event the tool must not act on (a pure test; the wheels the tool posted
+        itself are swallowed before it): anything but a move while the tool is moving the pointer,
+        a wheel on the grid or the sheet, and a wheel or click ahead of the displayed view - a
+        queued click must never edit the next frame before it is displayed."""
         tool = self.tool
-        if event == cv2.EVENT_MOUSEWHEEL and tool.viewport.absorb_wheel(x, y, flags, tool.view_w):
-            return True                             # a wheel the tool sent itself, not the hand's
-        tool.mouse.report(x, y)                     # where the warp landed; check_placement reads it
-        if event == cv2.EVENT_MOUSEWHEEL and (tool.mouse.calibrating or tool.overview or not tool.view_ready()):
-            # A wheel the tool does not act on still zoomed Qt's own viewport: cancel that, or the
-            # next viewport check finds it and rebuilds the window.
-            tool.viewport.repay_wheel(flags >> 16)
-            return True
-        if tool.mouse.calibrating and event != cv2.EVENT_MOUSEMOVE:
-            return True                             # the tool is moving the pointer itself just now
-        # a queued click must never edit the next frame before it is displayed
-        return not tool.overview and event != cv2.EVENT_MOUSEMOVE and not tool.view_ready()
+        if tool.mouse.calibrating:
+            return event != cv2.EVENT_MOUSEMOVE
+        if tool.overview:
+            return event == cv2.EVENT_MOUSEWHEEL
+        return event != cv2.EVENT_MOUSEMOVE and not tool.view_ready()
 
     def place_click(self, x: int, y: int) -> None:
         """A left click on the picture: the ball is there, and the next frame comes up."""

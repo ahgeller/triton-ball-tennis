@@ -12,7 +12,7 @@ from typing import List, Tuple
 from finetune.labeling import label_tool
 from finetune.labeling import label_window as win
 from finetune.labeling.label_draw import FILTERS
-from finetune.labeling.label_source import Source, build_source, expand
+from finetune.labeling.label_source import Source, build_source, expand_clip_ranges
 from finetune.labeling.label_store import SETTINGS_NAME, Settings, load_settings
 from finetune.labeling.label_tool import ZOOM_MAX, Tool
 from finetune.labeling.label_grid import GRID_SIZES
@@ -50,7 +50,7 @@ def qt_backend() -> bool:
 def open_sources(args: argparse.Namespace) -> Tuple[List[str], List[Source]]:
     """The clip names the command line expands to and the sources that are ready among them; a
     bad range is a ValueError naming it."""
-    names = expand(args.clips, args.labels)
+    names = expand_clip_ranges(args.clips, args.labels)
     sources = [source for source in (build_source(name, args.videos, args.labels) for name in names)
                if source is not None]
     return names, sources

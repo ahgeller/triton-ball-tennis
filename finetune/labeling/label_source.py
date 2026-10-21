@@ -287,9 +287,10 @@ class Source:
         return image
 
 
-def expand(names: List[str], labels: Path) -> List[str]:
-    """Turn what was typed into a clip list. 'a..b' means every labelled clip from a to b in order.
-    Raises ValueError for a range whose ends have no labels."""
+def expand_clip_ranges(names: List[str], labels: Path) -> List[str]:
+    """Turn what was typed into a clip list: 'a..b' means every clip with labels (or a draft) in
+    `labels` from a to b in order, and repeats are dropped. Raises ValueError for a range whose
+    ends have no labels."""
     available = sorted({clip_of(path) for path in label_files(labels) + draft_files(labels)}, key=natural_key)
     out: List[str] = []
     for name in names:
