@@ -144,8 +144,8 @@ def check_capabilities(cfg: Config, device_str: str) -> Tuple[Config, EncoderCho
         ENCODER_NVENC: "NVENC encoding",
         ENCODER_LIBX264: "libx264 encoding",
     }.get(encoder.preferred, "OpenCV encoding"))
-    accel.append("CUDA preprocessing" if is_cuda and cfg.enable_preprocess
-                 else "CPU preprocessing" if cfg.enable_preprocess else "no preprocessing")
+    # Preprocessing has no CPU path; a non-CUDA device fails at detector setup.
+    accel.append("CUDA preprocessing" if cfg.enable_preprocess else "no preprocessing")
     print(f"[platform] Device: {device_str}")
     print(f"[platform] Accelerations: {', '.join(accel)}")
     return cfg, encoder

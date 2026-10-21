@@ -1,5 +1,5 @@
 import math
-from typing import Any, NamedTuple, Optional, Tuple
+from typing import NamedTuple, Optional, Tuple, Union
 
 import numpy as np
 
@@ -80,7 +80,11 @@ class PackedMask(NamedTuple):
         return out
 
 
-def ensure_mask_u8(mask_obj: Any) -> Optional[np.ndarray]:
+# A per-frame motion mask as the selector accepts it.
+MaskLike = Union[PackedMask, np.ndarray]
+
+
+def ensure_mask_u8(mask_obj: Optional[MaskLike]) -> Optional[np.ndarray]:
     """Return uint8 mask {0,255}: None, a ``PackedMask`` unpacked, or the array as given."""
     if mask_obj is None:
         return None

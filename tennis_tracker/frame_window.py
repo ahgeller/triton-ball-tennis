@@ -2,7 +2,7 @@
 
 Pass 1 looks at three consecutive source frames at once: the current frame
 is preprocessed, and the previous and next frames feed the temporal motion
-gate.  On the CPU the window keeps the current frame and the one read ahead;
+gate.  In host memory the window keeps the current frame and the one read ahead;
 with preprocessing enabled it also keeps each frame's CUDA tensors so a frame
 is uploaded exactly once.
 """

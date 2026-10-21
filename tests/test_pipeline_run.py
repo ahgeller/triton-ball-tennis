@@ -467,7 +467,7 @@ def test_run_matches_golden(tmp_path, monkeypatch, fake_cuda, capsys, clip):
     assert len(frames) == FRAMES
     sources = {row.get("source") for row in frames if row.get("present")}
     assert "det" in sources
-    assert sources & {"motion", "interp", "carry"}, f"no filled gap sources in {sources}"
+    assert sources & {"motion", "interp"}, f"no filled gap sources in {sources}"
     assert result["json"]["chosen_track"] is not None
     assert result["json"]["last_valid_court_keypoints"] == COURT_KEYPOINTS
     assert result["json"]["summary"]["pass2_frames_rendered"] == FRAMES

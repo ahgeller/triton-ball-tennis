@@ -1,10 +1,10 @@
 import math
 import numpy as np
-from typing import Optional, List, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from .config import SelectorConfig
 from .models import Detection, Track
-from .utils import cfg_diag, fps_norm_pxpf, ensure_mask_u8
+from .utils import MaskLike, cfg_diag, fps_norm_pxpf, ensure_mask_u8
 from .physics import xy_dist
 
 
@@ -16,17 +16,21 @@ def _static_speed_threshold(cfg: SelectorConfig, diag: float) -> float:
 
 
 def build_detections(
-    detections_by_frame: List[List[Tuple[list, float]]],
-    raw_motions: Optional[List[Optional[np.ndarray]]] = None
+    detections_by_frame: Sequence[Sequence[Tuple[Sequence[float], float]]],
+    motion_masks: Optional[Sequence[Optional[MaskLike]]] = None
 ) -> List[List[Detection]]:
-    """Convert raw YOLO outputs to Detection objects."""
+    """Turn per-frame ``(bbox_xyxy, confidence)`` ball candidates into Detections.
+
+    A detection is ``on_motion`` when its centre (or a pixel beside it) is set
+    in that frame's ``motion_masks`` entry.
+    """
     all_dets = []
-    has_motion = bool(raw_motions)
+    has_motion = bool(motion_masks)
     for t, frame_dets in enumerate(detections_by_frame):
         frame_list = []
         mask = None
-        if frame_dets and has_motion and t < len(raw_motions):
-            bm = raw_motions[t]
+        if frame_dets and has_motion and t < len(motion_masks):
+            bm = motion_masks[t]
             if bm is not None:
                 mask = ensure_mask_u8(bm)
         for bbox, conf in frame_dets:

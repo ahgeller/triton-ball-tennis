@@ -18,7 +18,7 @@ from .models import Detection, FrameResult, Source, Track
 from .physics import predict_projectile
 from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
 from .tracking import build_detections, build_tracks
-from .utils import ensure_mask_u8
+from .utils import MaskLike, ensure_mask_u8
 
 # -- Tuned constants (30 FPS, 1080p reference unless stated) ----------------
 # Longest internal gap, and longest tail, the selector will fill: 0.30 s.
@@ -191,7 +191,7 @@ def trajectory_observations(track: Track, fps: float) -> List[Detection]:
 
 
 def motion_near(
-    mask_obj: Any,
+    mask_obj: Optional[MaskLike],
     x: float,
     y: float,
     reference_area: float,
@@ -246,8 +246,8 @@ def _motion_candidate(
     x: float,
     y: float,
     area: float,
-    boost_masks: Optional[Sequence[Any]],
-    raw_motions: Optional[Sequence[Any]],
+    boost_masks: Optional[Sequence[Optional[MaskLike]]],
+    raw_motions: Optional[Sequence[Optional[MaskLike]]],
     gate: float,
     area_ratio_max: float,
 ) -> Optional[Dict[str, Any]]:
@@ -523,8 +523,8 @@ class _Scene:
     total: int
     width: int
     height: int
-    boost_masks: Optional[Sequence[Any]]
-    raw_motions: Optional[Sequence[Any]]
+    boost_masks: Optional[Sequence[Optional[MaskLike]]]
+    raw_motions: Optional[Sequence[Optional[MaskLike]]]
     player_boxes_by_frame: Optional[Sequence[Any]]
     fill_frames: int        # longest gap or tail the selector fills
     min_fill_speed: float   # px/frame at this fps
@@ -824,8 +824,8 @@ def select_ball_in_play(
     width: int,
     height: int,
     court_polygon: Optional[np.ndarray] = None,
-    boost_masks: Optional[Sequence[Any]] = None,
-    raw_motions: Optional[Sequence[Any]] = None,
+    boost_masks: Optional[Sequence[Optional[MaskLike]]] = None,
+    raw_motions: Optional[Sequence[Optional[MaskLike]]] = None,
     player_boxes_by_frame: Optional[Sequence[Any]] = None,
     debug: bool = False,
 ) -> Tuple[List[Optional[FrameResult]], Optional[Track], List[Track]]:
@@ -833,7 +833,7 @@ def select_ball_in_play(
 
     ``detections_by_frame[t]`` holds ``(bbox_xyxy, confidence)`` pairs for
     source frame ``t``.  ``boost_masks`` / ``raw_motions`` are per-frame motion
-    masks (uint8 arrays or the packed tuples ``utils.ensure_mask_u8`` accepts),
+    masks (``utils.PackedMask``, a full-frame uint8 array, or None),
     ``player_boxes_by_frame[t]`` a dict or list of player boxes.
 
     Returns ``(per_frame, chosen, tracks)``: one ``FrameResult`` or ``None`` per
