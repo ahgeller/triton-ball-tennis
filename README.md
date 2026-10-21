@@ -35,7 +35,8 @@ unresolved detector gap remains a gap instead of becoming a long predicted path.
 
 - Python 3.10 and an NVIDIA CUDA GPU
 - CUDA-enabled PyTorch (install it from the PyTorch index for your CUDA version)
-- NumPy, OpenCV (the GUI build, for the label tool)
+- NumPy, OpenCV (pip's `opencv-python` is enough for the tracker; the label tool
+  needs the Qt build from conda-forge, see below)
 - TensorRT 10 for the player and court engines
 - BoxMOT for player tracking (required with the player engine; unset the engine path to run without players)
 - CatBoost, only for `--court`
@@ -51,6 +52,19 @@ unresolved detector gap remains a gap instead of becoming a long predicted path.
 pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
+
+The label tool (`python finetune/ft.py label <clip>`) draws its windows with Qt
+and refuses to start on any other OpenCV build. pip's Windows `opencv-python`
+wheel is not the Qt build (it reports WIN32UI), so for labeling, use a conda
+environment with conda-forge's OpenCV in its place; `finetune/ft.py` looks for
+such an environment by itself:
+
+```powershell
+pip uninstall opencv-python
+conda install -c conda-forge opencv
+```
+
+FilterPy is not needed: the selector's Kalman filter is plain NumPy.
 
 The repository includes the GridTrackNet weight export, the CatBoost bounce
 model and the TensorRT engines used by the default pipeline. TensorRT engines

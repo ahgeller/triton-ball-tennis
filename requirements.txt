@@ -10,11 +10,21 @@
 #     the PyTorch index for your CUDA version first, e.g.
 #       pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 #   - FFmpeg (optional, faster NVENC/libx264 rendering) is an external binary.
+#   - The label tool (finetune/labeling/label_tool.py, ft.py label) needs an
+#     OpenCV whose windows are drawn by Qt, and refuses to start otherwise
+#     (finetune/labeling/label_cli.py). pip's Windows opencv-python wheel is
+#     not that build (it draws with WIN32UI), so for labeling, install
+#     conda-forge's OpenCV instead of the pin below:
+#       pip uninstall opencv-python
+#       conda install -c conda-forge opencv
+#     The tracker, evaluation and training only need cv2 itself, so pip's
+#     opencv-python is enough for them. finetune/ft.py looks for a conda
+#     environment with the Qt build (finetune/interpreter.py).
 
 # --- Required ------------------------------------------------------------------
 torch==2.10.0             # CUDA build; GridTrackNet inference, CUDA motion masks, training
 numpy==1.26.4
-opencv-python==4.9.0.*    # GUI build (not -headless): the label tool opens windows
+opencv-python==4.9.0.*    # tracker, evaluation, training; the label tool needs conda-forge opencv (above)
 # TensorRT engines (models/*.engine) are specific to the GPU and TensorRT
 # version that built them; rebuild with build_trt_engines.py after upgrading.
 tensorrt==10.15.1.29      # player and court engine backends
@@ -28,3 +38,6 @@ psutil                    # sizes the automatic pass-2 frame cache (without it t
 # --- Tools, install when needed -------------------------------------------------
 # ultralytics==8.4.51     # build_trt_engines.py: YOLO .pt -> ONNX export only
 # pytest                  # python -m pytest -q and clean_tracker.py --self-test
+# filterpy                # not a dependency: the selector's Kalman filter is NumPy
+#                         # (ball_in_play_selector/physics.py); tests/test_ball_kalman.py
+#                         # only compares against it when it happens to be installed

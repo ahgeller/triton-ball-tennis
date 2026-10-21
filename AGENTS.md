@@ -96,7 +96,11 @@ resolves to a different Python installation. Other machines should use their own
 environment, not copy this user-specific path into application code.
 
 Runtime dependencies include CUDA PyTorch, NumPy, OpenCV and TensorRT;
-BoxMOT supplies player tracking. CatBoost is needed for `--court`. Ultralytics is
+BoxMOT supplies player tracking. FilterPy is not one: the selector's Kalman filter
+is NumPy (`ball_in_play_selector/physics.py`), and `tests/test_ball_kalman.py` only
+compares against FilterPy when it is installed. pip's `opencv-python` serves the
+tracker, but the label tool needs conda-forge's Qt build of OpenCV (see
+`requirements.txt`). CatBoost is needed for `--court`. Ultralytics is
 used by engine export. FFmpeg/NVENC can accelerate rendering. Versions and model/
 source hashes for the review are in `audit/snapshot.json`. There is no complete
 locked installation manifest. TensorRT engines may be GPU/version specific.
