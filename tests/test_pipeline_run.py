@@ -233,15 +233,15 @@ class FakeCourtDetector(CourtDetector):
         self.session = None
         self.detect_calls: List[int] = []
 
-    def detect(self, frame: np.ndarray, frame_idx: Optional[int] = None) -> Optional[List[float]]:
-        self.detect_calls.append(-1 if frame_idx is None else int(frame_idx))
+    def detect(self, frame: np.ndarray, frame_index: int) -> Optional[List[float]]:
+        self.detect_calls.append(int(frame_index))
         self.keypoints = list(COURT_KEYPOINTS)
         return self.keypoints
 
 
 @dataclass
 class _PlayerPending:
-    frame_idx: int
+    frame_index: int
 
 
 class FakePlayerDetector:
@@ -261,10 +261,10 @@ class FakePlayerDetector:
     def set_court_keypoints(self, court_keypoints: Optional[List[float]]) -> None:
         self.court_kps = court_keypoints
 
-    def detect_async_start(self, frame: np.ndarray, frame_idx: int, frame_gpu_t=None) -> _PlayerPending:
+    def detect_async_start(self, frame: np.ndarray, frame_index: int, frame_gpu_chw=None) -> _PlayerPending:
         assert frame.shape == (HEIGHT, WIDTH, 3)
-        self.start_calls.append(int(frame_idx))
-        return _PlayerPending(int(frame_idx))
+        self.start_calls.append(int(frame_index))
+        return _PlayerPending(int(frame_index))
 
     def detect_async_finish(self, pending: Optional[_PlayerPending]) -> List[List[float]]:
         if pending is None:
@@ -274,8 +274,8 @@ class FakePlayerDetector:
         self.cached_boxes = boxes
         return boxes
 
-    def detect(self, frame: np.ndarray, frame_idx: int) -> List[List[float]]:
-        return self.detect_async_finish(self.detect_async_start(frame, frame_idx))
+    def detect(self, frame: np.ndarray, frame_index: int) -> List[List[float]]:
+        return self.detect_async_finish(self.detect_async_start(frame, frame_index))
 
     def get_player_dict(self) -> Dict[int, List[float]]:
         return dict(self.slots)

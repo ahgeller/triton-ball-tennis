@@ -48,9 +48,9 @@ class CourtDetector:
             out[semantic_i] = pts[model_i]
         return out
 
-    def _print_raw_result(self, rows: np.ndarray, frame_idx: int) -> None:
+    def _print_raw_result(self, rows: np.ndarray, frame_index: int) -> None:
         best_idx = int(np.argmax(rows[:, 4])) if rows.size else -1
-        print(f"[court][raw] frame={frame_idx} rows={rows.shape[0]} best={best_idx}")
+        print(f"[court][raw] frame={frame_index} rows={rows.shape[0]} best={best_idx}")
         if best_idx >= 0:
             r = rows[best_idx]
             print(json.dumps({
@@ -58,23 +58,24 @@ class CourtDetector:
                 "conf": float(r[4]), "cls": float(r[5]),
             }))
 
-    def _report_miss(self, frame_idx: int) -> Optional[List[float]]:
+    def _report_miss(self, frame_index: int) -> Optional[List[float]]:
         if self.cfg.print_court_raw:
             msg = "miss, using cached court" if self.keypoints else "no court detected"
-            print(f"[court] frame={frame_idx}: {msg}")
+            print(f"[court] frame={frame_index}: {msg}")
         return self.keypoints
 
-    def detect(self, frame: np.ndarray, frame_idx: Optional[int] = None) -> Optional[List[float]]:
+    def detect(self, frame: np.ndarray, frame_index: int) -> Optional[List[float]]:
+        """The court keypoints as of source frame ``frame_index``: the engine
+        runs when ``cfg.court_detect_interval`` frames have passed since it
+        last did, otherwise the cached result is returned."""
         if self.session is None:
             return self.keypoints
         interval = max(1, int(self.cfg.court_detect_interval))
-        if frame_idx is None:
-            frame_idx = self.last_run_frame + interval
-        if self.keypoints is not None and frame_idx != 0 and \
-                (frame_idx - self.last_run_frame) < interval:
+        if self.keypoints is not None and frame_index != 0 and \
+                (frame_index - self.last_run_frame) < interval:
             return self.keypoints
 
-        self.last_run_frame = frame_idx
+        self.last_run_frame = frame_index
         t, scale = self.session.preprocess_frame(frame)
         outputs = self.session.forward_tensor(t)
         self.session.wait()
@@ -83,12 +84,12 @@ class CourtDetector:
         if rows.size == 0:
             return self.keypoints
         if self.cfg.print_court_raw:
-            self._print_raw_result(rows, frame_idx)
+            self._print_raw_result(rows, frame_index)
 
         conf = rows[:, 4] if rows.shape[1] > 4 else np.zeros((rows.shape[0],), dtype=np.float32)
         best_i = int(np.argmax(conf))
         if float(conf[best_i]) < float(self.cfg.court_conf):
-            return self._report_miss(frame_idx)
+            return self._report_miss(frame_index)
 
         row = rows[best_i]
         kpt_raw = row[self._KEYPOINT_COLUMN:]
@@ -107,7 +108,7 @@ class CourtDetector:
         if len(flat) >= 2 * self._MIN_KEYPOINTS:
             self.keypoints = flat
             return self.keypoints
-        return self._report_miss(frame_idx)
+        return self._report_miss(frame_index)
 
     def draw(self, frame: np.ndarray) -> np.ndarray:
         if self.keypoints is None:

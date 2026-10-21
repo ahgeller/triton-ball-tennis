@@ -180,11 +180,11 @@ class _Pass1Collector:
             run_aux = (frame_idx - self.last_aux_detect_frame) >= self.aux_force_interval
         player_pending = None
         if run_aux:
-            court_kps = self.court_detector.detect(frame, frame_idx=frame_idx)
+            court_kps = self.court_detector.detect(frame, frame_index=frame_idx)
             self.player_detector.set_court_keypoints(court_kps)
             gpu = self.window.curr_gpu
             player_pending = self.player_detector.detect_async_start(
-                frame, frame_idx, frame_gpu_t=gpu.chw if gpu is not None else None)
+                frame, frame_index=frame_idx, frame_gpu_chw=gpu.chw if gpu is not None else None)
             self.last_aux_detect_frame = frame_idx
         else:
             court_kps = self.court_detector.keypoints

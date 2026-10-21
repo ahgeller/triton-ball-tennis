@@ -41,7 +41,7 @@ class PlayerPending:
     """
 
     frame: np.ndarray
-    frame_idx: int
+    frame_index: int
     width: int
     height: int
     court_kps: Optional[List[float]]
@@ -106,23 +106,26 @@ class PlayerDetector:
         rows[:, [1, 3]] = np.clip(rows[:, [1, 3]], 0, frame_h - 1)
         return rows
 
-    def detect_async_start(self, frame: np.ndarray, frame_idx: int,
-                           frame_gpu_t: Optional[torch.Tensor] = None) -> Optional[PlayerPending]:
+    def detect_async_start(self, frame: np.ndarray, frame_index: int,
+                           frame_gpu_chw: Optional[torch.Tensor] = None) -> Optional[PlayerPending]:
+        """Launch the engine on source frame ``frame_index`` (a host BGR frame,
+        which ByteTrack also needs).  ``frame_gpu_chw`` is the same frame
+        already on the GPU as CHW float in [0, 1], used instead when given."""
         if not self.enabled:
             return None
 
         h, w = frame.shape[:2]
         self._frame_diag = (w ** 2 + h ** 2) ** 0.5
-        pending = PlayerPending(frame, int(frame_idx), int(w), int(h), self.court_kps)
+        pending = PlayerPending(frame, int(frame_index), int(w), int(h), self.court_kps)
 
         # The engine runs every N frames; the tracker is still finished every
         # frame, with empty detections in between.
-        if frame_idx % self._current_interval != 0:
+        if frame_index % self._current_interval != 0:
             return pending
 
         t = None
-        if frame_gpu_t is not None:
-            t, _ = self.session.preprocess_cuda_chw_frame(frame_gpu_t)
+        if frame_gpu_chw is not None:
+            t, _ = self.session.preprocess_cuda_chw_frame(frame_gpu_chw)
         if t is None:
             t, _ = self.session.preprocess_frame(frame)
         pending.outputs = self.session.forward_tensor(t)
@@ -171,8 +174,8 @@ class PlayerDetector:
         self.cached_boxes = boxes
         return boxes
 
-    def detect(self, frame: np.ndarray, frame_idx: int) -> List[List[float]]:
-        return self.detect_async_finish(self.detect_async_start(frame, frame_idx))
+    def detect(self, frame: np.ndarray, frame_index: int) -> List[List[float]]:
+        return self.detect_async_finish(self.detect_async_start(frame, frame_index))
 
     def get_player_dict(self) -> Dict[int, List[float]]:
         return dict(self.slots)
