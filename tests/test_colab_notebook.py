@@ -28,19 +28,10 @@ def module_name(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
-def import_nodes(tree: ast.Module) -> Iterator[ast.AST]:
-    """Every node of `tree` except those inside a module-level ``__getattr__``: a PEP 562 lazy
-    attribute hook (``tennis_tracker.__getattr__`` imports the pipeline for ``tennis_tracker.run``)
-    runs only when that attribute is read, which the trainer never does."""
-    lazy_hooks = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "__getattr__"]
-    skipped = {id(inner) for hook in lazy_hooks for inner in ast.walk(hook)}
-    return (node for node in ast.walk(tree) if id(node) not in skipped)
-
-
 def internal_imports(path: Path) -> Iterator[str]:
     """Every finetune.* / tennis_tracker.* module `path` imports, at module level or inside a
     function, relative imports (``from .config import Config``) resolved against `path`."""
-    for node in import_nodes(ast.parse(path.read_text(encoding="utf-8"))):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.split(".")[0] in PACKAGES:
