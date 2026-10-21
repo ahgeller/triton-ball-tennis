@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 from ball_in_play_selector import FrameResult
 
-from tennis_tracker.render import rendering
 from tennis_tracker.config import Config
 from tennis_tracker.render.rendering import (
     COLOR_DET,

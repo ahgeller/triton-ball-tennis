@@ -9,7 +9,6 @@ import pytest
 from tennis_tracker.paths import ROOT
 
 
-
 def test_root_scripts_front_the_package_modules():
     import check_parity
     import evaluate_archive
@@ -25,7 +24,6 @@ def test_root_scripts_front_the_package_modules():
 def test_every_script_main_takes_argv_and_returns_a_status():
     """main(argv=None) -> int everywhere, invoked as raise SystemExit(main()): a test can drive a
     script without patching sys.argv, and the exit status is the return value, never implicit."""
-    import ast
     import inspect
     from evaluation import archive, parity, validate
     from finetune.data import import_data, realign
