@@ -5,15 +5,23 @@ the frames worth a look."""
 from __future__ import annotations
 
 import math
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from finetune.data.detector_metrics import HIT_PX, WRONG_PX, DetectorMetrics, scale_for_width
 from tennis_tracker.court.court_geometry import LINE_PAIRS_14, MIN_KEYPOINT_VALUES, last_valid_court_keypoints
 
+if TYPE_CHECKING:
+    # The tracking JSON's shape, defined where it is written; for the type checker only, so
+    # this scorer does not import the tracker's CUDA and TensorRT stack.
+    from tennis_tracker.export import FrameRow, TrackingFrames
+
 LINE_PX = 10.0  # "on a court line" if within this many 1080p pixels of one
 
+# Player boxes as the tracking JSON holds them (by tracked id) or as a plain list.
+PlayerBoxList = Union[Dict[str, Optional[List[float]]], Sequence[Optional[Sequence[float]]]]
 
-def _inside_player(x: float, y: float, boxes) -> bool:
+
+def _inside_player(x: float, y: float, boxes: Optional[PlayerBoxList]) -> bool:
     values = boxes.values() if isinstance(boxes, dict) else (boxes or [])
     return any(b and len(b) >= 4 and b[0] <= x <= b[2] and b[1] <= y <= b[3] for b in values)
 
@@ -25,7 +33,7 @@ def _segment_distance(x: float, y: float, ax: float, ay: float, bx: float, by: f
     return math.hypot(x - (ax + t * dx), y - (ay + t * dy))
 
 
-def _near_court_line(x: float, y: float, keypoints, scale: float) -> bool:
+def _near_court_line(x: float, y: float, keypoints: Optional[Sequence[float]], scale: float) -> bool:
     """Within LINE_PX (1080p) of a court line the keypoints describe; a keypoint list is usable
     from MIN_KEYPOINT_VALUES values (the tracker's rule) and only the lines it holds are tried."""
     if not keypoints or len(keypoints) < MIN_KEYPOINT_VALUES:
@@ -41,7 +49,7 @@ def _near_court_line(x: float, y: float, keypoints, scale: float) -> bool:
     return False
 
 
-def _classify(x: float, y: float, row: dict, fallback_keypoints: Optional[List[float]], scale: float) -> str:
+def _classify(x: float, y: float, row: FrameRow, fallback_keypoints: Optional[Sequence[float]], scale: float) -> str:
     """What did a wrong/false output land on: player, line, or something else."""
     if _inside_player(x, y, row.get("player_boxes")):
         return "player"
@@ -59,24 +67,25 @@ class ClipScore(NamedTuple):
     bad_frames: List[Tuple[int, str, Optional[str], str]]    # (frame, kind, source, where)
 
 
-def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: dict, width: int) -> ClipScore:
+def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: TrackingFrames,
+                        width: int) -> ClipScore:
     """One clip's pipeline output against its labels: (stats, by_source, 1080p pairs, landed, bad frames)."""
     frames = {row["frame"]: row for row in payload["frames"]}
     # The court as last seen, by the tracker's own rule (export.py writes the same thing).
     fallback_keypoints = (payload.get("last_valid_court_keypoints")
                           or last_valid_court_keypoints([row.get("court_keypoints") for row in payload["frames"]]))
     scale = scale_for_width(width)
-    pairs = []
+    pairs: List[Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]] = []
     by_source: Dict[str, Dict[str, int]] = {}
     landed: Dict[str, int] = {}
-    bad_frames = []
+    bad_frames: List[Tuple[int, str, Optional[str], str]] = []
     for frame, label in sorted(labels.items()):
         row = frames.get(frame)
-        present = bool(row and row.get("present"))
-        pred = (row["x"], row["y"]) if present else None
-        pairs.append((label, pred))
-        if not present:
+        if row is None or not row.get("present"):
+            pairs.append((label, None))
             continue
+        pred = (row["x"], row["y"])
+        pairs.append((label, pred))
         bucket = by_source.setdefault(row.get("source", "?"), {"hit": 0, "localized_error": 0, "wrong": 0, "invisible": 0})
         bad = None
         if label is None:

@@ -6,11 +6,11 @@ re-read from disk.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from .config import Config
 from .paths import COURT_ENGINE, PLAYER_ENGINE
-from .export import RunResult
+from .export import RunResult, TrackingFrames
 
 
 def headless_config(video: Path, *, model_path: Path, conf: float, device: str, tracking_json: Path,
@@ -41,7 +41,7 @@ def run_headless(video: Path, *, model_path: Path, conf: float, device: str, tra
                                output_video=output_video))
 
 
-def tracking_payload(result: RunResult) -> Dict[str, Any]:
+def tracking_payload(result: RunResult) -> TrackingFrames:
     """The part of the tracking JSON a scorer reads (``frames`` and the court as last seen), from
     the run's result, so a caller need not read the file the run wrote."""
     return {"frames": result.frame_rows(), "last_valid_court_keypoints": result.last_valid_court_keypoints}

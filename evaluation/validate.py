@@ -11,10 +11,123 @@ import json
 import math
 import statistics
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, TypedDict, TypeGuard, Union
+
+if TYPE_CHECKING:
+    # The tracking JSON's shape is defined where it is written.  Imported for the type checker
+    # only, so this scorer stays importable without the tracker's CUDA and TensorRT stack.
+    from tennis_tracker.export import FrameRow, SummaryJson, TrackingJson
 
 
-def _load_json(path: Path) -> Dict[str, Any]:
+class _LabelAlways(TypedDict):
+    frame: int
+
+
+class LabelRow(_LabelAlways, total=False):
+    """One hand label: ``frame`` always, ``x``/``y`` when the ball was marked, ``visible`` False
+    for a labelled absence (True when the key is missing)."""
+
+    x: Optional[float]
+    y: Optional[float]
+    visible: bool
+
+
+class _VisibleLabelAlways(_LabelAlways):
+    x: float
+    y: float
+
+
+class VisibleLabel(_VisibleLabelAlways, total=False):
+    """A ``LabelRow`` that marks the ball: ``_has_position`` tells them apart."""
+
+    visible: bool
+
+
+# A frame range the scorer skips, as ``start``/``end`` or ``from``/``to`` (inclusive).
+IgnoreRange = TypedDict("IgnoreRange", {"start": int, "end": int, "from": int, "to": int}, total=False)
+LabelRows = Union[List[LabelRow], Dict[str, LabelRow]]     # a list, or keyed by frame number
+
+
+class AnnotationJson(TypedDict, total=False):
+    """The annotation file: the labels under ``ball`` (or ``frames``) and the ranges to skip."""
+
+    ball: LabelRows
+    frames: LabelRows
+    ignore_ranges: List[IgnoreRange]
+
+
+class LargeJump(TypedDict):
+    from_frame: int
+    to_frame: int
+    gap: int
+    distance_px: float
+
+
+class MatchPrediction(TypedDict):
+    x: float
+    y: float
+    source: Optional[str]
+
+
+class MatchLabel(TypedDict):
+    x: float
+    y: float
+
+
+class Match(TypedDict):
+    """A visible label with a prediction on its frame, and how far apart they are."""
+
+    frame: int
+    error_px: float
+    pred: MatchPrediction
+    label: MatchLabel
+
+
+class ErrorStatistics(TypedDict):
+    """The summary's error figures: None where there was no match to measure."""
+
+    mean_error_px: Optional[float]
+    median_error_px: Optional[float]
+    p90_error_px: Optional[float]
+    max_error_px: Optional[float]
+    within_5px: int
+    within_10px: int
+    within_20px: int
+
+
+class ValidationSummary(ErrorStatistics):
+    """The figures ``check_parity`` freezes (it adds a ``smoothness`` block of its own)."""
+
+    prediction_file_summary: SummaryJson
+    labeled_visible_frames: int
+    matched_visible_frames: int
+    missed_visible_frames: int
+    recall: float
+    presence_recall: float
+    localization_recall_5px: float
+    localization_recall_10px: float
+    localization_recall_20px: float
+    labeled_absent_frames: int
+    false_positive_absent_frames: int
+    absence_precision: Optional[float]
+    absence_specificity: Optional[float]
+    prediction_present_frames: int
+    prediction_total_frames: int
+    prediction_filled_ratio: float
+    source_counts: Dict[str, int]
+    large_jump_count: int
+
+
+class ValidationReport(TypedDict):
+    summary: ValidationSummary
+    miss_frames: List[int]
+    false_positive_frames: List[int]
+    large_jumps: List[LargeJump]
+    matches: List[Match]
+
+
+def _load_json(path: Path) -> Any:
+    """The file's JSON as it is on disk; ``validate`` says what shape it expects."""
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -34,7 +147,7 @@ def _percentile(values: List[float], pct: float) -> Optional[float]:
     return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
 
 
-def _is_ignored(frame: int, ranges: Iterable[Dict[str, Any]]) -> bool:
+def _is_ignored(frame: int, ranges: Iterable[IgnoreRange]) -> bool:
     for item in ranges:
         start = int(item.get("start", item.get("from", -1)))
         end = int(item.get("end", item.get("to", start)))
@@ -43,9 +156,9 @@ def _is_ignored(frame: int, ranges: Iterable[Dict[str, Any]]) -> bool:
     return False
 
 
-def _prediction_frames(payload: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+def _prediction_frames(payload: TrackingJson) -> Dict[int, FrameRow]:
     frames = payload.get("frames", [])
-    out: Dict[int, Dict[str, Any]] = {}
+    out: Dict[int, FrameRow] = {}
     if isinstance(frames, list):
         for idx, row in enumerate(frames):
             if row is None:
@@ -61,19 +174,23 @@ def _prediction_frames(payload: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
     return out
 
 
-def _prediction_present(row: Optional[Dict[str, Any]]) -> bool:
+def _prediction_present(row: Optional[FrameRow]) -> TypeGuard[FrameRow]:
+    """Whether the row holds a ball position (``present`` with ``x`` and ``y``)."""
     if not row:
         return False
     return bool(row.get("present", False)) and row.get("x") is not None and row.get("y") is not None
 
 
-def _annotation_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _has_position(row: LabelRow) -> TypeGuard[VisibleLabel]:
+    return row.get("x") is not None and row.get("y") is not None
+
+
+def _annotation_rows(payload: AnnotationJson) -> List[LabelRow]:
     rows = payload.get("ball", payload.get("frames", []))
-    out: List[Dict[str, Any]] = []
+    out: List[LabelRow] = []
     if isinstance(rows, dict):
         for frame_s, value in rows.items():
-            row = dict(value or {})
-            row["frame"] = int(frame_s)
+            row: LabelRow = {**value, "frame": int(frame_s)} if value else {"frame": int(frame_s)}
             out.append(row)
     elif isinstance(rows, list):
         out.extend(row for row in rows if isinstance(row, dict))
@@ -82,7 +199,7 @@ def _annotation_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def _source_counts(pred_frames: Dict[int, Dict[str, Any]]) -> Dict[str, int]:
+def _source_counts(pred_frames: Dict[int, FrameRow]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for row in pred_frames.values():
         if not _prediction_present(row):
@@ -93,11 +210,11 @@ def _source_counts(pred_frames: Dict[int, Dict[str, Any]]) -> Dict[str, int]:
 
 
 def _large_jumps(
-    pred_frames: Dict[int, Dict[str, Any]],
+    pred_frames: Dict[int, FrameRow],
     jump_px: float,
     max_gap: int,
-) -> List[Dict[str, Any]]:
-    jumps: List[Dict[str, Any]] = []
+) -> List[LargeJump]:
+    jumps: List[LargeJump] = []
     last: Optional[Tuple[int, float, float]] = None
     for frame in sorted(pred_frames):
         row = pred_frames[frame]
@@ -122,30 +239,29 @@ def _large_jumps(
     return jumps
 
 
-def _label_rows(annotations: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def _label_rows(annotations: AnnotationJson) -> Tuple[List[VisibleLabel], List[LabelRow]]:
     """(the visible labels with a position, the absent labels), ignored ranges left out."""
     ignore_ranges = annotations.get("ignore_ranges", [])
-    visible_labels = []
-    absent_labels = []
+    visible_labels: List[VisibleLabel] = []
+    absent_labels: List[LabelRow] = []
     for row in _annotation_rows(annotations):
         frame = int(row["frame"])
         if _is_ignored(frame, ignore_ranges):
             continue
         visible = bool(row.get("visible", True))
-        has_xy = row.get("x") is not None and row.get("y") is not None
-        if visible and has_xy:
+        if visible and _has_position(row):
             visible_labels.append(row)
         elif not visible:
             absent_labels.append(row)
     return visible_labels, absent_labels
 
 
-def _match_labels(pred_frames: Dict[int, Dict[str, Any]],
-                  visible_labels: List[Dict[str, Any]]) -> Tuple[List[float], List[int], List[Dict[str, Any]]]:
+def _match_labels(pred_frames: Dict[int, FrameRow],
+                  visible_labels: List[VisibleLabel]) -> Tuple[List[float], List[int], List[Match]]:
     """(the error of every visible label with a prediction, the frames without one, the matches)."""
     errors: List[float] = []
     misses: List[int] = []
-    matches: List[Dict[str, Any]] = []
+    matches: List[Match] = []
     for label in visible_labels:
         frame = int(label["frame"])
         pred = pred_frames.get(frame)
@@ -165,8 +281,7 @@ def _match_labels(pred_frames: Dict[int, Dict[str, Any]],
     return errors, misses, matches
 
 
-def _error_statistics(errors: List[float]) -> Dict[str, Any]:
-    """The summary's error figures: None where there was no match to measure."""
+def _error_statistics(errors: List[float]) -> ErrorStatistics:
     return {
         "mean_error_px": statistics.fmean(errors) if errors else None,
         "median_error_px": statistics.median(errors) if errors else None,
@@ -179,11 +294,11 @@ def _error_statistics(errors: List[float]) -> Dict[str, Any]:
 
 
 def validate(
-    predictions: Dict[str, Any],
-    annotations: Dict[str, Any],
+    predictions: TrackingJson,
+    annotations: AnnotationJson,
     jump_px: float,
     jump_max_gap: int,
-) -> Dict[str, Any]:
+) -> ValidationReport:
     pred_frames = _prediction_frames(predictions)
     visible_labels, absent_labels = _label_rows(annotations)
     errors, misses, matches = _match_labels(pred_frames, visible_labels)
@@ -198,7 +313,7 @@ def validate(
         precision_on_labeled_absence = 1.0 - (
             len(false_positive_frames) / max(len(absent_labels), 1)
         )
-    summary = {
+    summary: ValidationSummary = {
         "prediction_file_summary": predictions.get("summary", {}),
         "labeled_visible_frames": len(visible_labels),
         "matched_visible_frames": len(errors),
@@ -268,7 +383,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     return 2 if _gates_failed(args, summary) else 0
 
 
-def summary_lines(summary: Dict[str, Any]) -> List[str]:
+def summary_lines(summary: ValidationSummary) -> List[str]:
     """The console report of a validation summary, one ``[validation]`` line per figure."""
     lines = [
         "[validation] labels matched/missed: "
@@ -293,7 +408,7 @@ def summary_lines(summary: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _gates_failed(args: argparse.Namespace, summary: Dict[str, Any]) -> bool:
+def _gates_failed(args: argparse.Namespace, summary: ValidationSummary) -> bool:
     """Whether any threshold given on the command line is missed (a missing number fails it)."""
     failed = False
     if args.max_mean_error is not None:

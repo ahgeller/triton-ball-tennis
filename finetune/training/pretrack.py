@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -44,7 +44,7 @@ Guess = Tuple[float, float, str, float]     # x, y, where it came from, confiden
 NO_GUESS = DraftRow(None, "none", 0.0)      # the draft row of a frame the detector had nothing for
 
 
-def write_draft(rows_by_frame: Dict[int, Optional[Guess]], draft_path: Path, stride: int,
+def write_draft(rows_by_frame: Mapping[int, Optional[Guess]], draft_path: Path, stride: int,
                 width: int, height: int, total: int) -> int:
     """Write one row per label frame (every `stride` frames from 0) through the label format's own
     draft writer: the guess where there is one, "no ball" otherwise. Returns how many frames got
