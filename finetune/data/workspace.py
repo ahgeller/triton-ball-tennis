@@ -45,6 +45,7 @@ LABEL_SUFFIX = "_ball.csv"
 DRAFT_SUFFIX = "_ball.csv.draft"
 REVIEW_SUFFIX = "_ball.review.json"
 SUSPECT_SUFFIX = "_ball.suspect.json"
+UNSAVED_SUFFIX = "_ball.unsaved.csv"      # the label tool's rescue copy when the label file cannot be written
 
 MANIFEST_COLUMNS = ("clip", "source", "section", "group", "width", "height", "fps", "stride",
                     "label_frames", "visible", "camera", "motion_px", "origin", "note")
@@ -114,12 +115,25 @@ def suspect_json(clip: str, labels: Optional[Path] = None) -> Path:
     return (LABELS if labels is None else labels) / f"{clip}{SUSPECT_SUFFIX}"
 
 
-def label_files(labels: Optional[Path] = None) -> List[Path]:
-    """Every final label file, in natural clip order."""
+def unsaved_csv(clip: str, labels: Optional[Path] = None) -> Path:
+    return (LABELS if labels is None else labels) / f"{clip}{UNSAVED_SUFFIX}"
+
+
+def _files_ending(suffix: str, labels: Optional[Path]) -> List[Path]:
     labels = LABELS if labels is None else labels
     if not labels.is_dir():
         return []
-    return sorted(labels.glob(f"*{LABEL_SUFFIX}"), key=lambda path: natural_key(path.stem))
+    return sorted(labels.glob(f"*{suffix}"), key=lambda path: natural_key(clip_of(path)))
+
+
+def label_files(labels: Optional[Path] = None) -> List[Path]:
+    """Every final label file, in natural clip order."""
+    return _files_ending(LABEL_SUFFIX, labels)
+
+
+def draft_files(labels: Optional[Path] = None) -> List[Path]:
+    """Every draft (``pretrack.py``'s guesses, not yet corrected), in natural clip order."""
+    return _files_ending(DRAFT_SUFFIX, labels)
 
 
 def labelled_clips(labels: Optional[Path] = None) -> List[str]:

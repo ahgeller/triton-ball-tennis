@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from finetune.data import workspace
-from finetune.data.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, find_video, label_csv,
-                                     label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
-                                     require_video, review_json, suspect_json, videos_in, write_manifest)
+from finetune.data.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, draft_files, find_video,
+                                     label_csv, label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
+                                     require_video, review_json, suspect_json, unsaved_csv, videos_in, write_manifest)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,6 +20,7 @@ def test_a_clip_names_its_files(tmp_path):
     assert draft_csv("rally7", tmp_path) == tmp_path / "rally7_ball.csv.draft"
     assert review_json("rally7", tmp_path) == tmp_path / "rally7_ball.review.json"
     assert suspect_json("rally7", tmp_path) == tmp_path / "rally7_ball.suspect.json"
+    assert unsaved_csv("rally7", tmp_path) == tmp_path / "rally7_ball.unsaved.csv"
     assert clip_of(label_csv("rally7", tmp_path)) == clip_of(draft_csv("rally7", tmp_path)) == "rally7"
 
 
@@ -28,7 +29,8 @@ def test_label_files_come_in_natural_clip_order(tmp_path):
         (tmp_path / name).write_text("")
     assert [p.name for p in label_files(tmp_path)] == ["video2_ball.csv", "video10_ball.csv"]
     assert labelled_clips(tmp_path) == ["video2", "video10"]
-    assert label_files(tmp_path / "missing") == []
+    assert [p.name for p in draft_files(tmp_path)] == ["video1_ball.csv.draft"]
+    assert label_files(tmp_path / "missing") == [] and draft_files(tmp_path / "missing") == []
     assert natural_key("video10") > natural_key("video2")
 
 

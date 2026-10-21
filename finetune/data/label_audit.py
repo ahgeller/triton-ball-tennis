@@ -28,8 +28,8 @@ from finetune.data.labels import (FLAG_ANSWER_DECIMALS, FlagKind, Flags, LabelFo
                                   read_labels, write_flags, write_labels)
 from finetune.data.scoring import AGREE_PX, DETECTION_CONF, MIN_FAST, REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
 from finetune.data import workspace as ws
-from finetune.data.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, suspect_json,
-                                     video_meta, videos_in, write_manifest)
+from finetune.data.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, review_json,
+                                     suspect_json, video_meta, videos_in, write_manifest)
 from tennis_tracker.frame_rate import phase_stride
 
 if TYPE_CHECKING:
@@ -323,7 +323,7 @@ def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: i
     path = label_csv(clip)
     if delta_frames == 0:
         return
-    if any(path.with_suffix(suffix).exists() for suffix in (".review.json", ".suspect.json")):
+    if review_json(clip).exists() or suspect_json(clip).exists():
         raise ValueError(f"Cannot bulk-shift {clip}: review metadata needs an explicit frame remapping")
     shifted = {frame + delta_frames: point for frame, point in read_labels(path, width, height).items()
                if 0 <= frame + delta_frames < total}

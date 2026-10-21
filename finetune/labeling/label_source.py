@@ -16,7 +16,8 @@ import numpy as np
 
 from finetune.labeling.label_store import Row, apply_flags, apply_review, load_rows
 from finetune.data.labels import LabelFormatError
-from finetune.data.workspace import draft_csv, find_video, label_csv, natural_key, review_json, video_meta
+from finetune.data.workspace import (clip_of, draft_csv, draft_files, find_video, label_csv, label_files, natural_key,
+                                     review_json, suspect_json, video_meta)
 
 CACHE_BYTES = 400_000_000  # decoded frames kept in memory, as a budget: 1080p frames are 6 MB each
 CACHE_FRAMES_MAX = 96      # ... and never more than this many, nor fewer than CACHE_FRAMES_MIN
@@ -46,11 +47,11 @@ class Source:
     """One clip in a run: its video, its rows, and the files its work goes back to."""
 
     def __init__(self, clip: str, video: Path, rows: List[Row], width: int, height: int,
-                 out_csv: Path, review: Path):
+                 out_csv: Path, review: Path, suspects: Optional[Path] = None):
         self.clip, self.video, self.rows = clip, video, rows
         self.width, self.height = width, height
         self.out_csv, self.review = out_csv, review
-        self.suspects = review.with_name(review.name.replace("_ball.review.json", "_ball.suspect.json"))
+        self.suspects = suspect_json(clip, review.parent) if suspects is None else suspects
         for row in rows:
             row.clip = clip
         self.capture = cv2.VideoCapture(str(video))
@@ -262,8 +263,7 @@ class Source:
 def expand(names: List[str], labels: Path) -> List[str]:
     """Turn what was typed into a clip list. 'a..b' means every labelled clip from a to b in order.
     Raises ValueError for a range whose ends have no labels."""
-    available = sorted({path.name.split("_ball.csv")[0] for path in labels.glob("*_ball.csv*")
-                        if path.name.endswith(("_ball.csv", "_ball.csv.draft"))}, key=natural_key)
+    available = sorted({clip_of(path) for path in label_files(labels) + draft_files(labels)}, key=natural_key)
     out: List[str] = []
     for name in names:
         if ".." in name:
@@ -307,7 +307,7 @@ def build_source(clip: str, videos: Path, labels: Path) -> Optional[Source]:
         print(f"[skip] {clip}: {from_file.name} has no label rows")
         return None
     review = review_json(clip, labels)
-    source = Source(clip, video, rows, width, height, final, review)
+    source = Source(clip, video, rows, width, height, final, review, suspect_json(clip, labels))
     try:
         source.flagged = apply_flags(source.suspects, rows)
         state = apply_review(review, rows)

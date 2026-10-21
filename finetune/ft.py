@@ -46,8 +46,9 @@ from finetune.data.label_audit import audit_labels, check_label_file, matches_an
 from finetune.data.labels import LabelFormatError, read_labels, reviewed_frames
 from finetune.data.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
 from finetune.data import workspace as ws
-from finetune.data.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_csv, label_csv, label_files, natural_key,
-                                     read_exclusions, read_manifest, review_json, video_meta, videos_in, write_manifest)
+from finetune.data.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_csv, draft_files, label_csv, label_files,
+                                     natural_key, read_exclusions, read_manifest, review_json, video_meta, videos_in,
+                                     write_manifest)
 from tennis_tracker.frame_rate import phase_stride
 
 # cheapest first: cv2 rules out most interpreters fast. Exit 3 means usable for training but with an
@@ -221,7 +222,7 @@ def sha8(path: Path) -> str:
 
 
 def drafted_clips() -> Set[str]:
-    return {clip_of(p) for p in ws.LABELS.glob("*_ball.csv.draft")} if ws.LABELS.is_dir() else set()
+    return {clip_of(p) for p in draft_files()}
 
 
 # --------------------------------------------------------------------------- commands

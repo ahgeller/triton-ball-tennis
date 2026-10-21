@@ -1442,7 +1442,7 @@ class Tool:
         for source in self.sources:
             if not source.dirty:
                 continue
-            rescue = source.out_csv.with_name(source.out_csv.stem + ".unsaved.csv")
+            rescue = ws.unsaved_csv(source.clip, source.out_csv.parent)
             try:
                 save_rows(rescue, source.rows, source.width, source.height)
                 print(f"[save] {source.out_csv.name} could not be written; your labels are in {rescue.name}")
