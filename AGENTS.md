@@ -52,9 +52,13 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `finetune/ft.py`: workflow front door (menu, launchers, script commands;
   `commands.py` has the in-process commands, `interpreter.py` the venv
   hand-over). The rest of the package is three
-  subpackages. `finetune/labeling/`: `label_tool.py` (manual edits), split into
-  `label_store.py` (a clip's rows and sidecars), `label_source.py` (one clip of a
-  labelling run), `label_window.py` (window plumbing and the key tables),
+  subpackages. `finetune/labeling/`: `label_tool.py` (manual edits: the tool's
+  state, navigation and edits, the actions the key table names), split into
+  `label_cli.py` (its command line), `label_store.py` (a clip's rows and
+  sidecars), `label_source.py` (one clip of a labelling run, and the prefetcher
+  that decodes ahead of the cursor), `label_window.py` (window plumbing and the
+  key tables), `label_keys.py` (what the keys do), `label_mouse.py` (what the
+  mouse does), `label_frame_view.py` (the single-frame picture and HUD),
   `label_views.py` (the grid and trajectory-sheet views, each owning its state,
   picture and keys), `label_draw.py` (the filters, marks and text every view
   draws with) and `label_hints.py` (the suggestions), with `refine.py` and

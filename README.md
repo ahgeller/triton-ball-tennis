@@ -174,7 +174,8 @@ sample/                                  Sample video and validation annotations
 finetune.bat / finetune.ps1              Front door for the fine-tuning workspace
 finetune/ft.py                           Front door for the labelling and training workflow
 finetune/commands.py, interpreter.py     Its in-process commands and the venv hand-over
-finetune/labeling/label_tool.py          Manual label editing (label_store, label_source, label_window,
+finetune/labeling/label_tool.py          Manual label editing (label_cli, label_store, label_source,
+                                         label_window, label_keys, label_mouse, label_frame_view,
                                          label_views, label_draw and label_hints hold its pieces)
 finetune/labeling/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
 finetune/labeling/refiner_training.py    Training that CNN on the frames you have checked

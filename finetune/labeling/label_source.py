@@ -8,8 +8,9 @@ clips in one sitting cannot mix them up, and edits always go back to the clip a 
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
 
 import cv2
 import numpy as np
@@ -33,6 +34,11 @@ LANDMARK = 8              # every Nth frame walked past is fingerprinted, so a l
 DECODE_RETRIES = 3        # re-seeks tried before a frame is given up on as undecodable
 SIGNATURE_SIZE = (96, 54) # a frame is fingerprinted at this size
 DEFAULT_ZOOM = 2.0
+PREFETCH = 6              # label frames decoded ahead while the tool waits for the next keypress
+PREFETCH_BUDGET_S = 0.02  # about a screen refresh of decoding per idle tick
+
+if TYPE_CHECKING:
+    from finetune.labeling.label_tool import Tool
 
 
 def frame_signature(image: np.ndarray) -> bytes:
@@ -356,3 +362,54 @@ def resume_from(source: Source, state: dict) -> None:
         source.zoom = float(state.get("zoom") or DEFAULT_ZOOM)
     except (TypeError, ValueError):
         source.zoom = DEFAULT_ZOOM
+
+
+class Prefetcher:
+    """Decodes the label frames ahead of the cursor while the tool is idle, so the next SPACE
+    lands on a frame that is already in memory. Runs ahead the way the last move went, at the
+    tool's step, along the uncertain walk when there is one."""
+
+    def __init__(self, tool: "Tool") -> None:
+        self.tool = tool
+
+    def run(self) -> bool:
+        """Decode not-yet-cached frames ahead of the cursor. True when there was work to do.
+
+        Keeps going for about a screen refresh rather than one frame per idle tick: a run of SPACE
+        presses at two or three a second was outrunning one decode per 30 ms wait."""
+        tool = self.tool
+        started, worked = time.monotonic(), False
+        for index in self.upcoming_rows():
+            if tool.rows[index].clip != tool.rows[tool.cursor].clip:
+                break                                    # do not disturb the next clip's capture yet
+            frame = tool.rows[index].frame
+            if tool.filter_name == "motion":
+                self.warm_frame_before(index)
+            if frame in tool.source.frame_cache or frame in tool.source.missing:
+                continue
+            tool.frame(frame)
+            worked = True
+            if time.monotonic() - started > PREFETCH_BUDGET_S:
+                break
+        return worked
+
+    def upcoming_rows(self) -> Sequence[int]:
+        """The next PREFETCH row indices the way the last move went, at the current step."""
+        tool = self.tool
+        s = tool.step                                    # n/d/p/a land every step-th row
+        if tool.direction >= 0:
+            return (tool.walk[tool.walk_pos + s::s][:PREFETCH] if tool.walk
+                    else range(tool.cursor + s, min(tool.cursor + s * PREFETCH + 1, len(tool.rows)), s))
+        # heading back: run ahead of `a` instead
+        return ((tool.walk[tool.walk_pos - s::-s][:PREFETCH] if tool.walk_pos - s >= 0 else [])
+                if tool.walk else range(tool.cursor - s, max(-1, tool.cursor - s * PREFETCH - 1), -s))
+
+    def warm_frame_before(self, index: int) -> None:
+        """The motion view diffs a row against the row before it: decode that one too while it is
+        still ahead of the capture (no seek), unless it is cached or known to be missing."""
+        tool = self.tool
+        if index > 0 and tool.rows[index - 1].clip == tool.rows[index].clip:
+            before = tool.rows[index - 1].frame
+            if (before not in tool.source.frame_cache and before not in tool.source.missing
+                    and before >= tool.source.position >= 0):
+                tool.frame(before)

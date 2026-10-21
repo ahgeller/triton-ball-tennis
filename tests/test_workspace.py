@@ -103,8 +103,8 @@ def test_tennis_workspace_reaches_the_label_tool_and_pretrack(tmp_path):
     env = dict(os.environ, TENNIS_WORKSPACE=str(tmp_path))
     weights = tmp_path / "w.npz"
     weights.write_bytes(b"")
-    code = ("from finetune.labeling import label_tool; from finetune.training import pretrack; "
-            "args = label_tool.build_parser().parse_args(['clip']); print(args.videos); print(args.labels); "
+    code = ("from finetune.labeling import label_cli; from finetune.training import pretrack; "
+            "args = label_cli.build_parser().parse_args(['clip']); print(args.videos); print(args.labels); "
             f"raise SystemExit(pretrack.main(['--clips', 'clip', '--weights', {str(weights)!r}]))")
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True)
     assert out.returncode == 1, out.stderr                       # no video named clip there: nothing drafted

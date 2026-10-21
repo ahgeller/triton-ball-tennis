@@ -13,12 +13,11 @@ labels/<clip>_ball.csv, with progress in labels/<clip>_ball.review.json, autosav
 
 from __future__ import annotations
 
-import argparse
 import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Hashable, List, Optional, Sequence, Tuple
+from typing import Dict, Hashable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -27,27 +26,23 @@ if __name__ == "__main__":          # run as a script: make the repository root 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finetune.labeling import label_window as win
-from finetune.labeling.label_draw import (FILTERS, GHOST, ZOOM_STEP, ChipRow, draw_badge, draw_ghost, draw_mark, draw_ticks,
-                                          enhance, fit_text, hit, label_mark_colour, mark_plan, review_badge)
+from finetune.labeling.label_draw import FILTERS, ZOOM_STEP
+from finetune.labeling.label_frame_view import FrameView
 from finetune.labeling.label_hints import Suggestions
-from finetune.labeling.label_source import Source, build_source, expand   # noqa: F401 - the tool's parts, by name
-from finetune.labeling.label_store import (SETTINGS_NAME, Row, Settings, load_settings, rescue_unsaved, save_flags,
-                                           save_review, save_rows, save_settings)
-from finetune.labeling.label_views import GRID_SIZES, GridView, SheetView
-from finetune.labeling.label_window import (KEY_TAB, KEYS_CONFIRM, KEYS_NEXT, KEYS_NUDGE, KEYS_PREV, KEYS_QUIT, KEYS_STEP,
-                                            KEYS_ZOOM_IN, KEYS_ZOOM_OUT, WINDOW)
-from finetune.data import workspace as ws
+from finetune.labeling.label_keys import KeyHandler
+from finetune.labeling.label_mouse import MouseHandler
+from finetune.labeling.label_source import Prefetcher, Source, build_source, expand   # noqa: F401 - the tool's parts, by name
+from finetune.labeling.label_store import Row, rescue_unsaved, save_flags, save_review, save_rows, save_settings
+from finetune.labeling.label_views import GridView, SheetView
+from finetune.labeling.label_window import WINDOW
 from finetune.data.labels import LabelFormatError, is_visible
 from finetune.labeling.refine import Suggestion
-from finetune.data.scoring import REFERENCE_HEIGHT
 
 HUD = 58
 MAX_UPSCALE = 2.0         # cap on drawing the frame bigger than it is: past this it only costs time
 UI_REFERENCE = 1280.0     # view width the HUD text sizes were chosen for; bigger views scale up
 ZOOM_EASE = 0.34          # share of the remaining gap closed each redraw: a glide, not a jump
 ZOOM_MAX = 12.0
-PREFETCH = 6              # label frames decoded ahead while the tool waits for the next keypress
-INSET_SHARE = 0.22        # width of the overview inset as a share of the view
 GHOST_REACH = 3           # rows either side searched for a ball to interpolate a missing guess from
 SNAP_PX = 4               # a wheel turned with the pointer this close to the ball zooms about the ball
 AUTOSAVE_SECONDS = 5.0    # write labels + review progress this often while there are unsaved changes
@@ -70,6 +65,10 @@ class Tool:
         self.mouse = win.CursorPlacer(self)    # parks the OS pointer on the ball (Windows)
         self.viewport = win.ViewportGuard()    # keeps the Qt window's own zoom at x1
         self.hints = Suggestions(sources)      # refine.suggest's measurements, kept current in the background
+        self.frame_view = FrameView(self)      # the single-frame picture and HUD; see label_frame_view
+        self.pointer = MouseHandler(self)      # what clicks and the wheel do; see label_mouse
+        self.keys = KeyHandler(self)           # what the keys do; see label_keys
+        self.prefetcher = Prefetcher(self)     # decodes ahead of the cursor while idle; see label_source
         self.fullscreen = False
         self.zoom = 1.0
         self.zoom_target = 1.0
@@ -82,8 +81,6 @@ class Tool:
         self.trail = True
         self.follow = True            # auto-centre: the view and the mouse go to the guess
         self.step = 1                 # frames n/d/p/a move at a time; SPACE and a click stay at 1
-        self.centre_button = None     # where the HUD badge that toggles that is, in display pixels
-        self.step_buttons = []        # ... and the x1..x8 ones, as (box, frames) pairs
         self.dirty = False
         self.pending_cursor_move = False
         self.last_save = time.monotonic()
@@ -94,11 +91,6 @@ class Tool:
         self.presented = None
         self.filter = 0               # index into FILTERS; h cycles it, the HUD chip shows it
         self.inset = True             # the small whole-frame overview drawn while zoomed in
-        self.inset_box = None         # where it is on screen, so a click in it can re-centre there
-        self.inset_scale = 1.0        # frame px -> inset px
-        self.filter_button = None     # HUD chips for those two, like centre_button
-        self.inset_button = None
-        self.thumbs: Dict[tuple, np.ndarray] = {}   # (clip, frame, width) -> small copy, for the inset
         self.ghost = None             # a frame with no guess: where the neighbours say the ball should be
         self.settings_path: Optional[Path] = None
         self.normal_rect = None       # the window's rect before going full screen, to rebuild into
@@ -136,6 +128,11 @@ class Tool:
     grid_tiles = property(lambda self: self.grid_view.tiles)
     sheet_start = property(lambda self: self.sheet_view.start, lambda self, i: setattr(self.sheet_view, "start", i))
     sheet_points = property(lambda self: self.sheet_view.points)
+
+    @property
+    def filter_name(self) -> str:
+        """The view filter in force, by its name in FILTERS (h cycles it)."""
+        return FILTERS[self.filter]
 
     # ---------------------------------------------------------------- geometry
     @property
@@ -426,46 +423,6 @@ class Tool:
         """True when the frame under the cursor has no picture, so nothing should be said about it."""
         return self.rows[self.cursor].frame in self.source.missing
 
-    def prefetch(self) -> bool:
-        """Decode not-yet-cached frames ahead of the cursor. Called while the tool is idle, so the
-        next SPACE lands on a frame that is already in memory. True when there was work to do.
-
-        Keeps going for about a screen refresh rather than one frame per idle tick: a run of SPACE
-        presses at two or three a second was outrunning one decode per 30 ms wait."""
-        started, worked = time.monotonic(), False
-        for index in self.upcoming_rows():
-            if self.rows[index].clip != self.rows[self.cursor].clip:
-                break                                    # do not disturb the next clip's capture yet
-            frame = self.rows[index].frame
-            if FILTERS[self.filter] == "motion":
-                self.warm_frame_before(index)
-            if frame in self.source.frame_cache or frame in self.source.missing:
-                continue
-            self.frame(frame)
-            worked = True
-            if time.monotonic() - started > 0.02:
-                break
-        return worked
-
-    def upcoming_rows(self) -> Sequence[int]:
-        """The next PREFETCH row indices the way the last move went, at the current step."""
-        s = self.step                                    # n/d/p/a land every step-th row
-        if self.direction >= 0:
-            return (self.walk[self.walk_pos + s::s][:PREFETCH] if self.walk
-                    else range(self.cursor + s, min(self.cursor + s * PREFETCH + 1, len(self.rows)), s))
-        # heading back: run ahead of `a` instead
-        return ((self.walk[self.walk_pos - s::-s][:PREFETCH] if self.walk_pos - s >= 0 else [])
-                if self.walk else range(self.cursor - s, max(-1, self.cursor - s * PREFETCH - 1), -s))
-
-    def warm_frame_before(self, index: int) -> None:
-        """The motion view diffs a row against the row before it: decode that one too while it is
-        still ahead of the capture (no seek), unless it is cached or known to be missing."""
-        if index > 0 and self.rows[index - 1].clip == self.rows[index].clip:
-            before = self.rows[index - 1].frame
-            if (before not in self.source.frame_cache and before not in self.source.missing
-                    and before >= self.source.position >= 0):
-                self.frame(before)
-
     def previous_image(self) -> Optional[np.ndarray]:
         """The picture of the label row before this one in the same clip, if it is already in the
         cache - it usually is, having just been looked at. Never decoded on purpose: a frame behind
@@ -477,48 +434,10 @@ class Tool:
             return None
         return self.source.frame_cache.get(before.frame)
 
-    def thumbnail(self, frame: int, image: np.ndarray, width: int, height: int) -> np.ndarray:
-        key = (self.clip, frame, width)
-        thumb = self.thumbs.get(key)
-        if thumb is None:
-            thumb = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
-            if len(self.thumbs) >= 64:
-                self.thumbs.pop(next(iter(self.thumbs)))
-            self.thumbs[key] = thumb
-        return thumb
-
-    def draw_inset(self, display: np.ndarray, image: np.ndarray, row: Row, ui: float) -> None:
-        """A small copy of the whole frame in the bottom-right corner while zoomed in, with the part on
-        screen boxed and the ball dotted. When the detector's guess is nowhere near, this is where the
-        real ball is found without zooming out: a click on it brings that spot into the zoomed view."""
-        self.inset_box = None
-        if not self.inset or self.zoom < 1.5:
-            return
-        width = int(self.view_w * INSET_SHARE)
-        height = max(1, int(round(width * self.height / self.width)))
-        margin = int(10 * ui)
-        left, top = self.view_w - width - margin, self.view_h - height - margin
-        if left < 0 or top < 0:
-            return
-        panel = self.thumbnail(row.frame, image, width, height).copy()
-        scale = width / self.width
-        self.inset_scale = scale
-        x0, y0 = self.origin
-        x1, y1 = x0 + self.view_w / self.scale, y0 + self.view_h / self.scale
-        cv2.rectangle(panel, (int(x0 * scale), int(y0 * scale)), (int(x1 * scale) - 1, int(y1 * scale) - 1),
-                      (255, 255, 255), 1)
-        point = self.target_point()
-        if point is not None:
-            cv2.circle(panel, (int(point[0] * scale), int(point[1] * scale)), max(2, int(2 * ui)),
-                       (0, 255, 255) if row.visible else GHOST, -1, cv2.LINE_AA)
-        display[top:top + height, left:left + width] = panel
-        cv2.rectangle(display, (left - 1, top - 1), (left + width, top + height), (110, 110, 110), 1)
-        self.inset_box = (left, top, left + width - 1, top + height - 1)
-
     def render_state(self, image: np.ndarray, before: Optional[np.ndarray]) -> Tuple[Hashable, ...]:
         """Everything the single-frame view is drawn from. render redraws only when this changes,
-        so the loop can call it every 30 ms for free. IF YOU MAKE render, draw_inset OR THE HUD READ
-        SOMETHING NEW, ADD IT HERE - a screen that does not change when it should is far worse than
+        so the loop can call it every 30 ms for free. IF YOU MAKE render OR FrameView (the picture,
+        the inset, the HUD) READ SOMETHING NEW, ADD IT HERE - a screen that does not change when it should is far worse than
         the CPU this saves. Any write to any Row bumps Row.revision, which covers the labels, review
         flags, trail and every counter in the HUD; the frame images are keyed by identity, which
         changes when one is decoded, evicted or replaced by a placeholder."""
@@ -535,158 +454,19 @@ class Tool:
         self.centre_view()
         row = self.rows[self.cursor]
         image = self.frame(row.frame)
-        mode = FILTERS[self.filter]
+        mode = self.filter_name
         before = self.previous_image() if mode == "motion" else None
         key = self.render_state(image, before)
         if key == self.render_key:
             self.render_fresh = False
             return self.render_cache
         self.render_fresh = True
-        canvas = self.warp_picture(image, before, mode)
-        display = canvas[:self.view_h]
         hint = self.suggestion_for(self.cursor)
         offer = self.offer_for(self.cursor)
         self.shown_offers = {} if offer is None else {self.cursor: (offer["x"], offer["y"])}
-        self.draw_marks(display, row, hint, offer)
-        self.draw_inset(display, image, row, self.ui)
-        self.draw_badges(display, row)
-        self.draw_hud(canvas, row, hint, offer)
+        canvas = self.frame_view.draw(image, before, mode, row, hint, offer)
         self.render_key, self.render_cache = key, canvas
         return canvas
-
-    def warp_picture(self, image: np.ndarray, before: Optional[np.ndarray], mode: str) -> np.ndarray:
-        """A fresh canvas for picture and HUD with the frame drawn into its top at the view's
-        scale and origin, filtered by `mode` (the motion filter diffs against `before`)."""
-        x0, y0 = self.origin
-        # Resize with exact sub-pixel origin handling via warpAffine. warpAffine puts pixel centres on
-        # whole numbers while frame coordinates put them at k + 0.5 (see to_view): the half-pixel
-        # terms line the drawn picture up with where a click is stored.
-        s = self.scale
-        matrix = np.array([[s, 0.0, s * (0.5 - x0) - 0.5], [0.0, s, s * (0.5 - y0) - 0.5]], dtype=np.float64)
-        interpolation = cv2.INTER_LINEAR if self.zoom < 8 else cv2.INTER_NEAREST
-        # One canvas for picture and HUD, the picture warped straight into its top: building them
-        # apart and stacking them copied the whole view once more per redraw. A fresh canvas each
-        # time, so an image handed out earlier (the cache, a caller's reference) is never drawn over.
-        canvas = np.empty((self.view_h + self.hud_h, self.view_w, 3), np.uint8)
-        display = canvas[:self.view_h]
-        cv2.warpAffine(image, matrix, (self.view_w, self.view_h), dst=display, flags=interpolation)
-        if mode != "off":
-            previous = None
-            if before is not None:
-                previous = cv2.warpAffine(before, matrix, (self.view_w, self.view_h), flags=interpolation)
-            display[:] = enhance(display, mode, previous)
-        return canvas
-
-    def draw_marks(self, display: np.ndarray, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> None:
-        """The trail, the mark (the suggestion on offer or the label, with the other ticked beside
-        it) or, on a frame with no ball and no offer, the dashed guess."""
-        ui = self.ui
-        thin = max(1, int(round(ui)))
-        if self.trail:
-            for previous in self.rows[max(0, self.cursor - 12):self.cursor]:
-                if previous.visible and previous.clip == row.clip:
-                    cv2.circle(display, self.to_view(previous.x, previous.y), max(3, int(3 * ui)),
-                               (200, 200, 60), thin, cv2.LINE_AA)
-        radius = int(max(8, 6 * self.zoom) * ui)
-        # The suggestion on offer is the mark SPACE takes, drawn as the label would be, in orange -
-        # bright when it is sure, dull when only a guess; the draft it replaces is ticked in grey.
-        plan = mark_plan(row, hint, offer, label_mark_colour(row))
-        for point, colour in plan.ticks:
-            draw_ticks(display, *self.to_view(*point), colour, ui)
-        if plan.mark is not None:
-            draw_mark(display, *self.to_view(*plan.mark), radius, plan.colour, ui)
-        elif self.ghost is not None:
-            draw_ghost(display, *self.to_view(*self.ghost), radius, ui)
-
-    def draw_badges(self, display: np.ndarray, row: Row) -> None:
-        """The row's review badge at the top right and the frames-left counter at the top left."""
-        badge = review_badge(row)
-        if badge is not None:
-            draw_badge(display, badge[0], badge[1], (0, 0, 0), self.ui, right_edge=self.view_w)
-        remaining = len(self.rows) - sum(r.reviewed for r in self.rows)
-        counter = "ALL DONE" if remaining == 0 else f"{remaining} LEFT"
-        fill, text_colour = ((70, 190, 70), (0, 0, 0)) if remaining == 0 else ((50, 50, 50), (255, 255, 255))
-        draw_badge(display, counter, fill, text_colour, self.ui)
-
-    def hud_place(self) -> str:
-        """Where in the clip, the run and the uncertain walk the cursor is."""
-        source = self.source
-        within = f"{self.cursor - source.start + 1}/{len(source.rows)}"
-        place = (f"{source.clip} [{within}]" if len(self.sources) == 1 else
-                 f"{source.clip} [{within}]  clip {self.sources.index(source) + 1}/{len(self.sources)}"
-                 f"  run {self.cursor + 1}/{len(self.rows)}")
-        if self.walk:
-            left = sum(1 for i in self.walk if not self.rows[i].settled)
-            place += f"  UNCERTAIN ONLY {self.walk_pos + 1}/{len(self.walk)} ({left} left)"
-        return place
-
-    def hud_state(self, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> str:
-        """The label, and what the suggestion says about it."""
-        state = "NOT VISIBLE" if not row.visible else f"({row.x:.1f}, {row.y:.1f})"
-        if offer is not None:
-            sure = "sure" if offer["trusted"] else "UNSURE, look closely"
-            if row.visible:
-                gap = math.hypot(offer["x"] - row.x, offer["y"] - row.y) * REFERENCE_HEIGHT / self.height
-                return f"HINT ({offer['x']:.1f}, {offer['y']:.1f}) {sure}  grey draft {gap:.1f}px off"
-            return f"HINT ({offer['x']:.1f}, {offer['y']:.1f}) {sure}  draft: no ball"
-        if hint is not None and not row.visible:
-            return state + "  hint: the video shows a ball here (y takes it)"
-        if hint is not None:
-            gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * REFERENCE_HEIGHT / self.height
-            state += f"  hint {gap:.1f}px" if gap >= 0.05 else "  hint: here"
-            verdict = self.hint_verdict(self.cursor)
-            if verdict is not None:
-                state += "  hint ok" if verdict == "agrees" else "  hint differs"
-            else:
-                state += " (unsure)"
-        return state
-
-    def hud_lines(self, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> Tuple[str, str]:
-        """The two text lines of the HUD: this frame, and the counts with the keys that matter."""
-        tag = "EDITED" if row.edited else "ok" if row.reviewed else "unreviewed"
-        line1 = (f"{self.hud_place()}  frame {row.frame}  {self.hud_state(row, hint, offer)}  "
-                 f"from {row.source} {row.conf:.2f}  {tag}  zoom x{self.zoom:.1f}{'  *unsaved*' if self.dirty else ''}")
-        keys = ("SPACE=take hint  x=keep draft  v=invisible" if offer is not None else
-                "SPACE=good  y=take hint  v=invisible")
-        return line1, f"{self.hud_counts()}{keys}  r=accept run  f=uncertain  q=quit"
-
-    def hud_counts(self) -> str:
-        """How much of the run is reviewed, uncertain, flagged and disputed, as the HUD says it."""
-        reviewed = sum(r.reviewed for r in self.rows)
-        uncertain_left = sum(1 for r in self.rows if r.uncertain and not r.reviewed)
-        flagged_left = sum(1 for r in self.rows if r.suspect)
-        disputed = self.disputed_count()
-        return (f"reviewed {reviewed}/{len(self.rows)}  uncertain left {uncertain_left}  "
-                f"{('flagged left ' + str(flagged_left) + '   ') if flagged_left else '  '}"
-                f"{('hint differs ' + str(disputed) + ' (e)   ') if disputed else ''}")
-
-    def draw_hud(self, canvas: np.ndarray, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> None:
-        """The two text lines and the clickable chips along the bottom of the single-frame view."""
-        ui = self.ui
-        thin = max(1, int(round(ui)))
-        hud = canvas[self.view_h:]
-        hud[:] = 0
-        line1, line2 = self.hud_lines(row, hint, offer)
-        # Buttons along the right end of the bar, laid out right to left and measured before the
-        # two text lines, so a long clip name or a narrow window cuts the text short instead of
-        # running under them. Every box is kept for on_mouse: they are all clickable.
-        chips = ChipRow(hud, self.hud_h, self.view_h, ui)
-        pad = chips.pad
-        # Lit green means on; the words stay short so the text lines keep their room
-        edge, self.centre_button = chips.chip(self.view_w - pad, "g  CENTRE", self.follow)
-        edge, self.inset_button = chips.chip(edge - pad, "o  INSET", self.inset)
-        edge, self.filter_button = chips.chip(edge - pad, f"h  {FILTERS[self.filter].upper() if self.filter else 'FILTER'}",
-                                              self.filter != 0)
-        self.step_buttons = []
-        for jump in (8, 6, 4, 2, 1):                     # right to left, so x1 comes out leftmost
-            edge, box = chips.chip(edge - pad, f"x{jump}", jump == self.step)
-            self.step_buttons.append((box, jump))
-        edge = chips.caption(edge, "a/d step")
-        room = max(0, edge - int(16 * ui))
-        cv2.putText(hud, fit_text(line1, room, 0.55 * ui, thin), (int(8 * ui), int(22 * ui)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * ui, (255, 255, 255), thin, cv2.LINE_AA)
-        cv2.putText(hud, fit_text(line2, room, 0.48 * ui, thin), (int(8 * ui), int(46 * ui)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48 * ui, (180, 180, 180), thin, cv2.LINE_AA)
 
     def pump(self, ms: int) -> None:
         """Let highgui deliver events for `ms` without losing a keypress: Qt's waitKey hands back,
@@ -721,83 +501,8 @@ class Tool:
 
     # ---------------------------------------------------------------- edits
     def on_mouse(self, event: int, x: int, y: int, flags: int, param: object) -> None:
-        if self.mouse_guarded(event, x, y, flags):
-            return
-        if self.sheet:
-            self.sheet_mouse(event, x, y)
-            return
-        if event == cv2.EVENT_LBUTTONDBLCLK:
-            # The second press of a quick double-click comes through as this instead of a press. With
-            # the pointer parked on the same screen pixel frame after frame, click-click on two
-            # consecutive frames is exactly that, and every second click used to be thrown away.
-            event = cv2.EVENT_LBUTTONDOWN
-        if self.grid:
-            self.grid_mouse(event, x, y)
-            return
-        if y >= self.view_h:                        # the HUD: its buttons, and nothing else
-            if event == cv2.EVENT_LBUTTONDOWN:
-                self.hud_click(x, y)
-            return
-        if event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_RBUTTONDOWN) and hit(self.inset_box, x, y):
-            self.inset_click(x, y)
-            return
-        if event == cv2.EVENT_LBUTTONDOWN:
-            self.place_click(x, y)
-        elif event == cv2.EVENT_RBUTTONDOWN:
-            frame_x, frame_y = self.to_frame(x + 0.5, y + 0.5)
-            self.center = (min(max(frame_x, 0.0), self.width - 1.0),   # a click in the black beyond
-                           min(max(frame_y, 0.0), self.height - 1.0))  # the frame: keep it on frame
-            self.centre_view()
-        elif event == cv2.EVENT_MOUSEWHEEL:
-            self.mouse.wheel_at = time.monotonic()
-            self.zoom_at(self.wheel_notches(flags), x + 0.5, y + 0.5)
-            self.viewport.repay_wheel(flags >> 16)
-
-    def mouse_guarded(self, event: int, x: int, y: int, flags: int) -> bool:
-        """True for a mouse event the tool must not act on: a wheel it posted itself, anything
-        while it is moving the pointer, a wheel or click ahead of the displayed view."""
-        if event == cv2.EVENT_MOUSEWHEEL and self.viewport.absorb_wheel(x, y, flags, self.view_w):
-            return True                             # a wheel the tool sent itself, not the hand's
-        self.mouse.report(x, y)                     # where the warp landed; check_placement reads it
-        if event == cv2.EVENT_MOUSEWHEEL and (self.mouse.calibrating or self.overview or not self.view_ready()):
-            # A wheel the tool does not act on still zoomed Qt's own viewport: cancel that, or the
-            # next viewport check finds it and rebuilds the window.
-            self.viewport.repay_wheel(flags >> 16)
-            return True
-        if self.mouse.calibrating and event != cv2.EVENT_MOUSEMOVE:
-            return True                             # the tool is moving the pointer itself just now
-        # a queued click must never edit the next frame before it is displayed
-        return not self.overview and event != cv2.EVENT_MOUSEMOVE and not self.view_ready()
-
-    def hud_click(self, x: int, y: int) -> None:
-        """A left click on the HUD bar: the chip under it, if any."""
-        if hit(self.centre_button, x, y):
-            self.toggle_follow()
-        elif hit(self.filter_button, x, y):
-            self.cycle_filter()
-        elif hit(self.inset_button, x, y):
-            self.toggle_inset()
-        for box, jump in self.step_buttons:
-            if hit(box, x, y):
-                self.step = jump
-
-    def inset_click(self, x: int, y: int) -> None:
-        """Either button in the overview: bring that part of the frame into the zoomed view. The
-        left button does not place a label from a thumbnail - nothing there is precise enough."""
-        left, top = self.inset_box[0], self.inset_box[1]
-        self.center = (min(max((x + 0.5 - left) / self.inset_scale, 0.0), self.width - 1.0),
-                       min(max((y + 0.5 - top) / self.inset_scale, 0.0), self.height - 1.0))
-        self.centre_view()
-
-    def place_click(self, x: int, y: int) -> None:
-        """A left click on the picture: the ball is there, and the next frame comes up."""
-        if self.frame_missing():
-            return                                  # nothing to see, so nothing to label
-        fx, fy = self.to_frame(x + 0.5, y + 0.5)  # highgui floors the pointer to a pixel: aim at
-        if not (-2 <= fx < self.width + 2 and -2 <= fy < self.height + 2):   # its middle
-            return                                # a click in the black beyond the frame
-        if self.set_point(fx, fy):
-            self.move(1)
+        """The window's mouse callback (label_mouse.MouseHandler)."""
+        self.pointer.on_mouse(event, x, y, flags, param)
 
     def cycle_filter(self) -> None:
         self.filter = (self.filter + 1) % len(FILTERS)
@@ -810,11 +515,10 @@ class Tool:
 
     def remember_settings(self) -> None:
         if self.settings_path is not None:
-            save_settings(self.settings_path, {"filter": FILTERS[self.filter], "inset": self.inset,
+            save_settings(self.settings_path, {"filter": self.filter_name, "inset": self.inset,
                                                "grid_size": self.grid_size,
                                                "trail": self.trail})
 
-    @staticmethod
     def wheel_notches(flags: int) -> float:
         """Wheel movement in notches, sign included.
 
@@ -1171,113 +875,17 @@ class Tool:
         except cv2.error:
             return True
         if not self.overview and not gliding and self.mouse.aim is None:
-            self.prefetch()          # decode the frames SPACE is about to ask for, but not
+            self.prefetcher.run()    # decode the frames SPACE is about to ask for, but not
                                      # while a warp is still waiting to be checked: a decode
                                      # runs long enough to age the answer out
         if not gliding and not self.mouse.scrolling() and not self.mouse.calibrating:
             self.viewport.check(self.view_w, self.view_h + self.hud_h)   # whole picture, at x1?
         return False
 
-    # ---------------------------------------------------------------- keys
+    # ---------------------------------------------------------------- keys (label_keys has the table)
     def handle_key(self, key: int) -> bool:
-        """One key from waitKeyEx; True when the tool should quit. The guards and q are here; what
-        a key does belongs to the view showing it (SheetView, GridView, plain_key), and the grid and
-        the single frame then share common_key."""
-        code = key & 0xFF if key < 0x10000 else key
-        if win.non_character_key(code):
-            return False          # F1 is not p, F2 is not q: see NON_CHARACTER_KEYS
-        if not self.overview and not self.view_ready() and code not in KEYS_QUIT:
-            return False  # a mouse callback may have advanced while waitKey dispatched events
-        if code in KEYS_QUIT:
-            return self.quit_key()
-        direction = self.key_direction(key, code)
-        if self.sheet:
-            self.sheet_view.handle_key(code, direction)
-        elif self.grid:
-            self.grid_view.handle_key(code, direction) or self.common_key(code)
-        else:
-            self.plain_key(code, direction) or self.common_key(code)
-        return False
-
-    @staticmethod
-    def key_direction(key: int, code: int) -> int:
-        """1 for a forward key (n, d, right arrow), -1 for a backward one (p, a, left arrow), else 0.
-        Arrows: this build hands back the bare virtual-key codes (37/39), older Win32 builds pack
-        them above bit 16, GTK and Qt have codes of their own. Match them all; none of them
-        collide with a printable key the tool uses."""
-        if code in (ord("n"), ord("d")) or key in KEYS_NEXT or code in KEYS_NEXT:
-            return 1
-        if code in (ord("p"), ord("a")) or key in KEYS_PREV or code in KEYS_PREV:
-            return -1
-        return 0
-
-    def quit_key(self) -> bool:
-        """q / ESC: save, and quit - unless labels could not be saved and that has not been said."""
-        self.save()
-        if self.dirty and not self.quit_warned:
-            self.quit_warned = True
-            print("[warn] some labels could not be saved (see above). Close the file in the other "
-                  "program and press q again; quitting anyway keeps them in <clip>_ball.unsaved.csv")
-            return False
-        return True
-
-
-    def plain_key(self, code: int, direction: int) -> bool:
-        """What a key does in the single-frame view; False for a key it shares with the grid."""
-        if self.edit_key(code):
-            return True
-        if code == ord("e"):
-            self.seek_disputed()
-        elif code in (ord("f"), ord("b")):
-            self.jump(1 if code == ord("f") else -1)
-        elif direction:
-            self.move(direction * self.step)
-        elif code in KEYS_STEP:
-            self.step = KEYS_STEP[code]
-        elif code in KEYS_ZOOM_IN + KEYS_ZOOM_OUT:
-            self.zoom_key(1.0 if code in KEYS_ZOOM_IN else -1.0)
-        else:
-            return False
-        return True
-
-    def edit_key(self, code: int) -> bool:
-        """The single-frame keys that say something about this frame's label and move on:
-        SPACE, y, x, v and r. False for any other key."""
-        if code in KEYS_CONFIRM:
-            self.confirm()
-            self.move(1)
-        elif code == ord("y"):
-            if self.take_suggestion():
-                self.move(1)
-        elif code == ord("x"):
-            self.confirm(take_offer=False)    # the draft is right, not the hint on offer
-            self.move(1)
-        elif code == ord("v"):
-            self.mark_invisible()
-            self.move(1)
-        elif code == ord("r"):
-            accepted = self.accept_run()
-            print(f"[run ] accepted {accepted} confident frame(s); stopped at frame "
-                  f"{self.rows[self.cursor].frame}")
-        else:
-            return False
-        return True
-
-    def common_key(self, code: int) -> None:
-        """The keys the grid and the single frame read the same way."""
-        toggles = {ord("w"): self.toggle_sheet, KEY_TAB: self.toggle_grid, ord("z"): self.toggle_grid_size,
-                   ord("t"): self.toggle_trail, ord("g"): self.toggle_follow, ord("h"): self.cycle_filter,
-                   ord("o"): self.toggle_inset, ord("m"): self.toggle_fullscreen, ord("s"): self.save}
-        if code in toggles:
-            toggles[code]()
-        elif code == ord("u"):
-            self.rows[self.cursor].undo()
-            self.dirty = self.source.dirty = True
-            self.follow_ball()
-        elif code in KEYS_NUDGE:
-            dx, dy = KEYS_NUDGE[code]
-            step = .25 if (chr(code).isupper() or win.shift_held()) else 1.
-            self.nudge(dx * step, dy * step)
+        """One key from waitKeyEx; True when the tool should quit (label_keys.KeyHandler)."""
+        return self.keys.handle(key)
 
     def seek_disputed(self) -> bool:
         """e / SHIFT+e: the next / previous frame the suggestions disagree with. False, with a
@@ -1291,110 +899,12 @@ class Tool:
         self.trail = not self.trail
         self.remember_settings()
 
-def build_parser() -> argparse.ArgumentParser:
-    """The command line; the folder defaults are the workspace's as it is now (``TENNIS_WORKSPACE``)."""
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("clips", nargs="+", help="Clip stem(s), or a range like video22..video53")
-    parser.add_argument("--videos", type=Path, default=ws.VIDEOS)
-    parser.add_argument("--labels", type=Path, default=ws.LABELS)
-    parser.add_argument("--zoom", type=float, default=None, help="Starting zoom (default: last used, else 2)")
-    parser.add_argument("--grid", action="store_true", help="Review a page of enlarged ball crops together (z: 8 or 16); TAB toggles this view")
-    parser.add_argument("--uncertain", action="store_true",
-                        help="Only stop on frames that want attention: no confident guess, or flagged "
-                             "by ft.py check --audit --mark. Every other label is left alone.")
-    return parser
-
-
-def qt_backend() -> bool:
-    """Whether this OpenCV draws its windows with Qt; the message when it does not."""
-    backend = win.highgui_backend()
-    if backend.upper().startswith("QT"):
-        return True
-    # The view, wheel and key handling are built around Qt's window: on another backend the
-    # zoom check never passes and the window is rebuilt over and over.
-    print(f"[error] this OpenCV draws its windows with {backend}, but the label tool needs the Qt "
-          f"build. Install conda-forge's instead of pip's:\n"
-          f"        pip uninstall opencv-python && conda install -c conda-forge opencv",
-          file=sys.stderr)
-    return False
-
-
-def open_sources(args: argparse.Namespace) -> Tuple[List[str], List[Source]]:
-    """The clip names the command line expands to and the sources that are ready among them; a
-    bad range is a ValueError naming it."""
-    names = expand(args.clips, args.labels)
-    sources = [source for source in (build_source(name, args.videos, args.labels) for name in names)
-               if source is not None]
-    return names, sources
-
-
 def main() -> int:
-    if not qt_backend():
-        return 2
-    args = build_parser().parse_args()
-    try:
-        names, sources = open_sources(args)
-    except ValueError as error:
-        print(f"[error] {error}", file=sys.stderr)
-        return 2
-    if not sources:
-        return 1
-    tool = Tool(sources)
-    if args.uncertain and not tool.only_uncertain():
-        print("[done] nothing uncertain left in " + (names[0] if len(names) == 1 else
-                                                     f"{names[0]}..{names[-1]}") +
-              " - every frame here has either a confident guess or your tick on it.")
-        return 0
-    if not args.uncertain:
-        tool.cursor = starting_cursor(tool, sources)
-    tool.zoom = min(max(args.zoom or sources[0].zoom, 1.0), ZOOM_MAX)
-    tool.zoom_target = tool.zoom
-    tool.settings_path = args.labels / SETTINGS_NAME
-    apply_settings(tool, load_settings(tool.settings_path))
-    announce(tool, sources, names, args.uncertain)
-    if args.grid:
-        tool.toggle_grid()
-    tool.run()
-    return 0
-
-
-def starting_cursor(tool: Tool, sources: List[Source]) -> int:
-    """One clip resumes exactly where you left off; a run carries on at the first frame not done."""
-    if len(sources) == 1:
-        return sources[0].cursor
-    return next((i for i, row in enumerate(tool.rows) if not row.settled), 0)
-
-
-def apply_settings(tool: Tool, settings: Settings) -> None:
-    """The toggles the last session left in the settings file, where they still make sense."""
-    if settings.get("filter") in FILTERS:
-        tool.filter = FILTERS.index(settings["filter"])
-    tool.inset = bool(settings.get("inset", tool.inset))
-    tool.trail = bool(settings.get("trail", tool.trail))
-    if settings.get("grid_size") in GRID_SIZES:
-        tool.grid_size = settings["grid_size"]
-
-
-def announce(tool: Tool, sources: List[Source], names: List[str], uncertain: bool) -> None:
-    """The opening lines: what is open, where it starts and what the walk stops on."""
-    total = sum(len(source.rows) for source in sources)
-    flagged = sum(source.flagged for source in sources)
-    if len(sources) == 1:
-        source = sources[0]
-        print(f"[open] {source.video.name}: {len(source.rows)} label frames, "
-              f"{sum(r.uncertain for r in source.rows)} uncertain")
-    else:
-        done = sum(1 for row in tool.rows if row.settled)
-        print(f"[open] {len(sources)} clips as one run: {names[0]} .. {names[-1]}, {total} label frames, "
-              f"{done} already done. Starting at {tool.rows[tool.cursor].clip} "
-              f"frame {tool.rows[tool.cursor].frame}.")
-        print("       n/p and SPACE carry straight on into the next clip; each clip saves to its own file.")
-    if uncertain:
-        print(f"[only ] stepping through {len(tool.walk)} uncertain frame(s) of {total}; "
-              f"n/p/SPACE move between those, everything else is left exactly as it is.")
-    elif flagged:
-        print(f"[flag] {flagged} frame(s) were marked doubtful by the last audit - press f to walk them; "
-              f"they are drawn in magenta. Fixing or confirming one clears it.")
+    """The command line (label_cli); this file stays the script people run."""
+    # label_cli builds a Tool, so it imports this module: imported here, when the script runs,
+    # rather than at load, or the two would import each other half-made.
+    from finetune.labeling.label_cli import main as cli_main
+    return cli_main()
 
 
 if __name__ == "__main__":
