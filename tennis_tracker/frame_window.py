@@ -39,7 +39,9 @@ class FrameWindow:
         self.device = device
         self.upload = bool(upload)
         self.uploader: Optional[PinnedFrameUploader] = None
-        if self.upload:
+        # Pinned staging records CUDA events on the device's stream, so only a CUDA device gets it;
+        # a CPU device (the tests' fake CUDA) takes the plain upload even on a box with a driver.
+        if self.upload and device.type == "cuda":
             try:
                 self.uploader = PinnedFrameUploader(first.shape[0], first.shape[1], device)
             except RuntimeError as error:    # no CUDA driver or no pinned memory

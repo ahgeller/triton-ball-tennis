@@ -8,7 +8,9 @@ import pytest
 
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court.court_geometry import court_keypoints_key
-from tests.test_pipeline_run import FULL_OVERRIDES, clip, load_golden, render_env, run_pipeline  # noqa: F401
+from tests.test_pipeline_run import (  # noqa: F401
+    FULL_OVERRIDES, assert_json_close, clip, load_golden, render_env, run_pipeline,
+)
 from tennis_tracker.court import bounce_events
 from tennis_tracker.court.bounce_events import infer_kinematic_bounces, predict_bounce_events
 from tennis_tracker.court.contact_events import detect_player_contacts
@@ -188,7 +190,7 @@ def test_court_flag_draws_the_minimap_on_the_golden_clip(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert FakeBounceModel.loaded == [str(bounce_model.resolve())]
     assert "[court minimap]" in out
-    assert result["json"] == plain["json"]
+    assert_json_close(result["json"], plain["json"], "--court changed the tracking JSON")
     if plain.get("render_env") == render_env():
         assert result["streams"]["detector_input"] == plain["streams"]["detector_input"]
         assert result["streams"]["tracking"] != plain["streams"]["tracking"]

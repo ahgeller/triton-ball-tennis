@@ -429,6 +429,25 @@ def render_env() -> Dict[str, str]:
     return {"opencv": cv2.__version__, "numpy": np.__version__}
 
 
+def assert_json_close(actual: Any, expected: Any, what: str, path: str = "") -> None:
+    """``actual == expected`` except that floats may differ by rounding noise: the refit's
+    least squares and the Kalman updates land on different last bits under another numpy or
+    BLAS build (4e-13 px between numpy 1.26 and 2.5), which is not a behavioural change."""
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict) and set(actual) == set(expected), f"{what}: keys differ at {path or '/'}"
+        for key in expected:
+            assert_json_close(actual[key], expected[key], what, f"{path}/{key}")
+    elif isinstance(expected, list):
+        assert isinstance(actual, list) and len(actual) == len(expected), f"{what}: length differs at {path or '/'}"
+        for index, (left, right) in enumerate(zip(actual, expected)):
+            assert_json_close(left, right, what, f"{path}[{index}]")
+    elif isinstance(expected, float) or isinstance(actual, float):
+        assert isinstance(actual, (int, float)) and not isinstance(actual, bool) \
+            and math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9), f"{what}: {path} is {actual!r}, golden {expected!r}"
+    else:
+        assert actual == expected, f"{what}: {path} is {actual!r}, golden {expected!r}"
+
+
 def load_golden() -> Dict[str, Any]:
     if not FIXTURE_PATH.exists():
         pytest.fail(f"missing golden fixture {FIXTURE_PATH}; run with {UPDATE_ENV}=1 to create it")
@@ -504,7 +523,7 @@ def test_run_matches_golden(tmp_path, monkeypatch, fake_cuda, capsys, clip):
     assert [index for index, _ in detector.inputs_seen] == list(range(FRAMES))
     assert "timing" in result["raw_json"] and result["raw_json"]["timing"].get("pass1_total", 0.0) > 0.0
 
-    assert result["json"] == expected["json"], "tracking JSON changed; see module docstring to update the golden"
+    assert_json_close(result["json"], expected["json"], "tracking JSON changed; see module docstring to update the golden")
 
 
 def test_rendered_frames_match_golden(tmp_path, monkeypatch, fake_cuda, clip):
@@ -531,7 +550,7 @@ def test_json_only_run_matches_golden_without_rendering(tmp_path, monkeypatch, f
     assert result["streams"] == {}
     assert "[pass 2] Skipped (no video outputs selected)" in out
     assert not Path(result["cfg"].output_video).exists()
-    assert result["json"] == expected
+    assert_json_close(result["json"], expected, "JSON-only run differs from the golden")
 
 
 def test_disabling_preprocess_runs_on_detections_alone(tmp_path, monkeypatch, fake_cuda, capsys, clip):
@@ -547,7 +566,7 @@ def test_disabling_preprocess_runs_on_detections_alone(tmp_path, monkeypatch, fa
     assert "det" in sources and "motion" not in sources
     assert result["json"]["motion_diagnostics"]["summary"]["mask_source_counts"] == {"none": FRAMES}
     maybe_update_golden({"no_preprocess_json": result["json"]})
-    assert result["json"] == load_golden()["no_preprocess_json"]
+    assert_json_close(result["json"], load_golden()["no_preprocess_json"], "no-preprocess run differs from the golden")
 
 
 def test_zero_frame_video_raises_and_opens_no_writer(tmp_path, monkeypatch, fake_cuda, capsys):
