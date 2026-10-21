@@ -108,7 +108,7 @@ GridTrackNet clips were evaluated after this clarification.
 
 video11 and video12 have not been reviewed at all. An earlier exploratory run
 included them before the clarification. Those measurements are withdrawn as
-quality evidence. `raw_eval.txt` was regenerated using **video10 only**. No
+quality evidence. `records/raw_eval.txt` was regenerated using **video10 only**. No
 automatic annotation audit/fix or label realignment was run.
 
 ### Checks actually performed
@@ -118,14 +118,14 @@ automatic annotation audit/fix or label realignment was run.
 | `clean_tracker.py --self-test` | Passed | Existing deterministic selector, decoder and court examples |
 | `train_gridtracknet.py --self-test` | Passed | Existing target/loss/sampling/model-shape examples |
 | `ft.py check`, before user exclusions | 86 files, 0 format problems | Syntax/cadence/range checks only; not label correctness |
-| `audit/review_checks.py` | 13 issues reproduced | Synthetic, isolated current-behavior counterexamples |
+| `audit/review_checks.py` (now `audit/records/review_checks_2026-09.py.txt`) | 13 issues reproduced | Synthetic, isolated current-behavior counterexamples |
 | Full GPU Pomona run, JSON only | Completed | Default detector, TensorRT auxiliaries, CUDA motion, selection, JSON and annotation validation |
 | Frozen Pomona parity check | Failed | Current output does not meet several historical gates |
 | Raw video10 threshold sweep | Completed | One permitted workspace clip, current weights and labels |
 
 The full run used Python 3.10.19, torch 2.10.0+cu128, NumPy 1.26.4, OpenCV 4.9.0,
 FilterPy 1.4.5, TensorRT 10.15.1.29 and an RTX 5080 Laptop GPU. Full versions,
-source hashes, label hashes and model hashes are in `snapshot.json`. The runtime
+source hashes, label hashes and model hashes are in `records/snapshot.json`. The runtime
 warned that its TensorRT plans were created for a different device model, but
 this run completed. No engine rebuild was attempted.
 
@@ -167,10 +167,14 @@ delivered 226. Those 226 frames supplied the scored labels.
 
 ## 3. Reproduced findings and proposed fixes
 
-`review_checks.py` uses synthetic frames, mocked detector outputs and small
-in-memory objects. It does not test any excluded match. Its assertions confirm
-the defects still exist; they are not a green correctness suite. All thirteen
-outputs are saved in `review_checks.json`.
+`review_checks.py` used synthetic frames, mocked detector outputs and small
+in-memory objects. It does not test any excluded match. Its assertions confirmed
+the defects existed at the time; they are not a green correctness suite. All
+thirteen outputs are saved in `records/review_checks.json`. The defects have
+since been fixed; the script is kept unchanged, as a text record that no longer
+runs, at `records/review_checks_2026-09.py.txt`. Its pointer to
+`tests/test_fixes.py` is stale: those regression tests were moved next to each
+module's tests (`tests/test_<module>.py`, run with `python -m pytest -q`).
 
 ### P1 — Training recall has the wrong denominator
 
@@ -668,15 +672,18 @@ gains and real-world bounce/line-call accuracy remain unmeasured proposals.
 ## Artifacts and reproduction
 
 - `AGENTS.md`: project initialization, commands, contracts and user exclusions.
-- `audit/review_checks.py`, `.json`, `.log`: thirteen synthetic reproductions.
-- `audit/collect_snapshot.py`, `snapshot.json`: environment, source/model/data
-  hashes and descriptive inventory; inventory counts are not accuracy evidence.
-- `audit/raw_eval.txt`: the permitted video10-only threshold sweep.
+- `audit/records/review_checks_2026-09.py.txt` (formerly `audit/review_checks.py`),
+  `audit/records/review_checks.json`, `.log`: thirteen synthetic reproductions.
+- `audit/collect_snapshot.py`, `audit/records/snapshot.json`: environment,
+  source/model/data hashes and descriptive inventory; inventory counts are not
+  accuracy evidence.
+- `audit/records/raw_eval.txt`: the permitted video10-only threshold sweep.
 - `output/review_20260907_tracking.json` and
   `output/review_20260907_validation.json`: full Pomona run and validation.
 
-Run the two existing self-tests and `audit/review_checks.py` with the interpreter
-listed in `AGENTS.md`. For the saved benchmark, use
+Run the two existing self-tests with the interpreter listed in `AGENTS.md`
+(`audit/review_checks.py` was run then; it is now the text record above). For
+the saved benchmark, use
 `check_parity.py --existing --predictions output/review_20260907_tracking.json`.
 That command currently fails the five gates listed above; do not describe it as
 passing. Existing user changes and model weights remain intact.

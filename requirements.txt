@@ -1,8 +1,8 @@
 # Runtime packages imported by the tracker, the fine-tuning workspace and the tests.
 #
 # Pinned versions are the ones the October 2026 review ran with on Python
-# 3.10.19 / Windows / RTX 5080 (audit/snapshot.json, "versions"). Packages the
-# snapshot does not record are left unpinned. This is not a complete lock file:
+# 3.10.19 / Windows / RTX 5080 (audit/records/snapshot.json, "versions").
+# Packages the snapshot does not record are left unpinned. This is not a complete lock file:
 # transitive dependencies are not pinned.
 #
 # Not installable from PyPI defaults:

@@ -46,7 +46,7 @@ unresolved detector gap remains a gap instead of becoming a long predicted path.
 - FFmpeg recommended for faster video encoding
 
 `requirements.txt` lists these with the versions the last review ran with
-(recorded in `audit/snapshot.json`); it is not a full lock file:
+(recorded in `audit/records/snapshot.json`); it is not a full lock file:
 
 ```powershell
 pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
@@ -211,7 +211,8 @@ finetune/training/dataset.py             Grid targets, augmentation, Dataset and
 finetune/training/pretrack.py, detect.py Drafts from the raw GridTrackNet prepass
 finetune/labels/                         Hand-corrected own-camera labels
 tests/                                   Synthetic regression tests (pytest)
-audit/                                   Review reports, logs and verification scripts
+audit/                                   Review reports and verification scripts
+audit/records/                           Their logs and results (records, not code)
 output/                                  Generated videos, JSON, and reports (ignored)
 ```
 

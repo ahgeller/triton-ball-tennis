@@ -1,4 +1,4 @@
-"""Read-only inventory for the September 2026 review; writes audit/snapshot.json."""
+"""Read-only inventory for the September 2026 review; writes audit/records/snapshot.json."""
 import csv
 import hashlib
 import importlib.metadata
@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SNAPSHOT = ROOT / "audit/snapshot.json"
+SNAPSHOT = ROOT / "audit/records/snapshot.json"
 _HASH_BLOCK_BYTES = 1 << 20
 
 

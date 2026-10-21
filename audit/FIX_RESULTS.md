@@ -76,7 +76,8 @@ each correctness fix or compare them with the old frozen Pomona baseline.
 
 ## Verification
 
-- `audit/test_fixes.py`: **15 synthetic regression tests passed**, including
+- `audit/test_fixes.py` (since split into the per-module tests under `tests/`):
+  **15 synthetic regression tests passed**, including
   tail publication at both frame phases, metrics, writer failure, physics,
   CPU/CUDA color-gate parity, duplicate frames, hard pins, provenance,
   review eligibility and metadata-protected shifts.
@@ -90,7 +91,7 @@ each correctness fix or compare them with the old frozen Pomona baseline.
 Logs: `verified_raw_after_fixes.txt`, `verified_pipeline_after_fixes.txt`
 (color on), `verified_pipeline_color_off.txt`, `fix_tests.txt`,
 `training_self_test_after_fixes.txt`, `tracker_self_test_after_fixes.txt`,
-`render_color_off_court.txt`, and `fix_run_verification.json` in this directory.
+`render_color_off_court.txt`, and `fix_run_verification.json` in `audit/records/`.
 Final per-frame JSONs are in `output/verified_fixes_color_off_20260907`.
 The rendered example is `output/verified_video13_color_off_court.mp4`.
 

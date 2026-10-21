@@ -102,7 +102,7 @@ compares against FilterPy when it is installed. pip's `opencv-python` serves the
 tracker, but the label tool needs conda-forge's Qt build of OpenCV (see
 `requirements.txt`). CatBoost is needed for `--court`. Ultralytics is
 used by engine export. FFmpeg/NVENC can accelerate rendering. Versions and model/
-source hashes for the review are in `audit/snapshot.json`. There is no complete
+source hashes for the review are in `audit/records/snapshot.json`. There is no complete
 locked installation manifest. TensorRT engines may be GPU/version specific.
 
 ```powershell
@@ -120,9 +120,10 @@ the selector, court-overlay, ROI and GridTrackNet modules from `tests/` through
 pytest; `train_gridtracknet.py --self-test` is also run by
 `tests/test_train_gridtracknet.py`. Put new tests in `tests/` as plain pytest
 functions (fixtures and `parametrize`, not `unittest.TestCase`), shared synthetic
-fixtures in `tests/_helpers.py`. `audit/` keeps the review's record (reports,
-logs, verification scripts); `audit/review_checks.py` documents the September
-2026 defects and no longer runs.
+fixtures in `tests/_helpers.py`. `audit/` keeps the review's reports and
+verification scripts; `audit/records/` holds their logs and results, and
+`audit/records/review_checks_2026-09.py.txt` is the September 2026 defect
+reproduction script, kept as text: it no longer runs.
 
 Always specify `--archive finetune` for workspace evaluation: the evaluator can
 otherwise prefer a separate Desktop archive. Use distinct output paths for new
@@ -182,11 +183,12 @@ unsupported gaps should remain absent. Physics is presently an image-space
 prior; do not present its extrapolations as measured 3D positions or speeds.
 
 See `audit/PROJECT_REVIEW.md` before modifying evaluation, prepass publication,
-label frame identity, realignment pins, motion masks or physics. The audit's
-`review_checks.py` records how the September 2026 defects were reproduced; it
-exits without running; the tests that assert the fixes live next to each
-module's tests (`tests/test_<module>.py`). Convert
-relevant checks to desired-behavior regression tests when making fixes. The user has now authorized
+label frame identity, realignment pins, motion masks or physics.
+`audit/records/review_checks_2026-09.py.txt` records how the September 2026
+defects were reproduced; its pointer to `tests/test_fixes.py` is out of date: the
+tests that assert the fixes live next to each module's tests
+(`tests/test_<module>.py`). Convert relevant checks to desired-behavior
+regression tests when making fixes. The user has now authorized
 fixing the reviewed defects and running validation. Architecture experiments
 remain separate from the correctness fixes; do not promote a model implicitly.
 

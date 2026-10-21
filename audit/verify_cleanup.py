@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BEFORE = ROOT / "output/verified_fixes_color_off_20260907"
 AFTER = ROOT / "output/verified_cleanup_20260907"
-RESULT = ROOT / "audit/cleanup_verification.json"
+RESULT = ROOT / "audit/records/cleanup_verification.json"
 # The reviewed standard set: video13 through video53.
 EXPECTED = {f"video{i}_gridtracknet.json" for i in range(13, 54)}
 REMOVED_CONFIG_FIELDS = ("court_depth", "motion_raw_ball_color_gate")

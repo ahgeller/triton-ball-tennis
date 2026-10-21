@@ -7,8 +7,8 @@ import cv2
 ROOT = Path(__file__).resolve().parents[1]
 FOLDER = ROOT / "output/verified_fixes_color_off_20260907"
 MEDIA = ROOT / "output/verified_video13_color_off_court.mp4"
-RENDER_CHECK = ROOT / "audit/render_check.jpg"
-RESULT = ROOT / "audit/fix_run_verification.json"
+RENDER_CHECK = ROOT / "audit/records/render_check.jpg"
+RESULT = ROOT / "audit/records/fix_run_verification.json"
 # The reviewed standard set: video13 through video53.
 EXPECTED = {f"video{i}_gridtracknet.json" for i in range(13, 54)}
 # The rendered video13 check: frame size, length and the frame saved for inspection.

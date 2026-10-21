@@ -50,8 +50,8 @@ Sixteen regression tests and the tracker self-test pass. The cleanup rerun
 uses only video13–video53, under `output/verified_cleanup_20260907`.
 `verify_cleanup.py` checks complete ordered frame exports, removed settings,
 and every frame record against the earlier color-off baseline.
-Results are recorded in `cleanup_verification.json` and
-`verified_pipeline_cleanup.txt`.
+Results are recorded in `records/cleanup_verification.json` and
+`records/verified_pipeline_cleanup.txt`.
 
 The completed cleanup run reports **87.8%** localization recall, **0.8%**
 wrong-object rate, **8.5%** misses, **23.9%** absent-frame false alarms, and
@@ -76,7 +76,7 @@ conditions mean this is not a controlled speed benchmark. Nevertheless the
 observed cost was too large to adopt without a dedicated performance study.
 The trial was stopped after 22 clip exports; its log is explicitly partial,
 and its kernel settings were reverted. No new configuration toggle was added.
-`verified_pipeline_cleanup_stable.txt` and `cleanup_stable_repeat_video41.txt`
+`records/verified_pipeline_cleanup_stable.txt` and `records/cleanup_stable_repeat_video41.txt`
 record that experiment, not the shipped default. Bitwise reproducibility across
 GPUs, libraries and separate runs remains unproven. Future work should measure
 which hard selector boundaries amplify tiny input changes.
