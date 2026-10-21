@@ -10,9 +10,8 @@ import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult, PackedMask, Track
 
-from .court_geometry import last_valid_court_keypoints
 from .pass1 import Pass1Result
-from .run_context import RunContext, Selection
+from .run_context import RunContext, RunResult
 
 # Motion-diagnostics search fallbacks, as fractions of the frame diagonal with a pixel floor.
 _SEARCH_FROM_POSITION_FRAC, _SEARCH_FROM_POSITION_MIN_PX = 0.035, 24.0
@@ -332,24 +331,15 @@ def build_motion_diagnostics(
     }
 
 
-def write_tracking_json(ctx: RunContext, pass1: Pass1Result, selection: Selection, *,
-                        elapsed_sec: float, pass2_frames_rendered: int) -> None:
-    """Write ``cfg.tracking_json`` for this run."""
+def write_tracking_json(ctx: RunContext, pass1: Pass1Result, result: RunResult) -> None:
+    """Write ``cfg.tracking_json`` for this run: what ``result`` holds, plus the motion
+    diagnostics from ``pass1`` when they were asked for."""
     cfg, video = ctx.cfg, ctx.video
-    total_frames = pass1.frame_count
-    filled = selection.filled_frames
+    total_frames = result.frame_count
+    filled = result.filled_frames
     out_path = Path(cfg.tracking_json)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    frame_rows = []
-    for i in range(total_frames):
-        row = frame_result_to_json(i, selection.per_frame[i] if i < len(selection.per_frame) else None)
-        if i < len(pass1.court_keypoints):
-            row["court_keypoints"] = json_safe(pass1.court_keypoints[i])
-        if i < len(pass1.player_boxes):
-            row["player_boxes"] = json_safe(pass1.player_boxes[i])
-        frame_rows.append(row)
-
-    chosen = selection.chosen_track
+    chosen = result.chosen_track
     payload = {
         "schema_version": _SCHEMA_VERSION,
         "video": {
@@ -363,25 +353,25 @@ def write_tracking_json(ctx: RunContext, pass1: Pass1Result, selection: Selectio
         "summary": {
             "filled_frames": int(filled),
             "filled_percent": float(100.0 * filled / max(1, total_frames)),
-            "elapsed_sec": float(elapsed_sec),
-            "effective_fps": float(total_frames / max(elapsed_sec, 1e-9)),
-            "pass2_frames_rendered": int(pass2_frames_rendered),
+            "elapsed_sec": float(result.elapsed_sec),
+            "effective_fps": float(total_frames / max(result.elapsed_sec, 1e-9)),
+            "pass2_frames_rendered": int(result.pass2_frames_rendered),
             "chosen_track_id": None if chosen is None else int(chosen.track_id),
-            "track_count": int(len(selection.all_tracks)),
+            "track_count": int(len(result.all_tracks)),
         },
         "config": json_safe(vars(cfg)),
-        "timing": json_safe(ctx.timing.values),
-        "last_valid_court_keypoints": json_safe(last_valid_court_keypoints(pass1.court_keypoints)),
+        "timing": json_safe(result.timing),
+        "last_valid_court_keypoints": json_safe(result.last_valid_court_keypoints),
         "chosen_track": track_to_json(chosen),
-        "tracks": [track_to_json(t) for t in selection.all_tracks],
+        "tracks": [track_to_json(t) for t in result.all_tracks],
         "motion_diagnostics": (
             build_motion_diagnostics(
-                selection.per_frame, pass1.detections, pass1.boost_masks, pass1.raw_motions,
+                result.per_frame, pass1.detections, pass1.boost_masks, pass1.raw_motions,
                 int(video.width), int(video.height),
             )
             if cfg.motion_diagnostics else {}
         ),
-        "frames": frame_rows,
+        "frames": result.frame_rows(),
     }
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)

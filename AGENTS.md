@@ -41,7 +41,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `ft.py hints train` or menu option 10. Its self-check decides "trusted" (threshold set on
   folds of clips it never saw); refine.py still finds the ball and decides ball/no ball.
   In the label tool an unreviewed frame's suggestion is the mark SPACE takes (sure ones
-  always, unsure ones within 3 px of the draft; see `Tool.offer_for` for the measurement);
+  always, unsure ones within 3 px of the draft; see `Suggestions.offer_for` in
+  `label_hints.py` for the measurement);
   `x` keeps the draft, `y` takes a hint beside a reviewed label. `ft.py hints sheet <clip>`
   renders a zoomed PNG of where two versions disagree, for judging marks by eye. A trajectory
   prior on the hints was measured and makes them worse (see the module docstring).

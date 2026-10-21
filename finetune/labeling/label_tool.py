@@ -29,13 +29,12 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 from finetune.labeling import label_window as win
 from finetune.labeling.label_hints import OFFER_MIN_PX, Suggestions
 from finetune.labeling.label_source import Source, build_source, expand   # noqa: F401 - the tool's parts, by name
-from finetune.labeling.label_store import (SETTINGS_NAME, Row, load_review, load_rows, load_settings,  # noqa: F401
-                                           load_suspects, save_review, save_rows, save_settings, save_suspects)
+from finetune.labeling.label_store import SETTINGS_NAME, Row, load_settings, save_flags, save_review, save_rows, save_settings
 from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV, WINDOW
+from finetune.data import workspace as ws
 from finetune.data.labels import LabelFormatError, is_visible
 from finetune.labeling.refine import Point, Suggestion
 from finetune.data.scoring import REFERENCE_HEIGHT
-from finetune.data.workspace import LABELS, VIDEOS
 
 HUD = 58
 MAX_UPSCALE = 2.0         # cap on drawing the frame bigger than it is: past this it only costs time
@@ -1393,7 +1392,7 @@ class Tool:
                     continue
                 save_rows(source.out_csv, source.rows, source.width, source.height)
                 save_review(source.review, source.rows, source.cursor, self.zoom)
-                save_suspects(source.suspects, source.rows)
+                save_flags(source.suspects, source.rows)
             except (OSError, LabelFormatError) as error:
                 # Another program has the file open, most likely (or a sidecar was damaged under
                 # us). Keep the edits in memory and keep going: the next autosave tries again, and
@@ -1634,6 +1633,20 @@ class Tool:
         self.trail = not self.trail
         self.remember_settings()
 
+def build_parser() -> argparse.ArgumentParser:
+    """The command line; the folder defaults are the workspace's as it is now (``TENNIS_WORKSPACE``)."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("clips", nargs="+", help="Clip stem(s), or a range like video22..video53")
+    parser.add_argument("--videos", type=Path, default=ws.VIDEOS)
+    parser.add_argument("--labels", type=Path, default=ws.LABELS)
+    parser.add_argument("--zoom", type=float, default=None, help="Starting zoom (default: last used, else 2)")
+    parser.add_argument("--grid", action="store_true", help="Review a page of enlarged ball crops together (z: 8 or 16); TAB toggles this view")
+    parser.add_argument("--uncertain", action="store_true",
+                        help="Only stop on frames that want attention: no confident guess, or flagged "
+                             "by ft.py check --audit --mark. Every other label is left alone.")
+    return parser
+
+
 def main() -> int:
     backend = win.highgui_backend()
     if not backend.upper().startswith("QT"):
@@ -1644,16 +1657,7 @@ def main() -> int:
               f"        pip uninstall opencv-python && conda install -c conda-forge opencv",
               file=sys.stderr)
         return 2
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("clips", nargs="+", help="Clip stem(s), or a range like video22..video53")
-    parser.add_argument("--videos", type=Path, default=VIDEOS)
-    parser.add_argument("--labels", type=Path, default=LABELS)
-    parser.add_argument("--zoom", type=float, default=None, help="Starting zoom (default: last used, else 2)")
-    parser.add_argument("--grid", action="store_true", help="Review a page of enlarged ball crops together (z: 8 or 16); TAB toggles this view")
-    parser.add_argument("--uncertain", action="store_true",
-                        help="Only stop on frames that want attention: no confident guess, or flagged "
-                             "by ft.py check --audit --mark. Every other label is left alone.")
-    args = parser.parse_args()
+    args = build_parser().parse_args()
 
     try:
         names = expand(args.clips, args.labels)

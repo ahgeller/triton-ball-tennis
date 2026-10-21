@@ -222,27 +222,11 @@ def _written_outputs(cfg: Config) -> Dict[str, Path]:
 
 
 def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered: int) -> RunResult:
-    """Write the tracking JSON, report what was produced and assemble the result."""
+    """Assemble the result, write it as the tracking JSON and report what was produced."""
     cfg = ctx.cfg
     n = pass1.frame_count
     elapsed = ctx.elapsed()
-    filled = selection.filled_frames
-    if cfg.tracking_json:
-        write_tracking_json(ctx, pass1, selection, elapsed_sec=elapsed, pass2_frames_rendered=rendered)
-        print(f"[done] Tracking JSON: {cfg.tracking_json}")
-    print(f"\n[done] {filled}/{n} frames filled ({100*filled/max(1,n):.1f}%)")
-    print(f"[done] {elapsed:.1f}s total")
-    if cfg.save_tracking_video:
-        print(f"[done] Tracking video: {cfg.output_video}")
-    if cfg.save_motion_debug:
-        print(f"[done] Motion debug:  {cfg.output_debug_path}")
-    if cfg.save_detector_input_debug:
-        print(f"[done] Detector input debug:  {cfg.output_detector_input_debug_path}")
-    if cfg.save_track_debug_video:
-        print(f"[done] Track debug:  {cfg.output_track_debug_path}")
-    if ctx.timing.enabled:
-        print_timing_summary(ctx.timing.values, elapsed, n, rendered)
-    return RunResult(
+    result = RunResult(
         per_frame=list(selection.per_frame),
         chosen_track=selection.chosen_track,
         all_tracks=list(selection.all_tracks),
@@ -255,6 +239,23 @@ def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered:
         pass2_frames_rendered=rendered,
         outputs=_written_outputs(cfg),
     )
+    if cfg.tracking_json:
+        write_tracking_json(ctx, pass1, result)
+        print(f"[done] Tracking JSON: {cfg.tracking_json}")
+    filled = result.filled_frames
+    print(f"\n[done] {filled}/{n} frames filled ({100*filled/max(1,n):.1f}%)")
+    print(f"[done] {elapsed:.1f}s total")
+    if cfg.save_tracking_video:
+        print(f"[done] Tracking video: {cfg.output_video}")
+    if cfg.save_motion_debug:
+        print(f"[done] Motion debug:  {cfg.output_debug_path}")
+    if cfg.save_detector_input_debug:
+        print(f"[done] Detector input debug:  {cfg.output_detector_input_debug_path}")
+    if cfg.save_track_debug_video:
+        print(f"[done] Track debug:  {cfg.output_track_debug_path}")
+    if ctx.timing.enabled:
+        print_timing_summary(ctx.timing.values, elapsed, n, rendered)
+    return result
 
 
 def run(cfg: Config) -> RunResult:

@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Set
 import cv2
 import numpy as np
 
-from finetune.labeling.label_store import Row, load_review, load_rows, load_suspects
+from finetune.labeling.label_store import Row, apply_flags, apply_review, load_rows
 from finetune.data.labels import LabelFormatError
 from finetune.data.workspace import draft_csv, find_video, label_csv, natural_key, review_json, video_meta
 
@@ -67,7 +67,7 @@ class Source:
         self.end: Optional[int] = None    # first frame index the video ran out at, once that is known
         self.missing: Set[int] = set()    # frames that could not be decoded; drawn black, never labelled
         self.label_frames = {row.frame for row in rows}   # the frames worth keeping when passed
-        self.flagged = 0              # how many rows the last audit flagged, from load_suspects
+        self.flagged = 0              # how many rows the last audit flagged, from apply_flags
 
     def release(self) -> None:
         """Let go of the decoder and the cache: each open capture holds 75-140 MB once it has
@@ -309,8 +309,8 @@ def build_source(clip: str, videos: Path, labels: Path) -> Optional[Source]:
     review = review_json(clip, labels)
     source = Source(clip, video, rows, width, height, final, review)
     try:
-        source.flagged = load_suspects(source.suspects, rows)
-        state = load_review(review, rows)
+        source.flagged = apply_flags(source.suspects, rows)
+        state = apply_review(review, rows)
     except LabelFormatError as error:
         # Somebody's record of what they checked: never started afresh, never written over.
         print(f"[skip] {clip}: {error}")

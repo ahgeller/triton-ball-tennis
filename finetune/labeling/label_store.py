@@ -153,12 +153,6 @@ def apply_review(path: Path, rows: List[Row]) -> Optional[dict]:
     return state
 
 
-# The names label_tool.py and label_source.py still import; one release of grace, then gone.
-load_review = apply_review
-load_suspects = apply_flags
-save_suspects = save_flags
-
-
 def load_settings(path: Path) -> dict:
     """The toggles worth keeping between sessions. Missing or broken file: the defaults."""
     try:

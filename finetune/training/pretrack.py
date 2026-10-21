@@ -26,17 +26,18 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finetune.training.detect import ball_detector, detect_points
+from finetune.data import workspace as ws
 from finetune.data.fileio import atomic_csv
 from finetune.data.labels import COLUMNS, frame_name, sentinel
-from finetune.data.workspace import (LABELS, REPO_WEIGHTS, ROOT, RUNS, VIDEOS, VideoMeta, draft_csv, label_csv,
-                                     video_meta, videos_in)
+from finetune.data.workspace import VideoMeta, draft_csv, label_csv, video_meta, videos_in
+from finetune.training.detect import ball_detector, detect_points
 from tennis_tracker.frame_rate import require_phase_stride
+from tennis_tracker.paths import COURT_ENGINE, PLAYER_ENGINE
 
 RAW_DRAFT_CONF = 0.25          # raw drafts keep guesses down to this confidence, so nearly every frame has one
 PIPELINE_CONF = 0.50           # the tracker's own default threshold
@@ -77,8 +78,8 @@ def pipeline_rows(video: Path, weights: Path, conf: Optional[float], device: str
         output_video=str(json_path.with_suffix(".mp4")),
         tracking_json=str(json_path),
         model_path=str(weights),
-        player_model_path=str(ROOT / "models" / "player.engine"),
-        court_model_path=str(ROOT / "models" / "courtdetection.engine"),
+        player_model_path=str(PLAYER_ENGINE),
+        court_model_path=str(COURT_ENGINE),
         conf=PIPELINE_CONF if conf is None else conf,
         device=device,
         save_tracking_video=False,
@@ -91,30 +92,36 @@ def pipeline_rows(video: Path, weights: Path, conf: Optional[float], device: str
     }
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--clips", nargs="*", help="Clip stems to (re)track; default: every video without a final label CSV")
     parser.add_argument("--source", choices=("raw", "pipeline"), default="raw")
-    parser.add_argument("--weights", type=Path, default=REPO_WEIGHTS, help="GridTrackNet weights (.npz)")
+    parser.add_argument("--weights", type=Path, default=ws.REPO_WEIGHTS, help="GridTrackNet weights (.npz)")
     parser.add_argument("--conf", type=float, default=None,
                         help=f"Draft confidence threshold (raw default {RAW_DRAFT_CONF} so nearly every frame gets a guess)")
     parser.add_argument("--device", default="0")
     parser.add_argument("--force", action="store_true", help="Re-track even if a final label CSV exists")
-    args = parser.parse_args()
+    return parser
 
-    VIDEOS.mkdir(exist_ok=True)
-    LABELS.mkdir(exist_ok=True)
-    RUNS.mkdir(exist_ok=True)
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Draft every video asked for into the workspace's labels folder (the workspace as it is
+    now: ``TENNIS_WORKSPACE`` relocates it)."""
+    args = build_parser().parse_args(argv)
+
+    ws.VIDEOS.mkdir(exist_ok=True)
+    ws.LABELS.mkdir(exist_ok=True)
+    ws.RUNS.mkdir(exist_ok=True)
     weights = args.weights.resolve()
     if not weights.is_file():
         print(f"Weights not found: {weights}")
         return 1
 
-    videos = list(videos_in(VIDEOS).values())
+    videos = list(videos_in(ws.VIDEOS).values())
     if args.clips:
         videos = [p for p in videos if p.stem in set(args.clips)]
     if not videos:
-        print(f"No videos to track in {VIDEOS}")
+        print(f"No videos to track in {ws.VIDEOS}")
         return 1
 
     for video in videos:
@@ -130,7 +137,7 @@ def main() -> int:
         if args.source == "raw":
             rows = raw_rows(video, weights, RAW_DRAFT_CONF if args.conf is None else args.conf, args.device, meta)
         else:
-            rows = pipeline_rows(video, weights, args.conf, args.device, RUNS / f"{video.stem}_{weights.stem}.json")
+            rows = pipeline_rows(video, weights, args.conf, args.device, ws.RUNS / f"{video.stem}_{weights.stem}.json")
         visible = write_draft(rows, draft, stride, meta.width, meta.height, meta.total)
         print(f"[draft] {draft.name}: {visible} guessed frames of {len(range(0, meta.total, stride))} label frames "
               f"-> python finetune/labeling/label_tool.py {video.stem}")

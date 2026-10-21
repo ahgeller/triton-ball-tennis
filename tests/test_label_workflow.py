@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from finetune.labeling import label_window as win
-from finetune.labeling.label_store import Row, load_review, load_rows, load_suspects, save_review
+from finetune.labeling.label_store import Row, apply_flags, apply_review, load_rows, save_flags, save_review
 from finetune.labeling.label_tool import ZOOM_STEP, Tool
 from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV
 
@@ -149,7 +149,7 @@ class LabelWorkflowTests(unittest.TestCase):
             rows[0].source, rows[0].conf = "det", .43
             save_review(review, rows, 0, 4.)
             resumed = load_rows(csv, 640, 360, "csv")
-            load_review(review, resumed)
+            apply_review(review, resumed)
             self.assertEqual((resumed[0].source, resumed[0].conf), ("det", .43))
 
     def test_review_evidence_is_applied_per_frame_and_bad_evidence_is_warned_about(self):
@@ -162,7 +162,7 @@ class LabelWorkflowTests(unittest.TestCase):
             rows = source("clip", 4).rows
             out = io.StringIO()
             with redirect_stdout(out):
-                state = load_review(review, rows)
+                state = apply_review(review, rows)
             self.assertEqual(state["reviewed"], [1])
             self.assertEqual((rows[1].source, rows[1].conf, rows[1].reviewed), ("det", 0.4, True))
             self.assertEqual((rows[2].source, rows[2].conf, rows[2].reviewed), ("csv", 0., False))
@@ -170,14 +170,14 @@ class LabelWorkflowTests(unittest.TestCase):
             self.assertIn(review.name, out.getvalue())
             self.assertIn("frame 2", out.getvalue())
 
-    def test_load_suspects_counts_a_legacy_frames_list_as_check_flags(self):
+    def test_apply_flags_counts_a_legacy_frames_list_as_check_flags(self):
         with tempfile.TemporaryDirectory() as directory:
             flags = Path(directory) / "clip_ball.suspect.json"
             flags.write_text(json.dumps({"unplaceable": [1], "frames": [3]}))
             rows = source("clip", 5).rows
-            self.assertEqual(load_suspects(flags, rows), 2)
+            self.assertEqual(apply_flags(flags, rows), 2)
             self.assertEqual([row.frame for row in rows if row.suspect], [1, 3])
-            self.assertEqual(load_suspects(flags.with_name("absent.json"), rows), 0)
+            self.assertEqual(apply_flags(flags.with_name("absent.json"), rows), 0)
             self.assertFalse(any(row.suspect for row in rows))
 
     def test_accept_run_marks_each_clip_dirty_including_last_row(self):
@@ -380,16 +380,15 @@ class LabelWorkflowTests(unittest.TestCase):
             self.assertTrue((directory / "a_ball.unsaved.csv").is_file())
 
     def test_legacy_flag_list_survives_a_save(self):
-        from finetune.labeling.label_tool import save_suspects, load_suspects
         with tempfile.TemporaryDirectory() as directory:
             flags = Path(directory) / "clip_ball.suspect.json"
             flags.write_text(json.dumps({"frames": [1, 3]}))
             rows = source("clip", 5).rows
-            self.assertEqual(load_suspects(flags, rows), 2)
-            save_suspects(flags, rows)               # nothing settled: nothing may be dropped
-            self.assertEqual(load_suspects(flags, rows), 2)
+            self.assertEqual(apply_flags(flags, rows), 2)
+            save_flags(flags, rows)               # nothing settled: nothing may be dropped
+            self.assertEqual(apply_flags(flags, rows), 2)
             rows[1].suspect = False                  # answered (SPACE or an edit in the tool)
-            save_suspects(flags, rows)
+            save_flags(flags, rows)
             self.assertEqual(json.loads(flags.read_text()),
                              {"unplaceable": [], "check": [3], "answered": {"1": [41.25, 27.75]}})
 
@@ -431,11 +430,11 @@ class LabelWorkflowTests(unittest.TestCase):
             for odd in ('{"reviewed": null, "edited": null}',             # parseable: tolerated field by field
                         '{"evidence": {"0": {"source": "det"}}}', '{"evidence": [1]}'):
                 review.write_text(odd)
-                load_review(review, rows)
+                apply_review(review, rows)
             for broken in ("[1, 2]", "{not json"):                     # not a review file: an error naming it
                 review.write_text(broken)
                 with self.assertRaises(LabelFormatError) as caught:
-                    load_review(review, rows)
+                    apply_review(review, rows)
                 self.assertIn(review.name, str(caught.exception))
             # The tool skips such a clip rather than open it on a fresh review file.
             labels = Path(directory)
@@ -590,7 +589,7 @@ class CnnRefinerTests(unittest.TestCase):
                                 "video13,C:\\prof\\Dataset\\game2\\Clip1\n"
                                 "video14,C:\\prof\\Dataset\\game2\\Clip2\n"
                                 "video1,C:\\archive\\video1.mp4\n", encoding="utf-8")
-            with patch.object(cnn_refiner, "HERE", Path(directory)):
+            with patch("finetune.data.workspace.MANIFEST", manifest):
                 fold_of = cnn_refiner.folds(["video13", "video14", "video1", "grid_match4"],
                                             {"video13": 300, "video14": 200, "video1": 400, "grid_match4": 600})
         self.assertEqual(fold_of["video13"], fold_of["video14"])

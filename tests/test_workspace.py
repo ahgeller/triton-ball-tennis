@@ -94,3 +94,20 @@ def test_tennis_workspace_relocates_the_workspace_without_touching_the_code_path
     env.pop("TENNIS_WORKSPACE")
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
     assert out.stdout.splitlines()[0] == str(ROOT / "finetune")
+
+
+def test_tennis_workspace_reaches_the_label_tool_and_pretrack(tmp_path):
+    """Both scripts read the workspace's folders when they run, not when they are imported, so
+    the relocated workspace is where the label tool looks and where pretrack drafts."""
+    env = dict(os.environ, TENNIS_WORKSPACE=str(tmp_path))
+    weights = tmp_path / "w.npz"
+    weights.write_bytes(b"")
+    code = ("from finetune.labeling import label_tool; from finetune.training import pretrack; "
+            "args = label_tool.build_parser().parse_args(['clip']); print(args.videos); print(args.labels); "
+            f"raise SystemExit(pretrack.main(['--clips', 'clip', '--weights', {str(weights)!r}]))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True)
+    assert out.returncode == 1, out.stderr                       # no video named clip there: nothing drafted
+    videos, labels = tmp_path.resolve() / "videos", tmp_path.resolve() / "labels"
+    assert out.stdout.splitlines() == [str(videos), str(labels), f"No videos to track in {videos}"]
+    assert videos.is_dir() and labels.is_dir()                   # made under the relocated workspace
+

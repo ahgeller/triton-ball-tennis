@@ -135,6 +135,10 @@ class RunResult:
     pass2_frames_rendered: int
     outputs: Dict[str, Path]                         # files written, by role: tracking_json, tracking_video, ...
 
+    @property
+    def filled_frames(self) -> int:
+        return sum(1 for r in self.per_frame if r is not None)
+
     def frame_rows(self) -> List[Dict[str, Any]]:
         """The per-frame rows as the tracking JSON's ``frames`` table holds them."""
         from .export import frame_result_to_json, json_safe   # export imports this module

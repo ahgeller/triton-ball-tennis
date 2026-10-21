@@ -37,7 +37,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -49,16 +49,15 @@ if TYPE_CHECKING:
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from finetune.labeling import refine
+from finetune.data import workspace as ws
 from finetune.data.fileio import write_atomic
 from finetune.data.labels import Labels, read_labels, reviewed_frames
 from finetune.data.scoring import REFERENCE_HEIGHT
-from finetune.data.workspace import (MANIFEST, WORKSPACE as HERE, find_video, label_csv, labelled_clips, read_manifest,
-                                     review_json, video_meta)
-from finetune.data.workspace import CACHE as WORKSPACE_CACHE, MODELS as WORKSPACE_MODELS
+from finetune.data.workspace import find_video, label_csv, labelled_clips, read_manifest, review_json, video_meta
+from finetune.labeling import refine
 
-MODELS = WORKSPACE_MODELS / "refiner"
-CACHE = WORKSPACE_CACHE / "refiner"
+MODELS = ws.MODELS / "refiner"
+CACHE = ws.CACHE / "refiner"
 CURRENT_NAME = "current.txt"     # in MODELS: names the version the label tool uses
 CROP = 96            # cut around a point at 1080p scale ...
 WINDOW = 64          # ... and the network sees this much of it, so the ball may sit 16 px off centre
@@ -251,11 +250,6 @@ def load_current() -> Optional[Placer]:
 
 
 # ------------------------------------------------------------------------------------ training
-def checked_frames(clip: str) -> Set[int]:
-    """Frames you have reviewed or edited in the label tool (a damaged review file is an error)."""
-    return reviewed_frames(clip)
-
-
 def clip_crops(clip: str) -> Optional[np.ndarray]:
     """Crops around every checked, visible label of a clip; cached until its labels or review change."""
     labels_csv, review = label_csv(clip), review_json(clip)
@@ -271,7 +265,7 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
     meta = video_meta(video)
     labels: Labels = read_labels(labels_csv, meta.width, meta.height)
     step = refine.label_spacing(labels)
-    points = {f: labels[f] for f in checked_frames(clip) if labels.get(f)}
+    points = {f: labels[f] for f in reviewed_frames(clip) if labels.get(f)}   # a damaged review file is an error
     if not points:
         return None
     height = meta.height
@@ -317,7 +311,7 @@ def gather_crops(log: Callable[..., None] = lambda *parts: print(*parts, flush=T
 def folds(clips: Sequence[str], sizes: Dict[str, int]) -> Dict[str, int]:
     """{clip: fold}: whole groups (the TrackNet clips of one game together, other clips alone),
     balanced by frame count, the same every run."""
-    origin = {clip: row["origin"] for clip, row in read_manifest(MANIFEST).items()}
+    origin = {clip: row["origin"] for clip, row in read_manifest().items()}
     group_of = {}
     for clip in clips:
         parts = re.split(r"[\\/]", origin.get(clip, ""))
@@ -472,7 +466,7 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
         return path
     write_atomic(current_file(), path.name)
     log(f"saved {path.name}; the label tool uses it from its next start "
-        f"(older versions stay in {MODELS.relative_to(HERE.parent)})")
+        f"(older versions stay in {MODELS.relative_to(ws.WORKSPACE.parent)})")
     return path
 
 
@@ -505,7 +499,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     sits on the ball; the captions give each mark's distance from your label in 1080p px."""
     video, labels_csv = find_video(clip), label_csv(clip)
     if video is None or not labels_csv.is_file():
-        print(f"{clip}: no video or labels under {HERE}")
+        print(f"{clip}: no video or labels under {ws.WORKSPACE}")
         return None
     width, height = video_meta(video)[1:3]
     seeds = read_labels(labels_csv, width, height)
