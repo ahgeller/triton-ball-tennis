@@ -1,4 +1,6 @@
 import math
+from typing import Any, Optional
+
 import numpy as np
 
 from .config import SelectorConfig, fps_scale
@@ -16,8 +18,13 @@ def fps_norm_pxpf(base_pxpf_30fps: float, cfg: SelectorConfig) -> float:
 def clamp01(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
 
-def ensure_mask_u8(mask_obj):
-    """Return uint8 mask {0,255}; supports packed (np.packbits) tuples."""
+def ensure_mask_u8(mask_obj: Any) -> Optional[np.ndarray]:
+    """Return uint8 mask {0,255}; supports packed (np.packbits) tuples.
+
+    Accepts None, a uint8 array, a full-frame ``(packed, h, w)`` tuple or an
+    ROI tuple ``("roi", packed, h, w, x1, y1, x2, y2)`` as the pipeline stores
+    them.
+    """
     if mask_obj is None:
         return None
     if isinstance(mask_obj, tuple) and len(mask_obj) == 8 and mask_obj[0] == "roi":

@@ -1,6 +1,7 @@
 import math
 import cv2
-from typing import Optional, List, Tuple, Dict
+import numpy as np
+from typing import Any, Optional, List, Sequence, Tuple, Dict
 
 from .config import SelectorConfig
 from .models import Detection, Track
@@ -83,8 +84,19 @@ def _track_extent(trk: Track) -> float:
     return math.sqrt((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2)
 
 
-def is_near_player(x, y, player_boxes_by_frame, frame_idx, margin=80):
-    """Check if (x,y) is near any player bbox at given frame."""
+def is_near_player(
+    x: float,
+    y: float,
+    player_boxes_by_frame: Optional[Sequence[Any]],
+    frame_idx: int,
+    margin: float = 80,
+) -> bool:
+    """Check if (x,y) is near any player bbox at given frame.
+
+    ``player_boxes_by_frame[frame_idx]`` is a dict (slot -> xyxy) or a list of
+    xyxy boxes; each box is dilated by ``margin`` and by twice its height
+    upward (serve toss above the head).
+    """
     if player_boxes_by_frame is None or frame_idx >= len(player_boxes_by_frame):
         return False
     pboxes = player_boxes_by_frame[frame_idx]
@@ -337,7 +349,9 @@ def stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Trac
     }
     return stitched
 
-def _court_fractions(track: Track, court_poly, expand_px: float):
+def _court_fractions(
+    track: Track, court_poly: Optional[np.ndarray], expand_px: float
+) -> Tuple[float, float, float]:
     """Compute court occupancy fractions.
 
     Returns:
@@ -421,8 +435,8 @@ def _jump_penalty(track: Track) -> float:
 def score_tracks(
     tracks: List[Track],
     cfg: SelectorConfig,
-    court_poly=None,
-    player_boxes_by_frame=None,
+    court_poly: Optional[np.ndarray] = None,
+    player_boxes_by_frame: Optional[Sequence[Any]] = None,
     total_frames: int = 0
 ) -> List[Track]:
     """Score each track, sort by score descending.

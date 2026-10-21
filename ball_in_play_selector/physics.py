@@ -36,7 +36,7 @@ def kinematic_motion_frac(
 def xy_dist(ax: float, ay: float, bx: float, by: float) -> float:
     return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
 
-def _projectile_matrices(cfg: SelectorConfig, dt: float = 1.0):
+def _projectile_matrices(cfg: SelectorConfig, dt: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
     """Exact linear-drag transition in source-frame units; drag is a 30 FPS reference."""
     drag = float(cfg.gravity_drag_factor) if cfg.gravity_enabled else 1.0
     if not 0.0 < drag <= 1.0:
@@ -86,7 +86,7 @@ def predict_projectile_velocity(
     return float(state[2]), float(state[3])
 
 class BallKalmanFilter:
-    def __init__(self, x0: float, y0: float, cfg: SelectorConfig):
+    def __init__(self, x0: float, y0: float, cfg: SelectorConfig) -> None:
         if KalmanFilter is None:
             raise RuntimeError("filterpy is required for BallKalmanFilter. Install filterpy==1.4.5.")
         self.cfg = cfg
