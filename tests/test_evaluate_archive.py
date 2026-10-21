@@ -72,7 +72,8 @@ def test_near_court_line():
     assert _near_court_line(150, 100 + LINE_PX, live, 1.0) is True
     assert _near_court_line(150, 111, live, 1.0) is False
     assert _near_court_line(150, 106, live, 2.0) is False            # 12 px at 1080p
-    assert _near_court_line(150, 105, live[:27], 1.0) is False       # too few values
+    assert _near_court_line(150, 105, live[:15], 1.0) is False       # too few values (MIN_KEYPOINT_VALUES)
+    assert _near_court_line(150, 105, live[:16], 1.0) is True        # the tracker's rule: 16 values are usable
     assert _near_court_line(150, 105, None, 1.0) is False
     undetected = _keypoints(k4=(200.0, 0.0))                         # its partner sits at (0, 0)
     assert _near_court_line(100, 0, undetected, 1.0) is False
@@ -108,3 +109,14 @@ def test_score_pipeline_clip_scales_to_1080p_and_classifies_where_bad_outputs_la
                                 "interp": {"hit": 0, "localized_error": 1, "wrong": 0, "invisible": 0}}
     assert result.landed == {"player": 1}
     assert result.bad_frames == [(0, "invisible", "det", "player")]
+
+
+def test_score_pipeline_clip_takes_the_court_as_last_seen_when_the_payload_does_not_say():
+    """Without the exporter's last_valid_court_keypoints, the latest frame with enough keypoint
+    values (the tracker's own rule) classifies the bad outputs of the frames that have none."""
+    line = _keypoints(k0=(0.0, 20.0), k4=(100.0, 20.0))
+    payload = {"frames": [{"frame": 0, "present": False, "court_keypoints": line},
+                          {"frame": 1, "present": False, "court_keypoints": [1.0] * 15},      # too few: not the court
+                          {"frame": 2, "present": True, "x": 20, "y": 20, "source": "det"}]}
+    result = score_pipeline_clip({2: None}, payload, 1920)
+    assert result.landed == {"line": 1} and result.bad_frames == [(2, "invisible", "det", "line")]

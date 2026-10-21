@@ -33,7 +33,7 @@ from finetune.detect import ball_detector, detect_points
 from finetune.labels import read_labels
 from finetune.scoring import HIT_PX, WRONG_PX, score, scale_for_width
 from finetune.workspace import WORKSPACE, clip_of, find_video, natural_key, video_meta
-from tennis_tracker.court_geometry import LINE_PAIRS_14
+from tennis_tracker.court_geometry import LINE_PAIRS_14, MIN_KEYPOINT_VALUES, last_valid_court_keypoints
 from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
 
 if TYPE_CHECKING:
@@ -103,9 +103,13 @@ def _segment_distance(x: float, y: float, ax: float, ay: float, bx: float, by: f
 
 
 def _near_court_line(x: float, y: float, keypoints, scale: float) -> bool:
-    if not keypoints or len(keypoints) < 28:
+    """Within LINE_PX (1080p) of a court line the keypoints describe; a keypoint list is usable
+    from MIN_KEYPOINT_VALUES values (the tracker's rule) and only the lines it holds are tried."""
+    if not keypoints or len(keypoints) < MIN_KEYPOINT_VALUES:
         return False
     for a, b in LINE_PAIRS_14:
+        if 2 * max(a, b) + 1 >= len(keypoints):
+            continue
         ax, ay, bx, by = keypoints[2 * a], keypoints[2 * a + 1], keypoints[2 * b], keypoints[2 * b + 1]
         if (ax, ay) == (0.0, 0.0) or (bx, by) == (0.0, 0.0):
             continue
@@ -207,7 +211,9 @@ def tracker_config(video_path: Path, name: str, conf: float, device: str, out_di
 def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: dict, width: int) -> ClipScore:
     """One clip's pipeline output against its labels: (stats, by_source, 1080p pairs, landed, bad frames)."""
     frames = {row["frame"]: row for row in payload["frames"]}
-    fallback_keypoints = payload.get("last_valid_court_keypoints")
+    # The court as last seen, by the tracker's own rule (export.py writes the same thing).
+    fallback_keypoints = (payload.get("last_valid_court_keypoints")
+                          or last_valid_court_keypoints([row.get("court_keypoints") for row in payload["frames"]]))
     scale = scale_for_width(width)
     pairs = []
     by_source: Dict[str, Dict[str, int]] = {}
