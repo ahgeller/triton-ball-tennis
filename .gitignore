@@ -28,3 +28,5 @@ finetune/.training-python
 /sample/*.mp4
 /finetune/labels/*.before_*
 /finetune/labels/*.premisaligned
+.desloppify/
+scorecard.png
