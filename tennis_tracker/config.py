@@ -119,9 +119,13 @@ class Config:
     # findContours on every frame), so they are opt-in.
     motion_diagnostics: bool = False
     debug_probe_motion_style: bool = True
-    save_guide_video: bool = False
-    output_guide_path: str = "output_videos/prof_test_guide_debug.mp4"
-    guide_interp_max_gap: int = 12
+    # Track-debug video: court geometry, every candidate track, the raw
+    # detections, the motion ROIs and the chosen track's display path.
+    save_track_debug_video: bool = False
+    output_track_debug_path: str = "output_videos/prof_test_track_debug.mp4"
+    # Longest gap (frames) the chosen track's display path is interpolated
+    # across in that video; pass 2 raises it to 0.6 s at the clip's FPS.
+    display_path_max_gap: int = 12
     print_selector_tracks: bool = True
     selector_track_limit: int = 0  # 0 = print all
     draw_search_regions: bool = False

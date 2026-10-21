@@ -15,7 +15,7 @@ from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetec
 from .motion import _pack_mask_u8, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, draw_motion_debug_frame
 from .tracking import ROIMotionTracker
 from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
-from .rendering import MOTION_DEBUG_SOURCE_COLOR, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_GUIDE, COLOR_GUIDE_INTERP
+from .rendering import MOTION_DEBUG_SOURCE_COLOR, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, build_display_path, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_DISPLAY_PATH, COLOR_DISPLAY_PATH_INTERP
 from .court_minimap import draw_court_minimap
 from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
@@ -476,8 +476,8 @@ def _validate_io_paths(cfg) -> Path:
         outputs.append(("motion debug video", cfg.output_debug_path))
     if cfg.save_detector_input_debug:
         outputs.append(("detector-input video", cfg.output_detector_input_debug_path))
-    if cfg.save_guide_video:
-        outputs.append(("guide video", cfg.output_guide_path))
+    if cfg.save_track_debug_video:
+        outputs.append(("track-debug video", cfg.output_track_debug_path))
     if cfg.tracking_json:
         outputs.append(("tracking JSON", cfg.tracking_json))
 
@@ -556,11 +556,11 @@ def run(cfg):
 
     # Writers (main output writer is created at pass 2 start to avoid long idle FFmpeg/NVENC process)
     writer = None
-    dbg_writer = detector_input_writer = guide_writer = None
+    dbg_writer = detector_input_writer = track_debug_writer = None
     needs_pass2_outputs = bool(
         cfg.save_tracking_video
         or cfg.save_motion_debug
-        or cfg.save_guide_video
+        or cfg.save_track_debug_video
     )
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
@@ -568,9 +568,9 @@ def run(cfg):
     if cfg.save_detector_input_debug:
         os.makedirs(os.path.dirname(cfg.output_detector_input_debug_path) or ".", exist_ok=True)
         detector_input_writer = VideoWriter(cfg.output_detector_input_debug_path, fps, w, h, cfg, encoder=encoder)
-    if cfg.save_guide_video:
-        os.makedirs(os.path.dirname(cfg.output_guide_path) or ".", exist_ok=True)
-        guide_writer = VideoWriter(cfg.output_guide_path, fps, w, h, cfg, encoder=encoder)
+    if cfg.save_track_debug_video:
+        os.makedirs(os.path.dirname(cfg.output_track_debug_path) or ".", exist_ok=True)
+        track_debug_writer = VideoWriter(cfg.output_track_debug_path, fps, w, h, cfg, encoder=encoder)
 
     print("[preprocess] CUDA S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
 
@@ -666,7 +666,7 @@ def run(cfg):
                     # (FPS FIX) We no longer unpack/pack masks here retroactively frame-by-frame.
                     # We only record the ghost ROI boxes, and do ONE batched mask erase at the end of Pass 1.
                                 
-                    # For all_rois (visual boxes on the guide video)
+                    # For all_rois (visual boxes on the track-debug video)
                     # We need to find the specific ROI in the list that matches these bounds
                     if all_rois[fr_idx] is not None:
                         new_rois = []
@@ -1083,14 +1083,14 @@ def run(cfg):
             limit=max(int(cfg.selector_track_limit), 0)
         )
     # The clean selector owns its bounded tail; no hidden legacy post-processing.
-    guide_interp_gap = max(
-        max(1, int(cfg.guide_interp_max_gap)),
+    display_path_gap = max(
+        max(1, int(cfg.display_path_max_gap)),
         min(24, max(10, int(round(float(fps) * 0.60))))
     )
-    guide_map = _build_display_guide(
+    display_path = build_display_path(
         chosen_track,
         N,
-        max_interp_gap=guide_interp_gap,
+        max_interp_gap=display_path_gap,
         frame_w=w,
         frame_h=h
     )
@@ -1104,20 +1104,20 @@ def run(cfg):
         vis_tracks[tid] = {}
         for o in trk.observations:
             vis_tracks[tid][o.frame] = (o.cx, o.cy, True)
-    # Debug-display fallback: if chosen-track guide is sparse, fill from final per-frame
-    # selector output so late-rally segments remain visible in guide video.
-    if guide_writer is not None:
+    # Debug-display fallback: if the chosen track's display path is sparse, fill from
+    # the final per-frame selector output so late-rally segments stay visible.
+    if track_debug_writer is not None:
         for gi, gr in enumerate(per_frame):
-            if gi in guide_map or gr is None or gr.cx is None or gr.cy is None:
+            if gi in display_path or gr is None or gr.cx is None or gr.cy is None:
                 continue
             src = str(getattr(gr, "source", ""))
             exact = src in ("det", "motion")
-            guide_map[gi] = (float(gr.cx), float(gr.cy), exact)
+            display_path[gi] = (float(gr.cx), float(gr.cy), exact)
 
-        # Note: we intentionally do NOT backfill guide_map from other (orange/blue) tracks.
-        # The green guide must only reflect the chosen track's positions.  Non-chosen tracks
-        # are already visible in the guide video via vis_tracks (their own colored dots/lines).
-        # Backfilling would make the green guide "snap to" orange/blue positions in gaps,
+        # Note: we intentionally do NOT backfill display_path from other (orange/blue) tracks.
+        # The white path must only reflect the chosen track's positions.  Non-chosen tracks
+        # are already visible in the track-debug video via vis_tracks (their own colored dots/lines).
+        # Backfilling would make the white path "snap to" orange/blue positions in gaps,
         # which is the opposite of what we want (orange/blue should follow green, not vice versa).
     if info_timing:
         timing["selector_post"] = timing.get("selector_post", 0.0) + (time.perf_counter() - selector_post_t0)
@@ -1152,8 +1152,8 @@ def run(cfg):
     # list of (raw_x, raw_y, smooth_x, smooth_y, source, conf) or None for gaps
     trail = []
     trail_max = max(10, int(round(fps * 0.25)))
-    guide_trail = []  # list of (x, y, exact) or None for guide gaps
-    guide_trail_max = max(40, trail_max + 20)
+    display_path_trail = []  # list of (x, y, exact) or None for gaps in the display path
+    display_path_trail_max = max(40, trail_max + 20)
     # Display-only smoothing for the magenta motion-search center (orange MOT path).
     # This does not affect selector logic; it only stabilizes the debug overlay.
     last_motion_search_dbg = None  # (x, y)
@@ -1163,7 +1163,7 @@ def run(cfg):
 
     # Per-track short history for visualization: tid -> list of (x, y)
     vis_track_trails = {int(t.track_id): [] for t in vis_track_list}
-    vis_trail_len = 120  # Long enough to show full rally segments in guide video
+    vis_trail_len = 120  # Long enough to show full rally segments in the track-debug video
     # Pre-build score lookup for label rendering (avoids repeated attribute access per frame)
     vis_track_scores = {int(t.track_id): float(t.score) for t in vis_track_list}
 
@@ -1192,12 +1192,12 @@ def run(cfg):
 
         if info_timing:
             render_t0 = time.perf_counter()
-            guide_write_elapsed = 0.0
+            debug_write_elapsed = 0.0
         dets = all_frame_dets[fi]
         frame_result = per_frame[fi]
         display_result = frame_result
         frame_out = frame.copy()
-        guide_frame = frame.copy() if guide_writer is not None else None
+        debug_frame = frame.copy() if track_debug_writer is not None else None
         court_kps = all_court_kps[fi]
         if court_kps and len(court_kps) >= 16:
             trail_kps = court_kps
@@ -1211,19 +1211,19 @@ def run(cfg):
             if court_kps:
                 court_det.keypoints = court_kps
                 court_det.draw(frame_out)
-                if guide_frame is not None:
-                    court_det.draw(guide_frame)
+                if debug_frame is not None:
+                    court_det.draw(debug_frame)
         if ground_model is not None:
             _draw_homography_net_line(frame_out, ground_model)
-            if guide_frame is not None:
-                _draw_homography_net_line(guide_frame, ground_model)
+            if debug_frame is not None:
+                _draw_homography_net_line(debug_frame, ground_model)
 
         # Draw court polygon outline (thin grey)
         if court_poly is not None:
             cv2.drawContours(frame_out, [court_poly.astype(np.int32)], 0,
                              (100, 100, 100), 1)
-            if guide_frame is not None:
-                cv2.drawContours(guide_frame, [court_poly.astype(np.int32)], 0,
+            if debug_frame is not None:
+                cv2.drawContours(debug_frame, [court_poly.astype(np.int32)], 0,
                                  (100, 100, 100), 1)
 
 
@@ -1234,26 +1234,26 @@ def run(cfg):
                     continue
                 px1, py1, px2, py2 = map(int, pbox)
                 cv2.rectangle(frame_out, (px1, py1), (px2, py2), (0, 0, 255), 2)
-                if guide_frame is not None:
-                    cv2.rectangle(guide_frame, (px1, py1), (px2, py2), (0, 0, 255), 2)
+                if debug_frame is not None:
+                    cv2.rectangle(debug_frame, (px1, py1), (px2, py2), (0, 0, 255), 2)
 
-        # Rejected raw proposals belong only in the optional guide/debug view.
+        # Rejected raw proposals belong only in the optional track-debug view.
         for ball_box, ball_conf in dets:
             ix1, iy1, ix2, iy2 = map(int, ball_box)
-            if guide_frame is not None:
-                cv2.rectangle(guide_frame, (ix1, iy1), (ix2, iy2), COLOR_RAW, 1)
-                cv2.line(guide_frame, (ix1, iy2), (ix2, iy2), (0, 0, 255), 1)
+            if debug_frame is not None:
+                cv2.rectangle(debug_frame, (ix1, iy1), (ix2, iy2), COLOR_RAW, 1)
+                cv2.line(debug_frame, (ix1, iy2), (ix2, iy2), (0, 0, 255), 1)
                 
         # Draw Motion ROIs (cleaned of ghost histories)
-        if guide_frame is not None and all_rois[fi] is not None:
+        if debug_frame is not None and all_rois[fi] is not None:
             for rx1, ry1, rx2, ry2 in all_rois[fi]:
-                cv2.rectangle(guide_frame, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 2)
-                cv2.putText(guide_frame, "ROI", (int(rx1), max(15, int(ry1) - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                cv2.rectangle(debug_frame, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 2)
+                cv2.putText(debug_frame, "ROI", (int(rx1), max(15, int(ry1) - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
         # Draw candidate tracks (circles + IDs)
         # Draw them underneath the chosen track result so the final choice pops on top.
-        # ONLY draw on guide_frame to keep main output clean.
-        if guide_frame is not None:
+        # ONLY draw on the track-debug frame to keep main output clean.
+        if debug_frame is not None:
             for trk in vis_track_list:
                 tid = int(trk.track_id)
                 tdata = vis_tracks.get(tid, {})
@@ -1292,7 +1292,7 @@ def run(cfg):
                         for i in range(1, len(seg)):
                             p0 = (int(seg[i-1][0]), int(seg[i-1][1]))
                             p1 = (int(seg[i][0]), int(seg[i][1]))
-                            cv2.line(guide_frame, p0, p1, tcolor, 1, cv2.LINE_AA)
+                            cv2.line(debug_frame, p0, p1, tcolor, 1, cv2.LINE_AA)
 
                 # Draw current position and ID+score
                 if is_active_frame:
@@ -1301,13 +1301,13 @@ def run(cfg):
                     dot_r = 5 if is_chosen_trk else 3
                     dot_th = -1 if is_chosen_trk else 2
                     # Dark outline so label is readable on any background
-                    cv2.circle(guide_frame, (cx, cy), dot_r + 2, (15, 15, 15), -1)
-                    cv2.circle(guide_frame, (cx, cy), dot_r, tcolor, dot_th)
+                    cv2.circle(debug_frame, (cx, cy), dot_r + 2, (15, 15, 15), -1)
+                    cv2.circle(debug_frame, (cx, cy), dot_r, tcolor, dot_th)
                     scr = vis_track_scores.get(tid, 0.0)
                     label = f"{tid}({scr:.0f})"
-                    cv2.putText(guide_frame, label, (cx + 6, cy + 6),
+                    cv2.putText(debug_frame, label, (cx + 6, cy + 6),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (15, 15, 15), 2)
-                    cv2.putText(guide_frame, label, (cx + 6, cy + 6),
+                    cv2.putText(debug_frame, label, (cx + 6, cy + 6),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, tcolor, 1)
 
         # Draw chosen result - color-coded by source
@@ -1325,10 +1325,10 @@ def run(cfg):
                     cv2.rectangle(frame_out, (bx1, by1), (bx2, by2), (15, 15, 15), 4)
                     cv2.rectangle(frame_out, (bx1, by1), (bx2, by2), COLOR_DET, 2)
                     cv2.line(frame_out, (bx1, by2), (bx2, by2), (255, 255, 255), 2)
-                    if guide_frame is not None:
-                        cv2.rectangle(guide_frame, (bx1, by1), (bx2, by2), (15, 15, 15), 4)
-                        cv2.rectangle(guide_frame, (bx1, by1), (bx2, by2), COLOR_DET, 2)
-                        cv2.line(guide_frame, (bx1, by2), (bx2, by2), (255, 255, 255), 2)
+                    if debug_frame is not None:
+                        cv2.rectangle(debug_frame, (bx1, by1), (bx2, by2), (15, 15, 15), 4)
+                        cv2.rectangle(debug_frame, (bx1, by1), (bx2, by2), COLOR_DET, 2)
+                        cv2.line(debug_frame, (bx1, by2), (bx2, by2), (255, 255, 255), 2)
                     bw = max(bx2f - bx1f, 1.0)
                     bh = max(by2f - by1f, 1.0)
                     det_anchor_radius = 0.5 * max(bw, bh)
@@ -1347,10 +1347,10 @@ def run(cfg):
                 cv2.circle(frame_out, (rcx, rcy), marker_radius, COLOR_DET, -1)
                 cv2.putText(frame_out, "DET", (rcx + 10, rcy - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_DET, 1)
-                if guide_frame is not None:
-                    cv2.circle(guide_frame, (rcx, rcy), marker_radius + 2, (15, 15, 15), 2)
-                    cv2.circle(guide_frame, (rcx, rcy), marker_radius, COLOR_DET, -1)
-                    cv2.putText(guide_frame, "DET", (rcx + 10, rcy - 5),
+                if debug_frame is not None:
+                    cv2.circle(debug_frame, (rcx, rcy), marker_radius + 2, (15, 15, 15), 2)
+                    cv2.circle(debug_frame, (rcx, rcy), marker_radius, COLOR_DET, -1)
+                    cv2.putText(debug_frame, "DET", (rcx + 10, rcy - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_DET, 1)
 
             elif display_result.source == 'motion':
@@ -1359,9 +1359,9 @@ def run(cfg):
                 cv2.circle(frame_out, (rcx, rcy), m_rad, COLOR_MOTION, -1)
                 cv2.putText(frame_out, "MOT", (rcx + 10, rcy - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_MOTION, 1)
-                if guide_frame is not None:
-                    cv2.circle(guide_frame, (rcx, rcy), m_rad, COLOR_MOTION, -1)
-                    cv2.putText(guide_frame, "MOT", (rcx + 10, rcy - 5),
+                if debug_frame is not None:
+                    cv2.circle(debug_frame, (rcx, rcy), m_rad, COLOR_MOTION, -1)
+                    cv2.putText(debug_frame, "MOT", (rcx + 10, rcy - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_MOTION, 1)
                 # Draw search region
                 if display_result.search_radius > 0:
@@ -1386,11 +1386,11 @@ def run(cfg):
                         # Small cross at predicted position
                         cv2.drawMarker(frame_out, (scx, scy), COLOR_SEARCH,
                                        cv2.MARKER_CROSS, 12, 1)
-                    if guide_frame is not None:
-                        cv2.circle(guide_frame, (scx, scy),
+                    if debug_frame is not None:
+                        cv2.circle(debug_frame, (scx, scy),
                                    int(display_result.search_radius), COLOR_SEARCH, 1)
-                        cv2.line(guide_frame, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
-                        cv2.drawMarker(guide_frame, (scx, scy), COLOR_SEARCH,
+                        cv2.line(debug_frame, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
+                        cv2.drawMarker(debug_frame, (scx, scy), COLOR_SEARCH,
                                        cv2.MARKER_CROSS, 12, 1)
                 else:
                     last_motion_search_dbg = None
@@ -1404,9 +1404,9 @@ def run(cfg):
                 cv2.circle(frame_out, (rcx, rcy), i_rad, COLOR_INTERP, -1)
                 cv2.putText(frame_out, "PHY", (rcx + 10, rcy - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_INTERP, 1)
-                if guide_frame is not None:
-                    cv2.circle(guide_frame, (rcx, rcy), i_rad, COLOR_INTERP, -1)
-                    cv2.putText(guide_frame, "PHY", (rcx + 10, rcy - 5),
+                if debug_frame is not None:
+                    cv2.circle(debug_frame, (rcx, rcy), i_rad, COLOR_INTERP, -1)
+                    cv2.putText(debug_frame, "PHY", (rcx + 10, rcy - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_INTERP, 1)
 
             # State circle (court-scaled radius): the selector's search region.
@@ -1418,9 +1418,9 @@ def run(cfg):
                 if draw_main_search_regions:
                     cv2.circle(frame_out, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
                     cv2.circle(frame_out, (scx, scy), sr, scol, 1, cv2.LINE_AA)
-                if guide_frame is not None:
-                    cv2.circle(guide_frame, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
-                    cv2.circle(guide_frame, (scx, scy), sr, scol, 1, cv2.LINE_AA)
+                if debug_frame is not None:
+                    cv2.circle(debug_frame, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
+                    cv2.circle(debug_frame, (scx, scy), sr, scol, 1, cv2.LINE_AA)
 
             # Piecewise arc smoothing:
             # smooth within segment, reset segment on jump or direction reversal.
@@ -1501,14 +1501,14 @@ def run(cfg):
             p0 = (trail[i-1][2], trail[i-1][3])
             p1 = (trail[i][2], trail[i][3])
 
-            # Guide view: show chosen trail state colors for all sources.
-            if guide_frame is not None:
+            # Track-debug view: show chosen trail state colors for all sources.
+            if debug_frame is not None:
                 gbase = _trail_base_color(src)
                 galpha = 0.55 + 0.45 * (i / len(trail))
                 gcolor = (int(gbase[0] * galpha), int(gbase[1] * galpha), int(gbase[2] * galpha))
                 gth = max(2, int(3 * galpha))
-                cv2.line(guide_frame, p0, p1, (15, 15, 15), gth + 1, cv2.LINE_AA)
-                cv2.line(guide_frame, p0, p1, gcolor, gth, cv2.LINE_AA)
+                cv2.line(debug_frame, p0, p1, (15, 15, 15), gth + 1, cv2.LINE_AA)
+                cv2.line(debug_frame, p0, p1, gcolor, gth, cv2.LINE_AA)
 
             if draw_main_ball_trail:
                 alpha = 0.55 + 0.45 * (i / len(trail))
@@ -1538,68 +1538,68 @@ def run(cfg):
             hud_text = f"ID:{chosen_id} {source_label} c={display_result.conf:.2f}"
             cv2.putText(frame_out, hud_text, (60, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            if guide_frame is not None:
-                 cv2.putText(guide_frame, f"F{fi}", (10, 25),
+            if debug_frame is not None:
+                 cv2.putText(debug_frame, f"F{fi}", (10, 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                 cv2.putText(guide_frame, hud_text, (60, 25), 
+                 cv2.putText(debug_frame, hud_text, (60, 25), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Guide-debug stream: show chosen-track guide progression over time.
-        guide_info = guide_map.get(fi)
-        if guide_info is None and display_result is not None:
-            # Keep guide-debug continuous when chosen-track guide ends early.
-            # Render fallback prominently so end-of-video guide does not disappear visually.
+        # Track-debug stream: the chosen track's display path over time.
+        path_point = display_path.get(fi)
+        if path_point is None and display_result is not None:
+            # Keep the path continuous when the chosen track's path ends early, so
+            # the end of the video does not lose it visually.
             g_exact_fallback = True
-            guide_info = (float(display_result.cx), float(display_result.cy), g_exact_fallback)
-        if guide_info is not None:
-            ggx, ggy, gexact = guide_info
-            guide_pt_dbg = (int(round(ggx)), int(round(ggy)), bool(gexact))
-            guide_trail.append(guide_pt_dbg)
-        elif guide_trail and guide_trail[-1] is not None:
-            guide_trail.append(None)
-        while len(guide_trail) > guide_trail_max:
-            guide_trail.pop(0)
+            path_point = (float(display_result.cx), float(display_result.cy), g_exact_fallback)
+        if path_point is not None:
+            ggx, ggy, gexact = path_point
+            path_pt = (int(round(ggx)), int(round(ggy)), bool(gexact))
+            display_path_trail.append(path_pt)
+        elif display_path_trail and display_path_trail[-1] is not None:
+            display_path_trail.append(None)
+        while len(display_path_trail) > display_path_trail_max:
+            display_path_trail.pop(0)
 
-        if guide_frame is not None:
+        if debug_frame is not None:
             if display_result is None:
-                for i in range(1, len(guide_trail)):
-                    p0 = guide_trail[i - 1]
-                    p1 = guide_trail[i]
+                for i in range(1, len(display_path_trail)):
+                    p0 = display_path_trail[i - 1]
+                    p1 = display_path_trail[i]
                     if p0 is None or p1 is None:
                         continue
                     if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > max(200.0, w * 0.15):
                         continue
                     seg_exact = bool(p0[2] and p1[2])
-                    seg_color = COLOR_GUIDE if seg_exact else COLOR_GUIDE_INTERP
+                    seg_color = COLOR_DISPLAY_PATH if seg_exact else COLOR_DISPLAY_PATH_INTERP
                     seg_th = 2 if seg_exact else 1
-                    cv2.line(guide_frame, (p0[0], p0[1]), (p1[0], p1[1]),
+                    cv2.line(debug_frame, (p0[0], p0[1]), (p1[0], p1[1]),
                              (15, 15, 15), seg_th + 1, cv2.LINE_AA)
-                    cv2.line(guide_frame, (p0[0], p0[1]), (p1[0], p1[1]),
+                    cv2.line(debug_frame, (p0[0], p0[1]), (p1[0], p1[1]),
                              seg_color, seg_th, cv2.LINE_AA)
 
-            if guide_info is not None and display_result is None:
-                ggx, ggy, gexact = guide_info
+            if path_point is not None and display_result is None:
+                ggx, ggy, gexact = path_point
                 gc = (int(round(ggx)), int(round(ggy)))
-                gcol = COLOR_GUIDE if gexact else COLOR_GUIDE_INTERP
+                gcol = COLOR_DISPLAY_PATH if gexact else COLOR_DISPLAY_PATH_INTERP
                 gr = 6 if gexact else 4
-                cv2.circle(guide_frame, gc, gr + 2, (15, 15, 15), 2)
-                cv2.circle(guide_frame, gc, gr, gcol, -1)
-            cv2.putText(guide_frame, f"F{fi}", (10, 25),
+                cv2.circle(debug_frame, gc, gr + 2, (15, 15, 15), 2)
+                cv2.circle(debug_frame, gc, gr, gcol, -1)
+            cv2.putText(debug_frame, f"F{fi}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             if chosen_track is not None:
-                cv2.putText(guide_frame, f"track={chosen_track.track_id}",
+                cv2.putText(debug_frame, f"track={chosen_track.track_id}",
                             (60, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                             (255, 255, 255), 1)
             if info_timing:
-                guide_write_t0 = time.perf_counter()
-            guide_writer.write(guide_frame)
+                debug_write_t0 = time.perf_counter()
+            track_debug_writer.write(debug_frame)
             if info_timing:
-                guide_write_dt = time.perf_counter() - guide_write_t0
-                guide_write_elapsed += guide_write_dt
-                timing["pass2_write_guide"] = timing.get("pass2_write_guide", 0.0) + guide_write_dt
+                debug_write_dt = time.perf_counter() - debug_write_t0
+                debug_write_elapsed += debug_write_dt
+                timing["pass2_write_track_debug"] = timing.get("pass2_write_track_debug", 0.0) + debug_write_dt
 
         if info_timing:
-            render_dt = time.perf_counter() - render_t0 - guide_write_elapsed
+            render_dt = time.perf_counter() - render_t0 - debug_write_elapsed
             timing["pass2_render"] = timing.get("pass2_render", 0.0) + max(0.0, render_dt)
             main_write_t0 = time.perf_counter()
         if writer is not None:
@@ -1840,8 +1840,8 @@ def run(cfg):
         dbg_writer.close()
     if detector_input_writer:
         detector_input_writer.close()
-    if guide_writer:
-        guide_writer.close()
+    if track_debug_writer:
+        track_debug_writer.close()
     if info_timing:
         timing["pass2_total"] = time.perf_counter() - pass2_perf_t0
 
@@ -1877,7 +1877,7 @@ def run(cfg):
         print(f"[done] Motion debug:  {cfg.output_debug_path}")
     if cfg.save_detector_input_debug:
         print(f"[done] Detector input debug:  {cfg.output_detector_input_debug_path}")
-    if cfg.save_guide_video:
-        print(f"[done] Guide Debug:  {cfg.output_guide_path}")
+    if cfg.save_track_debug_video:
+        print(f"[done] Track debug:  {cfg.output_track_debug_path}")
     if info_timing:
         _print_timing_summary(timing, elapsed, N, pass2_frames_rendered)

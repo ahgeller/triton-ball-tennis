@@ -10,8 +10,8 @@ COLOR_MOTION = (0, 165, 255)
 COLOR_INTERP = (255, 255, 0)
 COLOR_RAW = (0, 180, 180)
 COLOR_SEARCH = (255, 0, 255)
-COLOR_GUIDE = (255, 255, 255)
-COLOR_GUIDE_INTERP = (180, 220, 255)
+COLOR_DISPLAY_PATH = (255, 255, 255)
+COLOR_DISPLAY_PATH_INTERP = (180, 220, 255)
 
 # Trail colour per FrameResult.source, before the age fade.
 _SOURCE_BASE_COLOR: Dict[str, Tuple[int, int, int]] = {
@@ -46,17 +46,23 @@ def draw_court_side_guides(frame, court_keypoints, color=(0, 0, 255), thickness=
             cv2.line(frame, clipped[0], clipped[1], color, thickness, cv2.LINE_AA)
     return frame
 
-def _build_display_guide(
+def build_display_path(
     track,
     total_frames: int,
     max_interp_gap: int,
     frame_w: int,
     frame_h: int
 ) -> dict:
-    """Build a per-frame guide map from chosen track for guide-debug rendering."""
-    guide = {}
+    """The chosen track's display path for the track-debug video.
+
+    Maps frame index to ``(x, y, exact)``: the track's observations (exact),
+    linear fills across gaps of at most ``max_interp_gap`` frames, and a short
+    tail extension while the observed tail is moving (not exact).  Drawing
+    only; the tracking JSON never reads it.
+    """
+    path = {}
     if track is None or getattr(track, "num_obs", 0) <= 0:
-        return guide
+        return path
     diag = float(np.hypot(float(frame_w), float(frame_h)))
     max_step = max(10.0, 0.15 * diag)
     static_speed = max(2.0, 0.010 * diag)
@@ -74,7 +80,7 @@ def _build_display_guide(
 
     obs = [best_by_frame[f] for f in sorted(best_by_frame.keys()) if 0 <= f < total_frames]
     if not obs:
-        return guide
+        return path
     if len(obs) >= 3:
         keep = [obs[0]]
         for i in range(1, len(obs) - 1):
@@ -113,7 +119,7 @@ def _build_display_guide(
         obs = keep
 
     for o in obs:
-        guide[int(o.frame)] = (float(o.cx), float(o.cy), True)
+        path[int(o.frame)] = (float(o.cx), float(o.cy), True)
 
     max_gap = max(1, int(max_interp_gap))
     for i in range(1, len(obs)):
@@ -126,12 +132,12 @@ def _build_display_guide(
         if seg_speed > max_step * 1.10:
             continue
         for f in range(int(a.frame) + 1, int(b.frame)):
-            if f in guide:
+            if f in path:
                 continue
             t = (f - float(a.frame)) / float(gap)
             cx = float(a.cx) + (float(b.cx) - float(a.cx)) * t
             cy = float(a.cy) + (float(b.cy) - float(a.cy)) * t
-            guide[f] = (cx, cy, False)
+            path[f] = (cx, cy, False)
 
     # Conservative tail extension: only when the observed tail is moving.
     if len(obs) >= 2:
@@ -145,12 +151,12 @@ def _build_display_guide(
             tail_horizon = min(max_gap, max(2, int(max_interp_gap)))
             end_f = min(total_frames - 1, int(last.frame) + tail_horizon)
             for f in range(int(last.frame) + 1, end_f + 1):
-                if f in guide:
+                if f in path:
                     continue
                 dtf = f - int(last.frame)
-                guide[f] = (float(last.cx) + vx * dtf, float(last.cy) + vy * dtf, False)
+                path[f] = (float(last.cx) + vx * dtf, float(last.cy) + vy * dtf, False)
 
-    return guide
+    return path
 
 def _trail_base_color(src):
     return _SOURCE_BASE_COLOR.get(src, (255, 220, 80))
@@ -332,7 +338,7 @@ def _print_timing_summary(
         ("pass2_read", "pass2 frame read", pass2_frames),
         ("pass2_render", "pass2 render", pass2_frames),
         ("pass2_write_main", "pass2 write main", pass2_frames),
-        ("pass2_write_guide", "pass2 write guide", pass2_frames),
+        ("pass2_write_track_debug", "pass2 write track-debug", pass2_frames),
         ("pass2_write_debug", "pass2 write debug", pass2_frames),
     ]
     denom_total = max(float(total_elapsed), 1e-9)

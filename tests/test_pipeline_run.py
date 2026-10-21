@@ -317,7 +317,7 @@ STREAM_ROLES = {
     "tracking": "output_video",
     "motion_debug": "output_debug_path",
     "detector_input": "output_detector_input_debug_path",
-    "guide": "output_guide_path",
+    "track_debug": "output_track_debug_path",
 }
 
 FULL_OVERRIDES = dict(
@@ -325,7 +325,7 @@ FULL_OVERRIDES = dict(
     save_tracking_video=True,
     save_motion_debug=True,
     save_detector_input_debug=True,
-    save_guide_video=True,
+    save_track_debug_video=True,
     print_selector_tracks=False,
     use_nvenc=False,
     use_async_writer=False,
@@ -339,7 +339,7 @@ JSON_ONLY_OVERRIDES = dict(
     save_tracking_video=False,
     save_motion_debug=False,
     save_detector_input_debug=False,
-    save_guide_video=False,
+    save_track_debug_video=False,
 )
 
 
@@ -356,7 +356,7 @@ def make_config(tmp_path: Path, clip: Path, **overrides) -> Config:
         output_video=str(out / "tracking.mp4"),
         output_debug_path=str(out / "motion_debug.mp4"),
         output_detector_input_debug_path=str(out / "detector_input.mp4"),
-        output_guide_path=str(out / "guide.mp4"),
+        output_track_debug_path=str(out / "track_debug.mp4"),
         tracking_json=str(out / "tracking.json"),
         model_path=str(weights),
         device="0",
@@ -471,7 +471,7 @@ def test_run_matches_golden(tmp_path, monkeypatch, fake_cuda, capsys, clip):
     assert result["json"]["last_valid_court_keypoints"] == COURT_KEYPOINTS
     assert result["json"]["summary"]["pass2_frames_rendered"] == FRAMES
     assert result["json"]["motion_diagnostics"]["summary"]["frames_analyzed"] == FRAMES
-    assert set(result["streams"]) == {"tracking", "motion_debug", "detector_input", "guide"}
+    assert set(result["streams"]) == {"tracking", "motion_debug", "detector_input", "track_debug"}
     assert all(len(hashes) == FRAMES for hashes in result["streams"].values())
     assert "[pass 1] RAM frame cache enabled" in out
     assert "[pass 2] Using RAM frame cache" in out
@@ -537,7 +537,7 @@ def test_zero_frame_video_prints_and_returns_none(tmp_path, monkeypatch, fake_cu
     # The debug writers were already opened before the early return; nothing
     # was written to them and (current behaviour) they are never closed.
     debug_writers = CapturingVideoWriter.streams
-    assert set(debug_writers) == {cfg.output_debug_path, cfg.output_detector_input_debug_path, cfg.output_guide_path}
+    assert set(debug_writers) == {cfg.output_debug_path, cfg.output_detector_input_debug_path, cfg.output_track_debug_path}
     assert all(writer.hashes == [] and not writer.closed for writer in debug_writers.values())
 
 
