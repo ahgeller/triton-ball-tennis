@@ -19,7 +19,7 @@ class Config:
     # (p90 6.5), the detections sitting a median 2 px below the labels.
     gridtracknet_y_offset_px: float = 0.0
     gridtracknet_source_stride: Optional[int] = None  # None = 2 at 60 FPS / 1 at 30 FPS (the training cadence)
-    gridtracknet_prepass_background: bool = True  # overlap the detector prepass with pass 1
+    gridtracknet_prepass_background: bool = True  # run the GridTrackNet prepass on a worker thread, overlapped with pass 1
 
     # TensorRT
     trt_async_execute: bool = True

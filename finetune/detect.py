@@ -15,14 +15,16 @@ BallPoint = Tuple[float, float, float]     # x, y (native pixels) and confidence
 
 def ball_detector(weights: Path, conf: float = 0.0, device: str = "0",
                   source_stride: Optional[int] = None) -> "GridTrackNetBallDetector":
-    """A GridTrackNet detector on `weights`, keeping every candidate at or above `conf`, with the
-    background channel off: these scripts read the detector's own view of a frame, not the
-    tracker's. `source_stride` forces the frame spacing fed to the model (None: the training
-    cadence, 2 at 60 FPS and 1 at 30)."""
+    """A GridTrackNet detector on `weights`, keeping every candidate at or above `conf`. It sees
+    the same five RGB frames the tracker feeds the model; `detect_clip` runs the prepass in the
+    foreground, so these scripts get every frame's answer at once. `source_stride` forces the
+    frame spacing fed to the model (None: the training cadence, 2 at 60 FPS and 1 at 30)."""
+    import torch
     from tennis_tracker.config import Config
     from tennis_tracker import ball_detectors as backends
-    cfg = Config(conf=conf, device=device, gridtracknet_prepass_background=False,
-                 gridtracknet_source_stride=source_stride)
+    # These scripts own their process: let cuDNN autotune the fixed-shape convolutions.
+    torch.backends.cudnn.benchmark = True
+    cfg = Config(conf=conf, device=device, gridtracknet_source_stride=source_stride)
     return backends.GridTrackNetBallDetector(str(weights), cfg)
 
 

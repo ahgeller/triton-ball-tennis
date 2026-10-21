@@ -192,7 +192,6 @@ class FakeGridTrackNet:
         self.cfg = cfg
         self.prepared: Optional[Dict[str, Any]] = None
         self.precomputed: Optional[List[List[Tuple[List[float], float]]]] = None
-        self.precomputed_index = 0
         self.inputs_seen: List[Tuple[int, Any]] = []
         type(self).instances.append(self)
 
@@ -204,7 +203,6 @@ class FakeGridTrackNet:
         self.prepared = {"video_path": str(video_path), "fps": float(fps), "width": int(width),
                          "height": int(height), "total": int(total)}
         self.precomputed = [list(self.script[i]) if i < len(self.script) else [] for i in range(max(0, int(total)))]
-        self.precomputed_index = 0
 
     def detections_at(self, index: int) -> List[Tuple[List[float], float]]:
         if self.precomputed is None:
@@ -213,19 +211,15 @@ class FakeGridTrackNet:
             return []
         return [(list(box), float(conf)) for box, conf in self.precomputed[index]]
 
-    def detect_async_start(self, frame_bgr, frame_index: Optional[int] = None) -> _Pending:
-        if frame_index is None:
-            index = self.precomputed_index
-        else:
-            index = int(frame_index)
-        self.precomputed_index = index + 1
+    def detect_async_start(self, frame_bgr, frame_index: int) -> _Pending:
+        index = int(frame_index)
         self.inputs_seen.append((index, type(frame_bgr).__name__))
         return _Pending(index, self.detections_at(index))
 
     def detect_async_finish(self, pending: _Pending) -> List[Tuple[List[float], float]]:
         return pending.detections
 
-    def detect(self, frame_bgr, frame_index: Optional[int] = None):
+    def detect(self, frame_bgr, frame_index: int):
         return self.detect_async_finish(self.detect_async_start(frame_bgr, frame_index))
 
 

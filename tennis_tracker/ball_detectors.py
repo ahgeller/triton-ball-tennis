@@ -50,18 +50,24 @@ class BallDetectorBackend:
     frame's preprocessing with this frame's inference; the pending token is a
     backend-specific dataclass (``CachedDetections`` or ``TensorRTBallPending``)
     that only the same backend's ``detect_async_finish`` understands.
-    ``frame_index`` is the zero-based source frame; backends that cache a
-    whole clip use it to look the frame up.
+    ``frame_index`` is the zero-based source frame of ``frame_bgr``; a
+    backend that caches a whole clip answers for that frame.
+
+    ``prepare_video`` is called once per clip before the first frame; a
+    per-frame backend has nothing to prepare.
     """
 
     uses_raw_frames = False
     use_async = False
     async_slots = 1
 
-    def detect(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> List[Detection]:
+    def prepare_video(self, video_path: Path, fps: float, width: int, height: int, total: int) -> None:
+        """Hook for whole-clip backends; ``total`` is the container's frame count hint."""
+
+    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[Detection]:
         raise NotImplementedError
 
-    def detect_async_start(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> Any:
+    def detect_async_start(self, frame_bgr: FrameInput, frame_index: int) -> Any:
         raise NotImplementedError
 
     def detect_async_finish(self, pending: Any) -> List[Detection]:
@@ -83,15 +89,14 @@ class GridTrackNetBallDetector(BallDetectorBackend):
     """Run the pretrained model at its native five-frame, 30-FPS cadence.
 
     ``prepare_video`` decodes the whole clip once (by default on a worker
-    thread) and caches one detection per source frame; ``detections_at(i)``
-    returns frame ``i``'s result, waiting for the prepass if it is behind.
+    thread, see ``Config.gridtracknet_prepass_background``) and caches one
+    detection per decoded source frame; ``detections_at(i)`` returns frame
+    ``i``'s result, waiting for the prepass if it is behind, and raises once
+    the prepass has finished without ever decoding frame ``i``.
 
     ``detect`` / ``detect_async_start`` never read the frame they are given:
-    the prepass already decoded the clip.  With ``frame_index`` they answer
-    for that source frame, which is what ``pipeline.run`` passes, so skipping
-    frames is safe.  Without it they hand out the cached results in call
-    order, one call per source frame, and a caller that skips a frame shifts
-    every later answer.
+    the prepass already decoded the clip.  They answer for ``frame_index``,
+    so skipping frames is safe and call order never matters.
     """
 
     uses_raw_frames = True
@@ -105,12 +110,13 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self.device = torch.device(f"cuda:{int(cfg.device)}")
         self._decode = decode_predictions
         self._frame_tensor = frame_tensor
-        torch.backends.cudnn.benchmark = True
         self.model = load_model(Path(weights_path), self.device)
+        # One entry per decoded source frame, appended by the prepass.
         self.precomputed: Optional[List[List[Detection]]] = None
-        self.precomputed_index = 0
-        # Progressive prepass state: frames < ready_upto are final.
+        # Progressive prepass state: frames < ready_upto are final; ``_done``
+        # once the prepass has released its capture (with or without an error).
         self._ready_upto = 0
+        self._done = False
         self._ready = threading.Condition()
         self._worker: Optional[threading.Thread] = None
         self._worker_error: Optional[BaseException] = None
@@ -130,37 +136,55 @@ class GridTrackNetBallDetector(BallDetectorBackend):
 
     def prepare_video(self, video_path: Path, fps: float, width: int, height: int, total: int,
                       background: Optional[bool] = None) -> None:
-        """Decode the video once and cache one detection per frame.
+        """Decode the video once and cache one detection per decoded frame.
 
-        By default this runs on a worker thread so pass 1 can start on frame
-        0 while the detector is still ahead of it; ``detect()`` blocks only if
-        pass 1 catches up.  Results are identical to the synchronous pass.
+        ``total`` is the container's frame count, only a hint: the cache
+        grows with the frames actually decoded, and a mismatch is reported.
+        ``background`` (default ``cfg.gridtracknet_prepass_background``) runs
+        the prepass on a worker thread so pass 1 can start on frame 0 while
+        the detector is still ahead of it; ``detect()`` then blocks only if
+        pass 1 catches up.  Results are identical to the synchronous pass,
+        whose failure raises from here.
         """
         source_stride = self.source_stride_for(fps)
         capture = cv2.VideoCapture(str(video_path))
         if not capture.isOpened():
             raise RuntimeError(f"Could not open input video for GridTrackNet: {video_path}")
-        self.precomputed = [[] for _ in range(max(0, int(total)))]
-        self.precomputed_index = 0
+        self.precomputed = []
         self._ready_upto = 0
+        self._done = False
         self._worker_error = None
         if background is None:
             background = bool(self.cfg.gridtracknet_prepass_background)
+        args = (capture, source_stride, width, height, int(total))
         if background:
-            self._worker = threading.Thread(
-                target=self._prepass, args=(capture, source_stride, width, height), daemon=True, name="gridtracknet-prepass"
-            )
+            self._worker = threading.Thread(target=self._prepass, args=args, daemon=True, name="gridtracknet-prepass")
             self._worker.start()
         else:
             self._worker = None
-            self._prepass(capture, source_stride, width, height)
+            self._prepass(*args)
+            self._raise_if_failed()
 
     def _publish(self, upto: int) -> None:
         with self._ready:
             self._ready_upto = max(self._ready_upto, upto)
             self._ready.notify_all()
 
-    def _prepass(self, capture: cv2.VideoCapture, source_stride: int, width: int, height: int) -> None:
+    def _finish(self) -> None:
+        with self._ready:
+            self._done = True
+            self._ready.notify_all()
+
+    def _raise_if_failed(self) -> None:
+        error = self._worker_error
+        if error is None:
+            return
+        if not isinstance(error, Exception):   # KeyboardInterrupt, SystemExit: pass through
+            raise error
+        raise RuntimeError("GridTrackNet prepass failed") from error
+
+    def _prepass(self, capture: cv2.VideoCapture, source_stride: int, width: int, height: int,
+                 total_hint: int) -> None:
         cached = self.precomputed
         finalized = set()
         # One independent five-frame unit per phase. The model wants 30 FPS
@@ -173,7 +197,6 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         started = time.perf_counter()
         y_offset = float(self.cfg.gridtracknet_y_offset_px) * height / _REFERENCE_HEIGHT_PX
         radius = max(_MIN_BOX_RADIUS_PX, _BOX_RADIUS_FRAC * np.hypot(width, height))
-        stream = torch.cuda.Stream(device=self.device) if self._worker is not None else None
 
         def flush() -> None:
             nonlocal inference_calls, detected
@@ -199,26 +222,27 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             batches.clear()
             self._publish(min(pending_min, frame_index + 1))
 
-        # All of the worker's CUDA work lives on its own stream so it overlaps
-        # pass 1 on the default stream instead of serialising behind it.
-        stream_scope = torch.cuda.stream(stream) if stream is not None else contextlib.nullcontext()
         try:
+            # All of the worker's CUDA work lives on its own stream so it overlaps
+            # pass 1 on the default stream instead of serialising behind it.
+            stream = torch.cuda.Stream(device=self.device) if self._worker is not None else None
+            stream_scope = torch.cuda.stream(stream) if stream is not None else contextlib.nullcontext()
             with stream_scope:
                 while True:
                     ok, frame = capture.read()
                     if not ok:
                         break
-                    if frame_index < len(cached):
-                        phase = frame_index % source_stride
-                        unit = units[phase]
-                        item = (self._frame_tensor(frame, self.device), frame_index)
-                        recent[phase].append(item)
-                        unit.append(item)
-                        if len(unit) == 5:
-                            batches.append((torch.cat([value for value, _ in unit]), [index for _, index in unit]))
-                            unit.clear()
-                            if len(batches) == _UNITS_PER_INFERENCE:
-                                flush()
+                    cached.append([])
+                    phase = frame_index % source_stride
+                    unit = units[phase]
+                    item = (self._frame_tensor(frame, self.device), frame_index)
+                    recent[phase].append(item)
+                    unit.append(item)
+                    if len(unit) == 5:
+                        batches.append((torch.cat([value for value, _ in unit]), [index for _, index in unit]))
+                        unit.clear()
+                        if len(batches) == _UNITS_PER_INFERENCE:
+                            flush()
                     frame_index += 1
                 # Cover each phase's trailing frames with one overlapping window.
                 for phase in range(source_stride):
@@ -232,11 +256,12 @@ class GridTrackNetBallDetector(BallDetectorBackend):
                     stream.synchronize()
                 else:
                     torch.cuda.synchronize(self.device)
-        except BaseException as error:  # surfaced to the consumer in detect()
+        except BaseException as error:  # surfaced to the consumer by _raise_if_failed
             self._worker_error = error
         finally:
             capture.release()
             self._publish(len(cached))
+            self._finish()
 
         elapsed = time.perf_counter() - started
         print(
@@ -245,58 +270,51 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             f"in {elapsed:.1f}s ({frame_index / max(elapsed, 1e-9):.1f} source fps)"
             + (" [overlapped with pass 1]" if self._worker is not None else "")
         )
+        if self._worker_error is None and frame_index != total_hint:
+            print(f"[detector] GridTrackNet prepass: the container reported {total_hint} frames, "
+                  f"{frame_index} decoded; the decoded count is used")
 
     def wait_until_ready(self, index: int) -> None:
+        """Block until frame ``index`` is final or the prepass has finished; raises if it failed."""
         with self._ready:
-            while self._ready_upto <= index and self._worker_error is None:
-                if self._worker is not None and not self._worker.is_alive() and self._ready_upto <= index:
-                    break
+            while self._ready_upto <= index and not self._done:
                 self._ready.wait(timeout=0.5)
-        if self._worker_error is not None:
-            raise RuntimeError("GridTrackNet prepass failed") from self._worker_error
+        self._raise_if_failed()
 
     def detect_clip(self, video_path: Path, fps: float, width: int, height: int,
                     total: int) -> List[List[Detection]]:
-        """Run the prepass in the foreground and return each source frame's detections.
+        """Run the prepass in the foreground and return each decoded frame's detections.
 
         Index ``i`` of the result holds frame ``i``'s detections: an empty list
         when the ball was not found, else one ``(xyxy_box, confidence)`` pair.
+        A prepass that fails raises instead of returning partial results.
         """
         self.prepare_video(video_path, fps, width, height, total, background=False)
         return list(self.precomputed)
 
     def detections_at(self, index: int) -> List[Detection]:
-        """Detections for source frame ``index``, waiting for the prepass if it is behind."""
+        """Detections for source frame ``index``, waiting for the prepass if it
+        is behind.  Raises ``IndexError`` once the prepass has finished and
+        decoded no such frame."""
         if self.precomputed is None:
             raise RuntimeError("GridTrackNet.prepare_video() must run before detection.")
-        if index >= len(self.precomputed):
-            return []
         self.wait_until_ready(index)
+        if index >= len(self.precomputed):
+            raise IndexError(
+                f"GridTrackNet prepass decoded {len(self.precomputed)} frames; source frame {index} does not exist"
+            )
         return self.precomputed[index]
 
-    def next_detections(self) -> Tuple[int, List[Detection]]:
-        """The next source frame in decode order and its detections.
-
-        This is the call-order contract: the n-th call answers frame n.
-        """
-        index = self.precomputed_index
-        self.precomputed_index += 1
-        return index, self.detections_at(index)
-
-    def detect(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> List[Detection]:
-        """Detections for ``frame_index``, or for the next frame in call order
-        when it is None.  ``frame_bgr`` is never read: the prepass already
-        decoded the clip."""
+    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[Detection]:
+        """Detections for source frame ``frame_index``.  ``frame_bgr`` is never
+        read: the prepass already decoded the clip."""
         return self.detect_async_start(frame_bgr, frame_index).detections
 
-    def detect_async_start(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> CachedDetections:
+    def detect_async_start(self, frame_bgr: FrameInput, frame_index: int) -> CachedDetections:
         if frame_index is None:
-            index, detections = self.next_detections()
-        else:
-            index = int(frame_index)
-            detections = self.detections_at(index)
-            self.precomputed_index = index + 1  # keep a later call-order caller in step
-        return CachedDetections(index, detections)
+            raise ValueError("GridTrackNet answers per source frame: frame_index is required")
+        index = int(frame_index)
+        return CachedDetections(index, self.detections_at(index))
 
     def detect_async_finish(self, pending: CachedDetections) -> List[Detection]:
         return pending.detections
@@ -380,12 +398,12 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
     def supports_cuda_frame(self) -> bool:
         return self.device.type == "cuda"
 
-    def detect(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> List[Detection]:
+    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[Detection]:
         return self.detect_async_finish(self.detect_async_start(frame_bgr, frame_index))
 
-    def detect_async_start(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> TensorRTBallPending:
-        """Launch inference on ``frame_bgr``; ``frame_index`` is accepted for
-        interface parity and not needed (every call runs its own frame)."""
+    def detect_async_start(self, frame_bgr: FrameInput, frame_index: int) -> TensorRTBallPending:
+        """Launch inference on ``frame_bgr``; ``frame_index`` is part of the
+        interface and not needed here (every call runs its own frame)."""
         out_slot = self.session.next_output_slot()
         t = None
         if isinstance(frame_bgr, torch.Tensor):

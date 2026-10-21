@@ -319,4 +319,4 @@ def test_ball_engine_backend_runs_through_the_shared_session(monkeypatch, tmp_pa
     pending = detector.detect_async_start(np.zeros((16, 16, 3), dtype=np.uint8), frame_index=7)
     assert isinstance(pending, TensorRTBallPending) and pending.event is None
     assert detector.detect_async_finish(pending) == [([2.0, 4.0, 6.0, 8.0], pytest.approx(0.9))]
-    assert detector.detect(torch.zeros((16, 16, 3), dtype=torch.uint8)) == [([2.0, 4.0, 6.0, 8.0], pytest.approx(0.9))]
+    assert detector.detect(torch.zeros((16, 16, 3), dtype=torch.uint8), 8) == [([2.0, 4.0, 6.0, 8.0], pytest.approx(0.9))]

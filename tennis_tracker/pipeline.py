@@ -100,6 +100,8 @@ def _open_inputs(cfg: Config) -> RunContext:
     cfg, encoder = check_capabilities(cfg, device_str)
     device = torch.device(f"cuda:{device_index}")
 
+    # The run owns the process: let cuDNN autotune the fixed-shape convolutions.
+    torch.backends.cudnn.benchmark = True
     detector = _build_ball_detector(cfg)
 
     cap = cv2.VideoCapture(str(input_path))
@@ -113,8 +115,7 @@ def _open_inputs(cfg: Config) -> RunContext:
         frame_count_hint=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
     )
     print(f"[init] Video: {video.width}x{video.height} @ {video.fps:.1f}fps, ~{video.frame_count_hint} frames")
-    if isinstance(detector, GridTrackNetBallDetector):
-        detector.prepare_video(input_path, video.fps, video.width, video.height, video.frame_count_hint)
+    detector.prepare_video(input_path, video.fps, video.width, video.height, video.frame_count_hint)
 
     return RunContext(
         cfg=cfg,
