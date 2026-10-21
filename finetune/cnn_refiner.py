@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import math
 import re
 import sys
@@ -48,12 +47,15 @@ if __name__ == "__main__":          # run as a script: make the repository root 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from finetune import refine
+from finetune.fileio import write_atomic
+from finetune.labels import Labels, read_labels, reviewed_frames
+from finetune.scoring import REFERENCE_HEIGHT
+from finetune.workspace import WORKSPACE as HERE, find_video, label_csv, labelled_clips, review_json, video_meta
+from finetune.workspace import CACHE as WORKSPACE_CACHE, MODELS as WORKSPACE_MODELS
 
-HERE = Path(__file__).resolve().parent
-LABELS, VIDEOS = HERE / "labels", HERE / "videos"
-MODELS = HERE / "models" / "refiner"
-CACHE = HERE / "cache" / "refiner"
-CURRENT = MODELS / "current.txt"
+MODELS = WORKSPACE_MODELS / "refiner"
+CACHE = WORKSPACE_CACHE / "refiner"
+CURRENT_NAME = "current.txt"     # in MODELS: names the version the label tool uses
 CROP = 96            # cut around a point at 1080p scale ...
 WINDOW = 64          # ... and the network sees this much of it, so the ball may sit 16 px off centre
 EPOCHS = 40
@@ -62,14 +64,16 @@ SURE_PX = 2.0            # the self-check learns whether its answer is within th
 SURE_FAR_SHARE = 0.001   # ... and "sure" is set so at most this share of sure frames is over 5 px off
 FOLDS = 3
 BACKWARDS = [6, 7, 8, 3, 4, 5, 0, 1, 2]   # the 9 channels with the three frames in reverse order
-VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".m4v")
+PLACE_BATCH = 512          # windows placed per network call ...
+SCORE_BATCH = 1024         # ... and scored per call
+FAR_PX = 5.0               # a placement this far off (1080p px) counts as a miss in the self-check
 
 
 # ---------------------------------------------------------------------------------------- crops
 def cut(images: Sequence[np.ndarray], point: Tuple[float, float], height: int) -> np.ndarray:
     """uint8 CROP x CROP x 9: the three frames (before, label frame, after) around `point`, scaled
     to 1080p. Crop pixel j sits at point + (j - (CROP - 1) / 2) * height / 1080 in the image."""
-    side = int(round(CROP * height / 1080.0))
+    side = int(round(CROP * height / REFERENCE_HEIGHT))
     out = []
     for image in images:
         patch = cv2.getRectSubPix(image, (side, side), (point[0] - 0.5, point[1] - 0.5))
@@ -170,7 +174,7 @@ class Placer:
         import torch
         if not items:
             return []
-        scale = height / 1080.0
+        scale = height / REFERENCE_HEIGHT
         mid, lo, hi = (CROP - 1) / 2.0, (WINDOW - 1) / 2.0, CROP - 1 - (WINDOW - 1) / 2.0
         # where each window is centred, in crop pixels (kept inside the crop)
         centres = [(min(hi, max(lo, mid + (s[0] - c[0]) / scale)), min(hi, max(lo, mid + (s[1] - c[1]) / scale)))
@@ -179,8 +183,8 @@ class Placer:
         for _ in range(self.ROUNDS):
             moved = []
             with torch.no_grad():
-                for i in range(0, len(items), 512):
-                    batch = np.stack([window(items[j][0], centres[j]) for j in range(i, min(len(items), i + 512))])
+                for i in range(0, len(items), PLACE_BATCH):
+                    batch = np.stack([window(items[j][0], centres[j]) for j in range(i, min(len(items), i + PLACE_BATCH))])
                     xy, logit = self.looks(to_tensor(batch, self.device))
                     for k, (px, py) in enumerate(xy.cpu().numpy()):
                         cx, cy = centres[i + k]
@@ -198,24 +202,34 @@ def versions() -> List[Path]:
     return sorted(MODELS.glob("refiner-*.pt"))
 
 
+def current_file() -> Path:
+    """current.txt, looked up when asked so a redirected MODELS (tests) is honoured."""
+    return MODELS / CURRENT_NAME
+
+
 def current() -> Optional[Path]:
     """The version the label tool uses: the one current.txt names, else the newest."""
-    try:
-        named = MODELS / CURRENT.read_text(encoding="utf-8").strip()
+    marker = current_file()
+    if marker.is_file():
+        named = MODELS / marker.read_text(encoding="utf-8").strip()
         if named.is_file():
             return named
-    except OSError:
-        pass
     found = versions()
     return found[-1] if found else None
 
 
-def use(name: str) -> Path:
+def version_named(name: str) -> Path:
+    """The one version `name` picks out (its stem, file name or a unique part of the stem)."""
     match = [p for p in versions() if p.stem == name or p.name == name or name in p.stem]
     if len(match) != 1:
-        raise SystemExit(f"no single version matches {name!r}; `list` shows them")
-    CURRENT.write_text(match[0].name, encoding="utf-8")
+        raise ValueError(f"no single version matches {name!r}; `list` shows them")
     return match[0]
+
+
+def use(name: str) -> Path:
+    chosen = version_named(name)
+    write_atomic(current_file(), chosen.name)
+    return chosen
 
 
 def load_current() -> Optional[Placer]:
@@ -232,38 +246,15 @@ def load_current() -> Optional[Placer]:
 
 
 # ------------------------------------------------------------------------------------ training
-def read_labels(path: Path, width: int, height: int) -> Dict[int, Optional[Tuple[float, float]]]:
-    labels = {}
-    with path.open(newline="", encoding="utf-8-sig") as handle:
-        for row in csv.DictReader(handle):
-            frame = int(re.search(r"\d+", row["frame"]).group())
-            x, y = float(row["ball_x"]), float(row["ball_y"])
-            labels[frame] = None if (x >= width * .95 and y <= height * .05) else (x, y)
-    return labels
-
-
 def checked_frames(clip: str) -> set:
-    """Frames you have reviewed or edited in the label tool."""
-    try:
-        state = json.loads((LABELS / f"{clip}_ball.review.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return set()
-    return set(state.get("reviewed") or []) | set(state.get("edited") or [])
-
-
-def video_for(clip: str) -> Optional[Path]:
-    return next((p for p in VIDEOS.glob(f"{clip}.*") if p.suffix.lower() in VIDEO_SUFFIXES), None)
-
-
-def spacing(frames) -> int:
-    gaps = np.diff(sorted(frames))
-    return int(np.median(gaps)) if len(gaps) else 1
+    """Frames you have reviewed or edited in the label tool (a damaged review file is an error)."""
+    return reviewed_frames(review_json(clip))
 
 
 def clip_crops(clip: str) -> Optional[np.ndarray]:
     """Crops around every checked, visible label of a clip; cached until its labels or review change."""
-    labels_csv, review = LABELS / f"{clip}_ball.csv", LABELS / f"{clip}_ball.review.json"
-    video = video_for(clip)
+    labels_csv, review = label_csv(clip), review_json(clip)
+    video = find_video(clip)
     if video is None or not review.is_file():
         return None
     cached = CACHE / f"{clip}.npz"
@@ -272,14 +263,14 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
         crops = np.load(cached)["crops"]
         if crops.shape[1:] == (CROP, CROP, 9):      # not cut for an older crop size
             return crops
-    capture = cv2.VideoCapture(str(video))
-    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    labels = read_labels(labels_csv, width, height)
-    step = spacing(labels)
+    meta = video_meta(video)
+    labels: Labels = read_labels(labels_csv, meta.width, meta.height)
+    step = refine.label_spacing(labels)
     points = {f: labels[f] for f in checked_frames(clip) if labels.get(f)}
     if not points:
-        capture.release()
         return None
+    height = meta.height
+    capture = cv2.VideoCapture(str(video))
     users: Dict[int, int] = {}
     for f in points:
         for g in (f - step, f, f + step):
@@ -310,8 +301,7 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
 def gather(log=lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
     """{clip: crops} for every clip with checked frames."""
     out = {}
-    for labels_csv in sorted(LABELS.glob("*_ball.csv")):
-        clip = labels_csv.name[:-len("_ball.csv")]
+    for clip in labelled_clips():
         crops = clip_crops(clip)
         if crops is not None and len(crops):
             out[clip] = crops
@@ -413,8 +403,8 @@ def score(net, data, device, rng, repeats: int = 2):
     errors, confs = [], []
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
         for _ in range(repeats):
-            for i in range(0, len(data), 1024):
-                part = data[i:i + 1024]
+            for i in range(0, len(data), SCORE_BATCH):
+                part = data[i:i + SCORE_BATCH]
                 x, target = batches(part, device, rng, len(part), flip=False, every=True)
                 xy, logit = net(x)
                 errors.append((xy.float() - target).norm(dim=1).cpu().numpy())
@@ -424,9 +414,9 @@ def score(net, data, device, rng, repeats: int = 2):
 
 def sure_threshold(errors: np.ndarray, confs: np.ndarray) -> float:
     """The lowest confidence at which, counting every frame at least that confident, at most
-    SURE_FAR_SHARE of them are more than 5 px off."""
+    SURE_FAR_SHARE of them are more than FAR_PX off."""
     order = np.argsort(-confs)
-    far = np.cumsum(errors[order] > 5) / np.arange(1, len(order) + 1)
+    far = np.cumsum(errors[order] > FAR_PX) / np.arange(1, len(order) + 1)
     ok = np.where(far <= SURE_FAR_SHARE)[0]
     return float(confs[order][ok[-1]]) if len(ok) else 1.0
 
@@ -459,8 +449,8 @@ def train(epochs: int = EPOCHS, log=None, seed: int = 0) -> Optional[Path]:
     errors, confs = np.concatenate(errors), np.concatenate(confs)
     threshold = sure_threshold(errors, confs)
     sure = confs >= threshold
-    median, far = float(np.median(errors)), float(np.mean(errors > 5))
-    sure_far = float(np.mean(errors[sure] > 5)) if sure.any() else 0.0
+    median, far = float(np.median(errors)), float(np.mean(errors > FAR_PX))
+    sure_far = float(np.mean(errors[sure] > FAR_PX)) if sure.any() else 0.0
     log(f"on clips each test network never saw: median {median:.2f} px, {far:.1%} over 5 px; "
         f"{sure.mean():.0%} sure, {sure_far:.2%} of those over 5 px")
     net = fit(to_device(list(crops.values()), device), epochs, device, rng, log, "final")
@@ -476,7 +466,7 @@ def train(epochs: int = EPOCHS, log=None, seed: int = 0) -> Optional[Path]:
             f"<= {CHECK_FAR_SHARE:.0%} over 5 px), so the label tool keeps "
             f"{previous.stem if previous else 'the motion centroid'}")
         return path
-    CURRENT.write_text(path.name, encoding="utf-8")
+    write_atomic(current_file(), path.name)
     log(f"saved {path.name}; the label tool uses it from its next start "
         f"(older versions stay in {MODELS.relative_to(HERE.parent)})")
     return path
@@ -489,12 +479,7 @@ SHEET_COLOURS = {"label": (255, 255, 255), "a": (0, 165, 255), "b": (255, 0, 255
 
 def placer_for(name: str):
     """A Placer for a version name (`use`'s matching), or None for "centroid" (refine.py alone)."""
-    if name == "centroid":
-        return None
-    match = [p for p in versions() if p.stem == name or p.name == name or name in p.stem]
-    if len(match) != 1:
-        raise SystemExit(f"no single version matches {name!r}; `list` shows them")
-    return Placer(match[0])
+    return None if name == "centroid" else Placer(version_named(name))
 
 
 def cross(canvas: np.ndarray, point: Tuple[float, float], origin: Tuple[int, int], zoom: float, colour) -> None:
@@ -514,18 +499,16 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     furthest apart, each zoomed SHEET_ZOOM times with the pixel grid intact and three crosses: your
     label (white), the first version (orange) and the second (magenta). For judging by eye which one
     sits on the ball; the captions give each mark's distance from your label in 1080p px."""
-    video, labels_csv = video_for(clip), LABELS / f"{clip}_ball.csv"
+    video, labels_csv = find_video(clip), label_csv(clip)
     if video is None or not labels_csv.is_file():
-        print(f"{clip}: no video or labels under {LABELS.parent}")
+        print(f"{clip}: no video or labels under {HERE}")
         return None
-    capture = cv2.VideoCapture(str(video))
-    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    capture.release()
+    width, height = video_meta(video)[1:3]
     seeds = read_labels(labels_csv, width, height)
     if not seeds:
         print(f"{clip}: no labels")
         return None
-    to_1080 = 1080.0 / height
+    to_1080 = REFERENCE_HEIGHT / height
     found = []
     for name in names:
         placer = placer_for(name)
@@ -538,7 +521,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     if not frames:
         print(f"{clip}: no frame has a label and a suggestion from both")
         return None
-    side = max(8, int(round(SHEET_PATCH * height / 1080.0)))
+    side = max(8, int(round(SHEET_PATCH * height / REFERENCE_HEIGHT)))
     tile, strip = SHEET_PATCH * SHEET_ZOOM, 18
     scale = tile / float(side)                # canvas px per frame px
     tiles = []
@@ -623,23 +606,27 @@ def main(argv=None) -> int:
                                                    "current one and the one before it")
     viewer.add_argument("--count", type=int, default=36)
     args = parser.parse_args(argv)
-    if args.command == "train":
-        return 0 if train(args.epochs) else 1
-    if args.command == "list":
-        print("\n".join(describe()))
-        return 0
-    if args.command == "sheet":
-        names = list(args.versions)
-        if not names:
-            active = current()
-            older = [p for p in versions() if p != active]
-            names = [active.stem if active else "centroid", older[-1].stem if older else "centroid"]
-        if len(names) != 2:
-            raise SystemExit("sheet takes two names")
-        return 0 if sheet(args.clip, names, args.count) else 1
-    print(f"the label tool now uses {use(args.version).stem}")
+    try:
+        if args.command == "train":
+            return 0 if train(args.epochs) else 1
+        if args.command == "list":
+            print("\n".join(describe()))
+            return 0
+        if args.command == "sheet":
+            names = list(args.versions)
+            if not names:
+                active = current()
+                older = [p for p in versions() if p != active]
+                names = [active.stem if active else "centroid", older[-1].stem if older else "centroid"]
+            if len(names) != 2:
+                parser.error("sheet takes two names")
+            return 0 if sheet(args.clip, names, args.count) else 1
+        print(f"the label tool now uses {use(args.version).stem}")
+    except ValueError as error:
+        print(f"[error] {error}", file=sys.stderr)
+        return 1
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

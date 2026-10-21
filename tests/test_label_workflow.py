@@ -373,19 +373,32 @@ class LabelWorkflowTests(unittest.TestCase):
             (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")
             (labels / "clip_ball.suspect.json").write_text(json.dumps(
                 {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
-            with patch.object(ft, "LABELS", labels), patch.object(ft, "read_manifest", lambda: {}):
+            with patch.object(ft, "LABELS", labels), patch.object(ft, "read_manifest", lambda *_: {}):
                 ft.write_suspects("clip", "check", [1, 3], "audit")
                 self.assertEqual(ft.read_suspects("clip")["check"], [3])   # 3's label moved since
                 self.assertEqual(ft.outstanding_suspects("clip")["check"], [3])
 
-    def test_damaged_review_file_does_not_stop_the_tool(self):
+    def test_damaged_review_file_is_an_error_that_names_it_and_is_never_replaced(self):
+        from finetune.label_tool import LabelFormatError, build_source
         with tempfile.TemporaryDirectory() as directory:
             review = Path(directory) / "clip_ball.review.json"
             rows = source("clip", 3).rows
-            for broken in ("[1, 2]", '{"reviewed": null, "edited": null}',
-                           '{"evidence": {"0": {"source": "det"}}}', '{"evidence": [1]}'):
+            for odd in ('{"reviewed": null, "edited": null}',             # parseable: tolerated field by field
+                        '{"evidence": {"0": {"source": "det"}}}', '{"evidence": [1]}'):
+                review.write_text(odd)
+                load_review(review, rows)
+            for broken in ("[1, 2]", "{not json"):                     # not a review file: an error naming it
                 review.write_text(broken)
-                load_review(review, rows)            # must not raise
+                with self.assertRaises(LabelFormatError) as caught:
+                    load_review(review, rows)
+                self.assertIn(review.name, str(caught.exception))
+            # The tool skips such a clip rather than open it on a fresh review file.
+            labels = Path(directory)
+            (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,20,30\n")
+            with patch("finetune.label_tool.find_video", return_value=labels / "clip.mp4"), \
+                    patch("finetune.label_tool.video_meta", return_value=(30.0, 640, 360, 10)):
+                self.assertIsNone(build_source("clip", labels, labels))
+            self.assertEqual(review.read_text(), "{not json")
 
     def test_ranges_include_clips_that_only_have_a_draft(self):
         from finetune.label_tool import expand
@@ -554,7 +567,7 @@ class CnnRefinerTests(unittest.TestCase):
         from finetune import cnn_refiner
         with tempfile.TemporaryDirectory() as directory:
             models = Path(directory)
-            with patch.object(cnn_refiner, "MODELS", models), patch.object(cnn_refiner, "CURRENT", models / "current.txt"):
+            with patch.object(cnn_refiner, "MODELS", models):     # current.txt is looked up under it
                 self.assertIsNone(cnn_refiner.current())
                 for name in ("refiner-20261001-090000.pt", "refiner-20261019-110000.pt"):
                     (models / name).write_bytes(b"")
@@ -566,7 +579,7 @@ class CnnRefinerTests(unittest.TestCase):
                 (models / "refiner-20261001-090000.pt").unlink()
                 self.assertEqual(cnn_refiner.current().name, "refiner-20261020-080000.pt")   # ... unless it is gone
                 self.assertEqual(len(cnn_refiner.versions()), 2)
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(ValueError):
                     cnn_refiner.use("2026")                 # ambiguous
 
     def test_label_tool_reloads_the_placer_when_the_current_version_changes(self):
@@ -684,20 +697,24 @@ class TrajectorySheetTests(unittest.TestCase):
 class DraftTests(unittest.TestCase):
     def test_drafts_use_the_unshifted_detector_point(self):
         from finetune import pretrack
+        from finetune.workspace import VideoMeta
         from tennis_tracker import detectors
         seen = {}
 
         class Detector:
             def __init__(self, weights, cfg):
                 seen["offset"] = cfg.gridtracknet_y_offset_px
-                self.precomputed = [[([10, 20, 14, 24], .9)]]
+                seen["conf"] = cfg.conf
 
-            def prepare_video(self, *args):
-                pass
+            def detect_clip(self, video, fps, width, height, total):
+                seen["clip"] = (video, fps, width, height, total)
+                return [[([10, 20, 14, 24], .9)], []]
         with patch.object(detectors, "GridTrackNetBallDetector", Detector):
-            rows = pretrack.raw_rows(Path("clip.mp4"), Path("w.npz"), .5, "cpu", 30, 1280, 720, 1)
+            rows = pretrack.raw_rows(Path("clip.mp4"), Path("w.npz"), .5, "cpu", VideoMeta(30, 1280, 720, 2))
         self.assertEqual(seen["offset"], 0.0)
-        self.assertEqual(rows[0][:2], (12.0, 22.0))
+        self.assertEqual(seen["conf"], .5)
+        self.assertEqual(seen["clip"], (Path("clip.mp4"), 30, 1280, 720, 2))
+        self.assertEqual(rows, {0: (12.0, 22.0, "det", .9)})      # the box centre; frame 1 had nothing
 
 
 class TakeSuggestionTests(LabelWorkflowTests.__base__):

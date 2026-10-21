@@ -36,20 +36,24 @@ doubt so the click tool can take you to them.
 """
 from __future__ import annotations
 
-import csv
-import json
-import re
 import shutil
 import sys
 from pathlib import Path
+from typing import List, Set, Tuple
 
 import numpy as np
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-WS = Path(__file__).resolve().parent
-ROOT = WS.parent
+from finetune.detect import ball_detector, detect_points
+from finetune.labels import LabelRow, format_point, is_visible, read_label_rows, reviewed_frames, write_label_cells
+from finetune.scoring import scale_for_width
+from finetune.workspace import REPO_WEIGHTS, WORKSPACE as WS, label_csv, review_json, video_meta
+
+PREVIEW_TILES = 8            # frames shown on the --preview sheet ...
+PREVIEW_CROP = 70            # ... each a crop this many pixels either side of the label ...
+PREVIEW_TILE_PX = 220        # ... drawn this big
 
 AGREE_PX = 15.0          # detector and label agree within this many 1080p pixels
 FAST_PX = 6.0            # only a moving ball can tell one offset from the next
@@ -62,38 +66,20 @@ RATES = (1.0, 0.5, 2.0)  # label frame -> video frame scaling worth trying
 
 def detections(clip: str):
     """(frames, x, y, [width, height, total]) for every frame the detector is confident about."""
-    import cv2
-    from tennis_tracker.config import Config
-    from tennis_tracker import detectors as backends
     video = WS / "videos" / f"{clip}.mp4"
-    capture = cv2.VideoCapture(str(video))
-    fps = float(capture.get(cv2.CAP_PROP_FPS))
-    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    capture.release()
-    cfg = Config(conf=0.0, device="0", gridtracknet_prepass_background=False)
-    detector = backends.GridTrackNetBallDetector(str(ROOT / "models" / "gridtracknet_weights_torch.npz"), cfg)
-    detector.prepare_video(video, fps, width, height, total)
-    frames, xs, ys = [], [], []
-    for frame, found in enumerate(detector.precomputed):
-        if found and found[0][1] >= MIN_CONF:
-            box = found[0][0]
-            frames.append(frame)
-            xs.append((box[0] + box[2]) / 2.0)
-            ys.append((box[1] + box[3]) / 2.0)
-    return (np.array(frames, np.int32), np.array(xs, np.float32), np.array(ys, np.float32),
-            np.array([width, height, total], np.int32))
+    meta = video_meta(video)
+    points = detect_points(ball_detector(REPO_WEIGHTS), video, meta)
+    confident = sorted((frame, x, y) for frame, (x, y, conf) in points.items() if conf >= MIN_CONF)
+    return (np.array([f for f, _, _ in confident], np.int32), np.array([x for _, x, _ in confident], np.float32),
+            np.array([y for _, _, y in confident], np.float32), np.array([meta.width, meta.height, meta.total], np.int32))
 
 
-def frame_size(clip: str):
-    import cv2
-    capture = cv2.VideoCapture(str(WS / "videos" / f"{clip}.mp4"))
-    size = (int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-    capture.release()
-    return size
+def frame_size(clip: str) -> Tuple[int, int]:
+    meta = video_meta(WS / "videos" / f"{clip}.mp4")
+    return meta.width, meta.height
 
 
-def anchors(clip: str):
+def anchors(clip: str) -> Set[int]:
     """Frames you have already corrected by hand, from the click tool's review file.
 
     Both kinds count. Clicking the ball says "it is here on this frame"; pressing SPACE says "the
@@ -101,23 +87,12 @@ def anchors(clip: str):
     settled it, so the row is pinned where it is and the solve works around it: every frame you
     deal with pushes the cut past itself, and the ones you have not reached follow.
     """
-    path = WS / "labels" / f"{clip}_ball.review.json"
-    if not path.is_file():
-        return set()
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise ValueError(f"Cannot read review anchors from {path}; refusing alignment") from error
-    return {int(f) for f in state.get("edited", [])} | {int(f) for f in state.get("reviewed", [])}
+    return reviewed_frames(review_json(clip))      # a damaged review file is an error: no alignment
 
 
-def read_labels(clip: str):
-    """[(frame, x, y)] sorted by frame, exactly as the file has them."""
-    with (WS / "labels" / f"{clip}_ball.csv").open(newline="", encoding="utf-8-sig") as handle:
-        entries = [(int(re.search(r"(\d+)", row["frame"]).group(1)),
-                    float(row["ball_x"]), float(row["ball_y"])) for row in csv.DictReader(handle)]
-    entries.sort()
-    return entries
+def read_labels(clip: str) -> List[LabelRow]:
+    """The clip's rows sorted by frame, exactly as the file has them (the sentinel included)."""
+    return sorted(read_label_rows(label_csv(clip)))
 
 
 def lookup_tables(det_frames, det_x, det_y, total):
@@ -253,6 +228,65 @@ def unplaceable_at_cuts(bases, chosen, xs, ys, lut_x, lut_y, total, scale):
     return drop
 
 
+def remapped_rows(entries: List[LabelRow], frames, chosen, dropped: Set[int], fixed_by_hand: Set[int],
+                  rate: float, total: int, own_size: Tuple[int, int], video_size: Tuple[int, int]):
+    """The label file's rows re-timed onto the video: ``(video frame, x cell, y cell)`` for every row
+    that lands inside the video and outside a cut, scaled from the labels' own frame size to the
+    video's. Raises ValueError rather than touch a row a person has settled."""
+    own_w, own_h = own_size
+    width, height = video_size
+    per_frame = dict(zip(frames.tolist(), chosen.tolist()))
+    drop_frames = {int(frames[i]) for i in dropped}
+    if drop_frames & fixed_by_hand:
+        raise ValueError("Alignment would drop a reviewed row; nothing changed")
+    current = int(chosen[0])
+    written = []
+    for entry in entries:
+        current = per_frame.get(entry.frame, current)
+        if entry.frame in drop_frames:
+            continue
+        index = int(round(entry.frame * rate)) + current
+        if entry.frame in fixed_by_hand and (index != entry.frame or not 0 <= index < total):
+            raise ValueError("Alignment would move a reviewed row; nothing changed")
+        if not 0 <= index < total:
+            continue
+        point = None if not is_visible(entry.x, entry.y, own_w, own_h) else (entry.x * width / own_w, entry.y * height / own_h)
+        written.append((index, *format_point(point, width, height)))
+    written.sort()
+    if any(a[0] >= b[0] for a, b in zip(written, written[1:])):
+        raise ValueError("Alignment maps two label rows onto one video frame; nothing changed")
+    return written
+
+
+def write_preview(video: Path, frames, xs, ys, bases, chosen, out: Path) -> Path:
+    """A PNG of PREVIEW_TILES frames spread along the clip, each cropped around the label at the
+    video frame the alignment maps it to, for checking the alignment by eye."""
+    import cv2
+    capture = cv2.VideoCapture(str(video))
+    tiles = []
+    for k in [int(j * (len(frames) - 1) / (PREVIEW_TILES - 1)) for j in range(PREVIEW_TILES)]:
+        index = int(bases[k] + chosen[k])
+        capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, frame = capture.read()
+        if not ok:
+            continue
+        x, y = int(float(xs[k])), int(float(ys[k]))
+        crop = frame[max(0, y - PREVIEW_CROP):y + PREVIEW_CROP, max(0, x - PREVIEW_CROP):x + PREVIEW_CROP].copy()
+        if crop.size == 0:
+            crop = np.zeros((2 * PREVIEW_CROP, 2 * PREVIEW_CROP, 3), np.uint8)
+        crop = cv2.resize(crop, (PREVIEW_TILE_PX, PREVIEW_TILE_PX), interpolation=cv2.INTER_NEAREST)
+        cv2.circle(crop, (PREVIEW_TILE_PX // 2, PREVIEW_TILE_PX // 2), 22, (0, 255, 255), 2)
+        cv2.putText(crop, f"label {frames[k]}->f{index}", (4, 18), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42, (0, 255, 255), 1, cv2.LINE_AA)
+        tiles.append(crop)
+    capture.release()
+    while len(tiles) < PREVIEW_TILES:
+        tiles.append(np.zeros((PREVIEW_TILE_PX, PREVIEW_TILE_PX, 3), np.uint8))
+    half = PREVIEW_TILES // 2
+    cv2.imwrite(str(out), np.vstack([np.hstack(tiles[:half]), np.hstack(tiles[half:PREVIEW_TILES])]))
+    return out
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__)
@@ -264,16 +298,15 @@ def main() -> int:
     lut_x, lut_y = lookup_tables(det_frames, det_x, det_y, total)
 
     entries = read_labels(label_clip)
-    rows = [(frame, x * width / own_w, y * height / own_h) for frame, x, y in entries]
-    keep = [i for i, (_, x, y) in enumerate(rows)
-            if not (entries[i][1] >= own_w * 0.95 and entries[i][2] <= own_h * 0.05)]
+    rows = [(entry.frame, entry.x * width / own_w, entry.y * height / own_h) for entry in entries]
+    keep = [i for i, entry in enumerate(entries) if is_visible(entry.x, entry.y, own_w, own_h)]
     frames = np.array([rows[i][0] for i in keep], np.int64)
     if not len(frames):
         print("No visible labels provide alignment evidence; nothing changed")
         return 1
     xs = np.array([rows[i][1] for i in keep], np.float32)
     ys = np.array([rows[i][2] for i in keep], np.float32)
-    scale = 1920.0 / width
+    scale = scale_for_width(width)
     step = np.hypot(np.diff(xs, prepend=xs[0]), np.diff(ys, prepend=ys[0])) * scale
     fast = step >= FAST_PX
 
@@ -338,67 +371,20 @@ def main() -> int:
         print(f"  {len(dropped)} visible row(s) sit inside a cut the detector cannot place - dropped, not guessed")
 
     if "--preview" in sys.argv:
-        import cv2
-        capture = cv2.VideoCapture(str(WS / "videos" / f"{video_clip}.mp4"))
-        tiles = []
-        for k in [int(j * (len(frames) - 1) / 7) for j in range(8)]:
-            index = int(bases[k] + chosen[k])
-            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
-            ok, frame = capture.read()
-            if not ok:
-                continue
-            x, y = float(xs[k]), float(ys[k])
-            crop = frame[max(0, int(y) - 70):int(y) + 70, max(0, int(x) - 70):int(x) + 70].copy()
-            if crop.size == 0:
-                crop = np.zeros((140, 140, 3), np.uint8)
-            crop = cv2.resize(crop, (220, 220), interpolation=cv2.INTER_NEAREST)
-            cv2.circle(crop, (110, 110), 22, (0, 255, 255), 2)
-            cv2.putText(crop, f"label {frames[k]}->f{index}", (4, 18), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.42, (0, 255, 255), 1, cv2.LINE_AA)
-            tiles.append(crop)
-        capture.release()
-        while len(tiles) < 8:
-            tiles.append(np.zeros((220, 220, 3), np.uint8))
-        out = WS / f"realign_{label_clip}.png"
-        cv2.imwrite(str(out), np.vstack([np.hstack(tiles[:4]), np.hstack(tiles[4:8])]))
+        out = write_preview(WS / "videos" / f"{video_clip}.mp4", frames, xs, ys, bases, chosen, WS / f"realign_{label_clip}.png")
         print(f"  preview -> {out}")
 
     if "--apply" not in sys.argv:
         print("\n  (dry run - pass --apply to write it)")
         return 0
 
-    per_frame = dict(zip(frames.tolist(), chosen.tolist()))
-    drop_frames = {int(frames[i]) for i in dropped}
-    if drop_frames & fixed_by_hand:
-        raise ValueError("Alignment would drop a reviewed row; nothing changed")
-    current = int(chosen[0])
-    written = []
-    for position, (frame, x, y) in enumerate(entries):
-        current = per_frame.get(frame, current)
-        if frame in drop_frames:
-            continue
-        index = int(round(frame * rate)) + current
-        if frame in fixed_by_hand and (index != frame or not 0 <= index < total):
-            raise ValueError("Alignment would move a reviewed row; nothing changed")
-        if not 0 <= index < total:
-            continue
-        invisible = x >= own_w * 0.95 and y <= own_h * 0.05
-        written.append((index, width - 1, 0) if invisible
-                       else (index, f"{x * width / own_w:.2f}", f"{y * height / own_h:.2f}"))
-    written.sort()
-    assert all(a[0] < b[0] for a, b in zip(written, written[1:])), "frame numbers must stay increasing"
-
-    path = WS / "labels" / f"{label_clip}_ball.csv"
+    written = remapped_rows(entries, frames, chosen, dropped, fixed_by_hand, rate, total,
+                            (own_w, own_h), (width, height))
+    path = label_csv(label_clip)
     backup = path.with_suffix(".csv.premisaligned")
     if not backup.exists():
         shutil.copyfile(path, backup)
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["frame", "ball_x", "ball_y"])
-        for index, x, y in written:
-            writer.writerow([f"frame_{index:03d}", x, y])
-    temporary.replace(path)
+    write_label_cells(path, written)
     print(f"\n  [write] {path.name}: {len(written)} of {len(entries)} rows kept")
 
     if video_clip != label_clip:
@@ -414,4 +400,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

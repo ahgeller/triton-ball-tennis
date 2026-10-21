@@ -40,20 +40,22 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-WORKSPACE = Path(__file__).resolve().parent
-VIDEOS = WORKSPACE / "videos"
-LABELS = WORKSPACE / "labels"
-MANIFEST = WORKSPACE / "clips.csv"
+from finetune.fileio import atomic_csv, backup_copy
+from finetune.labels import LabelPoint, read_labels, reviewed_frames, write_labels
+from finetune.workspace import (LABELS, MANIFEST, VIDEO_SUFFIXES, VIDEOS, label_csv, natural_key,
+                                review_json, video_meta)
+from tennis_tracker.frame_rate import require_phase_stride
+
 MANIFEST_COLUMNS = ["clip", "source", "section", "group", "width", "height", "fps", "stride",
                     "label_frames", "visible", "camera", "motion_px", "origin", "note"]
-VIDEO_SUFFIXES = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
+ENCODE_TIMEOUT_S = 3600          # an ffmpeg encode of one clip that takes longer than this is stuck
 
 DESKTOP = Path(r"C:\Users\Andrew\Desktop")
 DEFAULT_SOURCES = {
@@ -68,79 +70,55 @@ PROF_FPS = 30.0          # the set ships one JPEG per frame of a 30 FPS broadcas
 GRID_LABEL_CANVAS = (1280, 720)   # GridTrackNet's FrameGenerator wrote 1280x720 PNGs; Labels.csv is in that space
 V5_CUSTOM_CANVAS = (1280, 720)    # the TrackNetV5 conversion put every custom label on a 1280x720 canvas
 
-Point = Optional[Tuple[float, float]]
+Point = LabelPoint
+TrackNetRow = Tuple[int, float, float]       # visibility, x, y as the source CSV has them
 
 
 # --------------------------------------------------------------------------- small helpers
 
-def natural_key(text: str) -> list:
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
+class ReviewedLabelsError(RuntimeError):
+    """The workspace label file about to be replaced has rows a person settled by hand."""
 
 
-def video_meta(path: Path) -> Tuple[float, int, int, int]:
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Could not open {path}")
-    meta = (
-        float(capture.get(cv2.CAP_PROP_FPS)),
-        int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-        int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-        int(capture.get(cv2.CAP_PROP_FRAME_COUNT)),
-    )
-    capture.release()
-    return meta
+def protect_existing(dst_csv: Path) -> None:
+    """Called before a workspace label file is written over. A file whose review sidecar says a
+    person has confirmed or corrected rows is refused outright - an import is a machine's or a
+    dataset's labels, never better than hand work - and any other existing file is backed up
+    beside itself first, as ft.py and realign.py do."""
+    if not dst_csv.is_file():
+        return
+    settled = reviewed_frames(review_json(dst_csv.name[: -len("_ball.csv")], dst_csv.parent))
+    if settled:
+        raise ReviewedLabelsError(f"{dst_csv.name} has {len(settled)} hand-reviewed row(s); not overwriting it "
+                                  f"(move its review sidecar aside first if you really mean to)")
+    backup = backup_copy(dst_csv, "import")
+    print(f"[backup] {dst_csv.name} -> {backup.name}")
 
 
-def stride_for(fps: float) -> int:
-    if 57.0 <= fps <= 62.0:
-        return 2
-    if 22.0 <= fps <= 32.0:
-        return 1
-    raise ValueError(f"{fps:.2f} FPS is neither 30 nor 60")
-
-
-def is_visible(x: float, y: float, width: int, height: int) -> bool:
-    return not (x >= width * 0.95 and y <= height * 0.05)
-
-
-def write_labels(path: Path, labels: Dict[int, Point], width: int, height: int) -> Tuple[int, int]:
-    """labels: frame index -> (x, y) in native pixels, or None. Returns (rows, visible)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    visible = 0
-    with temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["frame", "ball_x", "ball_y"])
-        for frame in sorted(labels):
-            point = labels[frame]
-            if point is None:
-                writer.writerow([f"frame_{frame:03d}", width - 1, 0])
-            else:
-                x = min(max(point[0], 0.0), width - 1.0)
-                y = min(max(point[1], 0.0), height - 1.0)
-                writer.writerow([f"frame_{frame:03d}", f"{x:.2f}", f"{y:.2f}"])
-                visible += 1
-    temporary.replace(path)
-    return len(labels), visible
-
-
-def read_workspace_labels(path: Path, width: int, height: int) -> Dict[int, Point]:
+def convert_rows(raw: Dict[int, TrackNetRow], frame_of: Callable[[int], int], scale: Tuple[float, float],
+                 total: int) -> Tuple[Dict[int, Point], int]:
+    """TrackNet rows -> workspace labels: `frame_of` maps a source row index to a video frame, `scale`
+    takes the source canvas to the video's pixels. Returns the labels and how many rows fell beyond
+    the video's `total` frames."""
     labels: Dict[int, Point] = {}
-    with path.open(newline="", encoding="utf-8-sig") as handle:
-        for row in csv.DictReader(handle):
-            frame = int(re.fullmatch(r"frame_(\d+)", row["frame"].strip()).group(1))
-            x, y = float(row["ball_x"]), float(row["ball_y"])
-            labels[frame] = (x, y) if is_visible(x, y, width, height) else None
-    return labels
+    dropped = 0
+    for index in sorted(raw):
+        frame = frame_of(index)
+        if frame >= total:
+            dropped += 1
+            continue
+        visibility, x, y = raw[index]
+        labels[frame] = (x * scale[0], y * scale[1]) if visibility > 0 else None
+    return labels, dropped
 
 
-def read_tracknet_csv(path: Path, keep_occluded: bool) -> Dict[int, Tuple[int, float, float]]:
+def read_tracknet_csv(path: Path, keep_occluded: bool) -> Dict[int, TrackNetRow]:
     """TrackNet-family CSVs: (Frame|file name), (Visibility|visibility), (X|x-coordinate), (Y|y-coordinate)[, status].
 
     Returns frame index -> (visibility, x, y). Visibility 0 = no ball, 1 = visible, 2 = hard to
     see, 3 = occluded with an estimated position (dropped unless keep_occluded).
     """
-    out: Dict[int, Tuple[int, float, float]] = {}
+    out: Dict[int, TrackNetRow] = {}
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         fields = {name.strip().lower(): name for name in reader.fieldnames or []}
@@ -175,8 +153,8 @@ def copy_media(src: Path, dst: Path, link: bool) -> str:
         try:
             os.link(src, dst)
             return "linked"
-        except OSError:
-            pass
+        except OSError as error:
+            print(f"[info] {dst.name}: cannot hard-link ({error}); copying instead")
     shutil.copyfile(src, dst)
     return "copied"
 
@@ -198,7 +176,7 @@ def frames_to_video(frames: List[Path], dst: Path, fps: float) -> str:
                        "-i", str(Path(temp) / f"%06d{suffix}"),
                        "-c:v", "libx264", "-preset", "slow", "-crf", "10", "-pix_fmt", "yuv420p",
                        "-movflags", "+faststart", str(dst)]
-            subprocess.run(command, check=True)
+            subprocess.run(command, check=True, timeout=ENCODE_TIMEOUT_S)
         return "ffmpeg"
     first = cv2.imread(str(frames[0]))
     height, width = first.shape[:2]
@@ -228,13 +206,10 @@ class Manifest:
         self.rows[clip] = row
 
     def save(self) -> None:
-        temporary = self.path.with_suffix(".tmp")
-        with temporary.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS)
-            writer.writeheader()
+        with atomic_csv(self.path) as rows:
+            rows.writerow(MANIFEST_COLUMNS)
             for clip in sorted(self.rows, key=natural_key):
-                writer.writerow(self.rows[clip])
-        temporary.replace(self.path)
+                rows.writerow([self.rows[clip].get(key, "") for key in MANIFEST_COLUMNS])
 
 
 def load_manifest(path: Path = MANIFEST) -> Dict[str, dict]:
@@ -245,14 +220,14 @@ def load_manifest(path: Path = MANIFEST) -> Dict[str, dict]:
 def record(manifest: Manifest, clip: str, video: Path, source: str, section: str, group: str,
            origin: str, note: str = "") -> dict:
     fps, width, height, _ = video_meta(video)
-    labels = read_workspace_labels(LABELS / f"{clip}_ball.csv", width, height)
+    labels = read_labels(label_csv(clip), width, height)
     manifest.put(clip, source=source, section=section, group=group, width=width, height=height,
-                 fps=f"{fps:.3f}", stride=stride_for(fps), label_frames=len(labels),
+                 fps=f"{fps:.3f}", stride=require_phase_stride(fps), label_frames=len(labels),
                  visible=sum(point is not None for point in labels.values()), origin=origin, note=note)
     return manifest.rows[clip]
 
 
-def report(clip: str, action: str, row: dict) -> None:
+def report(clip: str, action: str, row: Dict[str, str]) -> None:
     print(f"[{action:>7}] {clip:34s} {row['width']}x{row['height']} @{float(row['fps']):.0f} "
           f"labels={row['label_frames']} visible={row['visible']}", flush=True)
 
@@ -277,6 +252,7 @@ def import_archive(src: Path, manifest: Manifest, force: bool, link: bool, dry_r
         if dst_csv.is_file() and dst_video.is_file() and not force:
             action = "kept"
         else:
+            protect_existing(dst_csv)
             copy_media(video, dst_video, link)
             shutil.copyfile(csv_path, dst_csv)
             action = "copied"
@@ -311,14 +287,13 @@ def import_tracknet_frames(folder: Path, clip: str, manifest: Manifest, source: 
         print(f"[plan] {clip}: encode {len(ordered)} frames from {folder}")
         return True
     if not (dst_video.is_file() and dst_csv.is_file()) or force:
+        protect_existing(dst_csv)
         encoder = frames_to_video([by_index[i] for i in ordered], dst_video, fps)
         _, width, height, _ = video_meta(dst_video)
         sx = width / canvas[0] if canvas else 1.0
         sy = height / canvas[1] if canvas else 1.0
-        labels: Dict[int, Point] = {}
-        for position, index in enumerate(ordered):
-            visibility, x, y = raw[index]
-            labels[position] = (x * sx, y * sy) if visibility > 0 else None
+        position_of = {index: position for position, index in enumerate(ordered)}   # one video frame per image
+        labels, _ = convert_rows(raw, position_of.__getitem__, (sx, sy), len(ordered))
         write_labels(dst_csv, labels, width, height)
         action = "encoded"
         note = (note + "; " if note else "") + f"frames->{encoder}"
@@ -364,21 +339,14 @@ def import_tracknetv2(src: Path, manifest: Manifest, force: bool, link: bool, dr
             action = "kept"
         else:
             fps, width, height, total = video_meta(video)
-            stride = stride_for(fps)
+            stride = require_phase_stride(fps)
             raw = read_tracknet_csv(csv_path, keep_occluded)
             for visibility, _, _ in raw.values():
                 visibility_seen[visibility] = visibility_seen.get(visibility, 0) + 1
-            labels: Dict[int, Point] = {}
-            dropped = 0
-            for index in sorted(raw):
-                frame = index * stride if stride == 2 else index
-                if frame >= total:
-                    dropped += 1
-                    continue
-                visibility, x, y = raw[index]
-                labels[frame] = (x, y) if visibility > 0 else None
+            labels, dropped = convert_rows(raw, lambda index: index * stride, (1.0, 1.0), total)
             if dropped:
                 print(f"[warn] {clip}: {dropped} label rows beyond the video's {total} frames were dropped")
+            protect_existing(dst_csv)
             copy_media(video, dst_video, link)
             write_labels(dst_csv, labels, width, height)
             action = "copied"
@@ -414,22 +382,16 @@ def import_grid(src: Path, manifest: Manifest, force: bool, link: bool, dry_run:
                 action = "kept"
             else:
                 fps, width, height, total = video_meta(video)
-                stride = stride_for(fps)
-                sx, sy = width / GRID_LABEL_CANVAS[0], height / GRID_LABEL_CANVAS[1]
-                labels: Dict[int, Point] = {}
-                dropped = 0
-                for index in sorted(raw):
-                    frame = 2 * index + 1 if stride == 2 else index   # FrameGenerator.py skips a frame first at 60 FPS
-                    if frame >= total:
-                        dropped += 1
-                        continue
-                    visibility, x, y = raw[index]
-                    labels[frame] = (x * sx, y * sy) if visibility > 0 else None
+                stride = require_phase_stride(fps)
+                # FrameGenerator.py skips a frame first at 60 FPS: label k is video frame 2k + 1
+                labels, dropped = convert_rows(raw, lambda index: 2 * index + 1 if stride == 2 else index,
+                                               (width / GRID_LABEL_CANVAS[0], height / GRID_LABEL_CANVAS[1]), total)
                 if dropped:
                     print(f"[warn] {clip}: {dropped} label rows beyond the video's {total} frames were dropped")
                 if not labels:
                     print(f"[skip] {clip}: no labels map onto the video")
                     continue
+                protect_existing(dst_csv)
                 copy_media(video, dst_video, link)
                 write_labels(dst_csv, labels, width, height)
                 action = "copied"
@@ -548,4 +510,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -126,18 +126,14 @@ frames are left to do.
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
 import json
 import math
-import os
-import re
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
-
-import threading
+from typing import Dict, List, Optional, Set
 
 import cv2
 import numpy as np
@@ -146,10 +142,12 @@ if __name__ == "__main__":          # run as a script: make the repository root 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from finetune import cnn_refiner, refine
+from finetune.fileio import replace_file, write_atomic   # noqa: F401 - the tool's writers, by their old names
+from finetune.labels import (LabelFormatError, format_point, is_visible, read_label_rows, read_review,
+                             read_suspects, write_label_cells)
+from finetune.scoring import REFERENCE_HEIGHT
+from finetune.workspace import LABELS, VIDEOS, draft_csv, find_video, label_csv, natural_key, review_json, video_meta
 
-WORKSPACE = Path(__file__).resolve().parent
-VIDEOS = WORKSPACE / "videos"
-LABELS = WORKSPACE / "labels"
 WINDOW = "label_tool"
 HUD = 58
 CONFIDENT_CONF = 0.70
@@ -287,30 +285,6 @@ def shift_held() -> bool:
     return bool(_user32.GetKeyState(0x10) & 0x8000)          # VK_SHIFT
 
 
-def replace_file(temporary: Path, path: Path) -> None:
-    """Move a finished temporary file over `path`. Windows refuses while another process (Excel,
-    an editor, a virus scan) has the target open, so retry for a moment before giving up."""
-    for attempt in range(5):
-        try:
-            temporary.replace(path)
-            return
-        except PermissionError:
-            if attempt == 4:
-                raise
-            time.sleep(0.1)
-
-
-def write_atomic(path: Path, text: str) -> None:
-    """Write `text` to `path` through a temporary file, flushed to disk first, so a crash or power
-    cut leaves either the old file or the new one, never a truncated one."""
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    replace_file(temporary, path)
-
-
 # Keys with no character of their own come back from this build as their bare virtual-key code,
 # and some of those codes are also printable keys the tool binds: F1..F12 are 112..123, which read
 # as p, q, r, s, t, u, v ...; Insert/Delete are 45/46 ('-', '.'); PgUp/PgDn/End/Home are 33..36.
@@ -442,44 +416,23 @@ def fit_text(text: str, width: int, scale: float, thin: int) -> str:
     return text.rstrip()
 
 
-def is_visible(x: float, y: float, width: int, height: int) -> bool:
-    return not (x >= width * 0.95 and y <= height * 0.05)
-
-
 def load_rows(csv_path: Path, width: int, height: int, origin: str = "det") -> List[Row]:
     """origin names where a row with no source column of its own came from: "csv" for labels that
     arrived with the clip, "det" for ones pretrack.py guessed. Only pretrack writes a conf column,
     and the tool drops it on save, so without this a hand-labelled clip read back as "det 1.00"."""
     rows = []
-    with csv_path.open(newline="", encoding="utf-8-sig") as handle:
-        for record in csv.DictReader(handle):
-            match = re.fullmatch(r"frame_(\d+)", (record["frame"] or "").strip())
-            if match is None:
-                raise ValueError(f"{csv_path.name}: bad frame cell {record['frame']!r}")
-            frame = int(match.group(1))
-            x, y = float(record["ball_x"]), float(record["ball_y"])
-            visible = is_visible(x, y, width, height)
-            conf = record.get("conf")
-            rows.append(Row(frame, x if visible else width / 2.0, y if visible else height / 2.0, visible,
-                            record.get("source") or (origin if visible else "none"),
-                            float(conf) if conf not in (None, "") else 0.0))
+    for record in read_label_rows(csv_path):
+        visible = is_visible(record.x, record.y, width, height)
+        rows.append(Row(record.frame, record.x if visible else width / 2.0, record.y if visible else height / 2.0,
+                        visible, record.source or (origin if visible else "none"),
+                        record.conf if record.conf is not None else 0.0))
     rows.sort(key=lambda row: row.frame)
     return rows
 
 
 def save_rows(csv_path: Path, rows: List[Row], width: int, height: int) -> None:
-    temporary = csv_path.with_suffix(".tmp")
-    with temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["frame", "ball_x", "ball_y"])
-        for row in rows:
-            if row.visible:
-                writer.writerow([f"frame_{row.frame:03d}", f"{row.x:.2f}", f"{row.y:.2f}"])
-            else:
-                writer.writerow([f"frame_{row.frame:03d}", width - 1, 0])
-        handle.flush()
-        os.fsync(handle.fileno())
-    replace_file(temporary, csv_path)
+    write_label_cells(csv_path, [(row.frame, *format_point((row.x, row.y) if row.visible else None, width, height))
+                                 for row in rows])
 
 
 def save_suspects(path: Path, rows: List[Row]) -> None:
@@ -493,18 +446,15 @@ def save_suspects(path: Path, rows: List[Row]) -> None:
     """
     if not path.is_file():
         return
-    try:
-        blob = json.loads(path.read_text(encoding="utf-8"))
-        # Older audits wrote their check list as "frames"; load_suspects still reads it, so it has
-        # to be carried over here too, or the first save would throw those flags away.
-        flagged = {"unplaceable": [int(f) for f in blob.get("unplaceable", [])],
-                   "check": [int(f) for f in blob.get("check", blob.get("frames", []))]}
-    except (OSError, ValueError, TypeError, AttributeError):
-        return
+    blob = json.loads(path.read_text(encoding="utf-8"))     # read_suspects has already proven it parses
+    # Older audits wrote their check list as "frames"; read_suspects reads it as "check", so it has
+    # to be carried over here too, or the first save would throw those flags away.
+    flags = read_suspects(path)
+    flagged = {"unplaceable": flags["unplaceable"], "check": flags["check"]}
     by_frame = {row.frame: row for row in rows}
     open_now = {row.frame for row in rows if row.suspect}
     kept = {kind: [f for f in frames if f in open_now or f not in by_frame] for kind, frames in flagged.items()}
-    answered = dict(blob.get("answered") or {}) if isinstance(blob.get("answered"), dict) else {}
+    answered = dict(flags["answered"])
     for frames in flagged.values():
         for frame in frames:
             if frame in by_frame and frame not in open_now:
@@ -530,30 +480,21 @@ def save_review(path: Path, rows: List[Row], cursor: int, zoom: float) -> None:
 
 
 def load_suspects(path: Path, rows: List[Row]) -> int:
-    """Mark the frames a previous audit flagged. They are the ones worth your time first."""
-    if not path.is_file():
-        return 0
-    try:
-        blob = json.loads(path.read_text(encoding="utf-8"))
-        frames = set(int(f) for f in blob.get("unplaceable", [])) | \
-                 set(int(f) for f in blob.get("check", blob.get("frames", [])))
-    except (OSError, ValueError, TypeError, AttributeError):
-        print(f"[warn] {path.name} is not a flag file this tool can read; its flags are ignored")
-        return 0
+    """Mark the frames a previous audit flagged. They are the ones worth your time first. A flag
+    file that cannot be read is an error naming it (LabelFormatError), not an empty answer."""
+    flags = read_suspects(path)
+    frames = set(flags["unplaceable"]) | set(flags["check"])
     for row in rows:
         row.suspect = row.frame in frames
     return sum(row.suspect for row in rows)
 
 
-def load_review(path: Path, rows: List[Row]):
-    if not path.is_file():
-        return None
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(state, dict):
-        print(f"[warn] {path.name} is not a review file this tool can read; starting it afresh")
+def load_review(path: Path, rows: List[Row]) -> Optional[dict]:
+    """Apply the review sidecar to the rows and return it; None when there is none yet. A damaged
+    file is an error naming it (LabelFormatError): the tool never starts afresh over somebody's
+    record of what they checked. Odd shapes inside a parseable file are tolerated field by field."""
+    state = read_review(path)
+    if state is None:
         return None
     reviewed, edited = set(state.get("reviewed") or []), set(state.get("edited") or [])
     evidence_of = state.get("evidence") if isinstance(state.get("evidence"), dict) else {}
@@ -565,7 +506,7 @@ def load_review(path: Path, rows: List[Row]):
             try:
                 row.source, row.conf = str(evidence["source"]), float(evidence["conf"])
             except (TypeError, ValueError):
-                pass
+                print(f"[warn] {path.name}: frame {row.frame} has unreadable evidence {evidence!r}; ignored")
     return state
 
 
@@ -597,8 +538,9 @@ class Source:
         self.start = 0                # where its rows begin in the run's flat row list
         self.zoom = 2.0
         self.end = None               # first frame index the video ran out at, once that is known
-        self.missing: set = set()     # frames that could not be decoded; drawn black, never labelled
+        self.missing: Set[int] = set()     # frames that could not be decoded; drawn black, never labelled
         self.label_frames = {row.frame for row in rows}   # the frames worth keeping when passed
+        self.flagged = 0              # how many rows the last audit flagged, from load_suspects
 
 
 class Tool:
@@ -1656,14 +1598,14 @@ class Tool:
         if offer is not None:
             sure = "sure" if offer["trusted"] else "UNSURE, look closely"
             if row.visible:
-                gap = math.hypot(offer["x"] - row.x, offer["y"] - row.y) * 1080.0 / self.height
+                gap = math.hypot(offer["x"] - row.x, offer["y"] - row.y) * REFERENCE_HEIGHT / self.height
                 state = f"HINT ({offer['x']:.1f}, {offer['y']:.1f}) {sure}  grey draft {gap:.1f}px off"
             else:
                 state = f"HINT ({offer['x']:.1f}, {offer['y']:.1f}) {sure}  draft: no ball"
         elif hint is not None and not row.visible:
             state += "  hint: the video shows a ball here (y takes it)"
         elif hint is not None:
-            gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.height
+            gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * REFERENCE_HEIGHT / self.height
             state += f"  hint {gap:.1f}px" if gap >= 0.05 else "  hint: here"
             verdict = self.hint_verdict(self.cursor)
             if verdict is not None:
@@ -2297,7 +2239,7 @@ class Tool:
             if gap < OFFER_MIN_PX:
                 return None
             if not hint["trusted"] and not (OFFER_UNSURE and
-                                            gap * 1080.0 / self.by_clip[row.clip].height <= refine.AGREE_PX_1080):
+                                            gap * REFERENCE_HEIGHT / self.by_clip[row.clip].height <= refine.AGREE_PX_1080):
                 return None
         elif not hint["trusted"]:
             return None
@@ -2312,7 +2254,7 @@ class Tool:
         row = self.rows[index]
         if hint is None or not hint.get("trusted") or not row.visible:
             return None
-        gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * 1080.0 / self.by_clip[row.clip].height
+        gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * REFERENCE_HEIGHT / self.by_clip[row.clip].height
         return "agrees" if gap <= refine.AGREE_PX_1080 else "differs"
 
     def disputed_count(self) -> int:
@@ -2490,9 +2432,10 @@ class Tool:
                 save_rows(source.out_csv, source.rows, source.width, source.height)
                 save_review(source.review, source.rows, source.cursor, self.zoom)
                 save_suspects(source.suspects, source.rows)
-            except OSError as error:
-                # Another program has the file open, most likely. Keep the edits in memory and keep
-                # going: the next autosave tries again, and one stuck clip must not stop the others.
+            except (OSError, LabelFormatError) as error:
+                # Another program has the file open, most likely (or a sidecar was damaged under
+                # us). Keep the edits in memory and keep going: the next autosave tries again, and
+                # one stuck clip must not stop the others.
                 print(f"[warn] could not save {source.clip}: {error} - close the file wherever it is open; "
                       f"the edits are kept and saving is retried")
                 failed.append(source)
@@ -2694,7 +2637,8 @@ class Tool:
 
 
 def expand(names: List[str], labels: Path) -> List[str]:
-    """Turn what was typed into a clip list. 'a..b' means every labelled clip from a to b in order."""
+    """Turn what was typed into a clip list. 'a..b' means every labelled clip from a to b in order.
+    Raises ValueError for a range whose ends have no labels."""
     available = sorted({path.name.split("_ball.csv")[0] for path in labels.glob("*_ball.csv*")
                         if path.name.endswith(("_ball.csv", "_ball.csv.draft"))}, key=natural_key)
     out: List[str] = []
@@ -2702,7 +2646,7 @@ def expand(names: List[str], labels: Path) -> List[str]:
         if ".." in name:
             first, last = (part.strip() for part in name.split("..", 1))
             if first not in available or last not in available:
-                raise SystemExit(f"{first}..{last}: no labels for one of those in {labels}")
+                raise ValueError(f"{first}..{last}: no labels for one of those in {labels}")
             lo, hi = available.index(first), available.index(last)
             out.extend(available[min(lo, hi):max(lo, hi) + 1])
         else:
@@ -2715,40 +2659,39 @@ def expand(names: List[str], labels: Path) -> List[str]:
     return unique
 
 
-def natural_key(text: str) -> list:
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
-
-
-def build_source(clip: str, videos: Path, labels: Path):
+def build_source(clip: str, videos: Path, labels: Path) -> Optional["Source"]:
     """Everything one clip needs, or None with a message if it is not ready."""
-    found = [p for p in videos.glob(f"{clip}.*") if p.suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".m4v"}]
-    if not found:
+    video = find_video(clip, videos)
+    if video is None:
         print(f"[skip] {clip}: no video in {videos}")
         return None
-    video = found[0]
-    capture = cv2.VideoCapture(str(video))
-    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    capture.release()
-    if width <= 0 or height <= 0:
-        print(f"[skip] {clip}: {video.name} could not be opened (codec not supported, or the file is broken)")
+    try:
+        width, height = video_meta(video)[1:3]
+    except RuntimeError as error:
+        print(f"[skip] {clip}: {error}")
         return None                   # with a 0x0 frame every label would have read as invisible
-    final, draft = labels / f"{clip}_ball.csv", labels / f"{clip}_ball.csv.draft"
+    final, draft = label_csv(clip, labels), draft_csv(clip, labels)
     from_file = final if final.is_file() else draft
     if not from_file.is_file():
         print(f"[skip] {clip}: no labels; run  python finetune/pretrack.py --clips {clip}")
         return None
     try:
         rows = load_rows(from_file, width, height, "det" if draft.is_file() else "csv")
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, LabelFormatError) as error:
         print(f"[skip] {clip}: {from_file.name} could not be read: {error}")
         return None
     if not rows:
         print(f"[skip] {clip}: {from_file.name} has no label rows")
         return None
-    review = labels / f"{clip}_ball.review.json"
+    review = review_json(clip, labels)
     source = Source(clip, video, rows, width, height, final, review)
-    flagged = load_suspects(source.suspects, rows)
-    state = load_review(review, rows)
+    try:
+        source.flagged = load_suspects(source.suspects, rows)
+        state = load_review(review, rows)
+    except LabelFormatError as error:
+        # Somebody's record of what they checked: never started afresh, never written over.
+        print(f"[skip] {clip}: {error}")
+        return None
     if state is not None:
         try:
             cursor = int(state.get("cursor") or 0)
@@ -2763,7 +2706,6 @@ def build_source(clip: str, videos: Path, labels: Path):
             source.zoom = float(state.get("zoom") or 2.0)
         except (TypeError, ValueError):
             source.zoom = 2.0
-    source.flagged = flagged
     return source
 
 
@@ -2796,7 +2738,11 @@ def main() -> int:
                              "by ft.py check --audit --mark. Every other label is left alone.")
     args = parser.parse_args()
 
-    names = expand(args.clips, args.labels)
+    try:
+        names = expand(args.clips, args.labels)
+    except ValueError as error:
+        print(f"[error] {error}", file=sys.stderr)
+        return 2
     sources = [source for source in (build_source(name, args.videos, args.labels) for name in names)
                if source is not None]
     if not sources:
@@ -2825,7 +2771,7 @@ def main() -> int:
         tool.grid_size = settings["grid_size"]
 
     total = sum(len(source.rows) for source in sources)
-    flagged = sum(getattr(source, "flagged", 0) for source in sources)
+    flagged = sum(source.flagged for source in sources)
     if len(sources) == 1:
         source = sources[0]
         print(f"[open] {source.video.name}: {len(source.rows)} label frames, "
@@ -2849,4 +2795,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

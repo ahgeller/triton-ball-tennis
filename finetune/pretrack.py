@@ -24,88 +24,53 @@ the convention the trainer and evaluate_archive.py already read.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 from pathlib import Path
-
-import cv2
+from typing import Dict, Optional, Tuple
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tennis_tracker.config import Config
+from finetune.detect import ball_detector, detect_points
+from finetune.fileio import atomic_csv
+from finetune.labels import COLUMNS, frame_name, sentinel
+from finetune.workspace import (LABELS, REPO_WEIGHTS, ROOT, RUNS, VIDEOS, VideoMeta, draft_csv, label_csv,
+                                video_meta, videos_in)
+from tennis_tracker.frame_rate import require_phase_stride
 
-ROOT = Path(__file__).resolve().parents[1]
+RAW_DRAFT_CONF = 0.25          # raw drafts keep guesses down to this confidence, so nearly every frame has one
+PIPELINE_CONF = 0.50           # the tracker's own default threshold
+DRAFT_COLUMNS = (*COLUMNS, "source", "conf")
 
-WORKSPACE = Path(__file__).resolve().parent
-VIDEOS = WORKSPACE / "videos"
-LABELS = WORKSPACE / "labels"
-RUNS = WORKSPACE / "runs"
-VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
-DEFAULT_WEIGHTS = ROOT / "models" / "gridtracknet_weights_torch.npz"
-
-
-def label_stride(fps: float) -> int:
-    if 57.0 <= fps <= 62.0:
-        return 2
-    if 22.0 <= fps <= 32.0:
-        return 1
-    raise ValueError(f"{fps:.2f} FPS is not 30 or 60; re-encode the clip first")
+DraftRow = Tuple[float, float, str, float]     # x, y, where it came from, confidence
 
 
-def video_meta(path: Path):
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Could not open {path}")
-    meta = (
-        float(capture.get(cv2.CAP_PROP_FPS)),
-        int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-        int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-        int(capture.get(cv2.CAP_PROP_FRAME_COUNT)),
-    )
-    capture.release()
-    return meta
-
-
-def write_draft(rows_by_frame, draft_path: Path, stride: int, width: int, height: int, total: int) -> int:
-    """rows_by_frame: frame -> (x, y, source, conf) or None."""
+def write_draft(rows_by_frame: Dict[int, Optional[DraftRow]], draft_path: Path, stride: int,
+                width: int, height: int, total: int) -> int:
+    """rows_by_frame: frame -> (x, y, source, conf) or None. Returns how many frames got a guess."""
     visible = 0
-    with draft_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["frame", "ball_x", "ball_y", "source", "conf"])
+    with atomic_csv(draft_path) as writer:
+        writer.writerow(list(DRAFT_COLUMNS))
         for frame in range(0, total, stride):
             row = rows_by_frame.get(frame)
             if row:
                 x, y, source, conf = row
-                writer.writerow([f"frame_{frame:03d}", f"{x:.2f}", f"{y:.2f}", source, f"{conf:.2f}"])
+                writer.writerow([frame_name(frame), f"{x:.2f}", f"{y:.2f}", source, f"{conf:.2f}"])
                 visible += 1
             else:
-                writer.writerow([f"frame_{frame:03d}", width - 1, 0, "none", "0.00"])
+                writer.writerow([frame_name(frame), *sentinel(width), "none", "0.00"])
     return visible
 
 
-def raw_rows(video: Path, weights: Path, conf: float, device: str, fps, width, height, total):
-    from tennis_tracker import detectors as backends
-
-    cfg = Config(conf=conf, device=device, gridtracknet_prepass_background=False)
-    if weights.suffix.lower() in (".pt", ".pth"):
-        backend = getattr(backends, "TOTNetBallDetector", None)
-        if backend is None:
-            raise RuntimeError("This checkout has no TOTNet backend; use a GridTrackNet .npz")
-    else:
-        backend = backends.GridTrackNetBallDetector
-    detector = backend(str(weights), cfg)
-    detector.prepare_video(video, fps, width, height, total)
-    rows = {}
-    for frame, dets in enumerate(detector.precomputed):
-        if dets:
-            box, score = dets[0]
-            rows[frame] = ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0, "det", float(score))
-    return rows
+def raw_rows(video: Path, weights: Path, conf: float, device: str, meta: VideoMeta) -> Dict[int, DraftRow]:
+    """The detector's own best guess per frame, unshifted (no y offset): the draft is what it saw."""
+    detector = ball_detector(weights, conf=conf, device=device)
+    return {frame: (x, y, "det", score) for frame, (x, y, score) in detect_points(detector, video, meta).items()}
 
 
-def pipeline_rows(video: Path, weights: Path, conf, device: str, json_path: Path):
+def pipeline_rows(video: Path, weights: Path, conf: Optional[float], device: str, json_path: Path) -> Dict[int, DraftRow]:
+    from tennis_tracker.config import Config
     from tennis_tracker.pipeline import run
 
     cfg = Config(
@@ -115,7 +80,7 @@ def pipeline_rows(video: Path, weights: Path, conf, device: str, json_path: Path
         model_path=str(weights),
         player_model_path=str(ROOT / "models" / "player.engine"),
         court_model_path=str(ROOT / "models" / "courtdetection.engine"),
-        conf=0.50 if conf is None else conf,
+        conf=PIPELINE_CONF if conf is None else conf,
         device=device,
         save_tracking_video=False,
         print_selector_tracks=False,
@@ -132,9 +97,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--clips", nargs="*", help="Clip stems to (re)track; default: every video without a final label CSV")
     parser.add_argument("--source", choices=("raw", "pipeline"), default="raw")
-    parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS, help="Detector weights (.npz GridTrackNet or .pt TOTNet)")
+    parser.add_argument("--weights", type=Path, default=REPO_WEIGHTS, help="GridTrackNet weights (.npz)")
     parser.add_argument("--conf", type=float, default=None,
-                        help="Draft confidence threshold (raw default 0.25 so nearly every frame gets a guess)")
+                        help=f"Draft confidence threshold (raw default {RAW_DRAFT_CONF} so nearly every frame gets a guess)")
     parser.add_argument("--device", default="0")
     parser.add_argument("--force", action="store_true", help="Re-track even if a final label CSV exists")
     args = parser.parse_args()
@@ -147,7 +112,7 @@ def main() -> int:
         print(f"Weights not found: {weights}")
         return 1
 
-    videos = sorted(p for p in VIDEOS.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES)
+    videos = list(videos_in(VIDEOS).values())
     if args.clips:
         videos = [p for p in videos if p.stem in set(args.clips)]
     if not videos:
@@ -155,21 +120,21 @@ def main() -> int:
         return 1
 
     for video in videos:
-        final = LABELS / f"{video.stem}_ball.csv"
-        draft = LABELS / f"{video.stem}_ball.csv.draft"
+        final = label_csv(video.stem)
+        draft = draft_csv(video.stem)
         if final.is_file() and not args.force:
             print(f"[skip] {video.name}: {final.name} already exists (use --force to redo)")
             continue
-        fps, width, height, total = video_meta(video)
-        stride = label_stride(fps)
-        print(f"[track] {video.name}: {width}x{height} @ {fps:.2f} FPS, {total} frames, "
+        meta = video_meta(video)
+        stride = require_phase_stride(meta.fps)
+        print(f"[track] {video.name}: {meta.width}x{meta.height} @ {meta.fps:.2f} FPS, {meta.total} frames, "
               f"labelling every {stride} frame(s), source={args.source}")
         if args.source == "raw":
-            rows = raw_rows(video, weights, 0.25 if args.conf is None else args.conf, args.device, fps, width, height, total)
+            rows = raw_rows(video, weights, RAW_DRAFT_CONF if args.conf is None else args.conf, args.device, meta)
         else:
             rows = pipeline_rows(video, weights, args.conf, args.device, RUNS / f"{video.stem}_{weights.stem}.json")
-        visible = write_draft(rows, draft, stride, width, height, total)
-        print(f"[draft] {draft.name}: {visible} guessed frames of {len(range(0, total, stride))} label frames "
+        visible = write_draft(rows, draft, stride, meta.width, meta.height, meta.total)
+        print(f"[draft] {draft.name}: {visible} guessed frames of {len(range(0, meta.total, stride))} label frames "
               f"-> python finetune/label_tool.py {video.stem}")
     return 0
 

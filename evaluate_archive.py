@@ -1,11 +1,11 @@
-"""Score ball detectors and the full pipeline against the hand-labelled archive clips.
+"""Score ball detectors and the full pipeline against the hand-labelled clips.
 
 The label set holds ``videoN.mp4`` + ``videoN_ball.csv`` pairs labelled with the
 click tool: one row per labelled frame, with invisible balls parked in the
-top-right corner. ``--archive`` picks it; the default is ``$TENNIS_ARCHIVE``,
-then the standalone ``gridtracknet_finetuning/archive`` folder if it is still
-around, and otherwise this repo's own ``finetune/`` workspace, which holds the
-same clips plus the imported public ones.
+top-right corner (see ``finetune/labels.py``). ``--archive`` picks it; the
+default is ``$TENNIS_ARCHIVE`` when that is set, else this repo's own
+``finetune/`` workspace. Pass ``--archive finetune`` explicitly for workspace
+runs, as AGENTS.md asks.
 
 Modes:
   raw       run each detector's prepass at threshold 0 and sweep thresholds
@@ -20,125 +20,61 @@ except video10, so only video10 is held-out for it.
 from __future__ import annotations
 
 import argparse
-import csv
 import fnmatch
 import json
 import math
 import os
-import re
-import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import cv2
 from finetune.data_policy import is_verified, read_review_status
+from finetune.detect import ball_detector, detect_points
+from finetune.labels import read_labels
+from finetune.scoring import HIT_PX, REFERENCE_HEIGHT, REFERENCE_WIDTH, WRONG_PX, score, scale_for_width
+from finetune.workspace import VIDEO_SUFFIXES, clip_of, natural_key, video_meta
 
 ROOT = Path(__file__).resolve().parent
-
-
-def default_archive() -> Path:
-    """Hand-labelled clips: $TENNIS_ARCHIVE, the standalone archive folder, else the in-repo workspace."""
-    for candidate in (os.environ.get("TENNIS_ARCHIVE"),
-                      Path.home() / "Desktop" / "gridtracknet_finetuning" / "archive",
-                      ROOT / "finetune"):
-        if candidate and Path(candidate).is_dir():
-            return Path(candidate)
-    return ROOT / "finetune"
-
-
-ARCHIVE = default_archive()
+WORKSPACE = ROOT / "finetune"
+ARCHIVE_VARIABLE = "TENNIS_ARCHIVE"
 MODELS = {
     "gridtracknet": ROOT / "models" / "gridtracknet_weights_torch.npz",
 }
-HIT_PX = 10.0      # prediction counts as correct within this many pixels (1080p scale)
-WRONG_PX = 30.0    # beyond this it is tracking something else
+PLAYER_ENGINE = ROOT / "models" / "player.engine"
+COURT_ENGINE = ROOT / "models" / "courtdetection.engine"
+DEFAULT_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+PER_CLIP_CONF = 0.5         # the per-clip table and the offset report use this threshold
+BAD_FRAMES_LISTED = 40      # how many of a clip's bad frames the pipeline report names
+
+ClipPair = Tuple[Path, Path]    # (video, label csv)
 
 
-def is_visible(x: float, y: float, width: int, height: int) -> bool:
-    return not (x >= width * 0.95 and y <= height * 0.05)
+def default_archive() -> Path:
+    """Hand-labelled clips: $TENNIS_ARCHIVE when set, else the in-repo workspace. Resolved when
+    asked, not at import, so the environment and the folder are read as they are now."""
+    override = os.environ.get(ARCHIVE_VARIABLE)
+    return Path(override) if override else WORKSPACE
 
 
-def read_labels(path: Path, width: int, height: int) -> Dict[int, Optional[Tuple[float, float]]]:
-    labels: Dict[int, Optional[Tuple[float, float]]] = {}
-    with path.open(newline="", encoding="utf-8-sig") as handle:
-        for row in csv.DictReader(handle):
-            index = int(re.fullmatch(r"frame_(\d+)", row["frame"].strip()).group(1))
-            x, y = float(row["ball_x"]), float(row["ball_y"])
-            labels[index] = (x, y) if is_visible(x, y, width, height) else None
-    return labels
-
-
-def natural_key(path: Path):
-    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", path.stem)]
-
-
-def list_clips(names: Optional[List[str]], archive: Path = ARCHIVE) -> List[Tuple[Path, Path]]:
+def list_clips(names: Optional[List[str]], archive: Path) -> List[ClipPair]:
     """Pairs of (video, label csv); accepts the flat archive layout or finetune/{videos,labels}."""
     label_dir = archive / "labels" if (archive / "labels").is_dir() else archive
     video_dirs = [archive / "videos", archive] if (archive / "videos").is_dir() else [archive]
     clips = []
     review_status = read_review_status(archive)
-    for csv_path in sorted(label_dir.glob("*_ball.csv"), key=natural_key):
-        clip = csv_path.stem[: -len("_ball")]
+    for csv_path in sorted(label_dir.glob("*_ball.csv"), key=lambda path: natural_key(path.stem)):
+        clip = clip_of(csv_path)
         if names and not any(fnmatch.fnmatchcase(clip, pattern) for pattern in names):
             continue
         if not is_verified(clip, review_status):
             print(f"[skip] {clip}: labels are still under review")
             continue
-        videos = [p for d in video_dirs for p in d.glob(f"{clip}.*")
-                  if p.suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".m4v"}]
+        videos = [p for d in video_dirs for p in d.glob(f"{clip}.*") if p.suffix.lower() in VIDEO_SUFFIXES]
         if not videos:
             print(f"[skip] no video for {csv_path.name}")
             continue
         clips.append((videos[0], csv_path))
     return clips
-
-
-def video_meta(path: Path):
-    capture = cv2.VideoCapture(str(path))
-    meta = (
-        float(capture.get(cv2.CAP_PROP_FPS)),
-        int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-        int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-        int(capture.get(cv2.CAP_PROP_FRAME_COUNT)),
-    )
-    capture.release()
-    return meta
-
-
-def score(pairs, scale: float) -> Dict[str, float]:
-    """pairs: [(label or None, prediction or None)], distances scaled to 1080p."""
-    hit = wrong = miss = false_alarm = quiet = 0
-    errors = []
-    for label, prediction in pairs:
-        if label is None:
-            if prediction is None:
-                quiet += 1
-            else:
-                false_alarm += 1
-            continue
-        if prediction is None:
-            miss += 1
-            continue
-        error = math.hypot(prediction[0] - label[0], prediction[1] - label[1]) * scale
-        errors.append(error)
-        if error <= HIT_PX:
-            hit += 1
-        elif error > WRONG_PX:
-            wrong += 1
-    visible = hit + wrong + miss + sum(1 for e in errors if HIT_PX < e <= WRONG_PX)
-    errors.sort()
-    return {
-        "visible": visible,
-        "recall": hit / max(visible, 1),
-        "wrong_obj": wrong / max(visible, 1),
-        "miss": miss / max(visible, 1),
-        "invisible": false_alarm + quiet,
-        "false_alarm": false_alarm / max(false_alarm + quiet, 1),
-        "median_px": errors[len(errors) // 2] if errors else float("nan"),
-        "p90_px": errors[int(0.9 * len(errors))] if errors else float("nan"),
-    }
 
 
 LINE_PAIRS_14 = (
@@ -174,7 +110,7 @@ def _near_court_line(x: float, y: float, keypoints, scale: float) -> bool:
     return False
 
 
-def _classify(x: float, y: float, row, fallback_keypoints, scale: float) -> str:
+def _classify(x: float, y: float, row: dict, fallback_keypoints, scale: float) -> str:
     """What did a wrong/false output land on: player, line, or something else."""
     if _inside_player(x, y, row.get("player_boxes")):
         return "player"
@@ -192,131 +128,142 @@ def fmt(name: str, stats: Dict[str, float]) -> str:
     )
 
 
-def run_raw(models: List[str], clips, thresholds: List[float], device: str,
+def raw_rows(detector, clips: List[ClipPair], name: str) -> List[Tuple[str, dict, list]]:
+    """Per clip: (stem, meta, [(label, prediction, confidence)]) from one detector's prepass."""
+    out = []
+    for video_path, csv_path in clips:
+        meta = video_meta(video_path)
+        labels = read_labels(csv_path, meta.width, meta.height)
+        started = time.perf_counter()
+        points = detect_points(detector, video_path, meta)
+        elapsed = time.perf_counter() - started
+        rows = []
+        for frame, label in sorted(labels.items()):
+            point = points.get(frame)
+            rows.append((label, None if point is None else point[:2], 0.0 if point is None else point[2]))
+        out.append((video_path.stem, {"fps": meta.fps, "width": meta.width, "elapsed": elapsed}, rows))
+        print(f"[{name}] {video_path.stem}: {meta.total} frames in {elapsed:.1f}s", flush=True)
+    return out
+
+
+def report_raw(name: str, per_clip: List[Tuple[str, dict, list]], thresholds: List[float]) -> None:
+    print(f"\n=== {name}: threshold sweep (all clips pooled) ===")
+    for threshold in thresholds:
+        pairs = []
+        for _, meta, rows in per_clip:
+            scale = REFERENCE_HEIGHT / meta["width"] * (REFERENCE_WIDTH / REFERENCE_HEIGHT) if meta["width"] != REFERENCE_WIDTH else 1.0
+            pairs.extend((None if label is None else (label[0] * scale, label[1] * scale),
+                          (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
+                         for label, pred, conf in rows)
+        print(fmt(f"conf>={threshold:.2f}", score(pairs, 1.0)))
+    print(f"\n=== {name}: per clip at conf>={PER_CLIP_CONF:.2f} ===")
+    for clip, meta, rows in per_clip:
+        pairs = [(label, pred if conf >= PER_CLIP_CONF else None) for label, pred, conf in rows]
+        print(fmt(clip, score(pairs, scale_for_width(meta["width"]))))
+    # Systematic offset on confident hits (positive = prediction below/right of label).
+    dx = dy = 0.0
+    count = 0
+    for _, meta, rows in per_clip:
+        for label, pred, conf in rows:
+            if label and pred and conf >= PER_CLIP_CONF and math.hypot(pred[0] - label[0], pred[1] - label[1]) <= HIT_PX:
+                dx += pred[0] - label[0]
+                dy += pred[1] - label[1]
+                count += 1
+    if count:
+        print(f"{name}: mean offset on hits dx={dx / count:+.2f}px dy={dy / count:+.2f}px (n={count})")
+
+
+def run_raw(models: List[str], clips: List[ClipPair], thresholds: List[float], device: str,
             weights: Optional[Dict[str, Path]] = None, stride: Optional[int] = None) -> None:
-    from tennis_tracker.config import Config
-    from tennis_tracker import detectors as backends
-
-    per_model: Dict[str, List[Tuple[str, dict, list]]] = {name: [] for name in models}
+    per_model: Dict[str, List[Tuple[str, dict, list]]] = {}
     for name in models:
-        cfg = Config(conf=0.0, device=device, gridtracknet_source_stride=stride, gridtracknet_prepass_background=False)
-        path = (weights or {}).get(name) or MODELS[name]
-        detector = backends.GridTrackNetBallDetector(str(path), cfg)
-        for video_path, csv_path in clips:
-            fps, width, height, total = video_meta(video_path)
-            labels = read_labels(csv_path, width, height)
-            started = time.perf_counter()
-            detector.prepare_video(video_path, fps, width, height, total)
-            elapsed = time.perf_counter() - started
-            rows = []
-            for frame, label in sorted(labels.items()):
-                dets = detector.precomputed[frame] if frame < len(detector.precomputed) else []
-                if dets:
-                    box, conf = dets[0]
-                    rows.append((label, ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0), conf))
-                else:
-                    rows.append((label, None, 0.0))
-            per_model[name].append((video_path.stem, {"fps": fps, "width": width, "elapsed": elapsed}, rows))
-            print(f"[{name}] {video_path.stem}: {total} frames in {elapsed:.1f}s", flush=True)
+        detector = ball_detector((weights or {}).get(name) or MODELS[name], device=device, source_stride=stride)
+        per_model[name] = raw_rows(detector, clips, name)
         del detector
-
     for name in models:
-        print(f"\n=== {name}: threshold sweep (all clips pooled) ===")
-        for threshold in thresholds:
-            pairs = []
-            for _, meta, rows in per_model[name]:
-                scale = 1080.0 / meta["width"] * (1920.0 / 1080.0) if meta["width"] != 1920 else 1.0
-                pairs.extend((None if label is None else (label[0] * scale, label[1] * scale),
-                              (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
-                             for label, pred, conf in rows)
-            print(fmt(f"conf>={threshold:.2f}", score(pairs, 1.0)))
-        print(f"\n=== {name}: per clip at conf>=0.50 ===")
-        for clip, meta, rows in per_model[name]:
-            pairs = [(label, pred if conf >= 0.5 else None) for label, pred, conf in rows]
-            scale = 1920.0 / meta["width"]
-            print(fmt(clip, score(pairs, scale)))
-        # Systematic offset on confident hits (positive = prediction below/right of label).
-        dx = dy = 0.0
-        count = 0
-        for _, meta, rows in per_model[name]:
-            for label, pred, conf in rows:
-                if label and pred and conf >= 0.5 and math.hypot(pred[0] - label[0], pred[1] - label[1]) <= HIT_PX:
-                    dx += pred[0] - label[0]
-                    dy += pred[1] - label[1]
-                    count += 1
-        if count:
-            print(f"{name}: mean offset on hits dx={dx / count:+.2f}px dy={dy / count:+.2f}px (n={count})")
+        report_raw(name, per_model[name], thresholds)
 
 
-def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str,
-                 out_dir: Path, reuse_json: bool = False) -> None:
+def tracker_config(video_path: Path, name: str, conf: float, device: str, out_dir: Path, json_path: Path):
     from tennis_tracker.config import Config
+    return Config(
+        input_video=str(video_path),
+        output_video=str(out_dir / f"{video_path.stem}_{name}.mp4"),
+        tracking_json=str(json_path),
+        model_path=str(MODELS[name]),
+        player_model_path=str(PLAYER_ENGINE),
+        court_model_path=str(COURT_ENGINE),
+        conf=conf,
+        device=device,
+        save_tracking_video=False,
+        print_selector_tracks=False,
+    )
+
+
+def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: dict, width: int):
+    """One clip's pipeline output against its labels: (stats, by_source, 1080p pairs, landed, bad frames)."""
+    frames = {row["frame"]: row for row in payload["frames"]}
+    fallback_keypoints = payload.get("last_valid_court_keypoints")
+    scale = scale_for_width(width)
+    pairs = []
+    by_source: Dict[str, Dict[str, int]] = {}
+    landed: Dict[str, int] = {}
+    bad_frames = []
+    for frame, label in sorted(labels.items()):
+        row = frames.get(frame)
+        present = bool(row and row.get("present"))
+        pred = (row["x"], row["y"]) if present else None
+        pairs.append((label, pred))
+        if not present:
+            continue
+        bucket = by_source.setdefault(row.get("source", "?"), {"hit": 0, "localized_error": 0, "wrong": 0, "invisible": 0})
+        bad = None
+        if label is None:
+            bucket["invisible"] += 1
+            bad = "invisible"
+        else:
+            error = math.hypot(pred[0] - label[0], pred[1] - label[1]) * scale
+            if error > WRONG_PX:
+                bucket["wrong"] += 1
+                bad = "wrong"
+            else:
+                bucket["hit" if error <= HIT_PX else "localized_error"] += 1
+        if bad:
+            where = _classify(pred[0], pred[1], row, fallback_keypoints, scale)
+            landed[where] = landed.get(where, 0) + 1
+            bad_frames.append((frame, bad, row.get("source"), where))
+    normalized_pairs = [(None if label is None else (label[0] * scale, label[1] * scale),
+                         None if pred is None else (pred[0] * scale, pred[1] * scale))
+                        for label, pred in pairs]
+    return score(pairs, scale), by_source, normalized_pairs, landed, bad_frames
+
+
+def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float], device: str,
+                 out_dir: Path, reuse_json: bool = False) -> None:
     from tennis_tracker.pipeline import run
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in models:
         results = []
         for video_path, csv_path in clips:
-            fps, width, height, total = video_meta(video_path)
-            labels = read_labels(csv_path, width, height)
+            meta = video_meta(video_path)
+            labels = read_labels(csv_path, meta.width, meta.height)
             json_path = out_dir / f"{video_path.stem}_{name}.json"
             if json_path.is_file() and reuse_json:
                 print(f"[reuse] {json_path.name} -- NOT re-running the tracker; "
                       f"these numbers are from whenever this file was written")
             else:
-                cfg = Config(
-                    input_video=str(video_path),
-                    output_video=str(out_dir / f"{video_path.stem}_{name}.mp4"),
-                    tracking_json=str(json_path),
-                    model_path=str(MODELS[name]),
-                    player_model_path=str(ROOT / "models" / "player.engine"),
-                    court_model_path=str(ROOT / "models" / "courtdetection.engine"),
-                    conf=conf[name],
-                    device=device,
-                    save_tracking_video=False,
-                    print_selector_tracks=False,
-                )
-                run(cfg)
+                run(tracker_config(video_path, name, conf[name], device, out_dir, json_path))
             payload = json.loads(json_path.read_text(encoding="utf-8"))
-            frames = {row["frame"]: row for row in payload["frames"]}
-            fallback_keypoints = payload.get("last_valid_court_keypoints")
-            scale = 1920.0 / width
-            pairs = []
-            by_source: Dict[str, Dict[str, int]] = {}
-            landed: Dict[str, int] = {}
-            bad_frames = []
-            for frame, label in sorted(labels.items()):
-                row = frames.get(frame)
-                present = bool(row and row.get("present"))
-                pred = (row["x"], row["y"]) if present else None
-                pairs.append((label, pred))
-                if present:
-                    bucket = by_source.setdefault(row.get("source", "?"), {"hit": 0, "localized_error": 0, "wrong": 0, "invisible": 0})
-                    bad = None
-                    if label is None:
-                        bucket["invisible"] += 1
-                        bad = "invisible"
-                    elif math.hypot(pred[0] - label[0], pred[1] - label[1]) * scale > WRONG_PX:
-                        bucket["wrong"] += 1
-                        bad = "wrong"
-                    else:
-                        error = math.hypot(pred[0] - label[0], pred[1] - label[1]) * scale
-                        bucket["hit" if error <= HIT_PX else "localized_error"] += 1
-                    if bad:
-                        where = _classify(pred[0], pred[1], row, fallback_keypoints, scale)
-                        landed[where] = landed.get(where, 0) + 1
-                        bad_frames.append((frame, bad, row.get("source"), where))
-            normalized_pairs = [(None if label is None else (label[0] * scale, label[1] * scale),
-                                 None if pred is None else (pred[0] * scale, pred[1] * scale))
-                                for label, pred in pairs]
-            results.append((video_path.stem, score(pairs, scale), by_source, normalized_pairs, landed, bad_frames))
+            results.append((video_path.stem, *score_pipeline_clip(labels, payload, meta.width)))
         print(f"\n=== pipeline [{name}] per clip ===")
         pooled = []
         pooled_landed: Dict[str, int] = {}
         for clip, stats, by_source, pairs, landed, bad_frames in results:
             print(fmt(clip, stats), "| by source:", by_source, "| bad outputs landed on:", landed)
             if bad_frames:
-                print("    bad frames:", ", ".join(f"{f}:{kind[0]}/{src}/{where}" for f, kind, src, where in bad_frames[:40]))
+                print("    bad frames:", ", ".join(f"{f}:{kind[0]}/{src}/{where}"
+                                                   for f, kind, src, where in bad_frames[:BAD_FRAMES_LISTED]))
             pooled.extend(pairs)
             for key, value in landed.items():
                 pooled_landed[key] = pooled_landed.get(key, 0) + value
@@ -324,16 +271,17 @@ def run_pipeline(models: List[str], clips, conf: Dict[str, float], device: str,
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=("raw", "pipeline"), default="raw")
     parser.add_argument("--models", nargs="+", default=["gridtracknet"], choices=sorted(MODELS))
     parser.add_argument("--clips", nargs="*", default=None, help="Clip stems or globs, e.g. video10 'grid_match*'")
-    parser.add_argument("--thresholds", nargs="+", type=float, default=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+    parser.add_argument("--thresholds", nargs="+", type=float, default=DEFAULT_THRESHOLDS)
     parser.add_argument("--gridtracknet-conf", type=float, default=0.50)
     parser.add_argument("--device", default="0")
     parser.add_argument("--out-dir", default=str(ROOT / "output" / "archive_eval"))
-    parser.add_argument("--archive", default=str(ARCHIVE),
-                        help="Label set: the flat archive folder or a finetune-style folder with videos/ and labels/ (default: $TENNIS_ARCHIVE, else the archive folder, else finetune/)")
+    parser.add_argument("--archive", default=None,
+                        help="Label set: the flat archive folder or a finetune-style folder with videos/ and "
+                             f"labels/ (default: ${ARCHIVE_VARIABLE}, else finetune/)")
     parser.add_argument("--reuse-json", action="store_true",
                         help="Pipeline mode: score existing JSONs in --out-dir instead of re-running. "
                              "Off by default -- reusing them after a code change silently scores the old code.")
@@ -342,11 +290,12 @@ def main() -> int:
                         help="Force the frame spacing fed to GridTrackNet (1 = consecutive frames even at 60 FPS)")
     args = parser.parse_args()
 
-    clips = list_clips(args.clips, Path(args.archive))
+    archive = Path(args.archive) if args.archive else default_archive()
+    clips = list_clips(args.clips, archive)
     if not clips:
-        print(f"No clips found in {args.archive}")
+        print(f"No clips found in {archive}")
         return 1
-    print(f"[archive] {args.archive}  ({len(clips)} clips)")
+    print(f"[archive] {archive}  ({len(clips)} clips)")
     if args.mode == "raw":
         weights = {"gridtracknet": Path(args.gridtracknet_weights)} if args.gridtracknet_weights else None
         run_raw(args.models, clips, args.thresholds, args.device, weights, args.gridtracknet_stride)
@@ -360,4 +309,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
