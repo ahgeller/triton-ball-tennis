@@ -54,7 +54,7 @@ from finetune.data.detect import ball_detector, detect_points
 from finetune.data.fileio import backup_copy
 from finetune.data.realign_solve import Alignment, segments, solve_alignment, unplaceable_at_cuts
 from finetune.data.labels import LabelRow, format_point, is_visible, read_label_rows, reviewed_frames, write_label_cells
-from finetune.data.scoring import DETECTION_CONF, scale_for_width
+from finetune.data.detector_metrics import DETECTION_CONF, scale_for_width
 from finetune.data.workspace import VideoMeta, find_video, label_csv, require_video, video_meta
 
 PREVIEW_TILES = 8            # frames shown on the --preview sheet ...

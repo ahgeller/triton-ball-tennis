@@ -20,7 +20,7 @@ from finetune.labeling.label_draw import (FILTERS, GHOST, ChipRow, draw_badge, d
                                           fit_text, hit, label_mark_colour, mark_plan, review_badge)
 from finetune.labeling.label_store import Row
 from finetune.refiner.refine import Suggestion
-from finetune.data.scoring import REFERENCE_HEIGHT
+from finetune.data.detector_metrics import REFERENCE_HEIGHT
 
 if TYPE_CHECKING:
     from finetune.labeling.label_session import LabelSession

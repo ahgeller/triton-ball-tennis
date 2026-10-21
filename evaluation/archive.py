@@ -26,15 +26,15 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
 from finetune.data.data_policy import is_verified, read_review_status
 from finetune.data.detect import ball_detector, detect_points
 from finetune.data.labels import read_labels
-from finetune.data.scoring import HIT_PX, score, scale_for_width
+from finetune.data.detector_metrics import HIT_PX, DetectorMetrics, Point, scale_for_width
 from finetune.data import workspace as ws
 from finetune.data.workspace import clip_of, find_video, natural_key, video_meta
-from evaluation.pipeline_score import score_pipeline_clip
+from evaluation.pipeline_score import ClipScore, score_pipeline_clip
 from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
 
 if TYPE_CHECKING:
@@ -49,6 +49,23 @@ PER_CLIP_CONF = 0.5         # the per-clip table and the offset report use this 
 BAD_FRAMES_LISTED = 40      # how many of a clip's bad frames the pipeline report names
 
 ClipPair = Tuple[Path, Path]    # (video, label csv)
+
+
+class LabelledDetection(NamedTuple):
+    """One labelled frame against the detector: the label, the detector's point at any confidence
+    (None when it saw nothing) and that point's confidence (0 when there is none)."""
+    label: Point
+    prediction: Point
+    confidence: float
+
+
+class RawClip(NamedTuple):
+    """One clip's labelled frames against one detector's prepass, in frame order."""
+    clip: str
+    width: int
+    fps: float
+    elapsed: float            # seconds the prepass took
+    rows: List[LabelledDetection]
 
 
 def default_archive() -> Path:
@@ -79,17 +96,17 @@ def list_clips(names: Optional[List[str]], archive: Path) -> List[ClipPair]:
     return clips
 
 
-def fmt(name: str, stats: Dict[str, float]) -> str:
+def fmt(name: str, stats: DetectorMetrics) -> str:
     return (
-        f"{name:14s} vis={stats['visible']:4d} recall={stats['recall']:.3f} "
-        f"wrong={stats['wrong_obj']:.3f} miss={stats['miss']:.3f} | "
-        f"invis={stats['invisible']:3d} falseAlarm={stats['false_alarm']:.3f} | "
-        f"med={stats['median_px']:.1f}px p90={stats['p90_px']:.1f}px"
+        f"{name:14s} vis={stats.visible:4d} recall={stats.recall:.3f} "
+        f"wrong={stats.wrong:.3f} miss={stats.miss:.3f} | "
+        f"invis={stats.invisible:3d} falseAlarm={stats.false_alarm:.3f} | "
+        f"med={stats.median_px:.1f}px p90={stats.p90_px:.1f}px"
     )
 
 
-def raw_rows(detector, clips: List[ClipPair], name: str) -> List[Tuple[str, dict, list]]:
-    """Per clip: (stem, meta, [(label, prediction, confidence)]) from one detector's prepass."""
+def raw_rows(detector, clips: List[ClipPair], name: str) -> List[RawClip]:
+    """Each clip's labelled frames against one detector's prepass."""
     out = []
     for video_path, csv_path in clips:
         meta = video_meta(video_path)
@@ -100,30 +117,30 @@ def raw_rows(detector, clips: List[ClipPair], name: str) -> List[Tuple[str, dict
         rows = []
         for frame, label in sorted(labels.items()):
             point = points.get(frame)
-            rows.append((label, None if point is None else point[:2], 0.0 if point is None else point[2]))
-        out.append((video_path.stem, {"fps": meta.fps, "width": meta.width, "elapsed": elapsed}, rows))
+            rows.append(LabelledDetection(label, None if point is None else point[:2], 0.0 if point is None else point[2]))
+        out.append(RawClip(video_path.stem, meta.width, meta.fps, elapsed, rows))
         print(f"[{name}] {video_path.stem}: {meta.total} frames in {elapsed:.1f}s", flush=True)
     return out
 
 
-def _pooled_pairs(per_clip: List[Tuple[str, dict, list]], threshold: float) -> list:
+def _pooled_pairs(per_clip: List[RawClip], threshold: float) -> list:
     """Every clip's (label, prediction) pairs at 1080p scale, a prediction under `threshold` a miss."""
     pairs = []
-    for _, meta, rows in per_clip:
-        scale = scale_for_width(meta["width"])
+    for clip in per_clip:
+        scale = scale_for_width(clip.width)
         pairs.extend((None if label is None else (label[0] * scale, label[1] * scale),
                       (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
-                     for label, pred, conf in rows)
+                     for label, pred, conf in clip.rows)
     return pairs
 
 
-def _hit_offset(per_clip: List[Tuple[str, dict, list]]) -> Tuple[float, float, int]:
+def _hit_offset(per_clip: List[RawClip]) -> Tuple[float, float, int]:
     """(sum dx, sum dy, count) over confident hits: the systematic offset of predictions from
     labels (positive = prediction below/right of label), in native pixels."""
     dx = dy = 0.0
     count = 0
-    for _, meta, rows in per_clip:
-        for label, pred, conf in rows:
+    for clip in per_clip:
+        for label, pred, conf in clip.rows:
             if label and pred and conf >= PER_CLIP_CONF and math.hypot(pred[0] - label[0], pred[1] - label[1]) <= HIT_PX:
                 dx += pred[0] - label[0]
                 dy += pred[1] - label[1]
@@ -131,14 +148,14 @@ def _hit_offset(per_clip: List[Tuple[str, dict, list]]) -> Tuple[float, float, i
     return dx, dy, count
 
 
-def report_raw(name: str, per_clip: List[Tuple[str, dict, list]], thresholds: List[float]) -> None:
+def report_raw(name: str, per_clip: List[RawClip], thresholds: List[float]) -> None:
     print(f"\n=== {name}: threshold sweep (all clips pooled) ===")
     for threshold in thresholds:
-        print(fmt(f"conf>={threshold:.2f}", score(_pooled_pairs(per_clip, threshold), 1.0)))
+        print(fmt(f"conf>={threshold:.2f}", DetectorMetrics.of(_pooled_pairs(per_clip, threshold), 1.0)))
     print(f"\n=== {name}: per clip at conf>={PER_CLIP_CONF:.2f} ===")
-    for clip, meta, rows in per_clip:
-        pairs = [(label, pred if conf >= PER_CLIP_CONF else None) for label, pred, conf in rows]
-        print(fmt(clip, score(pairs, scale_for_width(meta["width"]))))
+    for clip in per_clip:
+        pairs = [(label, pred if conf >= PER_CLIP_CONF else None) for label, pred, conf in clip.rows]
+        print(fmt(clip.clip, DetectorMetrics.of(pairs, scale_for_width(clip.width))))
     dx, dy, count = _hit_offset(per_clip)
     if count:
         print(f"{name}: mean offset on hits dx={dx / count:+.2f}px dy={dy / count:+.2f}px (n={count})")
@@ -146,7 +163,7 @@ def report_raw(name: str, per_clip: List[Tuple[str, dict, list]], thresholds: Li
 
 def run_raw(models: List[str], clips: List[ClipPair], thresholds: List[float], device: str,
             weights: Optional[Dict[str, Path]] = None, stride: Optional[int] = None) -> None:
-    per_model: Dict[str, List[Tuple[str, dict, list]]] = {}
+    per_model: Dict[str, List[RawClip]] = {}
     for name in models:
         detector = ball_detector((weights or {}).get(name) or MODELS[name], device=device, source_stride=stride)
         per_model[name] = raw_rows(detector, clips, name)
@@ -177,7 +194,7 @@ def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in models:
-        results = []
+        results: List[Tuple[str, ClipScore]] = []
         for video_path, csv_path in clips:
             meta = video_meta(video_path)
             labels = read_labels(csv_path, meta.width, meta.height)
@@ -189,19 +206,19 @@ def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float
             else:
                 result = run(tracker_config(video_path, name, conf[name], device, out_dir, json_path))
                 payload = {"frames": result.frame_rows(), "last_valid_court_keypoints": result.last_valid_court_keypoints}
-            results.append((video_path.stem, *score_pipeline_clip(labels, payload, meta.width)))
+            results.append((video_path.stem, score_pipeline_clip(labels, payload, meta.width)))
         print(f"\n=== pipeline [{name}] per clip ===")
         pooled = []
         pooled_landed: Dict[str, int] = {}
-        for clip, stats, by_source, pairs, landed, bad_frames in results:
-            print(fmt(clip, stats), "| by source:", by_source, "| bad outputs landed on:", landed)
-            if bad_frames:
+        for clip, scored in results:
+            print(fmt(clip, scored.stats), "| by source:", scored.by_source, "| bad outputs landed on:", scored.landed)
+            if scored.bad_frames:
                 print("    bad frames:", ", ".join(f"{f}:{kind[0]}/{src}/{where}"
-                                                   for f, kind, src, where in bad_frames[:BAD_FRAMES_LISTED]))
-            pooled.extend(pairs)
-            for key, value in landed.items():
+                                                   for f, kind, src, where in scored.bad_frames[:BAD_FRAMES_LISTED]))
+            pooled.extend(scored.pairs)
+            for key, value in scored.landed.items():
                 pooled_landed[key] = pooled_landed.get(key, 0) + value
-        print(fmt("ALL", score(pooled, 1.0)), "| bad outputs landed on:", pooled_landed)
+        print(fmt("ALL", DetectorMetrics.of(pooled, 1.0)), "| bad outputs landed on:", pooled_landed)
 
 
 def main() -> int:

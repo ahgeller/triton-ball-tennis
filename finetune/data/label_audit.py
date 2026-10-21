@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from finetune.data.fileio import backup_copy
 from finetune.data.label_check import matches_any
 from finetune.data.labels import (FLAG_ANSWER_DECIMALS, FlagKind, Flags, Labels, read_flags, read_labels, write_flags, write_labels)
-from finetune.data.scoring import AGREE_PX, DETECTION_CONF, REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
+from finetune.data.detector_metrics import AGREE_PX, DETECTION_CONF, REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
 from finetune.data import workspace as ws
 from finetune.data.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, review_json,
                                      suspect_json, video_meta, videos_in, write_manifest)

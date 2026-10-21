@@ -16,7 +16,7 @@ from finetune.data.labels import write_labels
 from finetune.training.clips import ClipSelection, find_clips
 from finetune.training.dataset import Augmenter, UnitDataset, make_target
 from finetune.training.frame_cache import DATA_VERSION, TrainingUnit, prepare_clip, training_targets
-from finetune.training.metrics import better
+from finetune.training.metrics import promotion_improves
 from tests._helpers import metric_probe, write_clip
 
 SIZE = (64, 36)
@@ -177,16 +177,15 @@ def test_flip_mirrors_the_frames_and_the_labels_about_the_image_width(tmp_path):
 
 def test_metric_counts_localization_errors():
     stats = metric_probe(5, {i: [100, 100] if i == 0 else [120, 100] for i in range(5)})
-    assert stats["visible"] == 5
-    assert stats["recall"] == .2
+    assert stats.visible == 5
+    assert stats.recall == .2
 
 
 def test_metric_infers_tail():
     stats = metric_probe(7, {i: [100, 100] for i in range(7)})
-    assert stats["visible"] == 7
-    assert stats["recall"] == 1.
+    assert stats.visible == 7
+    assert stats.recall == 1.
 
 
 def test_false_alarms_block_promotion():
-    assert not better({"recall": .91, "wrong": 0., "false_alarm": 1.},
-                      {"recall": .90, "wrong": 0., "false_alarm": 0.})
+    assert not promotion_improves(training.metrics_of(.91, 0., false_alarm=1.), training.metrics_of(.90, 0., false_alarm=0.))

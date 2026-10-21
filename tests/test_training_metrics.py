@@ -5,16 +5,21 @@ from unittest.mock import patch
 import torch
 
 from finetune.training import metrics
-from finetune.training.metrics import METRIC_SLACK, better, predict_clip
+from finetune.data.detector_metrics import DetectorMetrics
+from finetune.training.metrics import METRIC_SLACK, promotion_improves, predict_clip
 from tests._helpers import Capture, metric_probe
 
 
-def test_better_wants_more_recall_without_more_wrong_or_false_alarms():
-    assert better({"recall": 0.90, "wrong": 0.01}, {"recall": 0.85, "wrong": 0.01})
-    assert not better({"recall": 0.85, "wrong": 0.01}, {"recall": 0.85, "wrong": 0.01})            # equal: the incumbent stays
-    assert better({"recall": 0.90, "wrong": 0.01 + METRIC_SLACK}, {"recall": 0.85, "wrong": 0.01})  # within the slack
-    assert not better({"recall": 0.95, "wrong": 0.05}, {"recall": 0.85, "wrong": 0.01})
-    assert not better({"recall": 0.95, "wrong": 0.01, "false_alarm": 0.5}, {"recall": 0.85, "wrong": 0.01, "false_alarm": 0.1})
+def rates(recall: float, wrong: float, false_alarm: float = 0.0) -> DetectorMetrics:
+    return DetectorMetrics(100, recall, wrong, 0.0, 100, false_alarm, 1.0, 2.0)
+
+
+def test_promotion_improves_wants_more_recall_without_more_wrong_or_false_alarms():
+    assert promotion_improves(rates(0.90, 0.01), rates(0.85, 0.01))
+    assert not promotion_improves(rates(0.85, 0.01), rates(0.85, 0.01))            # equal: the incumbent stays
+    assert promotion_improves(rates(0.90, 0.01 + METRIC_SLACK), rates(0.85, 0.01))  # within the slack
+    assert not promotion_improves(rates(0.95, 0.05), rates(0.85, 0.01))
+    assert not promotion_improves(rates(0.95, 0.01, 0.5), rates(0.85, 0.01, 0.1))
 
 
 def test_predict_clip_keeps_the_first_answer_for_a_frame_and_infers_the_tail():
@@ -37,4 +42,4 @@ def test_predict_clip_keeps_the_first_answer_for_a_frame_and_infers_the_tail():
 
 def test_detector_metrics_scores_a_clip_end_to_end():
     stats = metric_probe(5, {i: [100, 100] for i in range(5)})
-    assert set(stats) >= {"recall", "wrong", "false_alarm", "visible"} and stats["recall"] == 1.0
+    assert isinstance(stats, DetectorMetrics) and stats.recall == 1.0 and stats.wrong == 0.0

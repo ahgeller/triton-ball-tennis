@@ -38,7 +38,7 @@ from typing import (Callable, Dict, Iterable, Iterator, List, NamedTuple, Option
 import cv2
 import numpy as np
 
-from finetune.data.scoring import REFERENCE_HEIGHT
+from finetune.data.detector_metrics import REFERENCE_HEIGHT
 
 Point = Tuple[float, float]
 Box = Tuple[int, int, int, int]            # (x0, y0, x1, y1) of a patch cut from a frame

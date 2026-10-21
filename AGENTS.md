@@ -75,7 +75,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   the audit, `realign.py`, `pretrack.py`, `evaluation/archive.py` and the trainer's winner
   metric all run; `workspace.py`, where the workspace keeps things and a clip's video
   facts, and the one place `clips.csv` and `exclude.txt` are read and written
-  (`TENNIS_WORKSPACE` relocates the workspace); `scoring.py`, the detector metric;
+  (`TENNIS_WORKSPACE` relocates the workspace); `detector_metrics.py`, the detector metric (`DetectorMetrics`);
   `data_policy.py`, which clips may be trained, validated or scored on;
   `fileio.py`, atomic workspace writes; `alignment.py`, the one label-vs-detector
   agreement the audit and `realign.py` share; `import_data.py` (its importers;
@@ -91,7 +91,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   the sampler) and `pretrack.py` (drafts).
 - `evaluation/`: `tracking.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
-  the pipeline on workspace clips with `finetune/data/scoring.py` (`pipeline_score.py`
+  the pipeline on workspace clips with `finetune/data/detector_metrics.py` (`pipeline_score.py`
   scores one pipeline run's clip), `parity.py` is the Pomona gate. `validate_tracking.py`, `evaluate_archive.py` and `check_parity.py`
   at the root are thin entry points to them.
 

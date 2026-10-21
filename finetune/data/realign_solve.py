@@ -10,7 +10,7 @@ from typing import FrozenSet, List, NamedTuple, Optional, Set, Tuple
 import numpy as np
 
 from finetune.data.alignment import Evidence, Tracks, agreement, errors_at, judged_rows
-from finetune.data.scoring import AGREE_PX
+from finetune.data.detector_metrics import AGREE_PX
 
 COST_CAP = 60.0          # a label this far out tells us nothing beyond "wrong"
 NO_DETECTION = 15.0      # cost where the detector said nothing: indifferent, not evidence

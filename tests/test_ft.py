@@ -29,7 +29,7 @@ sys.meta_path.insert(0, Blocker())
 import finetune.ft
 assert not any(name.split(".")[0] in BLOCKED for name in sys.modules), sorted(sys.modules)
 for light in ("finetune.data.label_audit", "finetune.data.labels", "finetune.data.workspace", "finetune.data.data_policy",
-              "finetune.data.scoring", "finetune.data.fileio"):
+              "finetune.data.detector_metrics", "finetune.data.fileio"):
     assert light in sys.modules, light
 print("light")
 """

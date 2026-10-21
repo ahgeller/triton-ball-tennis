@@ -4,7 +4,7 @@ import math
 import numpy as np
 
 from finetune.data.alignment import Evidence, Tracks, agreement, errors_at, judged_rows, judges_fast
-from finetune.data.scoring import AGREE_PX, FAST_PX, MIN_FAST
+from finetune.data.detector_metrics import AGREE_PX, FAST_PX, MIN_FAST
 
 
 def straight_line(count: int, speed: float, start: int = 0):

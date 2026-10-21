@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
-from finetune.data.scoring import HIT_PX, WRONG_PX, score, scale_for_width
+from finetune.data.detector_metrics import HIT_PX, WRONG_PX, DetectorMetrics, scale_for_width
 from tennis_tracker.court_geometry import LINE_PAIRS_14, MIN_KEYPOINT_VALUES, last_valid_court_keypoints
 
 LINE_PX = 10.0  # "on a court line" if within this many 1080p pixels of one
@@ -52,7 +52,7 @@ def _classify(x: float, y: float, row: dict, fallback_keypoints: Optional[List[f
 
 class ClipScore(NamedTuple):
     """One clip's pipeline output scored against its labels."""
-    stats: Dict[str, float]
+    stats: DetectorMetrics
     by_source: Dict[str, Dict[str, int]]
     pairs: List[Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]]    # 1080p (label, pred)
     landed: Dict[str, int]
@@ -96,4 +96,4 @@ def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payloa
     normalized_pairs = [(None if label is None else (label[0] * scale, label[1] * scale),
                          None if pred is None else (pred[0] * scale, pred[1] * scale))
                         for label, pred in pairs]
-    return ClipScore(score(pairs, scale), by_source, normalized_pairs, landed, bad_frames)
+    return ClipScore(DetectorMetrics.of(pairs, scale), by_source, normalized_pairs, landed, bad_frames)

@@ -13,7 +13,7 @@ import numpy as np
 
 from finetune.data import workspace as ws
 from finetune.data.labels import read_labels
-from finetune.data.scoring import REFERENCE_HEIGHT
+from finetune.data.detector_metrics import REFERENCE_HEIGHT
 from finetune.data.workspace import find_video, label_csv, video_meta
 from finetune.refiner import refine
 from finetune.refiner.cnn_refiner import Placer, version_named

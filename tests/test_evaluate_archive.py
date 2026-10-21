@@ -90,11 +90,11 @@ def test_score_pipeline_clip_on_a_synthetic_payload():
     assert result.landed == {"other": 1}
     assert result.bad_frames == [(1, "wrong", "det", "other")]
     assert result.pairs == [((10, 10), (10, 10)), ((10, 10), (500, 500)), ((50, 50), None), (None, None)]
-    assert result.stats["visible"] == 3
-    assert result.stats["recall"] == pytest.approx(1 / 3)
-    assert result.stats["wrong_obj"] == pytest.approx(1 / 3)
-    assert result.stats["miss"] == pytest.approx(1 / 3)
-    assert result.stats["invisible"] == 1 and result.stats["false_alarm"] == 0.0
+    assert result.stats.visible == 3
+    assert result.stats.recall == pytest.approx(1 / 3)
+    assert result.stats.wrong == pytest.approx(1 / 3)
+    assert result.stats.miss == pytest.approx(1 / 3)
+    assert result.stats.invisible == 1 and result.stats.false_alarm == 0.0
 
 
 def test_score_pipeline_clip_scales_to_1080p_and_classifies_where_bad_outputs_land():
@@ -122,12 +122,12 @@ def test_score_pipeline_clip_takes_the_court_as_last_seen_when_the_payload_does_
 
 
 def test_report_raw_pools_pairs_at_1080p_and_measures_the_hit_offset(capsys):
-    from evaluation.archive import HIT_PX, PER_CLIP_CONF, _hit_offset, _pooled_pairs, report_raw
-    rows = [((100.0, 100.0), (101.0, 102.0), 0.9),          # a hit, 1 right and 2 down
-            ((100.0, 100.0), (100.0, 100.0), 0.3),          # too faint at the per-clip threshold
-            (None, (50.0, 50.0), 0.8),                      # a false alarm
-            ((200.0, 200.0), None, 0.0)]                    # a miss
-    per_clip = [("clip", {"fps": 30.0, "width": 960, "elapsed": 1.0}, rows)]
+    from evaluation.archive import HIT_PX, PER_CLIP_CONF, LabelledDetection, RawClip, _hit_offset, _pooled_pairs, report_raw
+    rows = [LabelledDetection((100.0, 100.0), (101.0, 102.0), 0.9),          # a hit, 1 right and 2 down
+            LabelledDetection((100.0, 100.0), (100.0, 100.0), 0.3),          # too faint at the per-clip threshold
+            LabelledDetection(None, (50.0, 50.0), 0.8),                      # a false alarm
+            LabelledDetection((200.0, 200.0), None, 0.0)]                    # a miss
+    per_clip = [RawClip("clip", 960, 30.0, 1.0, rows)]
     pairs = _pooled_pairs(per_clip, 0.5)
     assert pairs[0] == ((200.0, 200.0), (202.0, 204.0)) and pairs[1] == ((200.0, 200.0), None)
     assert pairs[2] == (None, (100.0, 100.0)) and pairs[3] == ((400.0, 400.0), None)
@@ -138,3 +138,4 @@ def test_report_raw_pools_pairs_at_1080p_and_measures_the_hit_offset(capsys):
     out = capsys.readouterr().out
     assert "probe: threshold sweep" in out and "conf>=0.50" in out and "clip" in out
     assert "mean offset on hits dx=+1.00px dy=+2.00px (n=1)" in out
+    assert "clip           vis=   3 recall=0.333 wrong=0.000 miss=0.667 | invis=  1 falseAlarm=1.000" in out

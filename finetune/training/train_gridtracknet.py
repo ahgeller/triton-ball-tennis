@@ -38,13 +38,14 @@ if __name__ == "__main__":          # run as a script: make the repository root 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tennis_tracker.gridtracknet import GRID_COLS, GRID_ROWS, HEIGHT, WIDTH, load_model
+from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.fileio import copy_atomic, write_atomic
 from finetune.data import workspace as ws
 from finetune.training.clips import Clip, ClipSelection, find_clips, resolve_val_clips, validation_split
 from finetune.training.dataset import Augmenter, UnitDataset, make_sampler, make_target, photometric_augment
 from finetune.training.frame_cache import build_units, prepare_data
 from finetune.training.loop import evaluate_loss, fresh_model, gridtracknet_loss, save_weights, train_epoch
-from finetune.training.metrics import better, detector_metrics
+from finetune.training.metrics import promotion_improves, score_weights
 
 SEED = 7                   # every run draws the same augmentation and sampling sequence
 
@@ -63,18 +64,18 @@ def parse_oversample(items: Optional[List[str]]) -> Dict[str, float]:
 def pick_winner(args: argparse.Namespace, clips: List[Clip], val_clips: List[str], best_path: Path,
                 device: torch.device) -> None:
     """Keep the best model by the metric that matters, not just the loss: the trained weights win
-    only when they beat the starting weights on the held-out clips (see `better`)."""
+    only when they beat the starting weights on the held-out clips (see `promotion_improves`)."""
     val_only = [entry for entry in clips if entry[0] in val_clips]
-    trained = detector_metrics(best_path, val_only, device)
+    trained = score_weights(best_path, val_only, device)
     print(f"[eval] trained best.npz on {val_clips}: {trained}")
     winner, winner_stats = best_path, trained
     if not args.from_scratch:
-        baseline = detector_metrics(args.weights, val_only, device)
+        baseline = score_weights(args.weights, val_only, device)
         print(f"[eval] starting weights on {val_clips}: {baseline}")
-        if not better(trained, baseline):
+        if not promotion_improves(trained, baseline):
             winner, winner_stats = args.weights, baseline
     copy_atomic(winner, args.save)
-    write_atomic(args.run_dir / "winner.json", json.dumps({"winner": str(winner), "metrics": winner_stats,
+    write_atomic(args.run_dir / "winner.json", json.dumps({"winner": str(winner), "metrics": winner_stats._asdict(),
                                                            "validation_clips": val_clips}, indent=2))
     print(f"[done] best model -> {args.save}  (from {winner.name}: {winner_stats})")
     if winner == best_path:
@@ -148,6 +149,12 @@ def expect(condition: bool, what: str) -> None:
         raise RuntimeError(f"train_gridtracknet self-test failed: {what}")
 
 
+def metrics_of(recall: float, wrong: float, false_alarm: float = 0.0) -> DetectorMetrics:
+    """A DetectorMetrics with the three rates the winner rule reads, for the self-test."""
+    return DetectorMetrics(visible=100, recall=recall, wrong=wrong, miss=0.0, invisible=100, false_alarm=false_alarm,
+                           median_px=1.0, p90_px=2.0)
+
+
 def self_test() -> None:
     from finetune.data.labels import is_visible
     expect(not is_visible(1910, 8, 1920, 1080) and is_visible(736, 508, 1920, 1080), "the invisible-ball corner")
@@ -157,8 +164,8 @@ def self_test() -> None:
     loss = gridtracknet_loss(prediction, target.unsqueeze(0))
     loss.backward()
     expect(bool(torch.isfinite(loss) and torch.isfinite(prediction.grad).all()), "a finite loss and gradient")
-    expect(better({"recall": 0.90, "wrong": 0.01}, {"recall": 0.85, "wrong": 0.01}), "more recall at equal wrong wins")
-    expect(not better({"recall": 0.95, "wrong": 0.05}, {"recall": 0.85, "wrong": 0.01}), "more wrong loses")
+    expect(promotion_improves(metrics_of(0.90, 0.01), metrics_of(0.85, 0.01)), "more recall at equal wrong wins")
+    expect(not promotion_improves(metrics_of(0.95, 0.05), metrics_of(0.85, 0.01)), "more wrong loses")
     even = {index: [1.0, 1.0] for index in range(0, 20, 2)}
     expect(build_units(even, 2)[:2] == [[0, 2, 4, 6, 8], [4, 6, 8, 10, 12]], "even-phase units")
     odd = {index: None for index in range(1, 20, 2)}

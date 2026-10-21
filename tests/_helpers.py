@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import torch
 
+from finetune.data.detector_metrics import DetectorMetrics
 from finetune.training import metrics
 from tennis_tracker import ball_detectors
 from tennis_tracker.ball_detectors import GridTrackNetBallDetector
@@ -103,8 +104,8 @@ class Capture:
         """Nothing to release; present because callers always release captures."""
 
 
-def metric_probe(count: int, labels: Dict[int, Optional[List[float]]]) -> Dict[str, float]:
-    """``detector_metrics`` on a ``count``-frame synthetic clip whose detector always fires at (100, 100)."""
+def metric_probe(count: int, labels: Dict[int, Optional[List[float]]]) -> DetectorMetrics:
+    """``score_weights`` on a ``count``-frame synthetic clip whose detector always fires at (100, 100)."""
     width, height = _PROBE_SIZE
     with patch.object(metrics, "load_model", return_value=lambda _: None), \
          patch.object(metrics, "video_meta", return_value=(_PROBE_FPS, width, height, count)), \
@@ -113,7 +114,7 @@ def metric_probe(count: int, labels: Dict[int, Optional[List[float]]]) -> Dict[s
          patch.object(metrics, "frame_tensor", return_value=torch.zeros(3, 1, 1)), \
          patch.object(metrics, "decode_predictions",
                       return_value=[(_PROBE_POINT, _PROBE_CONFIDENCE)] * 5):
-        return metrics.detector_metrics(
+        return metrics.score_weights(
             Path("unused"), [("probe", Path("unused"), Path("unused"), "custom")], torch.device("cpu")
         )
 
