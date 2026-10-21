@@ -29,9 +29,9 @@ SCORE_BREAKDOWN_DEFAULTS: Dict[str, float] = {
     "span": 0.0,                    # frames from first to last observation
     "inside_frac": 0.0,             # near-court: inside polygon or within court_expand_px
     "inside_strict_frac": 0.0,      # strictly inside the court polygon
-    "motion_frac_raw": 0.0,         # observations on the boost/motion mask
+    "motion_overlap": 0.0,          # observations on the boost/motion mask
     "motion_kin_frac": 0.0,         # physics.kinematic_motion_frac estimate
-    "motion_frac": 0.0,             # motion evidence: max(motion_frac_raw, motion_kin_frac)
+    "motion_evidence": 0.0,         # max(motion_overlap, motion_kin_frac)
     "avg_speed_pxpf": 0.0,
     "peak_speed_pxpf": 0.0,
     "extent_px": 0.0,               # diagonal of the box around all observations

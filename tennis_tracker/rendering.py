@@ -781,10 +781,10 @@ def print_selector_track_summary(all_tracks: Sequence[Any], chosen_track: Any, t
         sb = trk.score_breakdown if trk.score_breakdown else {}
         start_frac, end_frac = _track_time_fracs(trk, total_frames)
         inside_frac = float(sb.get("inside_strict_frac", sb.get("inside_frac", -1.0)))
-        motion_frac = float(sb.get("motion_frac", -1.0))
+        motion_evidence = float(sb.get("motion_evidence", -1.0))
         near_player_frac = float(sb.get("near_player_frac", -1.0))
         inside_s = f"{inside_frac * 100:5.1f}" if inside_frac >= 0.0 else "   --"
-        motion_s = f"{motion_frac * 100:5.1f}" if motion_frac >= 0.0 else "   --"
+        motion_s = f"{motion_evidence * 100:5.1f}" if motion_evidence >= 0.0 else "   --"
         near_s = f"{near_player_frac * 100:5.1f}" if near_player_frac >= 0.0 else "   --"
 
         sel = "*" if int(trk.track_id) == chosen_id else " "

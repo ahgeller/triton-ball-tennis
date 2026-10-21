@@ -224,7 +224,7 @@ def test_slow_confident_ball_rolling_in_court_is_not_static_clutter():
     ]
     rolling.score = 6.0
     rolling.score_breakdown = {
-        "motion_frac_raw": 0.2,
+        "motion_overlap": 0.2,
         "inside_strict_frac": 0.9,
         "extent_px": 29.0,
     }
@@ -238,7 +238,7 @@ def _sparse_track(track_id, frames):
         for index, frame in enumerate(frames)
     ]
     track.score = 7.3
-    track.score_breakdown = {"motion_frac_raw": 0.4, "inside_strict_frac": 0.0, "extent_px": 160.0}
+    track.score_breakdown = {"motion_overlap": 0.4, "inside_strict_frac": 0.0, "extent_px": 160.0}
     return track
 
 
@@ -258,11 +258,11 @@ def test_fast_short_track_is_selected():
         for frame in range(15)
     ]
     fast_short.score = 15.0
-    fast_short.score_breakdown = {"motion_frac_raw": 1.0}
+    fast_short.score_breakdown = {"motion_overlap": 1.0}
     assert fast_short in selected_tracks([fast_short], 60.0)
 
 
-def _airborne_track(track_id, motion_frac, extent_px):
+def _airborne_track(track_id, motion_evidence, extent_px):
     """The measured numbers of the VolyAvw lob track (see the lob tests)."""
     track = Track(track_id=track_id, cfg=_cfg(60.0, HD_WIDTH, HD_HEIGHT))
     track.observations = [
@@ -272,8 +272,8 @@ def _airborne_track(track_id, motion_frac, extent_px):
     ]
     track.score = 281.0
     track.score_breakdown = {
-        "motion_frac_raw": 0.391,
-        "motion_frac": motion_frac,
+        "motion_overlap": 0.391,
+        "motion_evidence": motion_evidence,
         "inside_strict_frac": 0.251,
         "extent_px": extent_px,
     }

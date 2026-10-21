@@ -80,9 +80,9 @@ def selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
     for track in tracks:
         cfg = track.cfg
         # Fraction of observations on the motion mask.
-        motion_overlap = track.score_value("motion_frac_raw")
+        motion_overlap = track.score_value("motion_overlap")
         # max(mask overlap, kinematic estimate) -- see scoring.score_tracks
-        motion_evidence = track.score_value("motion_frac")
+        motion_evidence = track.score_value("motion_evidence")
         confidences = sorted(float(item.conf) for item in track.observations)
         median_confidence = confidences[len(confidences) // 2] if confidences else 0.0
         score_density = track.score / max(track.num_obs, 1)

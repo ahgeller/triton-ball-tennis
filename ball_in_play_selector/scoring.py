@@ -472,7 +472,7 @@ def score_tracks(
         inside_frac, _, strict_inside_frac = _court_fractions(
             trk, court_poly, cfg.court_expand_px
         )
-        motion_frac_raw = sum(1 for o in obs if o.on_motion) / max(n, 1)
+        motion_overlap = sum(1 for o in obs if o.on_motion) / max(n, 1)
 
         near_player_frac = 0.0
         near_player_court_frac = 0.0
@@ -504,8 +504,8 @@ def score_tracks(
             avg_speed, peak_speed, extent, near_player_frac, cfg, cfg_diag(cfg)
         )
         # Motion evidence: the mask overlap, or the kinematic estimate when the
-        # mask misses a small, distant or slow ball.  Stored as "motion_frac".
-        motion_evidence = max(motion_frac_raw, motion_kin_frac)
+        # mask misses a small, distant or slow ball.
+        motion_evidence = max(motion_overlap, motion_kin_frac)
 
         # Positive additive terms requested by user.
         obs_add = cfg.w_len * n
@@ -529,8 +529,8 @@ def score_tracks(
             "span": span,
             "inside_frac": float(inside_frac),
             "inside_strict_frac": float(strict_inside_frac),
-            "motion_frac": float(motion_evidence),
-            "motion_frac_raw": float(motion_frac_raw),
+            "motion_evidence": float(motion_evidence),
+            "motion_overlap": float(motion_overlap),
             "motion_kin_frac": float(motion_kin_frac),
             "avg_speed_pxpf": float(avg_speed),
             "peak_speed_pxpf": float(peak_speed),
