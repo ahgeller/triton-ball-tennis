@@ -1,13 +1,15 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE
+
 
 @dataclass
 class Config:
     # paths
     input_video: str = r"input_videos/TMP.mp4"
     output_video: str = "output_videos/prof_test.mp4"
-    model_path: str = r"models/gridtracknet_weights_torch.npz"
+    model_path: str = str(GRIDTRACKNET_WEIGHTS)
 
     # Ball detector
     ball_class_name: Optional[str] = None
@@ -26,8 +28,8 @@ class Config:
     trt_async_slots: int = 3
 
     # Player & court detection
-    player_model_path: Optional[str] = "models/player.engine"
-    court_model_path: Optional[str] = "models/courtdetection.engine"
+    player_model_path: Optional[str] = str(PLAYER_ENGINE)
+    court_model_path: Optional[str] = str(COURT_ENGINE)
     # Players move a few px per frame at 60 fps and ByteTrack coasts the boxes
     # between inferences, while _is_near_player dilates them by margin plus
     # twice the box height -- far more than one frame of staleness. Measured

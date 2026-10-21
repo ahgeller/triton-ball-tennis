@@ -25,6 +25,7 @@ def main() -> None:
     import torch
     from finetune.train_gridtracknet import find_clips, resolve_val_clips
     from tennis_tracker.gridtracknet import GridTrackNet
+    from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE
 
     ws = ROOT / "finetune"
     clips = find_clips(ws / "videos", ws / "labels")
@@ -45,8 +46,7 @@ def main() -> None:
     paths = [*ROOT.glob("*.py"), *ROOT.glob("tennis_tracker/*.py"),
              *ROOT.glob("ball_in_play_selector/*.py"), *ROOT.glob("finetune/*.py"),
              ws / "clips.csv", ws / "exclude.txt", *ws.glob("labels/*_ball.csv"),
-             ROOT / "models/gridtracknet_weights_torch.npz", ROOT / "models/player.engine",
-             ROOT / "models/courtdetection.engine", ROOT / "sample/pomona.mp4",
+             GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, COURT_ENGINE, ROOT / "sample/pomona.mp4",
              ROOT / "sample/pomona_annotations.json"]
     model = GridTrackNet()
     snapshot = {"python": sys.version, "interpreter": sys.executable, "versions": versions,

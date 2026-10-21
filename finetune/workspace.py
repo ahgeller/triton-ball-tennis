@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Union
 
+from tennis_tracker.paths import GRIDTRACKNET_WEIGHTS
+
 WORKSPACE = Path(__file__).resolve().parent
 ROOT = WORKSPACE.parent
 VIDEOS = WORKSPACE / "videos"
@@ -21,7 +23,7 @@ RUNS = WORKSPACE / "runs"
 CACHE = WORKSPACE / "cache"
 MANIFEST = WORKSPACE / "clips.csv"
 EXCLUDE_FILE = WORKSPACE / "exclude.txt"
-REPO_WEIGHTS = ROOT / "models" / "gridtracknet_weights_torch.npz"   # the weights the tracker runs
+REPO_WEIGHTS = GRIDTRACKNET_WEIGHTS                                  # the weights the tracker runs
 BEST_WEIGHTS = MODELS / "gridtracknet_best.npz"                      # the last training winner
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".avi", ".m4v"})
 

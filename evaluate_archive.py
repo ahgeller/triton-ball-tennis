@@ -34,6 +34,7 @@ from finetune.labels import read_labels
 from finetune.scoring import HIT_PX, WRONG_PX, score, scale_for_width
 from finetune.workspace import VIDEO_SUFFIXES, clip_of, natural_key, video_meta
 from tennis_tracker.court_geometry import LINE_PAIRS_14
+from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE
 
 if TYPE_CHECKING:
     from tennis_tracker.config import Config
@@ -42,10 +43,8 @@ ROOT = Path(__file__).resolve().parent
 WORKSPACE = ROOT / "finetune"
 ARCHIVE_VARIABLE = "TENNIS_ARCHIVE"
 MODELS = {
-    "gridtracknet": ROOT / "models" / "gridtracknet_weights_torch.npz",
+    "gridtracknet": GRIDTRACKNET_WEIGHTS,
 }
-PLAYER_ENGINE = ROOT / "models" / "player.engine"
-COURT_ENGINE = ROOT / "models" / "courtdetection.engine"
 DEFAULT_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 PER_CLIP_CONF = 0.5         # the per-clip table and the offset report use this threshold
 BAD_FRAMES_LISTED = 40      # how many of a clip's bad frames the pipeline report names

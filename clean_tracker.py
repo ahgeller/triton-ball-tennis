@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from tennis_tracker.config import Config
+from tennis_tracker.paths import BOUNCE_MODEL, COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE
 from tennis_tracker.pipeline import run
 from validate_tracking import main as validate_tracking
 
@@ -70,14 +71,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         input_video=str(Path(args.input).resolve()),
         output_video=str(Path(args.output).resolve()),
         tracking_json=str(Path(args.tracking_json).resolve()),
-        model_path=str(ROOT / "models" / "gridtracknet_weights_torch.npz"),
-        player_model_path=str(ROOT / "models" / "player.engine"),
-        court_model_path=str(ROOT / "models" / "courtdetection.engine"),
+        model_path=str(GRIDTRACKNET_WEIGHTS),
+        player_model_path=str(PLAYER_ENGINE),
+        court_model_path=str(COURT_ENGINE),
         conf=float(args.conf),
         device=str(args.device),
         save_tracking_video=not args.no_video,
         draw_court_minimap=bool(args.court),
-        bounce_model_path=str(ROOT / "models" / "ctb_regr_bounce.cbm"),
+        bounce_model_path=str(BOUNCE_MODEL),
         print_selector_tracks=False,
         info_timing=bool(args.info),
         motion_diagnostics=bool(args.motion_diagnostics),
