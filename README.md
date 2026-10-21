@@ -138,9 +138,23 @@ validate_tracking.py                     Tracking JSON vs. hand labels
 check_parity.py                          Frozen Pomona benchmark gate
 build_trt_engines.py                     YOLO checkpoint -> ONNX -> TensorRT engine builder
 requirements.txt                         Python packages (see Requirements)
+tennis_tracker/pipeline.py               Run entry point: orders the stages, calls the selector
+tennis_tracker/run_context.py            Data the stages pass each other
+tennis_tracker/pass1.py                  Decode, motion evidence, ROIs and detections per frame
+tennis_tracker/frame_window.py           Previous/current/next frames for pass 1's temporal gate
+tennis_tracker/pass2.py                  Render the tracking and debug videos
+tennis_tracker/export.py                 Tracking JSON export
+tennis_tracker/motion.py                 CUDA background model and motion masks
+tennis_tracker/motion_debug.py           Motion-debug video drawing
+tennis_tracker/tracking.py               ROI tracking for motion search
+tennis_tracker/detectors.py              GridTrackNet prepass, TensorRT ball/player/court backends
 tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
-tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs, court minibar
-tennis_tracker/                          Detection, motion, rendering, and video pipeline
+tennis_tracker/court_geometry.py         Court keypoints, side guides, polygon, homography
+tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs
+tennis_tracker/court_minimap.py          Court minimap drawing
+tennis_tracker/rendering.py              Frame drawing and console summaries
+tennis_tracker/video_io.py               Frame reader, video writer, CUDA uploads
+tennis_tracker/                          Also config, frame-rate rules, host-side helpers
 ball_in_play_selector/                   Track construction, scoring, and recovery
 models/gridtracknet_weights_torch.npz    GridTrackNet inference weights
 models/ctb_regr_bounce.cbm               CatBoost bounce model (--court)

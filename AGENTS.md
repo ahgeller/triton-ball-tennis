@@ -14,11 +14,16 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `tennis_tracker/detectors.py`: progressive GridTrackNet prepass and TensorRT
   player/court backends. At about 60 FPS, even and odd phases each run at about
   30 FPS. Preserve source-frame indices and temporal order.
-- `tennis_tracker/pipeline.py`: decoding, motion/background state, ROI collection,
-  selector invocation, optional court events, rendering, JSON export.
+- `tennis_tracker/pipeline.py`: orders the stages, calls the selector and court
+  events, reports. `run_context.py`: data the stages pass each other. `pass1.py`
+  (with `frame_window.py`): decoding, background/motion state, ROI collection,
+  detector calls. `pass2.py`: rendering pass. `export.py`: tracking JSON.
+  `motion_debug.py`: motion-debug video. `court_geometry.py`: keypoints, side
+  guides, polygon, homography. `court_minimap.py`: minimap. `rendering.py`
+  draws only.
 - `ball_in_play_selector/`: candidate association, Kalman state, track scoring,
   timeline selection, bounded recovery, trajectory refit.
-- `tennis_tracker/motion.py`, `tracking.py`: CPU/CUDA motion masks and ROI tracking.
+- `tennis_tracker/motion.py`, `tracking.py`: CUDA motion masks and ROI tracking.
 - `tennis_tracker/court_overlay.py`: CatBoost/kinematic bounce candidates,
   player contacts and schematic rally legs.
 - `finetune/refine.py`: model-free sub-pixel ball suggestions for the label tool
@@ -127,9 +132,9 @@ prior; do not present its extrapolations as measured 3D positions or speeds.
 
 See `audit/PROJECT_REVIEW.md` before modifying evaluation, prepass publication,
 label frame identity, realignment pins, motion masks or physics. The audit's
-`review_checks.py` reproduces current defects with synthetic inputs: its passing
-assertions do NOT mean those defects are fixed. Convert relevant checks to
-desired-behavior regression tests when making fixes. The user has now authorized
+`review_checks.py` records how the September 2026 defects were reproduced; it
+exits without running, and `tests/test_fixes.py` asserts the fixes. Convert
+relevant checks to desired-behavior regression tests when making fixes. The user has now authorized
 fixing the reviewed defects and running validation. Architecture experiments
 remain separate from the correctness fixes; do not promote a model implicitly.
 
