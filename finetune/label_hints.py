@@ -7,7 +7,7 @@ import math
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from finetune import cnn_refiner, refine
 from finetune.label_store import Row
@@ -47,11 +47,11 @@ class Suggestions:
             return
         threading.Thread(target=self.worker, args=(current,), daemon=True, name="suggestions").start()
 
-    def order(self, first) -> list:
+    def order(self, first) -> List:
         return sorted(self.sources, key=lambda source: source is not first)
 
     @staticmethod
-    def label_state(source) -> tuple:
+    def label_state(source) -> Tuple:
         """Everything a clip's suggestions depend on: each label and whether you have checked it."""
         return tuple((row.x, row.y, row.visible, row.settled) for row in source.rows)
 
@@ -110,7 +110,7 @@ class Suggestions:
             print(f"[hint] {source.clip}: suggestions for {len(found)} of {len(source.rows)} frames, "
                   f"{trusted} trusted")
 
-    def current_placer(self):
+    def current_placer(self) -> Optional[cnn_refiner.Placer]:
         """The current cnn_refiner version, loaded on first use and again after a retrain switches
         versions; None (the motion centroid alone) when there is none or it cannot load."""
         model = cnn_refiner.current()

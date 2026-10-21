@@ -130,7 +130,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -433,11 +433,11 @@ class Tool:
     # decode and training's encode all assume). View pixel u covers [u, u + 1), so a frame point maps
     # to the view pixel whose span holds it (floor, not round: round's ties go to even, which put a
     # ball dead centre a pixel off); render's warp is built on the same convention.
-    def to_view(self, x: float, y: float):
+    def to_view(self, x: float, y: float) -> Tuple[int, int]:
         return (math.floor((x - self.origin[0]) * self.scale),
                 math.floor((y - self.origin[1]) * self.scale))
 
-    def to_frame(self, vx: float, vy: float):
+    def to_frame(self, vx: float, vy: float) -> Tuple[float, float]:
         return self.origin[0] + vx / self.scale, self.origin[1] + vy / self.scale
 
     def toggle_follow(self) -> None:
@@ -482,7 +482,7 @@ class Tool:
         self.centre_view()
         self.pending_cursor_move = True
 
-    def guess_for(self, index: int):
+    def guess_for(self, index: int) -> Optional[Tuple[float, float]]:
         """Where a frame with no detection probably has its ball: a straight line between the nearest
         visible labels either side, weighted by how far away each is. One side only is still worth
         aiming at when it is the row next door. None when there is nothing nearby to go on.
@@ -511,7 +511,7 @@ class Tool:
             return (near.x, near.y)
         return None
 
-    def target_point(self):
+    def target_point(self) -> Optional[Tuple[float, float]]:
         """The frame point this frame is about - where the view centres and the mouse parks: the
         suggestion on offer, else the ball, else the ghost guess when there is no ball.
 
@@ -550,7 +550,7 @@ class Tool:
         self.follow_ball()
 
     # ---------------------------------------------------------------- trajectory sheet
-    def clip_bounds(self, index: int):
+    def clip_bounds(self, index: int) -> Tuple[int, int]:
         """(first, last + 1) row indices of the clip row `index` belongs to."""
         source = self.by_clip[self.rows[index].clip]
         return source.start, source.start + len(source.rows)
@@ -572,7 +572,7 @@ class Tool:
             self.cursor = start       # leaving the sheet lands in the stretch it shows
             self.follow_ball()
 
-    def sheet_mouse(self, event, x, y) -> None:
+    def sheet_mouse(self, event: int, x: int, y: int) -> None:
         if event == cv2.EVENT_RBUTTONDOWN:
             self.toggle_sheet()
         elif event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_LBUTTONDBLCLK) and self.sheet_points:
@@ -831,7 +831,7 @@ class Tool:
             self.shown = image
         self.presented = presented
 
-    def grid_mouse(self, event, x, y) -> None:
+    def grid_mouse(self, event: int, x: int, y: int) -> None:
         if event not in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_LBUTTONDBLCLK, cv2.EVENT_RBUTTONDOWN):
             return
         for index, box, ox, oy, scale in self.grid_tiles:
@@ -886,7 +886,7 @@ class Tool:
                 break
         return worked
 
-    def previous_image(self):
+    def previous_image(self) -> Optional[np.ndarray]:
         """The picture of the label row before this one in the same clip, if it is already in the
         cache - it usually is, having just been looked at. Never decoded on purpose: a frame behind
         the capture costs a re-read from the start of the clip, and the motion view is a hint."""
@@ -935,7 +935,7 @@ class Tool:
         cv2.rectangle(display, (left - 1, top - 1), (left + width, top + height), (110, 110, 110), 1)
         self.inset_box = (left, top, left + width - 1, top + height - 1)
 
-    def render_state(self, image: np.ndarray, before: Optional[np.ndarray]) -> tuple:
+    def render_state(self, image: np.ndarray, before: Optional[np.ndarray]) -> Tuple:
         """Everything the single-frame view is drawn from. render redraws only when this changes,
         so the loop can call it every 30 ms for free. IF YOU MAKE render, draw_inset OR THE HUD READ
         SOMETHING NEW, ADD IT HERE - a screen that does not change when it should is far worse than
@@ -1046,6 +1046,15 @@ class Tool:
         cv2.rectangle(display, (int(10 * ui), int(10 * ui)), (int(26 * ui) + text_w, int(24 * ui) + text_h), fill, -1)
         cv2.putText(display, counter, (int(18 * ui), int(17 * ui) + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui,
                     text_colour, 2, cv2.LINE_AA)
+        self.draw_hud(canvas, row, hint, offer)
+        self.render_key, self.render_cache = key, canvas
+        return canvas
+
+    def draw_hud(self, canvas: np.ndarray, row: Row, hint: Optional[dict], offer: Optional[dict]) -> None:
+        """The two text lines and the clickable chips along the bottom of the single-frame view."""
+        ui = self.ui
+        thin = max(1, int(round(ui)))
+        reviewed = sum(r.reviewed for r in self.rows)
         hud = canvas[self.view_h:]
         hud[:] = 0
         uncertain_left = sum(1 for r in self.rows if r.uncertain and not r.reviewed)
@@ -1094,7 +1103,7 @@ class Tool:
         top = max(0, (self.hud_h - glyph_h - pad) // 2)
         bottom = min(self.hud_h - 1, top + glyph_h + pad)
 
-        def chip(right_edge: int, text: str, lit: bool):
+        def chip(right_edge: int, text: str, lit: bool) -> Tuple[int, Tuple[int, int, int, int]]:
             (text_w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.42 * ui, thin)
             left_edge = max(0, right_edge - text_w - 2 * pad)
             cv2.rectangle(hud, (left_edge, top), (right_edge, bottom),
@@ -1122,8 +1131,6 @@ class Tool:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55 * ui, (255, 255, 255), thin, cv2.LINE_AA)
         cv2.putText(hud, fit_text(line2, room, 0.48 * ui, thin), (int(8 * ui), int(46 * ui)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48 * ui, (180, 180, 180), thin, cv2.LINE_AA)
-        self.render_key, self.render_cache = key, canvas
-        return canvas
 
     def pump(self, ms: int) -> None:
         """Let highgui deliver events for `ms` without losing a keypress: Qt's waitKey hands back,
@@ -1157,7 +1164,7 @@ class Tool:
         self.mouse.warp(view_x, view_y)
 
     # ---------------------------------------------------------------- edits
-    def on_mouse(self, event, x, y, flags, param):
+    def on_mouse(self, event: int, x: int, y: int, flags: int, param: object) -> None:
         if event == cv2.EVENT_MOUSEWHEEL and self.viewport.absorb_wheel(x, y, flags, self.view_w):
             return                                  # a wheel the tool sent itself, not the hand's
         self.mouse.report(x, y)                     # where the warp landed; check_placement reads it
@@ -1235,7 +1242,7 @@ class Tool:
                                                "trail": self.trail})
 
     @staticmethod
-    def wheel_notches(flags) -> float:
+    def wheel_notches(flags: int) -> float:
         """Wheel movement in notches, sign included.
 
         highgui packs the wheel delta into the top 16 bits of flags as a signed short, so an

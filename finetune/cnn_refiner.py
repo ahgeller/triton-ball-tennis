@@ -38,7 +38,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import cv2
 import numpy as np
@@ -131,7 +131,7 @@ def network(self_check: bool = True):
     return Net()
 
 
-def to_tensor(windows: np.ndarray, device):
+def to_tensor(windows: np.ndarray, device: str):
     import torch
     return torch.from_numpy(np.ascontiguousarray(windows)).to(device).permute(0, 3, 1, 2).float().div_(255.0).sub_(0.5)
 
@@ -246,7 +246,7 @@ def load_current() -> Optional[Placer]:
 
 
 # ------------------------------------------------------------------------------------ training
-def checked_frames(clip: str) -> set:
+def checked_frames(clip: str) -> Set[int]:
     """Frames you have reviewed or edited in the label tool (a damaged review file is an error)."""
     return reviewed_frames(review_json(clip))
 
@@ -298,7 +298,7 @@ def clip_crops(clip: str) -> Optional[np.ndarray]:
     return out
 
 
-def gather(log=lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
+def gather(log: Callable[..., None] = lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
     """{clip: crops} for every clip with checked frames."""
     out = {}
     for clip in labelled_clips():
@@ -332,7 +332,7 @@ def folds(clips: Sequence[str], sizes: Dict[str, int]) -> Dict[str, int]:
     return {clip: fold_of_group[group] for clip, group in group_of.items()}
 
 
-def to_device(parts: Sequence[np.ndarray], device):
+def to_device(parts: Sequence[np.ndarray], device: str):
     import torch
     out = torch.empty((sum(len(p) for p in parts), CROP, CROP, 9), dtype=torch.uint8, device=device)
     i = 0
@@ -342,7 +342,7 @@ def to_device(parts: Sequence[np.ndarray], device):
     return out
 
 
-def batches(data, device, rng, size, flip=True, every=False):
+def batches(data, device: str, rng: np.random.Generator, size: int, flip: bool = True, every: bool = False):
     """Random windows of random crops on the GPU: (inputs, targets in window pixels). `every`
     takes the first `size` crops in order instead of drawing them at random (scoring)."""
     import torch
@@ -367,7 +367,7 @@ def batches(data, device, rng, size, flip=True, every=False):
     return x.contiguous(memory_format=torch.channels_last), torch.stack([tx, ty], 1)
 
 
-def fit(data, epochs: int, device, rng, log, label: str):
+def fit(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[..., None], label: str):
     """One network trained on `data` (crops already on the device)."""
     import torch
     net = network().to(device).to(memory_format=torch.channels_last)
@@ -396,7 +396,7 @@ def fit(data, epochs: int, device, rng, log, label: str):
     return net.eval()
 
 
-def score(net, data, device, rng, repeats: int = 2):
+def score(net, data, device: str, rng: np.random.Generator, repeats: int = 2) -> Tuple[np.ndarray, np.ndarray]:
     """Errors (window px = 1080p px) and confidences of every frame, `repeats` times each from a
     random start up to 16 px off."""
     import torch
@@ -421,7 +421,7 @@ def sure_threshold(errors: np.ndarray, confs: np.ndarray) -> float:
     return float(confs[order][ok[-1]]) if len(ok) else 1.0
 
 
-def train(epochs: int = EPOCHS, log=None, seed: int = 0) -> Optional[Path]:
+def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed: int = 0) -> Optional[Path]:
     """Calibrate on folds of clips each test network never saw, train on every checked frame, save
     a new version and make it current if it passes."""
     import torch
@@ -477,7 +477,7 @@ SHEET_PATCH, SHEET_ZOOM, SHEET_COLUMNS = 32, 10, 6   # a sheet tile is PATCH px 
 SHEET_COLOURS = {"label": (255, 255, 255), "a": (0, 165, 255), "b": (255, 0, 255)}      # BGR: white, orange, magenta
 
 
-def placer_for(name: str):
+def placer_for(name: str) -> Optional[Placer]:
     """A Placer for a version name (`use`'s matching), or None for "centroid" (refine.py alone)."""
     return None if name == "centroid" else Placer(version_named(name))
 
@@ -591,7 +591,7 @@ def describe() -> List[str]:
     return lines or ["  no versions yet - train one"]
 
 
-def main(argv=None) -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     trainer = sub.add_parser("train", help="train a new version on every frame you have checked")

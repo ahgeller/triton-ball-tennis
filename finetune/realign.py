@@ -39,7 +39,7 @@ from __future__ import annotations
 import shutil
 import sys
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -64,7 +64,7 @@ SWITCH_PENALTY = 400.0   # a cut must pay for itself in error saved before the D
 RATES = (1.0, 0.5, 2.0)  # label frame -> video frame scaling worth trying
 
 
-def detections(clip: str):
+def detections(clip: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """(frames, x, y, [width, height, total]) for every frame the detector is confident about."""
     video = WS / "videos" / f"{clip}.mp4"
     meta = video_meta(video)
@@ -95,7 +95,7 @@ def read_labels(clip: str) -> List[LabelRow]:
     return sorted(read_label_rows(label_csv(clip)))
 
 
-def lookup_tables(det_frames, det_x, det_y, total):
+def lookup_tables(det_frames: np.ndarray, det_x: np.ndarray, det_y: np.ndarray, total: int) -> Tuple[np.ndarray, np.ndarray]:
     lut_x = np.full(total + 2, np.nan, np.float32)
     lut_y = np.full(total + 2, np.nan, np.float32)
     keep = det_frames < total
@@ -104,7 +104,8 @@ def lookup_tables(det_frames, det_x, det_y, total):
     return lut_x, lut_y
 
 
-def agreement(bases, xs, ys, offsets, lut_x, lut_y, total, scale, fast):
+def agreement(bases: np.ndarray, xs: np.ndarray, ys: np.ndarray, offsets: np.ndarray, lut_x: np.ndarray,
+              lut_y: np.ndarray, total: int, scale: float, fast: np.ndarray) -> Tuple[float, int, float]:
     index = bases + offsets
     ok = (index >= 0) & (index < total)
     if ok.sum() == 0:
@@ -119,7 +120,8 @@ def agreement(bases, xs, ys, offsets, lut_x, lut_y, total, scale, fast):
     return float((judged <= AGREE_PX).mean()), int(judged.size), float(np.median(judged))
 
 
-def best_offset(bases, xs, ys, fast, lut_x, lut_y, total, scale, low, high):
+def best_offset(bases: np.ndarray, xs: np.ndarray, ys: np.ndarray, fast: np.ndarray, lut_x: np.ndarray,
+                lut_y: np.ndarray, total: int, scale: float, low: int, high: int) -> Tuple[float, Optional[int]]:
     best = (0.0, None)
     for offset in range(low, high + 1):
         index = bases + offset
@@ -139,7 +141,8 @@ def best_offset(bases, xs, ys, fast, lut_x, lut_y, total, scale, low, high):
     return best
 
 
-def candidates(bases, xs, ys, fast, lut_x, lut_y, total, scale, chunks):
+def candidates(bases: np.ndarray, xs: np.ndarray, ys: np.ndarray, fast: np.ndarray, lut_x: np.ndarray,
+               lut_y: np.ndarray, total: int, scale: float, chunks: int) -> np.ndarray:
     """Offsets worth considering, from a coarse chunk-by-chunk best-offset search."""
     edges = np.linspace(0, len(bases), chunks + 1).astype(int)
     winners = set()
@@ -154,7 +157,8 @@ def candidates(bases, xs, ys, fast, lut_x, lut_y, total, scale, chunks):
     return np.array(sorted(winners), np.int64)
 
 
-def solve(bases, xs, ys, lut_x, lut_y, total, scale, offsets, pinned=None):
+def solve(bases: np.ndarray, xs: np.ndarray, ys: np.ndarray, lut_x: np.ndarray, lut_y: np.ndarray, total: int,
+          scale: float, offsets: np.ndarray, pinned: Optional[np.ndarray] = None) -> np.ndarray:
     """One offset per visible label, non-decreasing, via a DP that pays to change.
 
     pinned marks rows that must keep the frame number they already have (offset 0) because a human
@@ -203,7 +207,8 @@ def solve(bases, xs, ys, lut_x, lut_y, total, scale, offsets, pinned=None):
     return offsets[path]
 
 
-def unplaceable_at_cuts(bases, chosen, xs, ys, lut_x, lut_y, total, scale):
+def unplaceable_at_cuts(bases: np.ndarray, chosen: np.ndarray, xs: np.ndarray, ys: np.ndarray, lut_x: np.ndarray,
+                        lut_y: np.ndarray, total: int, scale: float) -> Set[int]:
     """Indices of visible labels sitting inside a cut the detector cannot pin down.
 
     Where the video jumps, only frames the detector actually saw fix which row it jumps on. Inside

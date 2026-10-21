@@ -35,6 +35,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from finetune.scoring import REFERENCE_HEIGHT
+
 ITERATIONS = 3             # centroid -> recentre the window -> centroid ...
 RADIUS_720P = 7            # centroid half-width at 720p; scaled with the clip height. 9 drifted onto
                            # players and rackets next to the ball more often
@@ -73,7 +75,8 @@ def change_map(current: np.ndarray, others: List[np.ndarray], box) -> np.ndarray
     return change.astype(np.float32) * (1.0 + YELLOW_WEIGHT * yellow.astype(np.float32))
 
 
-def centroid(change: np.ndarray, origin, seed, radius: int, iterations: int = ITERATIONS):
+def centroid(change: np.ndarray, origin: Tuple[int, int], seed: Tuple[float, float], radius: int,
+             iterations: int = ITERATIONS) -> Optional[Tuple[float, float]]:
     """Iterated weighted centroid of `change` (a patch whose top-left pixel is at `origin` in the
     frame) around `seed`, in label coordinates, or None if nothing in reach changed."""
     height, width = change.shape
@@ -129,7 +132,8 @@ def blobs(change: np.ndarray, origin, centre, reach: int) -> List[Tuple[float, f
     return found
 
 
-def describe(change: np.ndarray, origin, point, reach: int, others) -> dict:
+def describe(change: np.ndarray, origin: Tuple[int, int], point: Tuple[float, float], reach: int,
+             others: List[Tuple[float, float, float]]) -> dict:
     """How ball-like the change at `point` is: its own peak against the window's, against the
     window's background, and how many other blobs compete with it."""
     height, width = change.shape
@@ -210,7 +214,7 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
         if width <= 0 or height <= 0:
             return {}
         radius, reach = radius_for(height), search_for(height)
-        to_1080 = 1080.0 / height
+        to_1080 = REFERENCE_HEIGHT / height
         labels = {f: p for f, p in seeds.items() if p is not None}
         checked = labels if confirmed is None else {f: labels[f] for f in confirmed if f in labels}
         # Where to look on each frame: its label, and where the labels either side put the ball
@@ -305,7 +309,7 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
 
     placed = {}
     if placer is not None and chosen:
-        reach_px = PLACE_REACH_1080 * height / 1080.0
+        reach_px = PLACE_REACH_1080 * height / REFERENCE_HEIGHT
         items, frames = [], []
         for frame, point in chosen.items():
             centre, crop = min(crops.get(frame, []), key=lambda c: math.hypot(c[0][0] - point[0], c[0][1] - point[1]),

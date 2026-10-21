@@ -218,7 +218,7 @@ def load_manifest(path: Path = MANIFEST) -> Dict[str, dict]:
 
 
 def record(manifest: Manifest, clip: str, video: Path, source: str, section: str, group: str,
-           origin: str, note: str = "") -> dict:
+           origin: str, note: str = "") -> Dict[str, str]:
     fps, width, height, _ = video_meta(video)
     labels = read_labels(label_csv(clip), width, height)
     manifest.put(clip, source=source, section=section, group=group, width=width, height=height,
@@ -477,6 +477,15 @@ def main() -> int:
     VIDEOS.mkdir(exist_ok=True)
     LABELS.mkdir(exist_ok=True)
     manifest = Manifest()
+    importers = {
+        "archive": lambda src: import_archive(src, manifest, args.force, args.link, args.dry_run),
+        "video11": lambda src: import_video11(src, manifest, args.force, args.link, args.dry_run),
+        "tracknetv2": lambda src: import_tracknetv2(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded),
+        "grid": lambda src: import_grid(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded),
+        "prof": lambda src: import_prof(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded),
+        "tracknet": lambda src: import_tracknet(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded,
+                                                args.prefix, args.fps, tuple(args.canvas) if args.canvas else None),
+    }
     total = 0
     for name in wanted:
         src = args.src if (args.src and len(wanted) == 1) else DEFAULT_SOURCES.get(name)
@@ -484,19 +493,11 @@ def main() -> int:
             print(f"[skip] {name}: source folder not found: {src}")
             continue
         print(f"\n=== {name}  <-  {src}", flush=True)
-        if name == "archive":
-            total += import_archive(src, manifest, args.force, args.link, args.dry_run)
-        elif name == "video11":
-            total += import_video11(src, manifest, args.force, args.link, args.dry_run)
-        elif name == "tracknetv2":
-            total += import_tracknetv2(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded)
-        elif name == "grid":
-            total += import_grid(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded)
-        elif name == "prof":
-            total += import_prof(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded)
-        elif name == "tracknet":
-            total += import_tracknet(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded,
-                                     args.prefix, args.fps, tuple(args.canvas) if args.canvas else None)
+        try:
+            total += importers[name](src)
+        except ReviewedLabelsError as error:
+            print(f"[stop] {error}")
+            return 1
         if not args.dry_run:
             manifest.save()
     if args.dry_run:

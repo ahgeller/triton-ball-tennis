@@ -26,13 +26,16 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from finetune.data_policy import is_verified, read_review_status
 from finetune.detect import ball_detector, detect_points
 from finetune.labels import read_labels
-from finetune.scoring import HIT_PX, REFERENCE_HEIGHT, REFERENCE_WIDTH, WRONG_PX, score, scale_for_width
+from finetune.scoring import HIT_PX, WRONG_PX, score, scale_for_width
 from finetune.workspace import VIDEO_SUFFIXES, clip_of, natural_key, video_meta
+
+if TYPE_CHECKING:
+    from tennis_tracker.config import Config
 
 ROOT = Path(__file__).resolve().parent
 WORKSPACE = ROOT / "finetune"
@@ -110,7 +113,7 @@ def _near_court_line(x: float, y: float, keypoints, scale: float) -> bool:
     return False
 
 
-def _classify(x: float, y: float, row: dict, fallback_keypoints, scale: float) -> str:
+def _classify(x: float, y: float, row: dict, fallback_keypoints: Optional[List[float]], scale: float) -> str:
     """What did a wrong/false output land on: player, line, or something else."""
     if _inside_player(x, y, row.get("player_boxes")):
         return "player"
@@ -151,7 +154,7 @@ def report_raw(name: str, per_clip: List[Tuple[str, dict, list]], thresholds: Li
     for threshold in thresholds:
         pairs = []
         for _, meta, rows in per_clip:
-            scale = REFERENCE_HEIGHT / meta["width"] * (REFERENCE_WIDTH / REFERENCE_HEIGHT) if meta["width"] != REFERENCE_WIDTH else 1.0
+            scale = scale_for_width(meta["width"])
             pairs.extend((None if label is None else (label[0] * scale, label[1] * scale),
                           (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
                          for label, pred, conf in rows)
@@ -184,7 +187,7 @@ def run_raw(models: List[str], clips: List[ClipPair], thresholds: List[float], d
         report_raw(name, per_model[name], thresholds)
 
 
-def tracker_config(video_path: Path, name: str, conf: float, device: str, out_dir: Path, json_path: Path):
+def tracker_config(video_path: Path, name: str, conf: float, device: str, out_dir: Path, json_path: Path) -> "Config":
     from tennis_tracker.config import Config
     return Config(
         input_video=str(video_path),
@@ -200,7 +203,7 @@ def tracker_config(video_path: Path, name: str, conf: float, device: str, out_di
     )
 
 
-def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: dict, width: int):
+def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: dict, width: int) -> tuple:
     """One clip's pipeline output against its labels: (stats, by_source, 1080p pairs, landed, bad frames)."""
     frames = {row["frame"]: row for row in payload["frames"]}
     fallback_keypoints = payload.get("last_valid_court_keypoints")
