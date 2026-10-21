@@ -9,9 +9,10 @@ from unittest.mock import patch
 import pytest
 
 from finetune import label_audit
-from finetune.label_audit import (AUDIT_MIN_COVERAGE, AUDIT_MIN_FAST, ClipAudit, audit_labels, check_label_file,
+from finetune.label_audit import (AUDIT_MIN_COVERAGE, ClipAudit, audit_labels, check_label_file,
                                   outstanding_flags, open_flags, shift_labels, flag_frames)
 from finetune.labels import read_labels
+from finetune.scoring import MIN_FAST
 from finetune.workspace import VideoMeta
 
 WIDTH, HEIGHT = 1920, 1080
@@ -115,7 +116,7 @@ class ClipAuditTests(unittest.TestCase):
     def test_agreeing_detector_is_ok(self):
         visible = moving_ball(range(30), 10)
         audit = ClipAudit(visible, dict(visible), 1, 1.0, 30)
-        self.assertGreaterEqual(len(audit.fast), AUDIT_MIN_FAST)
+        self.assertGreaterEqual(len(audit.fast), MIN_FAST)
         self.assertEqual(audit.agree0, 1.0)
         self.assertEqual(audit.best_shift, 0)
         self.assertEqual(audit.verdict(False), ("ok", False))
@@ -133,7 +134,7 @@ class ClipAuditTests(unittest.TestCase):
         visible = moving_ball(range(40), 20)                     # fast enough that +1 and +3 miss
         confident = {frame + 2: point for frame, point in visible.items()}
         audit = ClipAudit(visible, confident, 1, 1.0, 40)
-        self.assertGreaterEqual(len(audit.fast), AUDIT_MIN_FAST)
+        self.assertGreaterEqual(len(audit.fast), MIN_FAST)
         self.assertEqual(audit.agree0, 0.0)
         self.assertEqual(audit.best_shift, 2)
         self.assertTrue(audit.fixable)

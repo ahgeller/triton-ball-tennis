@@ -21,26 +21,25 @@ import datetime as dt
 import math
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from finetune.fileio import backup_copy
 from finetune.labels import (FLAG_ANSWER_DECIMALS, FlagKind, Flags, LabelFormatError, Labels, read_flags, read_label_rows,
                              read_labels, write_flags, write_labels)
-from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
+from finetune.scoring import AGREE_PX, DETECTION_CONF, MIN_FAST, REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
 from finetune import workspace as ws
 from finetune.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, suspect_json,
                                 video_meta, videos_in, write_manifest)
 from tennis_tracker.frame_rate import phase_stride
 
+if TYPE_CHECKING:
+    from finetune.alignment import Evidence, Tracks
+
 LABEL_COVERAGE = 0.9         # check: fewer labelled frames than this share of the span is a gap
 
-AUDIT_AGREE_PX = 15.0        # detector and label agree when within this many 1080p pixels
 AUDIT_MAX_SHIFT = 3000        # temporal shifts (label frames) tried when a clip disagrees: the whole clip
 AUDIT_SUSPECT = 0.60         # below this agreement (with enough detector coverage) a clip is flagged
 AUDIT_FIXABLE = 0.85         # a shifted alignment this good replaces the labels with --fix
-AUDIT_FAST_PX = 6.0          # 1080p px/frame above which a label can tell neighbouring frames apart
-AUDIT_MIN_FAST = 20          # fewer fast labels than this and the whole clip is judged instead
-AUDIT_CONF = 0.5             # detections at or above this confidence count as the detector's answer
 AUDIT_MIN_COVERAGE = 0.3     # the detector must fire on this share of the judged labels to judge a clip
 AUDIT_MIN_SHARE = 0.5        # a shifted alignment must cover this share of the unshifted one's frames
 SAME_POINT_PX = 10.0 ** -FLAG_ANSWER_DECIMALS   # an answered flag's label and the current one agree within this
@@ -176,21 +175,27 @@ def outstanding_flags(clip: str) -> Dict[str, List[int]]:
 
 class ClipAudit:
     """One clip's labels against the raw detector: how well they agree as they stand, and the
-    temporal shift (in label frames) that would make them agree best."""
+    temporal shift (in label frames) that would make them agree best. The agreement itself is
+    ``finetune.alignment``'s, the same one realign.py solves with, so the two never disagree about
+    a clip."""
 
     def __init__(self, visible: Dict[int, Tuple[float, float]], confident: Dict[int, Tuple[float, float]],
                  stride: int, scale: float, total: int):
-        self.visible, self.confident, self.stride, self.scale = visible, confident, stride, scale
+        from finetune.alignment import Evidence, Tracks, agreement, errors_at, judges_fast   # numpy: not at ft.py's import
+
+        self.stride, self.scale = stride, scale
+        frames = sorted(visible)
+        self.tracks: Tracks = Tracks.of(frames, [visible[f][0] for f in frames], [visible[f][1] for f in frames], scale)
+        self.evidence: Evidence = Evidence.of(confident, total, scale)
+        self._agreement = lambda shift: agreement(self.tracks, self.evidence, shift * stride)
         # Only a fast-moving ball can separate one temporal offset from the next: a slow ball stays
-        # inside AUDIT_AGREE_PX for several frames either way, so judging every label equally lets a
+        # inside AGREE_PX for several frames either way, so judging every label equally lets a
         # shifted clip score "ok" on the strength of its slow frames (grid_match92, +2 frames, found
-        # 2026-09-02 at 0.73 overall but 0.28 on its fast labels). Judge on the fast ones when there
-        # are enough of them, and fall back to all of them when there are not.
-        self.fast = {f for f in visible
-                     if any(visible.get(f + step) and
-                            math.hypot(visible[f + step][0] - visible[f][0], visible[f + step][1] - visible[f][1])
-                            * scale / stride >= AUDIT_FAST_PX for step in (stride, -stride))}
-        self.judged = self.fast if len(self.fast) >= AUDIT_MIN_FAST else set(visible)
+        # 2026-09-02 at 0.73 overall but 0.28 on its fast labels). Judge on the fast ones when the
+        # detector saw enough of them, and fall back to all of them when it did not.
+        self.fast = set(self.tracks.frames[self.tracks.fast].tolist())
+        seen0, self.errors0 = errors_at(self.tracks, self.evidence, 0)
+        self.judged = self.fast if judges_fast(self.tracks, seen0) else set(frames)
         self.best = self.agreement(0)
         self.agree0, n0 = self.best[0], self.best[1]
         self.best_shift = 0
@@ -204,19 +209,9 @@ class ClipAudit:
         self.at_edge = abs(self.best_shift) >= self.max_shift
 
     def agreement(self, shift: int) -> Tuple[float, int, float]:
-        """(share of judged labels the detector agrees with, labels it fired on, median error) at `shift`."""
-        hits, n, errors = 0, 0, []
-        for f in self.judged:
-            x, y = self.visible[f]
-            point = self.confident.get(f + shift * self.stride)
-            if point is None:
-                continue
-            n += 1
-            error = math.hypot(point[0] - x, point[1] - y) * self.scale
-            errors.append(error)
-            hits += error <= AUDIT_AGREE_PX
-        errors.sort()
-        return hits / max(n, 1), n, (errors[len(errors) // 2] if errors else float("nan"))
+        """(share of judged labels the detector agrees with, labels it fired on, median error) at
+        `shift` label frames."""
+        return self._agreement(shift)
 
     @property
     def fixable(self) -> bool:
@@ -225,10 +220,8 @@ class ClipAudit:
     def disputed_frames(self) -> List[int]:
         """Labels the detector confidently contradicts on a clip that lines up: about that frame, not
         the alignment. Flagged for a human; never rewritten from the detector."""
-        return [f for f in sorted(self.visible)
-                if self.confident.get(f) is not None
-                and math.hypot(self.confident[f][0] - self.visible[f][0], self.confident[f][1] - self.visible[f][1])
-                * self.scale > AUDIT_AGREE_PX]
+        return [int(f) for f, error in zip(self.tracks.frames.tolist(), self.errors0.tolist())
+                if not math.isnan(error) and error > AGREE_PX]      # NaN where the detector said nothing
 
     def verdict(self, fix: bool) -> Tuple[str, bool]:
         """(what to print, whether the clip's labels disagree with the detector)."""
@@ -267,7 +260,7 @@ def _flag_disputed(clip: str, audit: ClipAudit) -> str:
     """Flag the frames the detector disputes on a clip that lines up; the verdict's suffix."""
     disputed = audit.disputed_frames()
     flag_frames(clip, "check", disputed,
-                f"detector disagrees by more than {AUDIT_AGREE_PX:.0f} px - often it simply lost "
+                f"detector disagrees by more than {AGREE_PX:.0f} px - often it simply lost "
                 f"the ball at the racket, so confirm before changing anything")
     return f"; {len(disputed)} frame(s) to eyeball" if disputed else ""
 
@@ -289,7 +282,7 @@ def _audit_one(clip: str, video: Path, detector, fix: bool, mark: bool) -> bool:
     stride = _audit_stride(clip, meta.fps)
     labels = read_labels(label_csv(clip), meta.width, meta.height)
     visible = {f: p for f, p in labels.items() if p is not None}
-    confident = {f: (x, y) for f, (x, y, conf) in detect_points(detector, video, meta).items() if conf >= AUDIT_CONF}
+    confident = {f: (x, y) for f, (x, y, conf) in detect_points(detector, video, meta).items() if conf >= DETECTION_CONF}
     audit = ClipAudit(visible, confident, stride, scale_for_width(meta.width), meta.total)
     verdict, disagrees = audit.verdict(fix)
     if mark and audit.agree0 >= AUDIT_SUSPECT:
@@ -312,7 +305,7 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
     weights_path = Path(weights).resolve() if weights else ws.REPO_WEIGHTS
     detector = ball_detector(weights_path)
     print(f"\naudit: {len(clips)} clips against {weights_path.name} "
-          f"(agree = detector within {AUDIT_AGREE_PX:.0f} px of the label, measured on the fast labels; "
+          f"(agree = detector within {AGREE_PX:.0f} px of the label, measured on the fast labels; "
           f"shift = label frames)")
     print(f"  {'clip':36s} {'visible':>7s} {'fast':>5s} {'covered':>7s} {'agree':>6s} {'best':>6s} {'shift':>5s} {'med px':>7s}  verdict")
     disagreeing = sum(_audit_one(clip, videos[clip], detector, fix, mark) for clip in clips if clip in videos)

@@ -23,7 +23,6 @@ from tennis_tracker.motion import BackgroundModel, preprocess_frame_cuda, refine
 from ball_in_play_selector.config import SelectorConfig
 from ball_in_play_selector.physics import BallKalmanFilter, predict_projectile, predict_projectile_velocity
 from ball_in_play_selector.core import motion_near
-from finetune import realign
 from finetune import label_audit
 from finetune.label_source import Source
 from finetune.data_policy import is_verified
@@ -134,18 +133,6 @@ class FixTests(unittest.TestCase):
         for index in range(3):
             self.assertIsNotNone(Source.decode_at(source, index))
         self.assertEqual(source.position, 3)
-
-    def test_human_pin_is_a_hard_constraint(self):
-        n = 220
-        bases = np.arange(n, dtype=np.int64) * 2
-        lut_x = np.zeros(n * 2 + 3, dtype=np.float32)
-        lut_y = np.zeros_like(lut_x)
-        lut_x[bases] = 1000
-        pinned = np.zeros(n, bool)
-        pinned[n // 2] = True
-        offsets = realign.solve(bases, np.zeros(n), np.zeros(n), lut_x, lut_y,
-                                len(lut_x), 1., np.array([0, 1]), pinned)
-        self.assertEqual(offsets[n // 2], 0)
 
     def test_projectile_equal_timestamps_and_filter_consistency(self):
         cfg30 = SelectorConfig(fps=30).auto_scale()

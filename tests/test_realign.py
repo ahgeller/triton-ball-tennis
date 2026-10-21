@@ -3,12 +3,12 @@
 The end-to-end tests are an oracle of what ``main()`` prints, writes and returns for one fixture:
 a 240-row label file whose ball the (stubbed) detector sees three video frames later. They were
 recorded from the script before its main() was split into pieces, so they are the regression that
-the split changed no output. Every path the script reads or writes is patched into ``tmp_path``:
-no workspace label, review file or video is ever touched.
+the split (and the move onto the Tracks/Evidence bundles) changed no output. Every path the
+script reads or writes is patched into ``tmp_path``: no workspace label, review file or video is
+ever touched.
 """
 import io
 import json
-import sys
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -18,11 +18,14 @@ import numpy as np
 import pytest
 
 from finetune import labels, realign
+from finetune.alignment import Evidence, Tracks
+from finetune.workspace import VideoMeta
 
 CLIP = "synthetic_clip"
 ROWS = 240                   # candidates() needs chunks of 20+ rows and main() asks for 8 chunks
 SHIFT = 3                    # the video shows each labelled position SHIFT frames later
 WIDTH, HEIGHT, TOTAL = 1280, 720, 300
+META = VideoMeta(30.0, WIDTH, HEIGHT, TOTAL)
 SENTINEL_ROWS = (17, 150)    # rows that say "no ball"
 PINNED_FRAME = 10
 
@@ -38,17 +41,16 @@ def label_rows() -> List[Tuple[int, str, str]]:
     return [(f, *sentinel) if f in SENTINEL_ROWS else (f, f"{ball_x(f)}", "360") for f in range(ROWS)]
 
 
-def shifted_detections() -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def shifted_detections() -> Tuple[Evidence, VideoMeta]:
     """What ``realign.detections`` would answer for a video running SHIFT frames behind the labels."""
-    frames = [f + SHIFT for f in range(ROWS) if f not in SENTINEL_ROWS]
-    return (np.array(frames, np.int32), np.array([ball_x(f - SHIFT) for f in frames], np.float32),
-            np.array([360.0] * len(frames), np.float32), np.array([WIDTH, HEIGHT, TOTAL], np.int32))
+    points = {f + SHIFT: (float(ball_x(f)), 360.0) for f in range(ROWS) if f not in SENTINEL_ROWS}
+    return Evidence.of(points, TOTAL, realign.scale_for_width(WIDTH)), META
 
 
 def write_fixture(root: Path, reviewed: Optional[List[int]] = None) -> Path:
     """labels/<CLIP>_ball.csv (and the review sidecar when `reviewed` is given) under `root`."""
     folder = root / "labels"
-    folder.mkdir()
+    folder.mkdir(exist_ok=True)
     csv = folder / f"{CLIP}_ball.csv"
     csv.write_text("\n".join(["frame,ball_x,ball_y"] + [",".join([labels.frame_name(f), x, y])
                                                          for f, x, y in label_rows()]) + "\n")
@@ -62,24 +64,27 @@ def bound_to(root: Path) -> Iterator[None]:
     """Point every workspace path realign reads or writes into `root` and stub the detector."""
     detections = shifted_detections()
     with patch.object(realign, "detections", lambda clip: detections), \
-         patch.object(realign, "frame_size", lambda clip: (WIDTH, HEIGHT)), \
-         patch.object(realign, "label_csv", lambda clip: root / "labels" / f"{clip}_ball.csv"), \
-         patch("finetune.workspace.LABELS", root / "labels"), \
-         patch.object(realign, "WS", root):
+         patch.object(realign, "require_video", lambda clip: root / "videos" / f"{clip}.mp4"), \
+         patch.object(realign, "video_meta", lambda path: META), \
+         patch.multiple("finetune.workspace", WORKSPACE=root, LABELS=root / "labels", VIDEOS=root / "videos"):
         yield
 
 
 def run_main(root: Path, *args: str, out: Optional[io.StringIO] = None) -> Tuple[int, str]:
-    """``main()`` as the script runs it, on ``sys.argv``; returns (exit code, stdout). Pass `out`
-    to keep what was printed when main() raises."""
+    """``main()`` on `args`; returns (exit code, stdout). Pass `out` to keep what was printed when
+    main() raises."""
     out = io.StringIO() if out is None else out
-    with bound_to(root), patch.object(sys, "argv", ["realign.py", *args]), redirect_stdout(out):
-        code = realign.main()
+    with bound_to(root), redirect_stdout(out):
+        code = realign.main(list(args))
     return code, out.getvalue()
 
 
 def listing(root: Path) -> List[str]:
     return sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+
+
+def backups(csv: Path) -> List[Path]:
+    return sorted(csv.parent.glob(f"{csv.name}.before_realign_*"))
 
 
 # --------------------------------------------------------------------------- recorded output
@@ -104,11 +109,12 @@ PINNED = ("  1 frame(s) you corrected by hand are pinned and will not move\n"
 
 # --------------------------------------------------------------------------- main() end to end
 
-def test_fewer_than_two_clips_prints_the_doc_and_returns_2(tmp_path):
+def test_fewer_than_two_clips_is_a_usage_error(tmp_path, capsys):
     write_fixture(tmp_path)
-    code, out = run_main(tmp_path, CLIP)
-    assert code == 2
-    assert out == realign.__doc__ + "\n"
+    with pytest.raises(SystemExit) as caught:
+        run_main(tmp_path, CLIP)
+    assert caught.value.code == 2
+    assert "usage: realign.py" in capsys.readouterr().err
 
 
 def test_dry_run_reports_the_offset_and_writes_nothing(tmp_path):
@@ -122,15 +128,15 @@ def test_dry_run_reports_the_offset_and_writes_nothing(tmp_path):
     assert listing(tmp_path) == before
 
 
-def test_apply_backs_the_file_up_once_then_retimes_every_row(tmp_path):
+def test_apply_backs_the_file_up_then_retimes_every_row(tmp_path):
     csv = write_fixture(tmp_path)
     original = csv.read_bytes()
     code, out = run_main(tmp_path, CLIP, CLIP, "--apply")
     assert code == 0
     assert out == HEADER + SOLVED + WRITTEN
-    backup = csv.with_suffix(".csv.premisaligned")
+    backup, = backups(csv)
     assert backup.read_bytes() == original
-    assert listing(tmp_path) == ["labels", f"labels/{CLIP}_ball.csv", f"labels/{CLIP}_ball.csv.premisaligned"]
+    assert listing(tmp_path) == ["labels", f"labels/{CLIP}_ball.csv", f"labels/{backup.name}"]
     rewritten = [(row.frame, row.x, row.y) for row in labels.read_label_rows(csv)]
     assert rewritten == [(f + SHIFT, float(x), float(y)) for f, x, y in label_rows()]
     assert all(not labels.is_visible(x, y, WIDTH, HEIGHT) for f, x, y in rewritten if f - SHIFT in SENTINEL_ROWS)
@@ -154,7 +160,7 @@ def test_apply_refuses_to_drop_the_pinned_row_and_changes_nothing(tmp_path):
         run_main(tmp_path, CLIP, CLIP, "--apply", out=out)
     assert out.getvalue() == HEADER + PINNED
     assert csv.read_bytes() == original
-    assert listing(tmp_path) == before                       # no .premisaligned backup either
+    assert listing(tmp_path) == before                       # no backup either
     rows = {row.frame: (row.x, row.y) for row in labels.read_label_rows(csv)}
     assert rows[PINNED_FRAME] == (float(ball_x(PINNED_FRAME)), 360.0)
 
@@ -177,60 +183,91 @@ def test_reviewed_labels_cannot_have_their_video_replaced(tmp_path):
     assert listing(tmp_path) == before
 
 
+def test_the_video_the_labels_belong_to_is_swapped_in_whatever_its_container(tmp_path):
+    """A clip whose labels belong to another clip's video: apply copies that video in under the
+    labels' name (keeping its container) and keeps the wrong one as a .bak."""
+    write_fixture(tmp_path)
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    (videos / f"{CLIP}.mov").write_bytes(b"wrong")
+    (videos / "other_clip.mkv").write_bytes(b"right")
+    with patch.multiple("finetune.workspace", WORKSPACE=tmp_path, LABELS=tmp_path / "labels", VIDEOS=videos), \
+            redirect_stdout(io.StringIO()):
+        realign.swap_video(CLIP, "other_clip")
+    assert (videos / f"{CLIP}.mkv").read_bytes() == b"right"
+    assert (videos / f"{CLIP}_wrong_video.mov.bak").read_bytes() == b"wrong"
+    assert not (videos / f"{CLIP}.mov").exists()
+
+
 # --------------------------------------------------------------------------- the pieces main() calls
 
-def evidence() -> Tuple[np.ndarray, ...]:
-    """(frames, xs, ys, fast, lut_x, lut_y) for the fixture, built the way main() builds them."""
-    det_frames, det_x, det_y, _ = shifted_detections()
-    lut_x, lut_y = realign.lookup_tables(det_frames, det_x, det_y, TOTAL)
-    visible = [(f, float(x), float(y)) for f, x, y in label_rows() if labels.is_visible(float(x), float(y), WIDTH, HEIGHT)]
-    frames = np.array([f for f, _, _ in visible], np.int64)
-    xs = np.array([x for _, x, _ in visible], np.float32)
-    ys = np.array([y for _, _, y in visible], np.float32)
-    step = np.hypot(np.diff(xs, prepend=xs[0]), np.diff(ys, prepend=ys[0])) * realign.scale_for_width(WIDTH)
-    return frames, xs, ys, step >= realign.FAST_PX, lut_x, lut_y
+def evidence() -> Tuple[Tracks, Evidence]:
+    """(the visible rows, what the detector saw) for the fixture, built the way main() builds them."""
+    entries = sorted(labels.LabelRow(f, float(x), float(y)) for f, x, y in label_rows())
+    return realign.visible_tracks(entries, (WIDTH, HEIGHT), META), shifted_detections()[0]
 
 
 def test_parse_args_takes_two_clips_and_the_two_flags():
-    assert realign.parse_args(["realign.py", "a", "b", "--preview"]) == ("a", "b", True, False)
-    assert realign.parse_args(["realign.py", "a", "b", "--apply"]) == ("a", "b", False, True)
-    assert realign.parse_args(["realign.py", "x"]) is None
-    assert realign.parse_args(["realign.py"]) is None
+    args = realign.parse_args(["a", "b", "--preview"])
+    assert (args.label_clip, args.video_clip, args.preview, args.apply) == ("a", "b", True, False)
+    assert realign.parse_args(["a", "b", "--apply"]).apply is True
+    for bad in (["x"], [], ["a", "b", "--aply"]):
+        with pytest.raises(SystemExit):
+            realign.parse_args(bad)
+
+
+def test_visible_tracks_scales_onto_the_video_and_marks_the_fast_rows():
+    tracks, _ = evidence()
+    assert len(tracks.frames) == 238 and realign.scale_for_width(WIDTH) == 1.5
+    assert tracks.fast[1:].all() and not tracks.fast[0]
+    entries = [labels.LabelRow(0, 100.0, 50.0), labels.LabelRow(1, 1279.0, 0.0), labels.LabelRow(2, 200.0, 100.0)]
+    small = realign.visible_tracks(entries, (640, 360), META)       # labels made on a 640x360 copy
+    assert small.frames.tolist() == [0, 2] and small.xs.tolist() == [200.0, 400.0] and small.ys.tolist() == [100.0, 200.0]
 
 
 def test_solve_alignment_finds_the_constant_plus_three_offset_at_rate_1(capsys):
-    frames, xs, ys, fast, lut_x, lut_y = evidence()
-    assert len(frames) == 238 and realign.scale_for_width(WIDTH) == 1.5 and fast[1:].all() and not fast[0]
-    pinned = np.zeros(len(frames), bool)
-    best = realign.solve_alignment(frames, xs, ys, fast, lut_x, lut_y, TOTAL, 1.5, set(), pinned, chunks=8)
+    tracks, seen = evidence()
+    pinned = np.zeros(len(tracks.frames), bool)
+    best = realign.solve_alignment(tracks, seen, set(), pinned, chunks=8)
     assert best is not None
-    result, rate, bases, chosen = best
-    assert rate == 1.0
-    assert (chosen == SHIFT).all()
-    np.testing.assert_array_equal(bases, frames)
-    assert result[0] == 1.0 and result[2] == 0.0
+    assert best.rate == 1.0
+    assert (best.chosen == SHIFT).all()
+    np.testing.assert_array_equal(best.bases, tracks.frames)
+    assert best.result[0] == 1.0 and best.result[2] == 0.0 and best.dropped == frozenset()
     assert capsys.readouterr().out == "  rate 1: 22 candidate offsets in -182..+8  -> agree 1.00, median 0.0 px\n"
 
 
 def test_solve_alignment_is_none_when_no_rate_has_a_candidate_offset(capsys):
-    frames, xs, ys, fast, lut_x, lut_y = evidence()
-    pinned = np.zeros(len(frames), bool)
+    tracks, seen = evidence()
+    pinned = np.zeros(len(tracks.frames), bool)
     with patch.object(realign, "candidates", lambda *args: np.array([], np.int64)):
-        best = realign.solve_alignment(frames, xs, ys, fast, lut_x, lut_y, TOTAL, 1.5, set(), pinned, chunks=8)
+        best = realign.solve_alignment(tracks, seen, set(), pinned, chunks=8)
     assert best is None
     assert capsys.readouterr().out == ""
 
 
 def test_solve_alignment_keeps_a_pinned_row_at_offset_zero():
-    frames, xs, ys, fast, lut_x, lut_y = evidence()
+    tracks, seen = evidence()
     fixed = {PINNED_FRAME}
-    pinned = np.array([f in fixed for f in frames.tolist()], bool)
-    best = realign.solve_alignment(frames, xs, ys, fast, lut_x, lut_y, TOTAL, 1.5, fixed, pinned, chunks=8)
+    pinned = np.array([f in fixed for f in tracks.frames.tolist()], bool)
+    best = realign.solve_alignment(tracks, seen, fixed, pinned, chunks=8)
     assert best is not None
-    _, rate, _, chosen = best
-    assert rate == 1.0
-    assert chosen[frames <= PINNED_FRAME].tolist() == [0] * int((frames <= PINNED_FRAME).sum())
-    assert (chosen[frames > PINNED_FRAME] == SHIFT).all()
+    assert best.rate == 1.0
+    frames = tracks.frames
+    assert best.chosen[frames <= PINNED_FRAME].tolist() == [0] * int((frames <= PINNED_FRAME).sum())
+    assert (best.chosen[frames > PINNED_FRAME] == SHIFT).all()
+
+
+def test_human_pin_is_a_hard_constraint():
+    n = 220
+    bases = np.arange(n, dtype=np.int64) * 2
+    points = {int(frame): (1000.0, 0.0) for frame in bases}
+    seen = Evidence.of(points, n * 2 + 3, 1.0)
+    tracks = Tracks(bases, np.zeros(n, np.float32), np.zeros(n, np.float32), np.zeros(n, bool))
+    pinned = np.zeros(n, bool)
+    pinned[n // 2] = True
+    offsets = realign.solve(tracks, seen, np.array([0, 1]), pinned)
+    assert offsets[n // 2] == 0
 
 
 def test_segments_groups_runs_of_one_offset():
@@ -239,31 +276,35 @@ def test_segments_groups_runs_of_one_offset():
     assert realign.segments(np.array([], np.int64), np.array([], np.int64)) == []
 
 
-def test_apply_alignment_backs_up_once_and_retimes_every_row(tmp_path):
+def aligned_by(shift: int, frames: np.ndarray) -> realign.Alignment:
+    return realign.Alignment((1.0, len(frames), 0.0), 1.0, frames, np.full(len(frames), shift, np.int64))
+
+
+def test_apply_alignment_backs_up_every_time_and_retimes_every_row(tmp_path):
     csv = write_fixture(tmp_path)
     original = csv.read_bytes()
     before = listing(tmp_path)
     entries = sorted(labels.read_label_rows(csv))
-    frames = evidence()[0]
-    chosen = np.full(len(frames), SHIFT, np.int64)
-    with bound_to(tmp_path):
-        code = realign.apply_alignment(entries, frames, chosen, set(), set(), 1.0, TOTAL,
-                                       (WIDTH, HEIGHT), (WIDTH, HEIGHT), CLIP, CLIP)
+    frames = evidence()[0].frames
+    with bound_to(tmp_path), redirect_stdout(io.StringIO()):
+        code = realign.apply_alignment(entries, frames, aligned_by(SHIFT, frames), set(), META, (WIDTH, HEIGHT), CLIP, CLIP)
     assert code == 0
-    backup = csv.with_suffix(".csv.premisaligned")
+    backup, = backups(csv)
     assert backup.read_bytes() == original
-    assert listing(tmp_path) == before + [f"labels/{CLIP}_ball.csv.premisaligned"]
+    assert listing(tmp_path) == before + [f"labels/{backup.name}"]
     rewritten = [(row.frame, row.x, row.y) for row in labels.read_label_rows(csv)]
     assert rewritten == [(f + SHIFT, float(x), float(y)) for f, x, y in label_rows()]
     assert [f for f, x, y in rewritten if not labels.is_visible(x, y, WIDTH, HEIGHT)] == [f + SHIFT for f in SENTINEL_ROWS]
 
-    # a second apply re-times the already re-timed rows but leaves the first backup alone
+    # a second apply re-times the already re-timed rows and backs the file up again, like every
+    # other bulk write over a label file (fileio.backup_copy)
     entries = sorted(labels.read_label_rows(csv))
-    with bound_to(tmp_path):
-        realign.apply_alignment(entries, frames + SHIFT, chosen, set(), set(), 1.0, TOTAL,
-                                (WIDTH, HEIGHT), (WIDTH, HEIGHT), CLIP, CLIP)
-    assert backup.read_bytes() == original
-    assert listing(tmp_path) == before + [f"labels/{CLIP}_ball.csv.premisaligned"]
+    retimed = frames + SHIFT
+    with bound_to(tmp_path), redirect_stdout(io.StringIO()):
+        realign.apply_alignment(entries, retimed, aligned_by(SHIFT, retimed), set(), META, (WIDTH, HEIGHT), CLIP, CLIP)
+    first, second = backups(csv)
+    assert first == backup and first.read_bytes() == original
+    assert [row.frame for row in labels.read_label_rows(second)] == [f + SHIFT for f in range(ROWS)]
     assert [row.frame for row in labels.read_label_rows(csv)] == [f + 2 * SHIFT for f in range(ROWS)]
 
 
@@ -272,10 +313,8 @@ def test_apply_alignment_writes_nothing_when_a_reviewed_row_would_move(tmp_path)
     original = csv.read_bytes()
     before = listing(tmp_path)
     entries = sorted(labels.read_label_rows(csv))
-    frames = evidence()[0]
-    chosen = np.full(len(frames), SHIFT, np.int64)
+    frames = evidence()[0].frames
     with bound_to(tmp_path), pytest.raises(ValueError, match="would move a reviewed row; nothing changed"):
-        realign.apply_alignment(entries, frames, chosen, set(), {PINNED_FRAME}, 1.0, TOTAL,
-                                (WIDTH, HEIGHT), (WIDTH, HEIGHT), CLIP, CLIP)
+        realign.apply_alignment(entries, frames, aligned_by(SHIFT, frames), {PINNED_FRAME}, META, (WIDTH, HEIGHT), CLIP, CLIP)
     assert csv.read_bytes() == original
     assert listing(tmp_path) == before

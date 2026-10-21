@@ -1,8 +1,10 @@
-"""The detector metric: how a set of (label, prediction) pairs is scored.
+"""The detector metric: how a set of (label, prediction) pairs is scored, and the thresholds at
+which a label and a raw detection are said to agree.
 
 Distances are measured in 1080p pixels (a 1920-wide frame as it is; a smaller frame scaled up),
-so clips of different sizes pool. Used by evaluate_archive.py and by train_gridtracknet.py to
-pick the better of the trained and the starting weights.
+so clips of different sizes pool. ``score`` is used by evaluate_archive.py and by
+train_gridtracknet.py to pick the better of the trained and the starting weights; the agreement
+thresholds by ``finetune.alignment`` (the label audit and realign.py).
 """
 from __future__ import annotations
 
@@ -13,6 +15,11 @@ REFERENCE_WIDTH = 1920.0    # the frame size pixel distances are quoted at ...
 REFERENCE_HEIGHT = 1080.0   # ... (1080p); a 720p clip's pixel counts 1.5 times
 HIT_PX = 10.0               # a prediction counts as correct within this many pixels
 WRONG_PX = 30.0             # beyond this it is tracking something else
+
+AGREE_PX = 15.0             # a label and a raw detection agree within this many 1080p pixels
+FAST_PX = 6.0               # a label that moved this far (1080p px) since the previous row can tell one frame from the next
+MIN_FAST = 20               # fewer fast labels than this and every label is judged instead
+DETECTION_CONF = 0.5        # detections at or above this confidence count as the detector's answer
 
 Point = Optional[Tuple[float, float]]
 
