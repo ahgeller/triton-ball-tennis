@@ -14,7 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Deque, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import cv2
 import numpy as np
@@ -25,10 +25,14 @@ from ..config import Config
 from .engine_boxes import OutputMode, decode_engine_boxes, engine_output_mode
 from .engine_session import TensorRTRuntimeSession
 from ..frame_rate import require_phase_stride
-from ..gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
+from ..gridtracknet import HEIGHT, WIDTH, GridPoint, decode_predictions, frame_tensor, load_model
 
 # A BGR HWC uint8 frame, either a host array or a CUDA tensor of the same layout.
 FrameInput = Union[np.ndarray, torch.Tensor]
+# The prepass's pieces: one frame's input tensor with its source index, and a five-frame unit
+# (the frames' tensors concatenated) with the source indices it covers.
+_PrepassFrame = Tuple[torch.Tensor, int]
+_PrepassUnit = Tuple[torch.Tensor, List[int]]
 
 _BALL_NMS_IOU = 0.45
 # GridTrackNet gives a point; the box handed to the selector is this fraction
@@ -189,9 +193,9 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         # One independent five-frame unit per phase. The model wants 30 FPS
         # spacing, so at 60 FPS the odd frames form a second, equally valid
         # unit stream; running only phase 0 leaves every odd frame unobserved.
-        units = [[] for _ in range(source_stride)]
-        recent = [deque(maxlen=5) for _ in range(source_stride)]
-        batches = []
+        units: List[List[_PrepassFrame]] = [[] for _ in range(source_stride)]
+        recent: List[Deque[_PrepassFrame]] = [deque(maxlen=5) for _ in range(source_stride)]
+        batches: List[_PrepassUnit] = []
         frame_index = inference_calls = detected = 0
         started = time.perf_counter()
         y_offset = self.cfg.gridtracknet_y_offset_px * height / _REFERENCE_HEIGHT_PX
@@ -204,17 +208,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             with torch.inference_mode():
                 output = self.model(torch.stack([item[0] for item in batches]))
                 decoded = self._decode(output, width, height, self.cfg.conf)
-            for batch_index, (_, indices) in enumerate(batches):
-                start = batch_index * 5
-                for source_index, (point, confidence) in zip(indices, decoded[start:start + 5]):
-                    if source_index in finalized:
-                        continue
-                    finalized.add(source_index)
-                    if point is None:
-                        continue
-                    x, y = point[0], point[1] + y_offset
-                    cached[source_index] = [([x - radius, y - radius, x + radius, y + radius], confidence)]
-                    detected += 1
+            detected += _store_decoded(batches, decoded, finalized, cached, y_offset, radius)
             inference_calls += 1
             # Every frame below the oldest unit still being assembled is final.
             pending_min = min((item[1] for unit in units for item in unit), default=frame_index + 1)
@@ -243,13 +237,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
                         if len(batches) == _UNITS_PER_INFERENCE:
                             flush()
                     frame_index += 1
-                # Cover each phase's trailing frames with one overlapping window.
-                for phase in range(source_stride):
-                    if units[phase] and len(recent[phase]) == 5:
-                        batches.append((
-                            torch.cat([value for value, _ in recent[phase]]),
-                            [index for _, index in recent[phase]],
-                        ))
+                batches.extend(_trailing_windows(units, recent))
                 flush()
                 if stream is not None:
                     stream.synchronize()
@@ -263,6 +251,12 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             self._finish()
 
         elapsed = time.perf_counter() - started
+        self._report_prepass(frame_index, detected, inference_calls, source_stride, elapsed, total_hint)
+
+    def _report_prepass(self, frame_index: int, detected: int, inference_calls: int, source_stride: int,
+                        elapsed: float, total_hint: int) -> None:
+        """The prepass's console line, and a second when the decoded frame count differs from the
+        container's (the decoded count is the one every index refers to)."""
         print(
             f"[detector] GridTrackNet prepass: {frame_index} source frames, {detected} detections, "
             f"{inference_calls} batched calls across {source_stride} phase(s) "
@@ -317,6 +311,40 @@ class GridTrackNetBallDetector(BallDetectorBackend):
 
     def detect_async_finish(self, pending: CachedDetections) -> List[RawDetection]:
         return pending.detections
+
+
+def _store_decoded(batches: List[_PrepassUnit], decoded: List[GridPoint], finalized: Set[int],
+                   cached: List[List[RawDetection]], y_offset: float, radius: float) -> int:
+    """Write one inference call's decoded points into the prepass cache, in batch order; the
+    first unit to answer for a source frame finalises it, a later overlapping unit is ignored.
+    A point becomes a box of `radius` around it, moved down by `y_offset`. Returns the number of
+    frames given a detection."""
+    detected = 0
+    for batch_index, (_, indices) in enumerate(batches):
+        start = batch_index * 5
+        for source_index, (point, confidence) in zip(indices, decoded[start:start + 5]):
+            if source_index in finalized:
+                continue
+            finalized.add(source_index)
+            if point is None:
+                continue
+            x, y = point[0], point[1] + y_offset
+            cached[source_index] = [([x - radius, y - radius, x + radius, y + radius], confidence)]
+            detected += 1
+    return detected
+
+
+def _trailing_windows(units: List[List[_PrepassFrame]], recent: List[Deque[_PrepassFrame]]) -> List[_PrepassUnit]:
+    """Cover each phase's trailing frames (a unit left short when the clip ended) with one
+    overlapping window: that phase's last five frames, in phase order."""
+    windows: List[_PrepassUnit] = []
+    for phase in range(len(units)):
+        if units[phase] and len(recent[phase]) == 5:
+            windows.append((
+                torch.cat([value for value, _ in recent[phase]]),
+                [index for _, index in recent[phase]],
+            ))
+    return windows
 
 
 def decode_ball_predictions(
