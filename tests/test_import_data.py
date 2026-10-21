@@ -134,3 +134,18 @@ def test_provenance_and_options_are_plain_records():
     assert Provenance("grid") == Provenance("grid", "", "", "")
     assert ImportOptions() == ImportOptions(keep_occluded=False, force=False, link=False, dry_run=False)
     assert set(import_data.DEFAULT_SOURCES) == {"archive", "video11", "tracknetv2", "grid", "prof"}
+
+
+def test_the_command_line_names_the_importer_table(capsys):
+    """The sources the command line accepts, and what 'all' expands to, are read off IMPORTERS:
+    every default source folder has an importer, 'tracknet' is the one that needs --src."""
+    assert set(import_data.IMPORTERS) == set(import_data.DEFAULT_SOURCES) | {"tracknet"}
+    assert set(import_data.ALL_SOURCES) == set(import_data.IMPORTERS) - {"tracknetv2", "tracknet"}
+    with pytest.raises(SystemExit):
+        import_data.main(["--help"])
+    usage = capsys.readouterr().out
+    assert "{all,archive,video11,tracknetv2,grid,prof,tracknet}" in usage
+    assert "'all' = archive video11 grid prof" in usage
+    with pytest.raises(SystemExit):
+        import_data.main(["badminton"])
+    assert "invalid choice: 'badminton'" in capsys.readouterr().err

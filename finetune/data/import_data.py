@@ -254,11 +254,26 @@ def import_tracknet(src: Path, manifest: Manifest, options: ImportOptions, prefi
 
 # --------------------------------------------------------------------------- main
 
+# The sources the command line names, each run on its folder with the manifest, the options and the
+# parsed arguments (only 'tracknet' reads those). The command line's choices come from this table.
+Importer = Callable[[Path, Manifest, ImportOptions, argparse.Namespace], int]
+IMPORTERS: Dict[str, Importer] = {
+    "archive": lambda src, manifest, options, args: import_archive(src, manifest, options),
+    "video11": lambda src, manifest, options, args: import_video11(src, manifest, options),
+    "tracknetv2": lambda src, manifest, options, args: import_tracknetv2(src, manifest, options),
+    "grid": lambda src, manifest, options, args: import_grid(src, manifest, options),
+    "prof": lambda src, manifest, options, args: import_prof(src, manifest, options),
+    "tracknet": lambda src, manifest, options, args: import_tracknet(src, manifest, options, args.prefix, args.fps,
+                                                                     tuple(args.canvas) if args.canvas else None),
+}
+ALL_SOURCES = ("archive", "video11", "grid", "prof")   # what 'all' imports: not the badminton set, not a --src folder
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("sources", nargs="+",
-                        choices=("all", "archive", "video11", "tracknetv2", "grid", "prof", "tracknet"),
-                        help="what to import ('all' = archive video11 grid prof; the badminton set only with an explicit 'tracknetv2')")
+    parser.add_argument("sources", nargs="+", choices=("all", *IMPORTERS),
+                        help=f"what to import ('all' = {' '.join(ALL_SOURCES)}; "
+                             "the badminton set only with an explicit 'tracknetv2')")
     parser.add_argument("--src", type=Path, help="Override the source folder (required for 'tracknet')")
     parser.add_argument("--prefix", default="tracknet", help="Clip-name prefix / source tag for 'tracknet' imports")
     parser.add_argument("--fps", type=float, default=30.0, help="Frame rate for clips rebuilt from image folders")
@@ -271,23 +286,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="List what would be imported and stop")
     args = parser.parse_args(argv)
 
-    wanted = ["archive", "video11", "grid", "prof"] if "all" in args.sources else list(dict.fromkeys(args.sources))
+    wanted = list(ALL_SOURCES) if "all" in args.sources else list(dict.fromkeys(args.sources))
     if "tracknet" in wanted and args.src is None:
         parser.error("'tracknet' needs --src <folder>")
     ws.current().videos.mkdir(exist_ok=True)
     ws.current().labels.mkdir(exist_ok=True)
     manifest = Manifest()
     options = ImportOptions(keep_occluded=args.keep_occluded, force=args.force, link=args.link, dry_run=args.dry_run)
-    importers: Dict[str, Callable[[Path], int]] = {
-        "archive": lambda src: import_archive(src, manifest, options),
-        "video11": lambda src: import_video11(src, manifest, options),
-        "tracknetv2": lambda src: import_tracknetv2(src, manifest, options),
-        "grid": lambda src: import_grid(src, manifest, options),
-        "prof": lambda src: import_prof(src, manifest, options),
-        "tracknet": lambda src: import_tracknet(src, manifest, options, args.prefix, args.fps,
-                                                tuple(args.canvas) if args.canvas else None),
-    }
-    total = run_importers(wanted, importers, manifest, args.src, args.dry_run)
+    total = run_importers(wanted, manifest, options, args)
     if total is None:
         return 1
     if args.dry_run:
@@ -300,24 +306,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
-def run_importers(wanted: List[str], importers: Dict[str, Callable[[Path], int]], manifest: Manifest,
-                  src: Optional[Path], dry_run: bool) -> Optional[int]:
-    """Run each wanted importer on its source folder (`src` when one source was named, else the
-    default), saving clips.csv after each; the number of clips, or None when hand-reviewed labels
-    stopped the run."""
+def run_importers(wanted: List[str], manifest: Manifest, options: ImportOptions,
+                  args: argparse.Namespace) -> Optional[int]:
+    """Run each wanted importer on its source folder (``args.src`` when one source was named, else
+    the default), saving clips.csv after each; the number of clips, or None when hand-reviewed
+    labels stopped the run."""
     total = 0
     for name in wanted:
-        folder = src if (src and len(wanted) == 1) else DEFAULT_SOURCES.get(name)
+        folder = args.src if (args.src and len(wanted) == 1) else DEFAULT_SOURCES.get(name)
         if folder is None or not folder.exists():
             print(f"[skip] {name}: source folder not found: {folder}")
             continue
         print(f"\n=== {name}  <-  {folder}", flush=True)
         try:
-            total += importers[name](folder)
+            total += IMPORTERS[name](folder, manifest, options, args)
         except ReviewedLabelsError as error:
             print(f"[stop] {error}")
             return None
-        if not dry_run:
+        if not args.dry_run:
             manifest.save()
     return total
 

@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union, get_args
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
 
 from finetune.data.fileio import write_atomic
-from finetune.data.labels import (FlagKind, Flags, answered_point, format_point, frame_list, is_visible, read_flags,
-                                  read_label_rows, read_review, write_flags, write_label_cells)
+from finetune.data.labels import (FLAG_KINDS, FlagKind, Flags, answered_point, format_point, frame_list, is_visible,
+                                  read_flags, read_label_rows, read_review, write_flags, write_label_cells)
 from finetune.data.workspace import unsaved_csv
 
 if TYPE_CHECKING:
@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 CONFIDENT_CONF = 0.70       # a draft at or above this confidence is not "uncertain"
 SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: filter, inset, trail
-FLAG_KINDS: Tuple[FlagKind, ...] = get_args(FlagKind)  # the kinds of frame flag an audit raises
 
 
 class Row:
