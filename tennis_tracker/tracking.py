@@ -175,8 +175,15 @@ class ROIMotionTracker:
         
         return dropped_rois
 
-    def get_rois(self, frame_idx):
-        """Return a list of (x1, y1, x2, y2) ROIs or None for full-frame, plus their tight visual bounds."""
+    def next_rois(self, frame_idx):
+        """Advance to ``frame_idx`` and return its motion ROIs.
+
+        Returns ``(rois, rois_visual)``: the ``(x1, y1, x2, y2)`` regions to
+        compute motion in (or None for the full frame) and their tight visual
+        bounds for the debug video. Each call is one frame: it advances the
+        periodic full-frame schedule and records the coasting ROI of every
+        track that has lost the ball, so call it exactly once per frame.
+        """
         if not self.cfg.roi_motion_enabled:
             return None, None
 

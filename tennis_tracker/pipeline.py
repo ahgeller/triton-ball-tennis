@@ -808,7 +808,7 @@ def run(cfg):
                 protect_mask_cuda_cache = None
                 protect_mask_cuda_cache_key = None
 
-            rois, rois_visual = roi_tracker.get_rois(frame_idx)
+            rois, rois_visual = roi_tracker.next_rois(frame_idx)
             if rois:
                 min_x = min(r[0] for r in rois)
                 min_y = min(r[1] for r in rois)
