@@ -55,6 +55,7 @@ Color = Tuple[int, int, int]
 # pixel thresholds on 1920x1080 video (``CourtScene.scale``; REFERENCE_DIAG_PX is its diagonal).
 _MODEL_FPS = 30.0
 EVENT_MERGE_S = 0.15  # events of one kind closer than this are one event
+GAP_SPEED_REFERENCE_FPS = 60.0  # the frame rate the gap-fit velocity thresholds were tuned at
 # A turn this far down a player's box is a landing at the feet, not a stroke.
 LOWER_BODY_FRACTION = 0.40
 _PLAYER_PAD_MIN_PX = 24.0  # horizontal padding around a player box
@@ -144,6 +145,12 @@ class CourtScene:
     def scale(self) -> float:
         """Pixel scale relative to the 1080p frame the thresholds were tuned on."""
         return self.diagonal / REFERENCE_DIAG_PX
+
+    @property
+    def gap_speed_scale(self) -> float:
+        """Scale for a gap fit's velocities (``ball_turns.gap_turns``), which are per source
+        frame: their thresholds were tuned at 60 FPS and 1080p, so ``scale`` times 60 / fps."""
+        return GAP_SPEED_REFERENCE_FPS / max(float(self.fps), 1.0) * self.scale
 
     def frames(self, seconds: float) -> int:
         return seconds_to_frames(seconds, self.fps)

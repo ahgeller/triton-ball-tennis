@@ -53,6 +53,31 @@ def test_kinematic_bounces_are_clustered_in_frame_order(monkeypatch):
     assert infer_kinematic_bounces(scene) == [gap, kink]
 
 
+def _gap_bounce_track(fps: float, vx: float, descent: float, rise: float) -> List:
+    """A ball crossing at `vx` px/s and descending `descent` px/s, hidden for 0.27 s around its
+    landing, then rising `rise` px/s: the same physical path whatever `fps` samples it."""
+    before, gap = round(0.33 * fps), round(0.27 * fps)
+    landing_t = (before + (gap - 1) / 2) / fps
+    landing_y = 100.0 + descent * landing_t
+    track: List = [FrameResult(cx=100.0 + vx * f / fps, cy=100.0 + descent * f / fps, conf=0.9, source="det")
+                   for f in range(before)]
+    track += [None] * gap
+    track += [FrameResult(cx=100.0 + vx * f / fps, cy=landing_y - rise * (f / fps - landing_t), conf=0.9, source="det")
+              for f in range(before + gap, before + gap + round(0.33 * fps))]
+    return track
+
+
+@pytest.mark.parametrize("descent, found", [(240.0, 1), (90.0, 0)])
+def test_a_hidden_landing_is_judged_the_same_at_30_and_60_fps(descent, found):
+    # The gap fit's velocities are per source frame and its gates were tuned at 60 FPS, where a
+    # 90 px/s descent (1.5 px/frame) is too slow for a landing. Unscaled, the same descent at
+    # 30 FPS (3 px/frame) passed; now both frame rates give one answer per physical path.
+    for fps in (30.0, 60.0):
+        track = _gap_bounce_track(fps, vx=60.0, descent=descent, rise=150.0)
+        scene = CourtScene(track, [{}] * len(track), fps, 1920, 1080)
+        assert len(infer_kinematic_bounces(scene)) == found, f"{fps:.0f} FPS"
+
+
 def test_contacts_need_a_nearby_player():
     track = [
         FrameResult(cx=100.0 + 20 * frame, cy=300.0, conf=0.9, source="det")

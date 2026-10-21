@@ -175,7 +175,8 @@ def _gap_bounces(scene: CourtScene) -> List[BounceEvent]:
     Fit the incoming and outgoing branches and keep only a strong down-to-up turn.
     """
     bounces = []
-    scale = scene.scale
+    # The fit's velocities are per source frame (speed_scale); the prominence is pixels (scale).
+    scale, speed_scale = scene.scale, scene.gap_speed_scale
     for gap in gap_turns(scene):
         incoming, outgoing = gap.incoming, gap.outgoing
         in_speed, out_speed, cosine = turn_metrics(incoming, outgoing)
@@ -187,10 +188,10 @@ def _gap_bounces(scene: CourtScene) -> List[BounceEvent]:
             float(gap.before[-1][1].cy), float(gap.after[0][1].cy)
         ))
         if not (
-            incoming[1] >= 2.0 * scale
-            and outgoing[1] <= -1.0 * scale
-            and in_speed >= 3.0 * scale
-            and out_speed >= 1.5 * scale
+            incoming[1] >= 2.0 * speed_scale
+            and outgoing[1] <= -1.0 * speed_scale
+            and in_speed >= 3.0 * speed_scale
+            and out_speed >= 1.5 * speed_scale
             and cosine <= 0.80
             and prominence >= 6.0 * scale
         ):

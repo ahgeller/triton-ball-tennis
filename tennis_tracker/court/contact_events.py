@@ -22,8 +22,6 @@ from .court_scene import (
 )
 
 
-# Gap-fit velocities are per source frame; their thresholds were tuned at 60 FPS.
-_GAP_SPEED_REFERENCE_FPS = 60.0
 # Gap contacts are decisive evidence, so they outrank any kink score when
 # contacts by the same player are merged.
 _GAP_CONTACT_SCORE_BONUS = 1000.0
@@ -94,7 +92,7 @@ def _nearest_player_to_either(
 def _gap_contacts(scene: CourtScene) -> List[ContactEvent]:
     """Occluded racket contacts, which often appear as a short reversing gap."""
     contacts = []
-    speed_scale = (_GAP_SPEED_REFERENCE_FPS / max(float(scene.fps), 1.0)) * scene.scale
+    speed_scale = scene.gap_speed_scale
     for gap in gap_turns(scene):
         in_speed, out_speed, cosine = turn_metrics(gap.incoming, gap.outgoing)
         if in_speed < 4.0 * speed_scale or out_speed < 2.0 * speed_scale:
