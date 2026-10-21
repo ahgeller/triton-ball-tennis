@@ -1,7 +1,7 @@
 """Candidate association: per-frame detector candidates become ``Detection`` rows, and the
 rows become tracks by greedy assignment with stale reconnect and anti-jump trail guards."""
 import math
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 from .config import SelectorConfig
 from .models import Detection, RawDetection, Track
@@ -56,6 +56,29 @@ def build_detections(
     return all_dets
 
 
+def _recent_speed_and_motion(observations: Sequence[Detection]) -> Tuple[float, float]:
+    """Over a track's last 8 observations (fewer when it has fewer): the path length per frame
+    between the first and last of them, and the share that sat on the motion mask."""
+    recent = observations[-8:]
+    recent_dt = max(recent[-1].frame - recent[0].frame, 1)
+    recent_distance = sum(
+        xy_dist(a.cx, a.cy, b.cx, b.cy)
+        for a, b in zip(recent, recent[1:])
+    )
+    recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
+    return recent_distance / float(recent_dt), recent_motion
+
+
+def _static_track_jumps(trk: Track, det: Detection, obs_speed: float, cfg: SelectorConfig, diag: float) -> bool:
+    """A track that sat still off the motion mask for its last 8 observations, offered a detection
+    on the mask that would need more than twice the static speed: a new object, not this one."""
+    if len(trk.observations) < 8 or not bool(det.on_motion):
+        return False
+    recent_speed, recent_motion = _recent_speed_and_motion(trk.observations)
+    static_speed = _static_speed_threshold(cfg, diag)
+    return recent_speed <= static_speed and recent_motion < 0.25 and obs_speed > 2.0 * static_speed
+
+
 def _association_plausible(
     trk: "Track",
     det: Detection,
@@ -78,17 +101,8 @@ def _association_plausible(
     obs_vy = (det.cy - trk.last_pos[1]) / dt
     obs_speed = math.sqrt(obs_vx * obs_vx + obs_vy * obs_vy)
 
-    recent = trk.observations[-8:]
-    if len(recent) == 8 and bool(det.on_motion):
-        recent_dt = max(recent[-1].frame - recent[0].frame, 1)
-        recent_speed = sum(
-            xy_dist(a.cx, a.cy, b.cx, b.cy)
-            for a, b in zip(recent, recent[1:])
-        ) / recent_dt
-        recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
-        static_speed = _static_speed_threshold(cfg, diag)
-        if recent_speed <= static_speed and recent_motion < 0.25 and obs_speed > 2.0 * static_speed:
-            return False
+    if _static_track_jumps(trk, det, obs_speed, cfg, diag):
+        return False
 
     exp_vx, exp_vy = trk.last_vel
     exp_speed = math.sqrt(exp_vx * exp_vx + exp_vy * exp_vy)
@@ -138,62 +152,68 @@ def _best_stale_reconnect(
     diag: float,
     guards: _TrailGuards,
 ) -> int:
-    """Index in `finished` of the stale track `det` may rejoin, or -1.
+    """Index in `finished` of the stale track `det` may rejoin, or -1: the lowest
+    ``_stale_reconnect_score``, the first such track on a tie."""
+    best_idx = -1
+    best_score = 1e12
+    for fi_idx, trk_prev in enumerate(finished):
+        score = _stale_reconnect_score(trk_prev, det, t, cfg, diag, guards)
+        if score is not None and score < best_score:
+            best_score = score
+            best_idx = fi_idx
+    return best_idx
+
+
+def _stale_reconnect_score(
+    trk_prev: Track,
+    det: Detection,
+    t: int,
+    cfg: SelectorConfig,
+    diag: float,
+    guards: _TrailGuards,
+) -> Optional[float]:
+    """How well `det` would rejoin the finished track `trk_prev` (lower is better), or None.
 
     Reconnects only to genuinely stale, moving tracks, within distance, step,
     prediction-residual, jump and plausibility bounds.
     """
-    best_idx = -1
-    best_score = 1e12
-    for fi_idx, trk_prev in enumerate(finished):
-        if trk_prev.num_obs < guards.stitch_min_obs:
-            continue
-        recent = trk_prev.observations[-8:]
-        recent_dt = max(recent[-1].frame - recent[0].frame, 1)
-        recent_distance = sum(
-            xy_dist(a.cx, a.cy, b.cx, b.cy)
-            for a, b in zip(recent, recent[1:])
-        )
-        recent_speed = recent_distance / float(recent_dt)
-        recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
-        if (
-            recent_speed < pxpf_at_fps(1.0, cfg.fps, clamp=True)
-            and recent_motion < 0.25
-        ):
-            continue
-        gap = int(t - trk_prev.last_obs_frame)
-        if gap < guards.stitch_min_stale or gap > guards.stitch_gap_frames:
-            continue
+    if trk_prev.num_obs < guards.stitch_min_obs:
+        return None
+    recent_speed, recent_motion = _recent_speed_and_motion(trk_prev.observations)
+    if (
+        recent_speed < pxpf_at_fps(1.0, cfg.fps, clamp=True)
+        and recent_motion < 0.25
+    ):
+        return None
+    gap = int(t - trk_prev.last_obs_frame)
+    if gap < guards.stitch_min_stale or gap > guards.stitch_gap_frames:
+        return None
 
-        raw_dist = math.sqrt(
-            (trk_prev.last_pos[0] - det.cx) ** 2 +
-            (trk_prev.last_pos[1] - det.cy) ** 2
-        )
-        if raw_dist > guards.stitch_dist_px:
-            continue
+    raw_dist = math.sqrt(
+        (trk_prev.last_pos[0] - det.cx) ** 2 +
+        (trk_prev.last_pos[1] - det.cy) ** 2
+    )
+    if raw_dist > guards.stitch_dist_px:
+        return None
 
-        step = raw_dist / float(max(gap, 1))
-        if step > guards.stitch_max_step_px:
-            continue
+    step = raw_dist / float(max(gap, 1))
+    if step > guards.stitch_max_step_px:
+        return None
 
-        pred_x, pred_y = trk_prev.predict(t)
-        pred_resid = math.sqrt((pred_x - det.cx) ** 2 + (pred_y - det.cy) ** 2)
-        pred_gate = guards.stitch_pred_resid_px * (1.0 + 0.25 * float(max(0, gap - 1)))
-        if pred_resid > pred_gate:
-            continue
+    pred_x, pred_y = trk_prev.predict(t)
+    pred_resid = math.sqrt((pred_x - det.cx) ** 2 + (pred_y - det.cy) ** 2)
+    pred_gate = guards.stitch_pred_resid_px * (1.0 + 0.25 * float(max(0, gap - 1)))
+    if pred_resid > pred_gate:
+        return None
 
-        jump_gate = guards.jump_break_px + guards.jump_break_growth_px * float(max(0, gap - 1))
-        if raw_dist > jump_gate:
-            continue
+    jump_gate = guards.jump_break_px + guards.jump_break_growth_px * float(max(0, gap - 1))
+    if raw_dist > jump_gate:
+        return None
 
-        if not _association_plausible(trk_prev, det, max(gap, 1), cfg, diag):
-            continue
+    if not _association_plausible(trk_prev, det, max(gap, 1), cfg, diag):
+        return None
 
-        score = 0.60 * pred_resid + 0.40 * raw_dist
-        if score < best_score:
-            best_score = score
-            best_idx = fi_idx
-    return best_idx
+    return 0.60 * pred_resid + 0.40 * raw_dist
 
 
 def _association_cost(
@@ -236,6 +256,58 @@ def _association_cost(
     return dist + (0.15 * dist_pred if trk.misses > 0 else 0.0)
 
 
+def _assignment_costs(
+    active: List[Track],
+    frame_dets: List[Detection],
+    t: int,
+    dt_cap: int,
+    cfg: SelectorConfig,
+    diag: float,
+    guards: _TrailGuards,
+) -> List[Tuple[float, int, int]]:
+    """Every (cost, track index, detection index) pair of frame `t` a gate lets through, in track
+    then detection order (the order the greedy assignment breaks cost ties in)."""
+    assignments = []
+    for ti, trk in enumerate(active):
+        pred = trk.predict(t)
+        dt = t - trk.last_obs_frame
+        dt_eff = min(max(dt, 1), dt_cap)
+        for di, det in enumerate(frame_dets):
+            cost = _association_cost(trk, det, pred, dt, dt_eff, cfg, diag, guards)
+            if cost is not None:
+                assignments.append((cost, ti, di))
+    return assignments
+
+
+def _assign_greedily(
+    assignments: List[Tuple[float, int, int]],
+    active: List[Track],
+    frame_dets: List[Detection],
+) -> Tuple[Set[int], Set[int]]:
+    """Update tracks with detections, cheapest pair first (a stable sort: ties keep the order of
+    ``_assignment_costs``), each track and detection used once. Returns the used track and
+    detection indices."""
+    assignments.sort(key=lambda x: x[0])
+    used_tracks: Set[int] = set()
+    used_dets: Set[int] = set()
+    for _cost, ti, di in assignments:
+        if ti in used_tracks or di in used_dets:
+            continue
+        active[ti].update(frame_dets[di])
+        used_tracks.add(ti)
+        used_dets.add(di)
+    return used_tracks, used_dets
+
+
+def _count_misses(active: List[Track], used_tracks: Set[int], max_gap_frames: int) -> None:
+    """A track that got no detection this frame misses one more; past `max_gap_frames` it dies."""
+    for ti, trk in enumerate(active):
+        if ti not in used_tracks:
+            trk.misses += 1
+            if trk.misses > max_gap_frames:
+                trk.alive = False
+
+
 def build_tracks(
     all_dets: List[List[Detection]],
     cfg: SelectorConfig
@@ -249,31 +321,9 @@ def build_tracks(
     guards = _TrailGuards(cfg, diag)
 
     for t, frame_dets in enumerate(all_dets):
-        assignments = []
-        for ti, trk in enumerate(active):
-            pred = trk.predict(t)
-            dt = t - trk.last_obs_frame
-            dt_eff = min(max(dt, 1), dt_cap)
-            for di, det in enumerate(frame_dets):
-                cost = _association_cost(trk, det, pred, dt, dt_eff, cfg, diag, guards)
-                if cost is not None:
-                    assignments.append((cost, ti, di))
-
-        assignments.sort(key=lambda x: x[0])
-        used_tracks = set()
-        used_dets = set()
-        for _cost, ti, di in assignments:
-            if ti in used_tracks or di in used_dets:
-                continue
-            active[ti].update(frame_dets[di])
-            used_tracks.add(ti)
-            used_dets.add(di)
-
-        for ti, trk in enumerate(active):
-            if ti not in used_tracks:
-                trk.misses += 1
-                if trk.misses > cfg.max_gap_frames:
-                    trk.alive = False
+        assignments = _assignment_costs(active, frame_dets, t, dt_cap, cfg, diag, guards)
+        used_tracks, used_dets = _assign_greedily(assignments, active, frame_dets)
+        _count_misses(active, used_tracks, cfg.max_gap_frames)
 
         # Unmatched detections: rejoin a stale track or start a new one
         for di, det in enumerate(frame_dets):
