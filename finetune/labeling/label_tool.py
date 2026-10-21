@@ -331,10 +331,10 @@ class Tool:
         x = float(min(max(x, 0.0), session.width - 1.0))
         y = float(min(max(y, 0.0), session.height - 1.0))
         if not is_visible(x, y, session.width, session.height):
-            # The label CSV marks "no ball" by a point in the top-right corner, and every reader in
-            # the workspace takes any point there to mean that. Stored, this would read back as absent.
-            print(f"[warn] frame {session.rows[session.cursor].frame}: ({x:.0f}, {y:.0f}) is in the top-right "
-                  f"corner the label files reserve for 'no ball', so it cannot be saved as a ball there")
+            # The label CSV marks "no ball" by the top-right pixel, and every reader in the workspace
+            # takes a point on it to mean that. Stored, this would read back as absent.
+            print(f"[warn] frame {session.rows[session.cursor].frame}: ({x:.0f}, {y:.0f}) is the top-right "
+                  f"pixel the label files reserve for 'no ball', so it cannot be saved as a ball there")
             return False
         row = session.rows[session.cursor]
         row.snapshot()

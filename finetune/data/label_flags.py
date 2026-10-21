@@ -15,14 +15,25 @@ from typing import Dict, List, Optional, Tuple
 
 from finetune.data.detector_metrics import REFERENCE_HEIGHT, REFERENCE_WIDTH
 from finetune.data.labels import FLAG_ANSWER_DECIMALS, FlagKind, Flags, Labels, read_flags, read_labels, write_flags
-from finetune.data.workspace import label_csv, read_manifest, suspect_json
+from finetune.data.workspace import find_video, label_csv, read_manifest, suspect_json, video_meta
 
 SAME_POINT_PX = 10.0 ** -FLAG_ANSWER_DECIMALS   # an answered flag's label and the current one agree within this
 
 
-def manifest_frame_size(row: Dict[str, str]) -> Tuple[float, float]:
-    """A clip's frame size from its clips.csv row, 1080p when the row does not say."""
-    return float(row.get("width") or REFERENCE_WIDTH), float(row.get("height") or REFERENCE_HEIGHT)
+def label_frame_size(clip: str, row: Dict[str, str]) -> Tuple[float, float]:
+    """The frame size a clip's "no ball" sentinel is read at: its clips.csv row's, else its video's,
+    else the 1080p reference. The guess comes last because a 720p sentinel read at 1080p is a
+    visible ball at (1279, 0)."""
+    if row.get("width") and row.get("height"):
+        return float(row["width"]), float(row["height"])
+    video = find_video(clip)
+    if video is not None:
+        try:
+            _, width, height = video_meta(video)[:3]
+            return float(width), float(height)
+        except RuntimeError:
+            pass
+    return float(REFERENCE_WIDTH), float(REFERENCE_HEIGHT)
 
 
 def open_flags(clip: str) -> Dict[str, List[int]]:
@@ -59,11 +70,11 @@ def flag_frames(clip: str, kind: FlagKind, frames: List[int], note: str) -> None
 
 def clip_labels(clip: str) -> Labels:
     """frame -> (x, y), or None where the label says no ball, from the clip's label file (the
-    frame size taken from clips.csv, 1080p when the clip is not listed)."""
+    frame size from clips.csv, else the video, else 1080p: ``label_frame_size``)."""
     path = label_csv(clip)
     if not path.is_file():
         return {}
-    width, height = manifest_frame_size(read_manifest().get(clip, {}))
+    width, height = label_frame_size(clip, read_manifest().get(clip, {}))
     return read_labels(path, int(width), int(height))
 
 

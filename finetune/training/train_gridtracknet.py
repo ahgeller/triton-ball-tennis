@@ -157,7 +157,7 @@ def metrics_of(recall: float, wrong: float, false_alarm: float = 0.0) -> Detecto
 
 def self_test() -> None:
     from finetune.data.labels import is_visible
-    expect(not is_visible(1910, 8, 1920, 1080) and is_visible(736, 508, 1920, 1080), "the invisible-ball corner")
+    expect(not is_visible(1919, 0, 1920, 1080) and is_visible(1910, 8, 1920, 1080), "the invisible-ball sentinel")
     target = make_target([[960, 540], None, None, None, None], 1920, 1080)
     expect(bool(target[0, 13, 24] == 1), "the target cell of a centred ball")
     prediction = torch.full((1, 15, GRID_ROWS, GRID_COLS), 0.1, requires_grad=True)

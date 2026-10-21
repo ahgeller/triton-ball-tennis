@@ -332,12 +332,13 @@ def test_stepping_back_near_the_start_hits_the_cache():
     assert Capture.opened <= 2                       # was one reopen per press
 
 
-def test_point_in_the_no_ball_corner_is_refused():
+def test_a_point_on_the_no_ball_pixel_is_refused():
     tool = make_tool()
     before = (tool.session.rows[0].x, tool.session.rows[0].y)
-    assert not tool.set_point(1270, 10)  # would read back as "no ball"
+    assert not tool.set_point(tool.session.width - 1, 0)  # would read back as "no ball"
     assert (tool.session.rows[0].x, tool.session.rows[0].y) == before
     assert not tool.session.rows[0].reviewed
+    assert tool.set_point(1270, 10)     # the rest of the corner is image
     assert tool.set_point(600, 300)
 
 

@@ -30,8 +30,8 @@ from finetune.data.workspace import review_json
 
 COLUMNS = ("frame", "ball_x", "ball_y")
 FRAME_PATTERN = re.compile(r"frame_(\d+)")
-SENTINEL_X_SHARE = 0.95      # x at or beyond this share of the width ...
-SENTINEL_Y_SHARE = 0.05      # ... and y at or below this share of the height means "no ball"
+SENTINEL_REACH_PX = 1.5      # this close to the sentinel pixel means "no ball" (a sentinel scaled from
+                             # another frame size lands near the pixel, not on it)
 COORDINATE_DECIMALS = 2      # how the writers format a visible point
 FLAG_ANSWER_DECIMALS = 2     # how an answered flag's label is recorded; same_point compares at this precision
 
@@ -89,8 +89,14 @@ def frame_name(index: int) -> str:
 
 
 def is_visible(x: float, y: float, width: int, height: int) -> bool:
-    """False for a point in the corner the files reserve for "no ball"."""
-    return not (x >= width * SENTINEL_X_SHARE and y <= height * SENTINEL_Y_SHARE)
+    """False for the top-right pixel the files reserve for "no ball" (within SENTINEL_REACH_PX of it).
+
+    Every other point is a ball, the rest of that corner included: the readers once treated the top
+    5 % by 5 % of the image as the sentinel, which read a lob into the corner as no ball and made
+    the label tool refuse to save one. ``height`` is kept for the callers; the pixel is set by the
+    width alone.
+    """
+    return not (x >= width - 1 - SENTINEL_REACH_PX and y <= SENTINEL_REACH_PX)
 
 
 def sentinel(width: int) -> Tuple[int, int]:

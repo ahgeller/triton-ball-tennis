@@ -24,12 +24,13 @@ def test_a_cell_that_is_not_exactly_frame_index_is_an_error_not_a_guess(cell):
         labels.frame_index(cell)
 
 
-def test_the_top_right_corner_means_no_ball():
+def test_only_the_top_right_pixel_means_no_ball():
     assert labels.sentinel(1920) == (1919, 0)
     assert not labels.is_visible(1919, 0, 1920, 1080)
-    assert not labels.is_visible(1824, 54, 1920, 1080)      # anywhere in the 5% corner
-    assert labels.is_visible(1823, 54, 1920, 1080)
-    assert labels.is_visible(1900, 55, 1920, 1080)
+    assert not labels.is_visible(1918.5, 0, 1920, 1080)     # a 720p sentinel scaled to 1080p
+    assert labels.is_visible(1917, 0, 1920, 1080)
+    assert labels.is_visible(1919, 2, 1920, 1080)
+    assert labels.is_visible(1824, 54, 1920, 1080)          # the old 5 % corner is image
     assert labels.is_visible(0, 0, 1920, 1080)
 
 
