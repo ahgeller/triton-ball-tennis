@@ -14,9 +14,6 @@ COLOR_RAW = (0, 180, 180)
 COLOR_SEARCH = (255, 0, 255)
 COLOR_GUIDE = (255, 255, 255)
 COLOR_GUIDE_INTERP = (180, 220, 255)
-COLOR_GAP = (0, 0, 0)
-GAP_END_TRIM_PX = 6
-ENABLE_GAP_CONNECTORS = False
 
 _SOURCE_BASE_COLOR: Dict[str, Tuple[int, int, int]] = {
     "det": (40, 255, 40),
@@ -24,7 +21,6 @@ _SOURCE_BASE_COLOR: Dict[str, Tuple[int, int, int]] = {
     "carry": COLOR_PHYSICS,
     "interp": COLOR_PHYSICS,
     "guide": COLOR_GUIDE,
-    "gap": COLOR_GAP,
 }
 
 

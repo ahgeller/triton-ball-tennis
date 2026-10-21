@@ -65,20 +65,6 @@ def _nms_xyxy_np(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -
         order = rest[iou <= float(iou_thres)]
     return np.asarray(keep, dtype=np.int32)
 
-def _motion_combined_from_hsv(hsv_prev: np.ndarray, hsv_curr: np.ndarray) -> np.ndarray:
-    """Return per-pixel motion strength from HSV channel deltas."""
-    v_diff = cv2.absdiff(hsv_curr[:, :, 2], hsv_prev[:, :, 2])
-    s_diff = cv2.absdiff(hsv_curr[:, :, 1], hsv_prev[:, :, 1])
-    h0 = hsv_prev[:, :, 0].astype(np.int16)
-    h1 = hsv_curr[:, :, 0].astype(np.int16)
-    h_diff_raw = np.abs(h1 - h0)
-    h_diff = np.minimum(h_diff_raw, 180 - h_diff_raw).astype(np.uint8)
-
-    combined = np.maximum(v_diff, np.maximum(
-        (s_diff * 1.5).clip(0, 255).astype(np.uint8),
-        (h_diff * 1.2).clip(0, 255).astype(np.uint8)))
-    return cv2.GaussianBlur(combined, (3, 3), 0)
-
 def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) -> np.ndarray:
     """C++ probe-style frame delta: max(gray, V, scaled-S), blurred 3x3."""
     prev_hsv = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2HSV)
@@ -92,13 +78,6 @@ def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) 
     combined = np.maximum(gray_diff, np.maximum(v_diff, s_scaled))
     return cv2.GaussianBlur(combined, (3, 3), 0)
 
-
-def compute_motion_sv_from_hsv(
-    hsv_prev: np.ndarray, hsv_curr: np.ndarray, thresh: float
-) -> np.ndarray:
-    combined = _motion_combined_from_hsv(hsv_prev, hsv_curr)
-    _, mask = cv2.threshold(combined, int(thresh), 255, cv2.THRESH_BINARY)
-    return cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL_3x3)
 
 def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Optional[np.ndarray]:
     """Apply the active raw-mask morphology without appearance or size heuristics."""
@@ -124,7 +103,11 @@ def refine_raw_motion_temporal_cpu(
     next_bgr: Optional[np.ndarray],
     cfg: Config,
 ) -> Optional[np.ndarray]:
-    """Clean raw foreground with the C++ probe's temporal movement test."""
+    """Clean raw foreground with the C++ probe's temporal movement test.
+
+    CPU reference for the CUDA gate in ``preprocess_frame_cuda``; the runtime
+    itself only uses the CUDA path (see tests/test_fixes.py).
+    """
     if raw_motion_u8 is None:
         return None
     refined = raw_motion_u8
@@ -145,40 +128,7 @@ def refine_raw_motion_temporal_cpu(
         refined = cv2.bitwise_and(refined, temporal.astype(np.uint8) * 255)
     return _clean_raw_motion_mask(refined, cfg)
 
-def compute_motion_sv_3frame_hsv(
-    hsv_prev,
-    hsv_curr,
-    hsv_next,
-    thresh: float,
-    soft_temporal: bool = False,
-    temporal_lo_frac: float = 0.55,
-    temporal_hi_mult: float = 1.35,
-    v_min: float = 60.0,
-) -> np.ndarray:
-    c1 = _motion_combined_from_hsv(hsv_prev, hsv_curr)
-    c2 = _motion_combined_from_hsv(hsv_curr, hsv_next)
-
-    t = int(max(1, round(float(thresh))))
-    if soft_temporal:
-        lo = int(max(1, round(t * max(0.10, min(1.0, float(temporal_lo_frac))))))
-        hi = int(max(t + 1, round(t * max(1.0, float(temporal_hi_mult)))))
-        mask = (
-            ((c1 >= t) & (c2 >= lo)) |
-            ((c2 >= t) & (c1 >= lo)) |
-            (c1 >= hi) |
-            (c2 >= hi)
-        ).astype(np.uint8) * 255
-    else:
-        m1 = (c1 >= t).astype(np.uint8) * 255
-        m2 = (c2 >= t).astype(np.uint8) * 255
-        mask = cv2.bitwise_and(m1, m2)
-
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL_3x3)
-    bright = (hsv_curr[:, :, 2] > float(v_min)).astype(np.uint8) * 255
-    return cv2.bitwise_and(mask, bright)
-
-
-def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, buffers=None):
+def filter_boost_mask(raw_motion, min_area, max_area, cfg, buffers=None):
     """Filter motion mask - OPTIMIZED with pre-allocated buffers and single CC pass.
     
     Performance improvements:
@@ -405,21 +355,6 @@ def build_court_side_protect_mask(h, w, court_keypoints):
 
     return protect if protect is not None and np.any(protect) else None
 
-def build_protect_mask(h, w, player_bboxes=None, court_keypoints=None, player_pad=0):
-    # Player-area masking removed: keep only court-side protection.
-    # This prevents motion/boost suppression around players during hits.
-    return build_court_side_protect_mask(h, w, court_keypoints)
-
-def apply_exclude_mask_u8(mask_u8, exclude_mask):
-    """Zero out a uint8 mask where exclude_mask is True."""
-    if mask_u8 is None or exclude_mask is None:
-        return mask_u8
-    if not np.any(exclude_mask):
-        return mask_u8
-    out = mask_u8.copy()
-    out[exclude_mask] = 0
-    return out
-
 def _pack_mask_u8(mask_u8, roi=None):
     """Pack a uint8/bool 2D mask to bits for compact storage.
 
@@ -533,86 +468,30 @@ def _draw_probe_motion_overlay(
                 (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (210, 210, 210), 1, cv2.LINE_AA)
     return out
 
-def preprocess_frame(frame, raw_motion, boost_mask, cfg,
-                     player_bboxes=None, court_keypoints=None,
-                     visualize=False, hsv_cached=None,
-                     protect_mask_cached=None,
-                     rois_dbg=None):
-    # Visualize mode: overlay boost/motion directly, skip HSV work
-    if visualize:
-        out = frame.copy()
-        if raw_motion is None and boost_mask is None:
-            return out
-
-        motion_vis = (raw_motion > 0) if (raw_motion is not None and cfg.debug_show_raw_motion) else np.zeros(out.shape[:2], dtype=bool)
-        boost_vis = (boost_mask > 0) if boost_mask is not None else np.zeros_like(motion_vis)
-
-        # Keep protected regions (players + side-outside court) visually neutral.
-        protect_mask = protect_mask_cached if protect_mask_cached is not None else \
-            build_protect_mask(
-                frame.shape[0], frame.shape[1],
-                player_bboxes=player_bboxes,
-                court_keypoints=court_keypoints,
-                player_pad=cfg.player_bbox_pad)
-        if bool(cfg.debug_probe_motion_style):
-            return _draw_probe_motion_overlay(
-                frame, raw_motion, boost_mask, cfg,
-                protect_mask=protect_mask,
-                rois_dbg=rois_dbg,
-            )
-        if protect_mask is not None:
-            motion_vis = motion_vis & (~protect_mask)
-            boost_vis = boost_vis & (~protect_mask)
-
-        out[motion_vis & (~boost_vis)] = (0, 0, 128)
-        out[boost_vis] = (0, 255, 255)
-        if court_keypoints is not None:
-            draw_court_side_guides(out, court_keypoints, color=(0, 0, 255), thickness=2)
-            
-        return out
-
-    hsv = hsv_cached.copy() if hsv_cached is not None else cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
-    s_f = s.astype(np.float32)
-    v_f = v.astype(np.float32)
-    protect_mask = protect_mask_cached if protect_mask_cached is not None else \
-        build_protect_mask(
-            frame.shape[0], frame.shape[1],
-            player_bboxes=player_bboxes,
-            court_keypoints=court_keypoints,
-            player_pad=cfg.player_bbox_pad)
-    bm = None
-
-    if boost_mask is not None:
-        bm = boost_mask > 0
-        if protect_mask is not None:
-            bm = bm & (~protect_mask)
-        s_f[bm] = np.clip(s_f[bm] * cfg.pre_sat_boost, 0, 255)
-        v_f[bm] = np.clip(v_f[bm] * cfg.pre_val_boost, 0, 255)
-
-    if raw_motion is not None:
-        if cfg.motion_dilate > 1:
-            k = _get_kernel(cfg.motion_dilate)
-            motion_keep = cv2.dilate(raw_motion, k, iterations=1)
-        else:
-            motion_keep = raw_motion
-        static = (motion_keep == 0) & ~((s <= 110) & (v >= 120))
-        if protect_mask is not None:
-            static = static & (~protect_mask)
-        v_f[static] = np.clip(v_f[static] * cfg.dim_static, 0, 255)
-        s_copy = s.copy()
-        s_copy[static] = np.clip(
-            s_copy[static].astype(np.float32) * cfg.static_sat_scale, 0, 255).astype(np.uint8)
-        s = s_copy
-
-    v = v_f.astype(np.uint8)
-    if cfg.pre_hue_shift > 0.0 and bm is not None:
-        h = h.copy()
-        h_f = h.astype(np.float32)
-        h_f[bm] = np.clip(h_f[bm] * (1.0 - cfg.pre_hue_shift) + 30 * cfg.pre_hue_shift, 0, 179)
-        h = h_f.astype(np.uint8)
-
-    return cv2.cvtColor(cv2.merge((h, s, v)), cv2.COLOR_HSV2BGR)
+def draw_motion_debug_frame(frame, raw_motion, boost_mask, cfg,
+                            court_keypoints=None, protect_mask=None, rois_dbg=None):
+    """The motion-debug video frame: the raw and boost masks painted over the
+    source frame, plus the court side guides, or the probe-style overlay when
+    ``cfg.debug_probe_motion_style`` is set. Drawing only."""
+    if raw_motion is None and boost_mask is None:
+        return frame.copy()
+    if bool(cfg.debug_probe_motion_style):
+        return _draw_probe_motion_overlay(
+            frame, raw_motion, boost_mask, cfg,
+            protect_mask=protect_mask,
+            rois_dbg=rois_dbg,
+        )
+    out = frame.copy()
+    motion_vis = (raw_motion > 0) if (raw_motion is not None and cfg.debug_show_raw_motion) else np.zeros(out.shape[:2], dtype=bool)
+    boost_vis = (boost_mask > 0) if boost_mask is not None else np.zeros_like(motion_vis)
+    if protect_mask is not None:
+        motion_vis = motion_vis & (~protect_mask)
+        boost_vis = boost_vis & (~protect_mask)
+    out[motion_vis & (~boost_vis)] = (0, 0, 128)
+    out[boost_vis] = (0, 255, 255)
+    if court_keypoints is not None:
+        draw_court_side_guides(out, court_keypoints, color=(0, 0, 255), thickness=2)
+    return out
 
 def _hsv_to_bgr_cuda(h_t, s_t, v_t):
     """Convert HSV tensors (all 0-1 range) to BGR tensor (0-255 uint8)."""
@@ -655,7 +534,7 @@ def _motion_probe_delta_cuda(prev_frame_t, curr_frame_t, prev_v_t, prev_s_t, cur
 
 @_torch_no_grad()
 def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg,
-                          player_bboxes=None, court_keypoints=None,
+                          court_keypoints=None,
                           protect_mask_cached=None, rois=None,
                           skip_dim=False,
                           return_cuda_frame=False,
@@ -720,11 +599,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     protect_t = protect_mask_cuda_cached
     if protect_t is None:
         protect_np = protect_mask_cached if protect_mask_cached is not None else \
-            build_protect_mask(
-                frame.shape[0], frame.shape[1],
-                player_bboxes=player_bboxes,
-                court_keypoints=court_keypoints,
-                player_pad=cfg.player_bbox_pad)
+            build_court_side_protect_mask(frame.shape[0], frame.shape[1], court_keypoints)
         if protect_np is not None:
             protect_t = torch.from_numpy(protect_np).to(device)
 
@@ -863,8 +738,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                 if raw_motion_roi_u8.max() > 0:
                     t_cc = time.perf_counter() if perf is not None else 0.0
                     narrow_roi = filter_boost_mask(
-                        raw_motion_roi_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
-                        player_bboxes=player_bboxes)
+                        raw_motion_roi_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg)
                     if perf is not None:
                         perf_cc += (time.perf_counter() - t_cc)
                     np.maximum(boost_mask_u8[ry1:ry2, rx1:rx2], narrow_roi, out=boost_mask_u8[ry1:ry2, rx1:rx2])
@@ -872,8 +746,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                 # Wide detector-grade boost from ungated raw motion
                 if wide_distinct and wide_roi_u8 is not None and wide_roi_u8.max() > 0:
                     wide_roi = filter_boost_mask(
-                        wide_roi_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
-                        player_bboxes=player_bboxes)
+                        wide_roi_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg)
                     np.maximum(boost_detector_u8[ry1:ry2, rx1:rx2], wide_roi, out=boost_detector_u8[ry1:ry2, rx1:rx2])
 
             if boost_mask_u8.max() == 0:
@@ -894,14 +767,12 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
             raw_motion_u8 = _clean_raw_motion_mask(raw_motion_u8, cfg)
             t_cc = time.perf_counter() if perf is not None else 0.0
             boost_mask_u8 = filter_boost_mask(
-                raw_motion_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
-                player_bboxes=player_bboxes)
+                raw_motion_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg)
             if perf is not None:
                 perf_cc += (time.perf_counter() - t_cc)
             if wide_distinct and wide_u8 is not None:
                 boost_detector_u8 = filter_boost_mask(
-                    wide_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
-                    player_bboxes=player_bboxes)
+                    wide_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg)
                 if boost_detector_u8 is not None and boost_detector_u8.max() == 0:
                     boost_detector_u8 = None
             else:

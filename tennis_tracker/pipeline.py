@@ -12,10 +12,10 @@ from ball_in_play_selector import select_ball_in_play, FrameResult
 from .config import Config
 from .utils import _detect_device, check_capabilities, _resolve_engine_path, find_ball_class_id_from_names, read_engine_class_names
 from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
-from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
+from .motion import _pack_mask_u8, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, draw_motion_debug_frame
 from .tracking import ROIMotionTracker
 from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
-from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
+from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP
 from .court_minimap import draw_court_minimap
 from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
@@ -509,8 +509,8 @@ def _validate_io_paths(cfg) -> Path:
     return input_path
 
 
-def _detector_can_overlap(detector) -> bool:
-    return bool(getattr(detector, "use_async", False) and int(getattr(detector, "async_slots", 1)) >= 2)
+def _detector_can_overlap(detector: BallDetectorBackend) -> bool:
+    return bool(detector.use_async and int(detector.async_slots) >= 2)
 
 
 def run(cfg):
@@ -529,7 +529,7 @@ def run(cfg):
         raise RuntimeError(f"CUDA device {device_index} is unavailable.")
     cfg.device = str(device_index)
     cfg, encoder = check_capabilities(cfg, device_str)
-    is_cuda = device_str not in ("cpu", "mps")
+    cuda_device = torch.device(f"cuda:{device_index}")
 
     model_names = None
     detector: BallDetectorBackend
@@ -589,13 +589,7 @@ def run(cfg):
         os.makedirs(os.path.dirname(cfg.output_guide_path) or ".", exist_ok=True)
         guide_writer = VideoWriter(cfg.output_guide_path, fps, w, h, cfg, encoder=encoder)
 
-    # Preprocessing mode
-    use_cuda = cfg.enable_preprocess and is_cuda
-    if use_cuda:
-        print("[preprocess] CUDA S+V motion path")
-        cuda_device = torch.device(f"cuda:{device_index}")
-    else:
-        print("[preprocess] CPU S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
+    print("[preprocess] CUDA S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
 
     # Threaded frame reader - overlaps decode with GPU inference
     reader = ThreadedFrameReader(cap, prefetch=max(2, int(cfg.frame_reader_prefetch)))
@@ -610,7 +604,7 @@ def run(cfg):
     prev_frame_v_t = prev_frame_s_t = None
     curr_frame_gpu_t = next_frame_gpu_t = prev_frame_gpu_t = None
     frame_uploader = None
-    if use_cuda:
+    if cfg.enable_preprocess:
         try:
             frame_uploader = _PinnedFrameUploader(frame_curr.shape[0], frame_curr.shape[1], cuda_device)
         except Exception:
@@ -621,13 +615,7 @@ def run(cfg):
             next_frame_gpu_t = _cuda_frame_to_chw_f32(frame_next, cuda_device, uploader=frame_uploader)
             next_v_t, next_s_t = _cuda_vs_tensors(None, cuda_device, gpu_tensor=next_frame_gpu_t)
 
-    frame_prev_cpu = None
-    hsv_prev = hsv_curr = hsv_next = None
-    master_bg_v = master_bg_s = master_var_v = master_var_s = master_hsv = None
-    if not use_cuda and cfg.enable_preprocess:
-        hsv_curr = cv2.cvtColor(frame_curr, cv2.COLOR_BGR2HSV)
-        if frame_next is not None:
-            hsv_next = cv2.cvtColor(frame_next, cv2.COLOR_BGR2HSV)
+    master_bg_v = master_bg_s = master_var_v = master_var_s = None
     if info_timing:
         timing["init_total"] = time.perf_counter() - init_perf_t0
     pass1_perf_t0 = time.perf_counter() if info_timing else 0.0
@@ -642,7 +630,6 @@ def run(cfg):
     all_rois = []             # per-frame ROI boundary (or None)
     all_ghost_rois = []       # per-frame ghost-deleted ROI boxes (shown red in debug)
     all_player_boxes = []     # per-frame player bboxes
-    all_player_boxes_preproc = []  # per-frame player boxes used during preprocessing
     all_court_kps = []        # per-frame court keypoints
     frame_idx = 0
 
@@ -655,14 +642,6 @@ def run(cfg):
     protect_mask_cuda_cache = None
     protect_mask_cuda_cache_key = None
     prev_raw_motion_cuda = None  # CUDA boolean mask from previous frame - avoids CPU -> GPU re-upload in WTA
-    prev_raw_motion_u8 = None    # CPU uint8 mask from previous frame for HSV WTA background
-    collect_motion_stats = bool(cfg.save_motion_debug)
-    motion_raw_px_before_exclude = 0
-    motion_boost_px_before_exclude = 0
-    motion_raw_px_after_exclude = 0
-    motion_boost_px_after_exclude = 0
-    motion_frames_raw = 0
-    motion_frames_boost = 0
     pre_cuda_perf: Optional[Dict[str, float]] = {"pre_cuda_total": 0.0, "pre_cuda_raw_d2h": 0.0, "pre_cuda_cc_filter": 0.0} if info_timing else None
 
     # Skip-frame detection state
@@ -672,7 +651,7 @@ def run(cfg):
     skip_preprocess_dim = bool(cfg.skip_preprocess_dim)
     last_aux_detect_frame = -10**9
     aux_force_interval = max(1, int(cfg.aux_force_interval))
-    use_cuda_pre_frame = bool(use_cuda and detector.supports_cuda_frame())
+    use_cuda_pre_frame = bool(cfg.enable_preprocess and detector.supports_cuda_frame())
     can_overlap_ball_inference = _detector_can_overlap(detector)
     if use_cuda_pre_frame:
         print("[pass 1] CUDA zero-copy preprocess->detector path enabled")
@@ -723,7 +702,6 @@ def run(cfg):
         all_rois.append(record.get("rois_list"))
         all_ghost_rois.append([])  # placeholder; ghosts filled retroactively
         all_player_boxes.append(record["player_dict"])
-        all_player_boxes_preproc.append(record["player_boxes"])
         all_court_kps.append(record["court_kps"])
         if detector_input_writer is not None:
             # Stream debug-preprocessed frames immediately to avoid huge RAM growth.
@@ -763,7 +741,7 @@ def run(cfg):
                 print("[pass 1] RAM frame cache disabled (MemoryError)")
 
         # Update Weighted Temporal Average Backgrounds
-        if use_cuda:
+        if cfg.enable_preprocess:
             if master_bg_v is None:
                 # Initialize CUDA background at raw S+V values.
                 master_bg_v = curr_v_t.clone()
@@ -787,21 +765,6 @@ def run(cfg):
                 master_var_s.mul_(1.0 - alpha_mask).add_(alpha_mask * s_diff_sq)
                 master_bg_v.mul_(1.0 - alpha_mask).add_(curr_v_t * alpha_mask)
                 master_bg_s.mul_(1.0 - alpha_mask).add_(curr_s_t * alpha_mask)
-        elif cfg.enable_preprocess and hsv_curr is not None:
-            if master_hsv is None:
-                master_hsv = hsv_curr.copy().astype(np.float32)
-            else:
-                if prev_raw_motion_u8 is not None:
-                    # CPU HSV background: mirror CUDA behavior with reduced but non-zero
-                    # updates at previous-frame motion pixels to avoid permanent ghosts.
-                    motion_freeze_alpha = float(cfg.motion_freeze_alpha)
-                    alpha_arr = np.full_like(master_hsv[:, :, 0], cfg.background_alpha, dtype=np.float32)
-                    alpha_arr[prev_raw_motion_u8 > 0] = motion_freeze_alpha
-                    alpha_arr = np.stack([alpha_arr] * 3, axis=-1)
-                    master_hsv = master_hsv * (1.0 - alpha_arr) + hsv_curr.astype(np.float32) * alpha_arr
-                else:
-                    cv2.accumulateWeighted(hsv_curr, master_hsv, cfg.background_alpha)
-
         # Skip-frame detection: when skip_n > 1 run the detector every Nth frame
         # and let the selector interpolate the short gaps.
         _do_detect = True
@@ -827,7 +790,7 @@ def run(cfg):
             player_pending = player_det.detect_async_start(
                 frame_curr,
                 frame_idx,
-                frame_gpu_t=curr_frame_gpu_t if use_cuda else None,
+                frame_gpu_t=curr_frame_gpu_t,
             )
             player_boxes = [list(pb) for pb in player_det.cached_boxes] if player_det.cached_boxes else []
             last_aux_detect_frame = frame_idx
@@ -849,150 +812,65 @@ def run(cfg):
                     frame_curr.shape[0], frame_curr.shape[1], court_kps
                 )
                 side_mask_cache_key = side_key
-            side_mask = side_mask_cache
-            protect_mask = side_mask
+            protect_mask = side_mask_cache
             if info_timing:
                 timing["pass1_pre_mask_build"] = timing.get("pass1_pre_mask_build", 0.0) + (time.perf_counter() - pre_mask_t0)
 
-            if use_cuda:
-                protect_mask_cuda = None
-                if protect_mask is not None:
-                    if (protect_mask_cuda_cache is None) or (side_key != protect_mask_cuda_cache_key):
-                        protect_mask_cuda_cache = torch.from_numpy(protect_mask).to(cuda_device)
-                        protect_mask_cuda_cache_key = side_key
-                    protect_mask_cuda = protect_mask_cuda_cache
-                else:
-                    protect_mask_cuda_cache = None
-                    protect_mask_cuda_cache_key = None
-
-                rois, rois_visual = roi_tracker.get_rois(frame_idx)
-                if rois:
-                    min_x = min(r[0] for r in rois)
-                    min_y = min(r[1] for r in rois)
-                    max_x = max(r[2] for r in rois)
-                    max_y = max(r[3] for r in rois)
-                    roi_for_pack = (min_x, min_y, max_x, max_y)
-                    roi_used_count += len(rois)
-                else:
-                    roi_for_pack = None
-                    fullframe_count += 1
-                _skip_dim = bool(
-                    detector.uses_raw_frames
-                    or (
-                        skip_preprocess_dim
-                        and len(roi_tracker.tracks) > 0
-                        and roi_tracker.ball_visible
-                    )
-                )
-                need_cpu_pre_frame = bool(
-                    detector_input_writer is not None
-                    or (not use_cuda_pre_frame and not detector.uses_raw_frames)
-                )
-                pre_frame, raw_motion_u8, boost_mask_u8, _, _, pre_frame_cuda = \
-                    preprocess_frame_cuda(frame_curr, master_bg_v, master_bg_s,
-                                          master_var_v, master_var_s, cfg,
-                                          player_bboxes=player_boxes,
-                                          court_keypoints=court_kps,
-                                          protect_mask_cached=protect_mask,
-                                          rois=rois,
-                                          skip_dim=_skip_dim,
-                                          return_cuda_frame=bool(use_cuda_pre_frame and _do_detect),
-                                          need_cpu_frame=need_cpu_pre_frame,
-                                          frame_gpu_t=curr_frame_gpu_t,
-                                          curr_v_cached=curr_v_t,
-                                          curr_s_cached=curr_s_t,
-                                          prev_frame_gpu_t=prev_frame_gpu_t,
-                                          prev_frame_v_cached=prev_frame_v_t,
-                                          prev_frame_s_cached=prev_frame_s_t,
-                                          next_frame_gpu_t=next_frame_gpu_t,
-                                          next_v_cached=next_v_t,
-                                          next_s_cached=next_s_t,
-                                          protect_mask_cuda_cached=protect_mask_cuda,
-                                          need_detector_boost=not detector.uses_raw_frames,
-                                          perf=pre_cuda_perf)
-                if detector.uses_raw_frames:
-                    pre_frame = frame_curr
+            if protect_mask is not None:
+                if (protect_mask_cuda_cache is None) or (side_key != protect_mask_cuda_cache_key):
+                    protect_mask_cuda_cache = torch.from_numpy(protect_mask).to(cuda_device)
+                    protect_mask_cuda_cache_key = side_key
+                protect_mask_cuda = protect_mask_cuda_cache
             else:
-                rois, rois_visual = roi_tracker.get_rois(frame_idx) if cfg.roi_motion_enabled else (None, None)
-                if rois:
-                    min_x = min(r[0] for r in rois)
-                    min_y = min(r[1] for r in rois)
-                    max_x = max(r[2] for r in rois)
-                    max_y = max(r[3] for r in rois)
-                    roi_for_pack = (min_x, min_y, max_x, max_y)
-                    roi_used_count += len(rois)
-                else:
-                    roi_for_pack = None
-                    fullframe_count += 1
+                protect_mask_cuda_cache = None
+                protect_mask_cuda_cache_key = None
 
-                if master_hsv is not None:
-                    master_hsv_u8 = master_hsv.astype(np.uint8)
-                    if rois:
-                        rm_full = np.zeros((frame_curr.shape[0], frame_curr.shape[1]), dtype=np.uint8)
-                        rm_ungated_full = np.zeros_like(rm_full)
-                        for r in rois:
-                            rx1, ry1, rx2, ry2 = r
-                            rm_roi_ungated = compute_motion_sv_from_hsv(
-                                master_hsv_u8[ry1:ry2, rx1:rx2], hsv_curr[ry1:ry2, rx1:rx2], cfg.motion_thresh)
-                            rm_roi = refine_raw_motion_temporal_cpu(
-                                rm_roi_ungated,
-                                frame_prev_cpu[ry1:ry2, rx1:rx2] if frame_prev_cpu is not None else None,
-                                frame_curr[ry1:ry2, rx1:rx2],
-                                frame_next[ry1:ry2, rx1:rx2] if frame_next is not None else None,
-                                cfg,
-                            )
-                            np.maximum(rm_full[ry1:ry2, rx1:rx2], rm_roi, out=rm_full[ry1:ry2, rx1:rx2])
-                            np.maximum(rm_ungated_full[ry1:ry2, rx1:rx2], rm_roi_ungated, out=rm_ungated_full[ry1:ry2, rx1:rx2])
-                        rm = rm_full
-                        rm_ungated = rm_ungated_full
-                    else:
-                        rm_ungated = compute_motion_sv_from_hsv(master_hsv_u8, hsv_curr, cfg.motion_thresh)
-                        rm = refine_raw_motion_temporal_cpu(rm_ungated, frame_prev_cpu, frame_curr, frame_next, cfg)
-                else:
-                    rm = None
-                    rm_ungated = None
-
-                # Two boost masks:
-                #   boost_mask_u8 - narrow, gated source -> returned to selector
-                #     (preserves selector precision; frame-870-class FPs stay suppressed).
-                #   boost_detector_u8 - wide, ungated source -> drives the HSV brightening
-                #     the detector input sees (recall-positive: rescues detector misses on frames
-                #     where the temporal/color gate would have suppressed a real ball blob).
-                raw_motion_u8 = rm
-                def _build_boost(src):
-                    if src is None:
-                        return None
-                    if rois:
-                        out = np.zeros_like(src)
-                        for r in rois:
-                            rx1, ry1, rx2, ry2 = r
-                            roi_slice = src[ry1:ry2, rx1:rx2]
-                            if roi_slice.max() > 0:
-                                filtered_roi = filter_boost_mask(
-                                    roi_slice, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
-                                    player_bboxes=player_boxes)
-                                np.maximum(out[ry1:ry2, rx1:rx2], filtered_roi, out=out[ry1:ry2, rx1:rx2])
-                        return out if out.max() > 0 else None
-                    result = filter_boost_mask(
-                        src, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
-                        player_bboxes=player_boxes)
-                    if result is None or result.max() == 0:
-                        return None
-                    return result
-
-                boost_mask_u8 = _build_boost(rm)
-                if rm_ungated is not None and rm_ungated is not rm:
-                    boost_detector_u8 = _build_boost(rm_ungated)
-                else:
-                    boost_detector_u8 = boost_mask_u8
-
-                if not detector.uses_raw_frames:
-                    pre_frame = preprocess_frame(frame_curr, raw_motion_u8, boost_detector_u8, cfg,
-                                                  player_bboxes=player_boxes,
-                                                  court_keypoints=court_kps,
-                                                  hsv_cached=hsv_curr,
-                                                  protect_mask_cached=protect_mask)
-
+            rois, rois_visual = roi_tracker.get_rois(frame_idx)
+            if rois:
+                min_x = min(r[0] for r in rois)
+                min_y = min(r[1] for r in rois)
+                max_x = max(r[2] for r in rois)
+                max_y = max(r[3] for r in rois)
+                roi_for_pack = (min_x, min_y, max_x, max_y)
+                roi_used_count += len(rois)
+            else:
+                roi_for_pack = None
+                fullframe_count += 1
+            _skip_dim = bool(
+                detector.uses_raw_frames
+                or (
+                    skip_preprocess_dim
+                    and len(roi_tracker.tracks) > 0
+                    and roi_tracker.ball_visible
+                )
+            )
+            need_cpu_pre_frame = bool(
+                detector_input_writer is not None
+                or (not use_cuda_pre_frame and not detector.uses_raw_frames)
+            )
+            pre_frame, raw_motion_u8, boost_mask_u8, _, _, pre_frame_cuda = \
+                preprocess_frame_cuda(frame_curr, master_bg_v, master_bg_s,
+                                      master_var_v, master_var_s, cfg,
+                                      court_keypoints=court_kps,
+                                      protect_mask_cached=protect_mask,
+                                      rois=rois,
+                                      skip_dim=_skip_dim,
+                                      return_cuda_frame=bool(use_cuda_pre_frame and _do_detect),
+                                      need_cpu_frame=need_cpu_pre_frame,
+                                      frame_gpu_t=curr_frame_gpu_t,
+                                      curr_v_cached=curr_v_t,
+                                      curr_s_cached=curr_s_t,
+                                      prev_frame_gpu_t=prev_frame_gpu_t,
+                                      prev_frame_v_cached=prev_frame_v_t,
+                                      prev_frame_s_cached=prev_frame_s_t,
+                                      next_frame_gpu_t=next_frame_gpu_t,
+                                      next_v_cached=next_v_t,
+                                      next_s_cached=next_s_t,
+                                      protect_mask_cuda_cached=protect_mask_cuda,
+                                      need_detector_boost=not detector.uses_raw_frames,
+                                      perf=pre_cuda_perf)
+            if detector.uses_raw_frames:
+                pre_frame = frame_curr
             # Start current frame inference as soon as detector input is ready.
             # With per-pending CUDA events + output slots, this is safe and allows
             # overlap with post-mask CPU work below.
@@ -1003,35 +881,17 @@ def run(cfg):
                 det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
                 det_pending = detector.detect_async_start(det_input, frame_index=frame_idx)
 
-            # Don't exclude any court regions from motion detection - let the selector
-            # decide what to do with sideline/alley motion (previously protect_mask
-            # was blanking the outer left/right zone, blocking detection there).
-            side_mask = None
-
+            # Side-line motion is not excluded: the selector decides what to do
+            # with sideline/alley motion. The side mask only protects the
+            # detector-input dimming above.
             if info_timing:
                 postmask_t0 = time.perf_counter()
-            if collect_motion_stats and raw_motion_u8 is not None:
-                motion_raw_px_before_exclude += int(cv2.countNonZero(raw_motion_u8))
-                motion_frames_raw += 1
-            if collect_motion_stats and boost_mask_u8 is not None:
-                motion_boost_px_before_exclude += int(cv2.countNonZero(boost_mask_u8))
-                motion_frames_boost += 1
-            raw_motion_u8 = apply_exclude_mask_u8(raw_motion_u8, side_mask)
-            boost_mask_u8 = apply_exclude_mask_u8(boost_mask_u8, side_mask)
-            if collect_motion_stats and raw_motion_u8 is not None:
-                motion_raw_px_after_exclude += int(cv2.countNonZero(raw_motion_u8))
-            if collect_motion_stats and boost_mask_u8 is not None:
-                motion_boost_px_after_exclude += int(cv2.countNonZero(boost_mask_u8))
             # Keep a CUDA copy of the current motion mask for next frame's WTA freeze.
             # This avoids re-uploading raw_motion_u8 (CPU -> CUDA) in the next iteration.
-            if use_cuda:
-                if raw_motion_u8 is not None:
-                    prev_raw_motion_cuda = torch.from_numpy(raw_motion_u8).to(cuda_device, non_blocking=True) > 0
-                else:
-                    prev_raw_motion_cuda = None
+            if raw_motion_u8 is not None:
+                prev_raw_motion_cuda = torch.from_numpy(raw_motion_u8).to(cuda_device, non_blocking=True) > 0
             else:
-                # CPU path: keep previous-frame raw motion for HSV WTA background updates.
-                prev_raw_motion_u8 = raw_motion_u8.copy() if raw_motion_u8 is not None else None
+                prev_raw_motion_cuda = None
             if info_timing:
                 timing["pass1_pre_postmask"] = timing.get("pass1_pre_postmask", 0.0) + (time.perf_counter() - postmask_t0)
 
@@ -1068,7 +928,6 @@ def run(cfg):
                     "roi_for_pack": roi_for_pack,
                     "rois_list": rois_visual if rois_visual is not None else roi_tracker.last_rois,
                     "player_dict": dict(player_det.get_player_dict()),
-                    "player_boxes": [list(pb) for pb in player_boxes] if player_boxes else [],
                     "court_kps": court_kps,
                     "pre_frame": pre_frame,
                     "pre_frame_cuda": pre_frame_cuda,
@@ -1084,7 +943,6 @@ def run(cfg):
                     "roi_for_pack": roi_for_pack,
                     "rois_list": rois_visual if rois_visual is not None else roi_tracker.last_rois,
                     "player_dict": dict(player_det.get_player_dict()),
-                    "player_boxes": [list(pb) for pb in player_boxes] if player_boxes else [],
                     "court_kps": court_kps,
                     "pre_frame": pre_frame,
                     "pre_frame_cuda": pre_frame_cuda,
@@ -1100,10 +958,9 @@ def run(cfg):
         # Slide window
         if info_timing:
             slide_t0 = time.perf_counter()
-        frame_prev_for_slide = frame_curr
         frame_curr = frame_next
         frame_next = reader.read()
-        if use_cuda:
+        if cfg.enable_preprocess:
             prev_frame_gpu_t = curr_frame_gpu_t
             prev_frame_v_t, prev_frame_s_t = curr_v_t, curr_s_t
             curr_v_t, curr_s_t = next_v_t, next_s_t
@@ -1114,11 +971,6 @@ def run(cfg):
             else:
                 next_v_t = next_s_t = None
                 next_frame_gpu_t = None
-        elif cfg.enable_preprocess:
-            frame_prev_cpu = frame_prev_for_slide
-            hsv_prev = hsv_curr
-            hsv_curr = hsv_next
-            hsv_next = cv2.cvtColor(frame_next, cv2.COLOR_BGR2HSV) if frame_next is not None else None
         if info_timing:
             timing["pass1_slide"] = timing.get("pass1_slide", 0.0) + (time.perf_counter() - slide_t0)
 
@@ -1150,19 +1002,6 @@ def run(cfg):
     if cfg.roi_motion_enabled:
         print(f"[pass 1] ROI motion: {roi_used_count} ROI frames, "
               f"{fullframe_count} full-frame frames")
-    if cfg.enable_preprocess and collect_motion_stats and motion_frames_raw > 0:
-        raw_before_avg = motion_raw_px_before_exclude / max(motion_frames_raw, 1)
-        raw_after_avg = motion_raw_px_after_exclude / max(motion_frames_raw, 1)
-        raw_keep = 100.0 * motion_raw_px_after_exclude / max(motion_raw_px_before_exclude, 1)
-        boost_before_avg = motion_boost_px_before_exclude / max(motion_frames_boost, 1)
-        boost_after_avg = motion_boost_px_after_exclude / max(motion_frames_boost, 1)
-        boost_keep = 100.0 * motion_boost_px_after_exclude / max(motion_boost_px_before_exclude, 1)
-        print(
-            "[pass 1] Motion pixels/frame (avg): "
-            f"raw {raw_before_avg:.0f}->{raw_after_avg:.0f} ({raw_keep:.1f}% kept), "
-            f"boost {boost_before_avg:.0f}->{boost_after_avg:.0f} ({boost_keep:.1f}% kept)"
-        )
-        
     print("[pass 1] Executing batched ghost ROI deletion...")
     batch_t0 = time.perf_counter()
     erased_frames = 0
@@ -1679,18 +1518,13 @@ def run(cfg):
             # estimates meet detections instead of lagging behind them.
             smooth_x, smooth_y = trail_cx, trail_cy
 
-            # When we recover from a fully-lost run, connect end->new-start in black.
+            # Recovering from a fully-lost run hard-breaks the segment.
             if pending_lost_gap and prev is not None:
-                if ENABLE_GAP_CONNECTORS:
-                    trail.append((trail_cx, trail_cy, smooth_x, smooth_y, 'gap', 0.0))
-                else:
-                    # Even with connectors disabled, hard-break the segment on loss.
-                    trail.append(None)
+                trail.append(None)
             pending_lost_gap = False
             trail.append((trail_cx, trail_cy, smooth_x, smooth_y, src, conf))
         else:
-            # det/motion/carry/guide all failed this frame; prepare a black connector
-            # from the current segment end to the next recovered point.
+            # Nothing selected this frame: break the segment before the next recovered point.
             if trail and trail[-1] is not None:
                 pending_lost_gap = True
             trail.append(None)
@@ -1699,41 +1533,30 @@ def run(cfg):
         while len(trail) > trail_max:
             trail.pop(0)
 
-        # Draw trail - render black gap bridges first, then normal colored trail.
-        for draw_gap in (True, False):
-            for i in range(1, len(trail)):
-                if trail[i] is None or trail[i-1] is None:
-                    continue
-                src = trail[i][4]
-                is_gap = (src == 'gap')
-                if is_gap != draw_gap:
-                    continue
-                if is_gap:
-                    continue
-                p0 = (trail[i-1][2], trail[i-1][3])
-                p1 = (trail[i][2], trail[i][3])
+        # Draw the trail, newest segments brightest and thickest.
+        for i in range(1, len(trail)):
+            if trail[i] is None or trail[i-1] is None:
+                continue
+            src = trail[i][4]
+            p0 = (trail[i-1][2], trail[i-1][3])
+            p1 = (trail[i][2], trail[i][3])
 
-                # Guide view: show chosen trail state colors for all sources.
-                if (not is_gap) and guide_frame is not None and src in ("det", "carry", "interp", "motion", "guide"):
-                    gbase = _trail_base_color(src)
-                    galpha = 0.55 + 0.45 * (i / len(trail))
-                    gcolor = (int(gbase[0] * galpha), int(gbase[1] * galpha), int(gbase[2] * galpha))
-                    gth = max(2, int(3 * galpha))
-                    cv2.line(guide_frame, p0, p1, (15, 15, 15), gth + 1, cv2.LINE_AA)
-                    cv2.line(guide_frame, p0, p1, gcolor, gth, cv2.LINE_AA)
+            # Guide view: show chosen trail state colors for all sources.
+            if guide_frame is not None:
+                gbase = _trail_base_color(src)
+                galpha = 0.55 + 0.45 * (i / len(trail))
+                gcolor = (int(gbase[0] * galpha), int(gbase[1] * galpha), int(gbase[2] * galpha))
+                gth = max(2, int(3 * galpha))
+                cv2.line(guide_frame, p0, p1, (15, 15, 15), gth + 1, cv2.LINE_AA)
+                cv2.line(guide_frame, p0, p1, gcolor, gth, cv2.LINE_AA)
 
-                # Transfer selected state trails to main output.
-                # Keep: green det, orange motion, blue carry, yellow interp, white guide.
-                if (not is_gap) and src not in ("det", "motion", "carry", "guide", "interp"):
-                    continue
-
-                if draw_main_ball_trail:
-                    alpha = 0.55 + 0.45 * (i / len(trail))
-                    base = _trail_base_color(src)
-                    color = (int(base[0] * alpha), int(base[1] * alpha), int(base[2] * alpha))
-                    line_th = max(2, int(round(3 * alpha)))
-                    cv2.line(frame_out, p0, p1, (15, 15, 15), line_th + 1, cv2.LINE_AA)
-                    cv2.line(frame_out, p0, p1, color, line_th, cv2.LINE_AA)
+            if draw_main_ball_trail:
+                alpha = 0.55 + 0.45 * (i / len(trail))
+                base = _trail_base_color(src)
+                color = (int(base[0] * alpha), int(base[1] * alpha), int(base[2] * alpha))
+                line_th = max(2, int(round(3 * alpha)))
+                cv2.line(frame_out, p0, p1, (15, 15, 15), line_th + 1, cv2.LINE_AA)
+                cv2.line(frame_out, p0, p1, color, line_th, cv2.LINE_AA)
 
         if bool(cfg.draw_court_minimap):
             draw_court_minimap(
@@ -1871,22 +1694,16 @@ def run(cfg):
                 dbg_write_t0 = time.perf_counter()
             raw_m = _unpack_mask_u8(all_raw_motions[fi])
             boost_m = _unpack_mask_u8(all_boost_masks[fi])
-            pboxes = all_player_boxes_preproc[fi] if fi < len(all_player_boxes_preproc) else []
             # Cache the protect mask to avoid recomputing build_court_side_protect_mask
             # every frame - court keypoints rarely change.
             _dbg_protect_key = court_keypoints_key(court_kps)
             if fi == 0 or _dbg_protect_key != _dbg_protect_cache_key:
-                _dbg_protect_cache = build_protect_mask(
-                    h, w, player_bboxes=pboxes, court_keypoints=court_kps,
-                    player_pad=cfg.player_bbox_pad) if court_kps else None
+                _dbg_protect_cache = build_court_side_protect_mask(h, w, court_kps) if court_kps else None
                 _dbg_protect_cache_key = _dbg_protect_key
-            vis = preprocess_frame(frame, raw_m, boost_m,
-                                    cfg,
-                                    player_bboxes=pboxes,
-                                    court_keypoints=court_kps,
-                                    visualize=True,
-                                    protect_mask_cached=_dbg_protect_cache,
-                                    rois_dbg=all_rois[fi] if fi < len(all_rois) else None)
+            vis = draw_motion_debug_frame(frame, raw_m, boost_m, cfg,
+                                          court_keypoints=court_kps,
+                                          protect_mask=_dbg_protect_cache,
+                                          rois_dbg=all_rois[fi] if fi < len(all_rois) else None)
 
             # -- Draw motion detection ROI boxes onto vis --
             # Green = survived   Red = ghost-pruned (didn't reattach)
@@ -1984,26 +1801,25 @@ def run(cfg):
                         blob_r = min(10.0, max(4.0, min(rx2 - rx1, ry2 - ry1) * 0.12))
                         current_blobs.append((float(blob_cx), float(blob_cy), float(blob_r)))
 
-            if True:
-                # Reduced from max(120, w*0.08) - the old value (~153px for 1920px video)
-                # allowed unrelated motion regions to be merged into the same track.
-                MAX_DIST = max(40.0, w * 0.025)
-                unmatched = current_blobs.copy()
-                for trk in raw_motion_tracks:
-                    last_fi, last_x, last_y, last_r = trk[-1]
-                    if fi - last_fi <= 3:  # Allow 3 frame gap
-                        best_dist = MAX_DIST
-                        best_match = None
-                        for b in unmatched:
-                            dist = math.hypot(b[0] - last_x, b[1] - last_y)
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_match = b
-                        if best_match is not None:
-                            trk.append((fi, best_match[0], best_match[1], best_match[2]))
-                            unmatched.remove(best_match)
-                for b in unmatched:
-                    raw_motion_tracks.append([(fi, b[0], b[1], b[2])])
+            # Reduced from max(120, w*0.08) - the old value (~153px for 1920px video)
+            # allowed unrelated motion regions to be merged into the same track.
+            MAX_DIST = max(40.0, w * 0.025)
+            unmatched = current_blobs.copy()
+            for trk in raw_motion_tracks:
+                last_fi, last_x, last_y, last_r = trk[-1]
+                if fi - last_fi <= 3:  # Allow 3 frame gap
+                    best_dist = MAX_DIST
+                    best_match = None
+                    for b in unmatched:
+                        dist = math.hypot(b[0] - last_x, b[1] - last_y)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_match = b
+                    if best_match is not None:
+                        trk.append((fi, best_match[0], best_match[1], best_match[2]))
+                        unmatched.remove(best_match)
+            for b in unmatched:
+                raw_motion_tracks.append([(fi, b[0], b[1], b[2])])
             
             # Periodically prune old tracks
             MAX_AGE = 150
