@@ -15,7 +15,6 @@
 torch==2.10.0             # CUDA build; GridTrackNet inference, CUDA motion masks, training
 numpy==1.26.4
 opencv-python==4.9.0.*    # GUI build (not -headless): the label tool opens windows
-filterpy==1.4.5           # Kalman filter in ball_in_play_selector/physics.py
 # TensorRT engines (models/*.engine) are specific to the GPU and TensorRT
 # version that built them; rebuild with build_trt_engines.py after upgrading.
 tensorrt==10.15.1.29      # player and court engine backends

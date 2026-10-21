@@ -1,10 +1,6 @@
 import math
 import numpy as np
 from typing import Optional, Tuple
-try:
-    from filterpy.kalman import KalmanFilter
-except ImportError:
-    KalmanFilter = None
 
 from .config import SelectorConfig
 from .utils import fps_norm_pxpf, clamp01
@@ -85,40 +81,73 @@ def predict_projectile_velocity(
     state = F @ np.array([0., 0., *vel]) + B[:, 0] * cfg.gravity_px_per_frame2
     return float(state[2]), float(state[3])
 
+class LinearKalman:
+    """A linear Kalman filter over a column-vector state, in plain numpy.
+
+    ``x`` is the ``(dim_x, 1)`` state, ``P`` its covariance; ``F``/``B`` the
+    transition and control matrices, ``Q`` the process noise, ``H`` the
+    measurement matrix and ``R`` the measurement noise.  The caller may set
+    any of them between steps (the ball filter swaps ``F``/``B`` for the
+    projectile transition and ``R`` per detection confidence).
+
+    The equations, their operation order and the column-vector shapes are
+    exactly those of filterpy 1.4.5's ``KalmanFilter.predict``/``update``,
+    which this replaced, so the two produce bit-identical states.
+    """
+
+    def __init__(self, x: np.ndarray, P: np.ndarray, F: np.ndarray, B: np.ndarray,
+                 Q: np.ndarray, H: np.ndarray, R: np.ndarray) -> None:
+        self.x = np.asarray(x, dtype=float)
+        self.P = np.asarray(P, dtype=float)
+        self.F = np.asarray(F, dtype=float)
+        self.B = np.asarray(B, dtype=float)
+        self.Q = np.asarray(Q, dtype=float)
+        self.H = np.asarray(H, dtype=float)
+        self.R = np.asarray(R, dtype=float)
+        self._identity = np.eye(self.x.shape[0])
+
+    def predict(self, u: np.ndarray) -> None:
+        """x = F x + B u;  P = F P F' + Q."""
+        self.x = np.dot(self.F, self.x) + np.dot(self.B, u)
+        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
+
+    def update(self, z: np.ndarray) -> None:
+        """Fold in the ``(dim_z, 1)`` measurement ``z`` with the Joseph-form covariance update."""
+        y = z - np.dot(self.H, self.x)
+        PHT = np.dot(self.P, self.H.T)
+        S = np.dot(self.H, PHT) + self.R
+        K = np.dot(PHT, np.linalg.inv(S))
+        self.x = self.x + np.dot(K, y)
+        I_KH = self._identity - np.dot(K, self.H)
+        self.P = np.dot(np.dot(I_KH, self.P), I_KH.T) + np.dot(np.dot(K, self.R), K.T)
+
+
 class BallKalmanFilter:
+    """Constant-velocity (x, y, vx, vy) filter with the projectile transition and adaptive gating."""
+
     def __init__(self, x0: float, y0: float, cfg: SelectorConfig) -> None:
-        if KalmanFilter is None:
-            raise RuntimeError("filterpy is required for BallKalmanFilter. Install filterpy==1.4.5.")
         self.cfg = cfg
-        self.kf = KalmanFilter(dim_x=4, dim_z=2)
-        
-        # State: [x, y, vx, vy] as column vector (shape 4,1) as filterpy expects
-        self.kf.x = np.array([[x0], [y0], [0.0], [0.0]])
-        
-        # Transition Matrix
-        self.kf.F = np.array([[1., 0., 1., 0.],
-                              [0., 1., 0., 1.],
-                              [0., 0., 1., 0.],
-                              [0., 0., 0., 1.]])
-                              
-        # Measurement Matrix (we only observe x and y)
-        self.kf.H = np.array([[1., 0., 0., 0.],
-                              [0., 1., 0., 0.]])
-                              
-        # Covariance Matrix
-        # High uncertainty for unobserved initial velocity
-        self.kf.P = np.diag([10.0, 10.0, 100.0, 100.0])
-        
-        # Measurement Noise
-        # Measurement noise is adapted per-update (based on det confidence).
-        # Initialize with a reasonable default (~2px std).
-        self.kf.R = np.diag([4.0, 4.0])
-        
-        # Process Noise
-        self.kf.Q = np.diag([0.1, 0.1, 2.0, 2.0])
-        
-        # Control Input Matrix (for gravity and drag)
-        self.kf.B = np.array([[0.], [0.], [0.], [1.]])
+        self.kf = LinearKalman(
+            # State [x, y, vx, vy] as a column vector.
+            x=np.array([[x0], [y0], [0.0], [0.0]]),
+            # High uncertainty for the unobserved initial velocity.
+            P=np.diag([10.0, 10.0, 100.0, 100.0]),
+            # Constant-velocity transition; predict() swaps in the projectile one.
+            F=np.array([[1., 0., 1., 0.],
+                        [0., 1., 0., 1.],
+                        [0., 0., 1., 0.],
+                        [0., 0., 0., 1.]]),
+            # Control input (gravity acts on vy); predict() swaps in the projectile one.
+            B=np.array([[0.], [0.], [0.], [1.]]),
+            Q=np.diag([0.1, 0.1, 2.0, 2.0]),
+            # Only x and y are observed.
+            H=np.array([[1., 0., 0., 0.],
+                        [0., 1., 0., 0.]]),
+            # Measurement noise is set per update from the detection confidence;
+            # this default is ~2 px std.
+            R=np.diag([4.0, 4.0]),
+        )
+
     def _meas_sigma_px(self, conf: Optional[float]) -> float:
         """Map detection confidence -> measurement std-dev in pixels."""
         if conf is None:
@@ -148,7 +177,7 @@ class BallKalmanFilter:
 
 
     def _x(self) -> np.ndarray:
-        """Always return a 1D view of the state (handles both (4,) and (4,1) shapes)."""
+        """The (4, 1) column state flattened to a 1D copy."""
         return self.kf.x.flatten()
 
 
@@ -156,7 +185,7 @@ class BallKalmanFilter:
         """Use the same transition for ROI, filter state and covariance."""
         gravity = float(self.cfg.gravity_px_per_frame2) if self.cfg.gravity_enabled else 0.0
         self.kf.F, self.kf.B = _projectile_matrices(self.cfg)
-        self.kf.predict(u=np.array([[gravity]]))
+        self.kf.predict(np.array([[gravity]]))
         x = self._x()
         return float(x[0]), float(x[1])
 

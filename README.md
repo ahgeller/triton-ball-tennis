@@ -35,7 +35,7 @@ unresolved detector gap remains a gap instead of becoming a long predicted path.
 
 - Python 3.10 and an NVIDIA CUDA GPU
 - CUDA-enabled PyTorch (install it from the PyTorch index for your CUDA version)
-- NumPy, OpenCV (the GUI build, for the label tool), FilterPy 1.4.5
+- NumPy, OpenCV (the GUI build, for the label tool)
 - TensorRT 10 for the player and court engines
 - BoxMOT for player tracking (without it players are not tracked)
 - CatBoost, only for `--court`

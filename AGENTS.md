@@ -49,7 +49,7 @@ Run commands from the repository root. The verified local interpreter is
 resolves to a different Python installation. Other machines should use their own
 environment, not copy this user-specific path into application code.
 
-Runtime dependencies include CUDA PyTorch, NumPy, OpenCV, FilterPy and TensorRT;
+Runtime dependencies include CUDA PyTorch, NumPy, OpenCV and TensorRT;
 BoxMOT supplies player tracking. CatBoost is needed for `--court`. Ultralytics is
 used by engine export. FFmpeg/NVENC can accelerate rendering. Versions and model/
 source hashes for the review are in `audit/snapshot.json`. There is no complete
