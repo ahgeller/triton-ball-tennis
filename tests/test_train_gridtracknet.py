@@ -38,6 +38,20 @@ def test_main_reports_a_run_that_cannot_start_as_status_1(tmp_path, capsys):
     assert not (tmp_path / "cache").exists() and not (tmp_path / "run").exists()
 
 
+def test_holdout_and_val_clips_are_alternatives_and_the_config_records_the_choice(capsys):
+    parser = training.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--holdout", "mixed_v1", "--val-clips", "video10"])
+    assert "not allowed with argument" in capsys.readouterr().err
+    args = parser.parse_args(["--holdout", "mixed_v1", "--epochs", "3"])
+    config = training.run_config(args, ["video1", "video13"], ["video1"], {"custom": 2.0})
+    assert config["holdout"] == "mixed_v1" and config["val_clips"] is None and config["validation_clips"] == ["video1"]
+    assert config["clips"] == ["video1", "video13"] and config["epochs"] == 3 and config["oversample"] == {"custom": 2.0}
+    args = parser.parse_args(["--val-clips", "video10", "grid_match*"])
+    config = training.run_config(args, ["video10"], ["video10"], {})
+    assert config["holdout"] is None and config["val_clips"] == ["video10", "grid_match*"]
+
+
 # --------------------------------------------------------------------------- which clips train
 
 def workspace(root: Path, clips, manifest=None, exclude=(), review_status=None) -> tuple:

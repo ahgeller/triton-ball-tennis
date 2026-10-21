@@ -42,6 +42,19 @@ def test_list_clips_filters_by_name_pattern(tmp_path):
     assert list_clips(["video*"], archive) == list_clips(None, archive)
 
 
+def test_list_clips_narrows_to_a_named_held_out_set(tmp_path, capsys):
+    archive = _archive(tmp_path)
+    (archive / "review_status.json").write_text(json.dumps({"verified_clips": ["video1", "video2", "video3"]}))
+    (archive / "clips.csv").write_text("clip,source,group\nvideo1,custom,own\nvideo2,custom,own\nvideo3,prof,g\n")
+    (archive / "holdouts.json").write_text(json.dumps({"own": {"groups": ["own"]}, "g": {"groups": ["g"]}}))
+    assert [video.stem for video, _ in list_clips(None, archive, holdout="own")] == ["video1", "video2"]
+    assert [video.stem for video, _ in list_clips(["video2"], archive, holdout="own")] == ["video2"]     # both narrow
+    assert list_clips(None, archive, holdout="g") == []                        # video3 has no video
+    assert "[skip] no video for video3_ball.csv" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="no held-out set 'nope'"):
+        list_clips(None, archive, holdout="nope")
+
+
 def test_list_clips_trusts_an_archive_without_a_review_policy(tmp_path):
     archive = _archive(tmp_path)
     (archive / "review_status.json").unlink()
@@ -136,7 +149,7 @@ def test_report_raw_pools_pairs_at_1080p_and_measures_the_hit_offset(capsys):
             LabelledDetection((100.0, 100.0), (100.0, 100.0), 0.3),          # too faint at the per-clip threshold
             LabelledDetection(None, (50.0, 50.0), 0.8),                      # a false alarm
             LabelledDetection((200.0, 200.0), None, 0.0)]                    # a miss
-    per_clip = [RawClip("clip", 960, 30.0, 1.0, rows)]
+    per_clip = [RawClip("clip", 960, 540, 30.0, 1.0, rows)]
     pairs = _pooled_pairs(per_clip, 0.5)
     assert pairs[0] == ((200.0, 200.0), (202.0, 204.0)) and pairs[1] == ((200.0, 200.0), None)
     assert pairs[2] == (None, (100.0, 100.0)) and pairs[3] == ((400.0, 400.0), None)
@@ -147,4 +160,71 @@ def test_report_raw_pools_pairs_at_1080p_and_measures_the_hit_offset(capsys):
     out = capsys.readouterr().out
     assert "probe: threshold sweep" in out and "conf>=0.50" in out and "clip" in out
     assert "mean offset on hits dx=+1.00px dy=+2.00px (n=1)" in out
-    assert "clip           vis=   3 recall=0.333 wrong=0.000 miss=0.667 | invis=  1 falseAlarm=1.000" in out
+    assert "clip           vis=   3 recall=0.333 wrong=0.000 miss=0.667 | invis=  1 falseAlarm=1.000 (1/1) |" in out
+    assert "source=" not in out                                               # no manifest given: no per-source lines
+
+
+def _raw_clip(name, width, height, hits, misses, invisible, alarms, offset=(0.0, 0.0)):
+    """A RawClip of `hits` labels the detector hit (at `offset` from the label, in native px),
+    `misses` it missed, and `invisible` labels of which it fired on `alarms`, laid along a
+    diagonal so every label sits in a different grid cell position."""
+    from evaluation.archive import LabelledDetection, RawClip
+    rows = []
+    for index in range(hits + misses):
+        label = (20.0 + index * 7.3, 15.0 + index * 5.1)
+        hit = index < hits
+        rows.append(LabelledDetection(label, (label[0] + offset[0], label[1] + offset[1]) if hit else None, 0.9 if hit else 0.0))
+    for index in range(invisible):
+        rows.append(LabelledDetection(None, (5.0, 5.0) if index < alarms else None, 0.9 if index < alarms else 0.0))
+    return RawClip(name, width, height, 30.0, 1.0, rows)
+
+
+def test_report_raw_adds_a_macro_line_and_one_line_per_source(capsys):
+    """The pooled line lets a long clip outvote a short one and a source with few invisible labels
+    hide a false-alarm problem; the macro line weighs every clip the same, the source lines pool
+    within one source, and every false-alarm rate carries the count it is made of."""
+    from evaluation.archive import macro_metrics, report_raw
+    from evaluation.compare_eval_logs import read_scores
+    long_prof = _raw_clip("video13", 1280, 720, hits=90, misses=10, invisible=20, alarms=1)        # recall 0.9, fa 0.05
+    short_own = _raw_clip("video1", 1920, 1080, hits=5, misses=5, invisible=0, alarms=0)           # recall 0.5, no invisible
+    grid = _raw_clip("grid_match8", 1920, 1080, hits=20, misses=0, invisible=4, alarms=2)          # recall 1.0, fa 0.5
+    report_raw("probe", [long_prof, short_own, grid], [0.5],
+               sources={"video13": "prof", "video1": "custom", "grid_match8": "grid"})
+    out = capsys.readouterr().out
+    scores = read_scores(out)
+    assert scores["conf>=0.50"].recall == pytest.approx(115 / 130, abs=5e-4) and scores["ALL" if "ALL" in scores else "conf>=0.50"].visible == 130
+    assert scores["macro"].recall == pytest.approx((0.9 + 0.5 + 1.0) / 3, abs=5e-4) and scores["macro"].visible == 130
+    assert scores["macro"].false_alarm == pytest.approx((0.05 + 0.5) / 2, abs=5e-4)       # over the clips with invisible labels
+    assert scores["macro"].invisible == 24
+    assert scores["source=prof"].recall == pytest.approx(0.9) and scores["source=prof"].visible == 100
+    assert scores["source=custom"].recall == pytest.approx(0.5) and scores["source=grid"].false_alarm == pytest.approx(0.5)
+    lines = {line.split()[0]: line for line in out.splitlines() if " vis=" in line}
+    assert "falseAlarm=0.050 (1/20) |" in lines["video13"] and "falseAlarm=0.000 (0/0) |" in lines["video1"]
+    assert "falseAlarm=0.500 (2/4) |" in lines["grid_match8"] and "falseAlarm=0.125 (3/24) |" in lines["conf>=0.50"]
+    assert "falseAlarm=0.275 (3/24) |" in lines["macro"]                       # the mean rate, beside the pooled count
+    assert list(lines)[-4:] == ["macro", "source=custom", "source=grid", "source=prof"]
+    stats = macro_metrics([])
+    assert stats.visible == 0 and stats.invisible == 0 and stats.recall != stats.recall      # nan: no clip to average
+
+
+def test_cell_histogram_bins_recall_by_position_within_the_grid_cell(capsys):
+    """A label's place within its 48x27 cell decides the bin: at 1920x1080 a cell is 40 px wide,
+    so x=20 sits mid-cell (fraction 0.5) and x=41 just inside the next one (0.025)."""
+    from evaluation.archive import CELL_BINS, LabelledDetection, RawClip, cell_histogram, report_raw
+    rows = [LabelledDetection((20.0, 20.0), (20.0, 20.0), 0.9),             # x 0.5, y 0.5: both middle bins, a hit
+            LabelledDetection((41.0, 20.0), None, 0.0),                     # x 0.025: first bin, a miss
+            LabelledDetection((79.0, 61.0), (79.0, 61.0), 0.9),             # x 0.975: last bin; y 1.525 -> 0.525
+            LabelledDetection(None, (5.0, 5.0), 0.9)]                       # no label: not binned
+    per_clip = [RawClip("c", 1920, 1080, 30.0, 1.0, rows)]
+    bins = cell_histogram(per_clip, 0.5)
+    assert set(bins) == {"x", "y"} and all(len(per_bin) == CELL_BINS for per_bin in bins.values())
+    assert [stats.visible for stats in bins["x"]] == [1, 0, 1, 0, 1] and [stats.visible for stats in bins["y"]] == [0, 0, 3, 0, 0]
+    assert bins["x"][0].recall == 0.0 and bins["x"][2].recall == 1.0 and bins["x"][4].recall == 1.0
+    assert bins["y"][2].recall == pytest.approx(2 / 3)
+    report_raw("probe", per_clip, [0.5], histogram=True)
+    out = capsys.readouterr().out
+    assert "recall by position within the grid cell" in out
+    assert "x 0.0-0.2  n=    1 recall=0.000 wrong=0.000 miss=1.000" in out
+    assert "y 0.4-0.6  n=    3 recall=0.667" in out and "x spread: 1.000" in out and "y spread: 0.000" in out
+    report_raw("probe", per_clip, [0.5])
+    assert "recall by position" not in capsys.readouterr().out

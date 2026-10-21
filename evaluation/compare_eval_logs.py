@@ -4,9 +4,9 @@
 
 Both logs may be raw or pipeline mode; each ``name vis=... recall=... | ... | med=...px p90=...px``
 line the evaluator prints is read, and for every clip in both logs the change in recall, wrong,
-false alarm and median/p90 pixels is printed, pooled ``ALL`` (or threshold) lines included.
-Clips in only one log are listed at the end. Positive recall deltas and negative wrong / false
-alarm / pixel deltas are improvements.
+false alarm and median/p90 pixels is printed, the pooled lines (``ALL``, the threshold sweep,
+``macro`` and ``source=<name>``) last. Clips in only one log are listed at the end. Positive
+recall deltas and negative wrong / false alarm / pixel deltas are improvements.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Dict, NamedTuple, Optional, Sequence
 
 LINE = re.compile(
     r"^(?P<name>\S+)\s+vis=\s*(?P<vis>\d+) recall=(?P<recall>[\d.]+) wrong=(?P<wrong>[\d.]+) "
-    r"miss=(?P<miss>[\d.]+) \| invis=\s*(?P<invis>\d+) falseAlarm=(?P<false_alarm>[\d.]+) \| "
+    r"miss=(?P<miss>[\d.]+) \| invis=\s*(?P<invis>\d+) falseAlarm=(?P<false_alarm>[\d.]+)(?: \(\d+/\d+\))? \| "
     r"med=(?P<med>[\d.]+)px p90=(?P<p90>[\d.]+)px"
 )
 
@@ -46,6 +46,12 @@ def read_scores(text: str) -> Dict[str, Score]:
     return scores
 
 
+def is_pooled(name: str) -> bool:
+    """Is this a line over many clips (the pooled total, a threshold of the sweep, the per-clip
+    mean or a source), as opposed to one clip's?"""
+    return name == "ALL" or name == "macro" or name.startswith("conf>=") or name.startswith("source=")
+
+
 def _delta(value: float, places: int = 3) -> str:
     return f"{value:+.{places}f}"
 
@@ -53,7 +59,7 @@ def _delta(value: float, places: int = 3) -> str:
 def compare(before: Dict[str, Score], after: Dict[str, Score], only_changed: bool = False) -> str:
     """The comparison table as text: one row per name in both logs, pooled lines last."""
     shared = [name for name in before if name in after]
-    pooled = [name for name in shared if name == "ALL" or name.startswith("conf>=")]
+    pooled = [name for name in shared if is_pooled(name)]
     clips = [name for name in shared if name not in pooled]
     header = f"{'clip':30s} {'vis':>5s} {'recall':>14s} {'wrong':>14s} {'falseAlarm':>14s} {'med px':>12s} {'p90 px':>12s}"
     rows = [header, "-" * len(header)]

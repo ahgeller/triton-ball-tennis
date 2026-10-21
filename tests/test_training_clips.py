@@ -66,3 +66,39 @@ def test_validation_split_takes_whole_recording_groups_and_needs_reviewed_labels
                                                  encoding="utf-8")
     with pytest.raises(ValueError, match="reviewed labels"):
         validation_split(clips, tmp_path / "labels", ["video13"])
+
+
+def test_validation_split_keeps_the_rallies_of_one_recording_together(tmp_path):
+    """grid_match47, 49 and 50 are three rallies cut from one video: their clips.csv groups are
+    their own names, so only the origin says they are one recording (``recording_of``). Holding
+    out one of them used to leave the other two in training."""
+    clips = clips_in(tmp_path, ["grid_match47", "grid_match49", "grid_match50", "grid_match53"])
+    (tmp_path / "clips.csv").write_text(
+        "clip,source,group,origin\n"
+        "grid_match47,grid,grid_match47,C:\\data\\match47\\gravel amature.mp4\n"
+        "grid_match49,grid,grid_match49,C:\\data\\match47\\gravel amature.mp4\n"
+        "grid_match50,grid,grid_match50,C:\\data\\match47\\gravel amature.mp4\n"
+        "grid_match53,grid,grid_match53,C:\\data\\match53\\frames\n", encoding="utf-8")
+    (tmp_path / "review_status.json").write_text(json.dumps({"verified_clips": ["grid_match47", "grid_match49", "grid_match50", "grid_match53"]}),
+                                                 encoding="utf-8")
+    assert validation_split(clips, tmp_path / "labels", ["grid_match49"]) == ["grid_match47", "grid_match49", "grid_match50"]
+    assert validation_split(clips, tmp_path / "labels", ["grid_match53"]) == ["grid_match53"]
+
+
+def test_validation_split_takes_a_named_held_out_set(tmp_path):
+    clips = clips_in(tmp_path, ["video1", "video2", "video13", "video14", "grid_match8"])
+    (tmp_path / "clips.csv").write_text("clip,source,group\nvideo1,custom,own-camera\nvideo2,custom,own-camera\n"
+                                        "video13,prof,prof_game2\nvideo14,prof,prof_game2\ngrid_match8,grid,grid_match8\n",
+                                        encoding="utf-8")
+    (tmp_path / "review_status.json").write_text(json.dumps({"verified_video_min": 1, "verified_clips": ["grid_match8"]}),
+                                                 encoding="utf-8")
+    (tmp_path / "holdouts.json").write_text(json.dumps({"mixed": {"groups": ["own-camera"], "clips": ["grid_match8"]},
+                                                        "none_here": {"clips": ["video1"]}}), encoding="utf-8")
+    assert validation_split(clips, tmp_path / "labels", None, "mixed") == ["video1", "video2", "grid_match8"]
+    assert validation_split(clips[2:], tmp_path / "labels", None, "mixed") == ["grid_match8"]    # a run on fewer clips
+    with pytest.raises(ValueError, match="covers none of this run's clips"):
+        validation_split(clips[2:4], tmp_path / "labels", None, "none_here")
+    with pytest.raises(ValueError, match="alternatives"):
+        validation_split(clips, tmp_path / "labels", ["video13"], "mixed")
+    with pytest.raises(ValueError, match="no held-out set 'typo'"):
+        validation_split(clips, tmp_path / "labels", None, "typo")

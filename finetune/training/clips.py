@@ -4,7 +4,8 @@ Data contract (same as the archive): ``videos/<clip>.mp4`` + ``labels/<clip>_bal
 with ``frame,ball_x,ball_y`` rows at 30 FPS cadence (every 2nd frame of a 60 FPS clip, every
 frame at 30 FPS; the first labelled frame may be odd) and invisible balls parked in the
 top-right corner. ``clips.csv`` (written by import_data.py) tags every clip with a source and a
-recording group, so a run can pick and hold out by them (``ClipSelection``, ``validation_split``).
+recording group, so a run can pick and hold out by them (``ClipSelection``, ``validation_split``);
+``holdouts.json`` names fixed held-out sets of whole recordings (``--holdout``).
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from finetune.data.data_policy import clip_source, is_trainable, is_verified, read_review_status, untrainable_reason
-from finetune.data.workspace import MANIFEST_NAME, clip_of, find_video, label_files, read_exclusions, read_manifest
+from finetune.data.holdouts import holdout_clips
+from finetune.data.workspace import (HOLDOUTS_NAME, MANIFEST_NAME, clip_of, find_video, label_files, read_exclusions,
+                                     read_manifest, recording_of)
 
 DEFAULT_VAL_CLIP = "video10"
 
@@ -95,14 +98,23 @@ def resolve_val_clips(names: List[str], patterns: Optional[List[str]]) -> List[s
     return [DEFAULT_VAL_CLIP] if DEFAULT_VAL_CLIP in names else [names[-1]]
 
 
-def validation_split(clips: List[Clip], labels: Path, patterns: Optional[List[str]]) -> List[str]:
-    """The held-out clips: what --val-clips names plus every clip of the same recording group, all
-    of which must have reviewed labels, and never the whole set."""
+def validation_split(clips: List[Clip], labels: Path, patterns: Optional[List[str]],
+                     holdout: Optional[str] = None) -> List[str]:
+    """The held-out clips: what --val-clips names (or the --holdout set's members among the run's
+    clips) plus every clip cut from the same recording (``recording_of``: the clips.csv group,
+    else the origin video), all of which must have reviewed labels, and never the whole set."""
     names = [clip for clip, _, _, _ in clips]
-    val_clips = resolve_val_clips(names, patterns)
     metadata = read_manifest(labels.parent / MANIFEST_NAME)
-    val_groups = {metadata.get(name, {}).get("group") for name in val_clips} - {None, ""}
-    val_clips = [name for name in names if name in val_clips or metadata.get(name, {}).get("group") in val_groups]
+    if holdout:
+        if patterns:
+            raise ValueError("--holdout and --val-clips are alternatives; give one")
+        val_clips = holdout_clips(holdout, names, metadata, labels.parent / HOLDOUTS_NAME)
+        if not val_clips:
+            raise ValueError(f"held-out set {holdout!r} covers none of this run's clips")
+    else:
+        val_clips = resolve_val_clips(names, patterns)
+    recordings = {recording_of(name, metadata) for name in val_clips}
+    val_clips = [name for name in names if recording_of(name, metadata) in recordings]
     review_status = read_review_status(labels.parent)
     unverified = [name for name in val_clips if not is_verified(name, review_status)]
     if unverified:

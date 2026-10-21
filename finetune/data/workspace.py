@@ -2,7 +2,8 @@
 
 The workspace is laid out as ``videos/<clip>.<ext>`` + ``labels/<clip>_ball.csv`` (plus the
 sidecars described in ``finetune.data.labels``), with ``clips.csv`` listing every imported clip,
-``exclude.txt`` the clips training skips and ``review_status.json`` the review policy. Every
+``exclude.txt`` the clips training skips, ``review_status.json`` the review policy and
+``holdouts.json`` the named held-out sets (``finetune.data.holdouts`` reads that one). Every
 script used to spell these paths out for itself; this is the one place they are defined, and
 the one place ``clips.csv`` and ``exclude.txt`` are read and written.
 
@@ -39,6 +40,7 @@ DEFAULT_WORKSPACE = Path(__file__).resolve().parents[1]     # the finetune/ fold
 MANIFEST_NAME = "clips.csv"
 EXCLUDE_NAME = "exclude.txt"
 REVIEW_STATUS_NAME = "review_status.json"
+HOLDOUTS_NAME = "holdouts.json"               # the named held-out sets (finetune.data.holdouts)
 BEST_WEIGHTS_NAME = "gridtracknet_best.npz"   # the last training winner, under models/
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".avi", ".m4v"})
 
@@ -103,6 +105,10 @@ class Workspace:
     @property
     def review_status(self) -> Path:
         return self.root / REVIEW_STATUS_NAME
+
+    @property
+    def holdouts(self) -> Path:
+        return self.root / HOLDOUTS_NAME
 
     @property
     def best_weights(self) -> Path:

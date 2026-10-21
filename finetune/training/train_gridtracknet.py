@@ -8,6 +8,7 @@ tags every clip with a source so you can pick, hold out and oversample by source
 
     python finetune/training/train_gridtracknet.py                              # fine-tune bundled weights, hold out video10
     python finetune/training/train_gridtracknet.py --val-clips video10 video11  # own-camera hold-out
+    python finetune/training/train_gridtracknet.py --holdout mixed_v1           # the fixed held-out set in holdouts.json
     python finetune/training/train_gridtracknet.py --sources custom             # own footage only
     python finetune/training/train_gridtracknet.py --oversample custom=6 --epoch-units 20000
     python finetune/training/train_gridtracknet.py --from-scratch --epochs 30   # train a fresh network on everything
@@ -84,11 +85,20 @@ def pick_winner(args: argparse.Namespace, clips: List[Clip], val_clips: List[str
         print("[done] the starting weights stayed ahead on the held-out clips; nothing to promote")
 
 
+def run_config(args: argparse.Namespace, names: List[str], val_clips: List[str], oversample: Dict[str, float]) -> dict:
+    """What a run was: the clips, the held-out ones and how they were chosen, and every option that
+    shaped the training, as ``config.json`` records it."""
+    return {"clips": names, "validation_clips": val_clips, "holdout": args.holdout, "val_clips": args.val_clips,
+            "sources": args.sources, "cameras": args.cameras, "augment": args.augment, "oversample": oversample,
+            "epoch_units": args.epoch_units, "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
+            "from_scratch": args.from_scratch, "weights": str(args.weights)}
+
+
 def train(args: argparse.Namespace) -> None:
     torch.manual_seed(SEED)       # the data loaders' draws derive from it too, see Augmenter
     clips = find_clips(args.videos, args.labels, ClipSelection(args.sources, args.exclude_clips, args.include_excluded, args.cameras))
     names = [clip for clip, _, _, _ in clips]
-    val_clips = validation_split(clips, args.labels, args.val_clips)
+    val_clips = validation_split(clips, args.labels, args.val_clips, args.holdout)
     oversample = parse_oversample(args.oversample)
     manifest = prepare_data(clips, args.data_dir, val_clips, args.rebuild_data, args.prep_workers)
     if args.prepare_only:
@@ -117,11 +127,7 @@ def train(args: argparse.Namespace) -> None:
     args.run_dir.mkdir(parents=True, exist_ok=True)
     results = args.run_dir / "results.csv"
     write_atomic(results, "epoch,train_loss,val_loss,seconds\n")
-    write_atomic(args.run_dir / "config.json", json.dumps({
-        "clips": names, "validation_clips": val_clips, "sources": args.sources, "cameras": args.cameras,
-        "augment": args.augment, "oversample": oversample,
-        "epoch_units": args.epoch_units, "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
-        "from_scratch": args.from_scratch, "weights": str(args.weights)}, indent=2))
+    write_atomic(args.run_dir / "config.json", json.dumps(run_config(args, names, val_clips, oversample), indent=2))
     best_path = args.run_dir / "best.npz"
     best = math.inf
     print(f"[train] device={device} epochs={args.epochs} batch={args.batch_size} "
@@ -197,7 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save", type=Path, default=layout.best_weights)
     parser.add_argument("--data-dir", type=Path, default=layout.cache / "data")
     parser.add_argument("--run-dir", type=Path, default=layout.runs / "train")
-    parser.add_argument("--val-clips", nargs="*", help="Held-out clip stems or globs (default: video10 if present, else the last clip)")
+    held_out = parser.add_mutually_exclusive_group()
+    held_out.add_argument("--val-clips", nargs="*", help="Held-out clip stems or globs (default: video10 if present, else the last clip)")
+    held_out.add_argument("--holdout", metavar="NAME",
+                          help="Hold out a named set of whole recordings from the workspace's holdouts.json (e.g. mixed_v1)")
     parser.add_argument("--sources", nargs="*", help="Only use clips whose clips.csv source is listed (e.g. custom grid)")
     parser.add_argument("--exclude-clips", nargs="*", help="Clip stems or globs to leave out entirely")
     parser.add_argument("--include-excluded", action="store_true", help="Explicitly include excluded/unverified clips for training (validation still requires verified labels)")
