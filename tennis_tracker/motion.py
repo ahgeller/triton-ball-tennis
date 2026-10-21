@@ -35,42 +35,6 @@ def _get_kernel(size: int) -> np.ndarray:
 _KERNEL_3x3 = _get_kernel(3)
 
 
-def xywh_to_xyxy(boxes_xywh: np.ndarray) -> np.ndarray:
-    """Centre/size boxes as corner boxes (rows of ``[x1, y1, x2, y2, ...]``)."""
-    out = boxes_xywh.copy()
-    out[:, 0] = boxes_xywh[:, 0] - boxes_xywh[:, 2] * 0.5
-    out[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] * 0.5
-    out[:, 2] = boxes_xywh[:, 0] + boxes_xywh[:, 2] * 0.5
-    out[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] * 0.5
-    return out
-
-def nms_xyxy(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -> np.ndarray:
-    """Indices of the boxes greedy non-maximum suppression keeps, best score first."""
-    if boxes_xyxy.size == 0 or scores.size == 0:
-        return np.empty((0,), dtype=np.int32)
-    x1 = boxes_xyxy[:, 0]
-    y1 = boxes_xyxy[:, 1]
-    x2 = boxes_xyxy[:, 2]
-    y2 = boxes_xyxy[:, 3]
-    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
-    order = np.argsort(scores)[::-1]
-    keep = []
-    while order.size > 0:
-        i = int(order[0])
-        keep.append(i)
-        if order.size == 1:
-            break
-        rest = order[1:]
-        xx1 = np.maximum(x1[i], x1[rest])
-        yy1 = np.maximum(y1[i], y1[rest])
-        xx2 = np.minimum(x2[i], x2[rest])
-        yy2 = np.minimum(y2[i], y2[rest])
-        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
-        union = areas[i] + areas[rest] - inter + 1e-6
-        iou = inter / union
-        order = rest[iou <= float(iou_thres)]
-    return np.asarray(keep, dtype=np.int32)
-
 def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) -> np.ndarray:
     """C++ probe-style frame delta: max(gray, V, scaled-S), blurred 3x3."""
     prev_hsv = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2HSV)

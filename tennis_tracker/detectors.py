@@ -33,7 +33,6 @@ import torch.nn.functional as F
 from .config import Config
 from .frame_rate import require_phase_stride
 from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
-from .motion import nms_xyxy, xywh_to_xyxy
 from .utils import resolve_engine_path, engine_is_trt10, iter_engine_io, read_engine_header
 
 # One ball detection: an xyxy box in source pixels and its confidence.
@@ -599,6 +598,44 @@ class GridTrackNetBallDetector(BallDetectorBackend):
 
     def detect_async_finish(self, pending: CachedDetections) -> List[Detection]:
         return pending.detections
+
+
+def xywh_to_xyxy(boxes_xywh: np.ndarray) -> np.ndarray:
+    """Centre/size boxes as corner boxes (rows of ``[x1, y1, x2, y2, ...]``)."""
+    out = boxes_xywh.copy()
+    out[:, 0] = boxes_xywh[:, 0] - boxes_xywh[:, 2] * 0.5
+    out[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] * 0.5
+    out[:, 2] = boxes_xywh[:, 0] + boxes_xywh[:, 2] * 0.5
+    out[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] * 0.5
+    return out
+
+
+def nms_xyxy(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -> np.ndarray:
+    """Indices of the boxes greedy non-maximum suppression keeps, best score first."""
+    if boxes_xyxy.size == 0 or scores.size == 0:
+        return np.empty((0,), dtype=np.int32)
+    x1 = boxes_xyxy[:, 0]
+    y1 = boxes_xyxy[:, 1]
+    x2 = boxes_xyxy[:, 2]
+    y2 = boxes_xyxy[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = np.argsort(scores)[::-1]
+    keep = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
+        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+        union = areas[i] + areas[rest] - inter + 1e-6
+        iou = inter / union
+        order = rest[iou <= float(iou_thres)]
+    return np.asarray(keep, dtype=np.int32)
 
 
 def _rescale_box(det: Any, scale: Tuple[float, float]) -> List[float]:
