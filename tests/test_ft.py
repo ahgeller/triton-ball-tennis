@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from finetune import ft
+from finetune import ft, menu
 from finetune.data import workspace
 from finetune.data.labels import write_labels
 from tennis_tracker.paths import ROOT
@@ -56,17 +56,17 @@ CHOICES = ["grid_match1", "grid_match23", "video23", "clipA"]
     ("zzz", "zzz"),                # nothing matches: passed through for the tool to complain about
 ])
 def test_resolve_choice_takes_numbers_names_and_unique_substrings(answer, expected):
-    assert ft._resolve_choice(answer, CHOICES) == expected
+    assert menu._resolve_choice(answer, CHOICES) == expected
 
 
 def test_resolve_choice_refuses_a_number_that_is_also_a_clip_name(capsys):
-    assert ft._resolve_choice("2", ["a", "b", "video2"]) is None
+    assert menu._resolve_choice("2", ["a", "b", "video2"]) is None
     out = capsys.readouterr().out
     assert "2 is two things here" in out and "number 2 in the list is b" in out and "video2" in out
 
 
 def test_resolve_choice_refuses_an_ambiguous_substring(capsys):
-    assert ft._resolve_choice("23", CHOICES) is None       # 23 is past the list, and two clips contain it
+    assert menu._resolve_choice("23", CHOICES) is None       # 23 is past the list, and two clips contain it
     assert "'23' matches 2: grid_match23, video23" in capsys.readouterr().out
 
 
@@ -173,8 +173,8 @@ def test_menu_dispatches_a_number_or_a_name_and_quits(workspace_dir, capsys):
     ran = []
     with patch.object(ft, "_ask", lambda prompt: next(answers)), \
             patch.object(ft, "run_cli", lambda argv: ran.append(argv) or 0):
-        assert ft.interactive_menu() == 0                     # 1 -> status, Enter, 'status' -> status, q
-        assert ft.interactive_menu() == 0                     # nope -> not an option, Enter -> ..., EOF quits
+        assert menu.interactive_menu() == 0                   # 1 -> status, Enter, 'status' -> status, q
+        assert menu.interactive_menu() == 0                   # nope -> not an option, Enter -> ..., EOF quits
     assert ran == [["status"], ["status"]]
     out = capsys.readouterr().out
     assert "'nope' is not an option" in out and "the workspace is empty" in out

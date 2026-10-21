@@ -1,8 +1,9 @@
 """The labelling and GridTrackNet fine-tuning workspace.
 
-``ft.py`` is the front door: the menu, the launchers and the commands that run another script;
-``commands.py`` holds the commands that work in this process and ``interpreter.py`` finds the
-python with cv2 and torch to hand over to. The modules behind them are grouped by what they own:
+``ft.py`` is the front door: the launchers and the commands that run another script;
+``menu.py`` is its interactive menu, ``commands.py`` holds the commands that work in this process
+and ``interpreter.py`` finds the python with cv2 and torch to hand over to. The modules behind
+them are grouped by what they own:
 
 - ``finetune.data``: the label files and their sidecars, the workspace layout, the review
   policy, the audit and the dataset ingest (stdlib + numpy; nothing here needs cv2 or torch at
