@@ -5,14 +5,14 @@ Engine policy: see ``engine_session.open_engine_session``.
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional
+from typing import List, Optional
 
-import cv2
 import numpy as np
 
 from .config import Config
 from .court_geometry import LINE_PAIRS_14
 from .engine_session import open_engine_session
+from .rendering import draw_court
 
 _NEVER = -10**9
 
@@ -70,7 +70,7 @@ class CourtDetector:
         last did, otherwise the cached result is returned."""
         if self.session is None:
             return self.keypoints
-        interval = max(1, int(self.cfg.court_detect_interval))
+        interval = max(1, self.cfg.court_detect_interval)
         if self.keypoints is not None and frame_index != 0 and \
                 (frame_index - self.last_run_frame) < interval:
             return self.keypoints
@@ -88,7 +88,7 @@ class CourtDetector:
 
         conf = rows[:, 4] if rows.shape[1] > 4 else np.zeros((rows.shape[0],), dtype=np.float32)
         best_i = int(np.argmax(conf))
-        if float(conf[best_i]) < float(self.cfg.court_conf):
+        if float(conf[best_i]) < self.cfg.court_conf:
             return self._report_miss(frame_index)
 
         row = rows[best_i]
@@ -111,32 +111,5 @@ class CourtDetector:
         return self._report_miss(frame_index)
 
     def draw(self, frame: np.ndarray) -> np.ndarray:
-        if self.keypoints is None:
-            return frame
-        kps = self.keypoints
-        n = len(kps) // 2
-
-        for ki in range(0, len(kps) - 1, 2):
-            x, y = int(kps[ki]), int(kps[ki + 1])
-            if x > 0 or y > 0:
-                cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
-                if self.cfg.court_draw_indices:
-                    cv2.putText(frame, str(ki // 2), (x, y - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-
-        if self.cfg.court_points_only:
-            return frame
-
-        line_pairs: Any = []
-        if n == 14:
-            line_pairs = self._LINE_PAIRS_14
-        elif n >= self._MIN_KEYPOINTS:
-            line_pairs = [(j, j + 1) for j in range(n - 1)]
-
-        for a, b in line_pairs:
-            if a < n and b < n:
-                ax, ay = int(kps[a * 2]), int(kps[a * 2 + 1])
-                bx, by = int(kps[b * 2]), int(kps[b * 2 + 1])
-                if (ax > 0 or ay > 0) and (bx > 0 or by > 0):
-                    cv2.line(frame, (ax, ay), (bx, by), (0, 255, 0), 2)
-        return frame
+        """Draw the cached keypoints on ``frame`` (``rendering.draw_court``); untouched while there are none."""
+        return draw_court(frame, self.keypoints, self.cfg)

@@ -64,7 +64,7 @@ class PlayerDetector:
         self.tracker: Optional[Any] = None
         # Detection cadence is controlled by the CLI/config, while ByteTrack
         # still receives an update every frame and coasts on empty detections.
-        self._current_interval = max(1, int(cfg.player_detect_interval))
+        self._current_interval = max(1, cfg.player_detect_interval)
         # ByteTrack's live boxes keyed by track id.
         self.slots: Dict[int, List[float]] = {}
 
@@ -97,7 +97,7 @@ class PlayerDetector:
         """Engine output -> ``[x1, y1, x2, y2, conf, cls]`` rows in frame pixels,
         clipped to the frame, for boxmot.  Class ``_PLAYER_CLASS`` only."""
         scale = (frame_w / float(max(self.session.input_w, 1)), frame_h / float(max(self.session.input_h, 1)))
-        rows = decode_engine_boxes(pred_t, scale, float(self.cfg.player_conf), float(self.cfg.player_iou),
+        rows = decode_engine_boxes(pred_t, scale, self.cfg.player_conf, self.cfg.player_iou,
                                    engine_output_mode(pred_t), cls_filter=[_PLAYER_CLASS])
         if rows.shape[0] == 0:
             return np.empty((0, POSTPROCESSED_COLUMNS))

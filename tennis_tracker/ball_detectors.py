@@ -107,7 +107,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         if not torch.cuda.is_available():
             raise RuntimeError("GridTrackNet requires CUDA-enabled torch.")
         self.cfg = cfg
-        self.device = torch.device(f"cuda:{int(cfg.device)}")
+        self.device = torch.device(f"cuda:{cfg.device}")
         self._decode = decode_predictions
         self._frame_tensor = frame_tensor
         self.model = load_model(Path(weights_path), self.device)
@@ -123,7 +123,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         with torch.inference_mode():
             self.model(torch.zeros((1, 15, HEIGHT, WIDTH), device=self.device, dtype=torch.float16))
         torch.cuda.synchronize(self.device)
-        print(f"[detector] GridTrackNet FP16 (confidence={float(cfg.conf):.2f}, device={self.device})")
+        print(f"[detector] GridTrackNet FP16 (confidence={cfg.conf:.2f}, device={self.device})")
 
     def source_stride_for(self, fps: float) -> int:
         override = self.cfg.gridtracknet_source_stride
@@ -155,7 +155,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self._done = False
         self._worker_error = None
         if background is None:
-            background = bool(self.cfg.gridtracknet_prepass_background)
+            background = self.cfg.gridtracknet_prepass_background
         args = (capture, source_stride, width, height, int(total))
         if background:
             self._worker = threading.Thread(target=self._prepass, args=args, daemon=True, name="gridtracknet-prepass")
@@ -195,7 +195,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         batches = []
         frame_index = inference_calls = detected = 0
         started = time.perf_counter()
-        y_offset = float(self.cfg.gridtracknet_y_offset_px) * height / _REFERENCE_HEIGHT_PX
+        y_offset = self.cfg.gridtracknet_y_offset_px * height / _REFERENCE_HEIGHT_PX
         radius = max(_MIN_BOX_RADIUS_PX, _BOX_RADIUS_FRAC * np.hypot(width, height))
 
         def flush() -> None:
@@ -204,7 +204,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
                 return
             with torch.inference_mode():
                 output = self.model(torch.stack([item[0] for item in batches]))
-                decoded = self._decode(output, width, height, float(self.cfg.conf))
+                decoded = self._decode(output, width, height, self.cfg.conf)
             for batch_index, (_, indices) in enumerate(batches):
                 start = batch_index * 5
                 for source_index, (point, confidence) in zip(indices, decoded[start:start + 5]):
@@ -370,12 +370,12 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         self.ball_cls_id = ball_cls_id
         self.cls_filter = [ball_cls_id] if ball_cls_id is not None else None
         if device is None:
-            device = torch.device(f"cuda:{cfg.device}") if str(cfg.device).isdigit() else torch.device("cuda:0")
+            device = torch.device(f"cuda:{cfg.device}") if cfg.device.isdigit() else torch.device("cuda:0")
         self.session = TensorRTRuntimeSession(
             engine_path,
             device=device,
-            async_execute=bool(cfg.trt_async_execute),
-            output_slots=max(1, int(cfg.trt_async_slots)),
+            async_execute=cfg.trt_async_execute,
+            output_slots=max(1, cfg.trt_async_slots),
         )
         self.device = self.session.device
         self.use_async = self.session.use_async
@@ -418,6 +418,6 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
     def detect_async_finish(self, pending: TensorRTBallPending) -> List[Detection]:
         self.session.wait(pending.event)
         return decode_ball_predictions(
-            pending.outputs[0], pending.scale, float(self.cfg.conf), self.cls_filter, self.output_mode
+            pending.outputs[0], pending.scale, self.cfg.conf, self.cls_filter, self.output_mode
         )
 

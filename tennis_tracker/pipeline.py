@@ -150,17 +150,17 @@ def _select(ctx: RunContext, pass1: Pass1Result) -> Selection:
         boost_masks=pass1.boost_masks,
         raw_motions=pass1.raw_motions,
         player_boxes_by_frame=pass1.player_boxes,
-        debug=bool(cfg.print_selector_tracks))
+        debug=cfg.print_selector_tracks)
     timing.add("selector_select", select_t0)
 
     print(f"[selector] {len(all_tracks)} total tracks")
     post_t0 = timing.start()
     if cfg.print_selector_tracks:
         print_selector_track_summary(all_tracks, chosen_track, total_frames=n,
-                                     limit=max(int(cfg.selector_track_limit), 0))
+                                     limit=max(cfg.selector_track_limit, 0))
     # The selector owns its bounded tail; the display path is for the debug video only.
     path_gap = max(
-        max(1, int(cfg.display_path_max_gap)),
+        max(1, cfg.display_path_max_gap),
         min(_DISPLAY_PATH_GAP_MAX_FRAMES,
             max(_DISPLAY_PATH_GAP_MIN_FRAMES, int(round(float(video.fps) * _DISPLAY_PATH_GAP_SECONDS)))),
     )
@@ -182,7 +182,7 @@ def _select(ctx: RunContext, pass1: Pass1Result) -> Selection:
 def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> CourtEvents:
     """Bounces, contacts and rally legs for the court minimap; empty when it is off."""
     cfg, video = ctx.cfg, ctx.video
-    if not bool(cfg.draw_court_minimap):
+    if not cfg.draw_court_minimap:
         return CourtEvents()
     if not cfg.bounce_model_path:
         raise RuntimeError("--court requires Config.bounce_model_path")

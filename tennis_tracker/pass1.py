@@ -19,6 +19,7 @@ from ball_in_play_selector import PackedMask
 
 from .court_geometry import court_keypoints_key
 from .ball_detectors import Detection
+from .court_overlay import PlayerBoxes
 from .frame_window import FrameWindow
 from .motion import BackgroundModel, build_court_side_protect_mask, preprocess_frame_cuda
 from .run_context import RunContext
@@ -50,7 +51,7 @@ class Pass1Result:
     raw_motions: List[Optional[PackedMask]] = field(default_factory=list)
     rois: List[Optional[List[Box]]] = field(default_factory=list)          # visual ROI boxes
     ghost_rois: List[List[Box]] = field(default_factory=list)              # ROIs of tracks that timed out
-    player_boxes: List[Dict[Any, Any]] = field(default_factory=list)       # tracked player id -> box
+    player_boxes: List[PlayerBoxes] = field(default_factory=list)          # tracked player id -> box
     court_keypoints: List[Optional[List[float]]] = field(default_factory=list)
     cached_frames: Optional[List[np.ndarray]] = None   # decoded frames kept for pass 2, if they fit
     roi_frames: int = 0            # frames whose motion was computed inside ROIs (counted per ROI)
@@ -71,7 +72,7 @@ class FrameRecord:
     boost_mask_u8: Optional[np.ndarray]
     pack_roi: Optional[Box]                  # rectangle the masks are packed in
     rois: Optional[List[Box]]
-    player_boxes: Dict[Any, Any]
+    player_boxes: PlayerBoxes
     court_keypoints: Optional[List[float]]
     detector_frame: Optional[np.ndarray]
     detector_frame_cuda: Optional[torch.Tensor]
@@ -91,12 +92,12 @@ def pass2_cache_budget_mb(cfg) -> float:
     a fixed budget cannot know whether a 12 GiB clip fits on this machine.
     Without psutil that cannot be measured, so the budget is 0.
     """
-    explicit = int(cfg.pass2_cache_max_mb or 0)
+    explicit = cfg.pass2_cache_max_mb
     if explicit > 0:
         return float(explicit)
     if psutil is None:
         return 0.0          # cannot tell how much is free: do not risk the machine
-    ceiling = float(max(1, int(cfg.pass2_cache_ceiling_mb)))
+    ceiling = float(max(1, cfg.pass2_cache_ceiling_mb))
     free_mb = psutil.virtual_memory().available / _MIB
     return min(0.5 * free_mb, ceiling)
 
@@ -111,7 +112,7 @@ def _new_frame_cache(ctx: RunContext) -> Optional[List[np.ndarray]]:
     if est_mb <= budget_mb:
         print(f"[pass 1] RAM frame cache enabled ({est_mb:.0f} MiB est, {budget_mb:.0f} MiB budget)")
         return []
-    if psutil is None and int(cfg.pass2_cache_max_mb or 0) <= 0:
+    if psutil is None and cfg.pass2_cache_max_mb <= 0:
         print("[pass 1] RAM frame cache disabled (psutil not installed; set pass2_cache_max_mb to enable it)")
     else:
         print(f"[pass 1] RAM frame cache disabled ({est_mb:.0f} MiB needed > {budget_mb:.0f} MiB budget)")
@@ -151,10 +152,10 @@ class _Pass1Collector:
         self._protect_mask: Optional[np.ndarray] = None
         self._protect_mask_cuda: Optional[torch.Tensor] = None
         # Skip-frame detection and the aux (court/player) schedule.
-        self.skip_n = max(1, int(self.cfg.skip_frame_detect))
-        self.aux_force_interval = max(1, int(self.cfg.aux_force_interval))
+        self.skip_n = max(1, self.cfg.skip_frame_detect)
+        self.aux_force_interval = max(1, self.cfg.aux_force_interval)
         self.last_aux_detect_frame = -10 ** 9
-        self.use_cuda_detector_input = bool(self.cfg.enable_preprocess and self.detector.supports_cuda_frame())
+        self.use_cuda_detector_input = self.cfg.enable_preprocess and self.detector.supports_cuda_frame()
         self.can_overlap_ball_inference = bool(self.detector.use_async and int(self.detector.async_slots) >= 2)
         if self.use_cuda_detector_input:
             print("[pass 1] CUDA zero-copy preprocess->detector path enabled")
@@ -380,7 +381,7 @@ def collect_pass1(ctx: RunContext) -> Pass1Result:
     """Decode the clip and collect per-frame evidence; raises RuntimeError on an empty clip."""
     cfg, timing = ctx.cfg, ctx.timing
     print("[preprocess] CUDA S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
-    reader = ThreadedFrameReader(ctx.capture, prefetch=max(2, int(cfg.frame_reader_prefetch)))
+    reader = ThreadedFrameReader(ctx.capture, prefetch=max(2, cfg.frame_reader_prefetch))
     first = reader.read()
     if first is None:
         reader.release()

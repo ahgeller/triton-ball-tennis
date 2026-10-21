@@ -271,8 +271,8 @@ def open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> O
         raise FileNotFoundError(f"[{label}] TensorRT engine not found for '{model_path}'")
     session = TensorRTRuntimeSession(
         str(engine_path),
-        device=torch.device(f"cuda:{int(cfg.device)}"),
-        async_execute=bool(cfg.trt_async_execute),
+        device=torch.device(f"cuda:{cfg.device}"),
+        async_execute=cfg.trt_async_execute,
     )
     print(f"[{label}] TensorRT runtime initialized: {engine_path}")
     return session
