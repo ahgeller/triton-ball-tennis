@@ -55,6 +55,17 @@ def test_contacts_need_a_nearby_player():
     assert detect_player_contacts(CourtScene(track, far, 30.0, 1920, 1080)) == []
 
 
+def test_gap_contact_skips_a_player_without_a_box():
+    """A short reversing gap where one tracked player has no box this frame: that player is
+    skipped (as nearest_player and inside_player do) and the contact goes to the other one."""
+    track = [FrameResult(cx=100.0 + 20 * frame, cy=100.0, conf=0.9, source="det") for frame in range(10)]
+    track += [None] * 4                                                   # frames 10-13 hidden
+    track += [FrameResult(cx=260.0 - 20 * step, cy=100.0, conf=0.9, source="det") for step in range(6)]
+    boxes = [{7: None, 8: (270.0, 50.0, 330.0, 200.0)}] * len(track)
+    contacts = detect_player_contacts(CourtScene(track, boxes, 30.0, 1920, 1080))
+    assert contacts == [ContactEvent(11, 300.0, 200.0, 8, 1040.0, "gap")]
+
+
 def test_assemble_links_a_contact_to_its_confirmed_landing():
     contacts = [ContactEvent(0, 60.0, 205.0, 1, 10.0, "kink")]
     confirmed = [BounceEvent(30, 40.0, 60.0, 0.9)]

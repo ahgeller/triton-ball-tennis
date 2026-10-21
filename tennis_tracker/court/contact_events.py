@@ -80,6 +80,8 @@ def _nearest_player_to_either(
 ) -> Optional[Tuple[float, Hashable, PlayerBox]]:
     nearest = None
     for player_id, box in (boxes or {}).items():
+        if box is None or len(box) < 4:
+            continue
         distance = min(
             box_distance(float(a.cx), float(a.cy), box),
             box_distance(float(b.cx), float(b.cy), box),
