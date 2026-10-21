@@ -30,7 +30,8 @@ Frame coordinates follow the label files: pixel k's centre is at k + 0.5.
 from __future__ import annotations
 
 import math
-from typing import Dict, Iterable, List, Optional, Tuple, TypedDict
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tuple, TypedDict
 
 import cv2
 import numpy as np
@@ -207,158 +208,283 @@ def label_spacing(frames: Iterable[int]) -> int:
     return max(1, int(np.median(gaps)))
 
 
+class Candidate(NamedTuple):
+    """One measured blob on a frame: where it is, which starting point found it, how ball-like."""
+    x: float
+    y: float
+    kind: str            # "label" or "path": the starting point it was found around
+    ratio: float         # its own peak as a share of the brightest change in the window
+    contrast: float      # its peak over the window's background
+    blobs: int           # distinct blobs in the window, itself included
+
+
+@dataclass
+class Measurement:
+    """What one label frame's change map showed."""
+    candidates: List[Candidate]                 # every distinct moving blob near a starting point
+    base: Optional[Point]                       # the label's own centroid, else the path's: the first choice
+    crops: List[Tuple[Point, np.ndarray]] = field(default_factory=list)   # (starting point, crop) for a placer
+
+
+@dataclass(frozen=True)
+class ClipGeometry:
+    """A clip's size and the search sizes that follow from it."""
+    width: int
+    height: int
+    step: int                  # video frames between label frames
+    radius: int                # centroid half-width, frame px
+    reach: int                 # candidate blobs are looked for this far around a starting point
+    pad: int                   # the change map is cut this far around a starting point
+    offsets: Tuple[int, ...]   # the neighbours a frame is compared against, relative to it
+    to_1080: float             # frame px -> 1080p px
+
+    @classmethod
+    def of(cls, width: int, height: int, step: int) -> "ClipGeometry":
+        radius, reach = centroid_radius_px(height), search_radius_px(height)
+        offsets = tuple(sorted({sign * o * step for sign in (-1, 1) for o in OFFSETS}))
+        return cls(width, height, step, radius, reach, reach + radius * (ITERATIONS + 1) + 4, offsets,
+                   REFERENCE_HEIGHT / height)
+
+    def box(self, centre: Point) -> Tuple[int, int, int, int]:
+        """(x0, y0, x1, y1) of the change map around `centre`, kept inside the frame."""
+        cx, cy = int(math.floor(centre[0])), int(math.floor(centre[1]))
+        return (max(0, cx - self.pad), max(0, cy - self.pad),
+                min(self.width, cx + self.pad + 1), min(self.height, cy + self.pad + 1))
+
+
 def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Optional[int] = None,
             stop=lambda: False, confirmed: Optional[Iterable[int]] = None,
             only: Optional[Iterable[int]] = None, placer=None) -> Dict[int, Suggestion]:
     """A suggestion for every label frame, reading the video once from the start.
 
     `seeds` maps every label frame to its current label, or None where the label says there is no
-    ball. Returns frame -> Suggestion (its fields are documented there). `confirmed` names the frames whose labels a person has checked; where enough of them are near,
-    only those decide where the path puts the ball, so a run of wrong drafts cannot vouch for
-    itself (elsewhere every label does). `only` limits the measuring to those label frames - after
-    an edit, a stretch around it - while every label still informs the path. Frames where
-    nothing moved are left out. `stop` is polled so a caller can abandon the pass. A `placer`
-    (cnn_refiner.Placer) moves each chosen point to where you would click it; "centroid" keeps
-    where the measurement itself put it.
+    ball. Returns frame -> Suggestion (its fields are documented there). `confirmed` names the
+    frames whose labels a person has checked; where enough of them are near, only those decide
+    where the path puts the ball, so a run of wrong drafts cannot vouch for itself (elsewhere every
+    label does). `only` limits the measuring to those label frames - after an edit, a stretch
+    around it - while every label still informs the path. Frames where nothing moved are left
+    out. `stop` is polled so a caller can abandon the pass. A `placer` (cnn_refiner.Placer) moves
+    each chosen point to where you would click it; "centroid" keeps where the measurement itself
+    put it.
+
+    The stages: which frames and labels take part (plan), where to look on each frame
+    (search_centres), one streamed pass measuring the candidates there (measure_clip), the choice
+    between them by the path through the neighbours (choose), the placer (place), and the trust
+    rule (is_trusted) on the way out (to_suggestion).
     """
-    order = sorted(seeds)
-    if not order:
+    if not seeds:
         return {}
+    plan = plan_pass(seeds, confirmed, only)
     capture = cv2.VideoCapture(str(video))
     try:
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if width <= 0 or height <= 0:
             return {}
-        radius, reach = centroid_radius_px(height), search_radius_px(height)
-        to_1080 = REFERENCE_HEIGHT / height
-        labels = {f: p for f, p in seeds.items() if p is not None}
-        checked = labels if confirmed is None else {f: labels[f] for f in confirmed if f in labels}
-        # Where to look on each frame: its label, and where the labels either side put the ball
-        # when that is somewhere else (or the frame has no label).
-        centres: Dict[int, List[Tuple[str, Tuple[float, float]]]] = {}
-        measured = order if only is None else sorted(set(only) & set(order))
-        for frame in measured:
-            spots = [("label", labels[frame])] if frame in labels else []
-            guess = predict(checked, frame, order) or predict(labels, frame, order)
-            if guess is not None and 0 <= guess[0] < width and 0 <= guess[1] < height and (
-                    frame not in labels or math.hypot(guess[0] - labels[frame][0], guess[1] - labels[frame][1]) > 2.0):
-                spots.append(("path", guess))
-            if spots:
-                centres[frame] = spots
+        geometry = ClipGeometry.of(width, height, spacing or label_spacing(plan.order))
+        centres = search_centres(plan, width, height)
         if not centres:
             return {}
-        step = spacing or label_spacing(order)
-        offsets = sorted({sign * o * step for sign in (-1, 1) for o in OFFSETS})
-        wanted = {frame + o for frame in centres for o in [0] + offsets}
-        pad = reach + radius * (ITERATIONS + 1) + 4
-        options: Dict[int, List[dict]] = {}
-        crops: Dict[int, List[tuple]] = {}           # frame -> [(centre, crop for the placer)]
-        base: Dict[int, Tuple[float, float]] = {}
-        kept: Dict[int, np.ndarray] = {}
-        pending = sorted(centres)
-        last = max(pending) + max(offsets)
-        index = 0
-
-        def measure(frame: int) -> None:
-            others = [kept[frame + o] for o in offsets if frame + o in kept]
-            if len(others) < 2:
-                return
-            found = []
-            for kind, centre in centres[frame]:
-                cx, cy = int(math.floor(centre[0])), int(math.floor(centre[1]))
-                box = (max(0, cx - pad), max(0, cy - pad), min(width, cx + pad + 1), min(height, cy + pad + 1))
-                change = change_map(kept[frame], others, box)
-                near = blobs(change, box[:2], centre, reach)
-                point = centroid(change, box[:2], centre, radius)
-                points = ([(point[0], point[1])] if point is not None else []) + [(b[0], b[1]) for b in near]
-                for i, p in enumerate(points):
-                    entry = {"x": p[0], "y": p[1], "from": kind, **blob_features(change, box[:2], p, reach, near)}
-                    found.append(entry)
-                    if i == 0 and point is not None and frame not in base:
-                        base[frame] = p          # the label's own centroid first, else the path's
-            if found:
-                options[frame] = found
-                if placer is not None:
-                    images = [kept.get(frame - step, kept[frame]), kept[frame], kept.get(frame + step, kept[frame])]
-                    crops[frame] = [(centre, placer.cut(images, centre, height)) for _, centre in centres[frame]]
-
-        while index <= last and not stop():
-            if index not in wanted:
-                if not capture.grab():
-                    break
-                index += 1
-                continue
-            ok, image = capture.read()
-            if not ok:
-                break
-            kept[index] = image
-            while pending and pending[0] + max(offsets) <= index:
-                measure(pending.pop(0))
-            for old in [k for k in kept if pending and k < pending[0] + min(offsets)]:
-                del kept[old]
-            index += 1
-        if not stop():
-            for frame in pending:             # the clip ended before their last neighbours
-                measure(frame)
+        measured = measure_clip(capture, centres, geometry, placer, stop)
     finally:
         capture.release()
-
-    # Choose, per frame, the blob the path through the neighbours' choices points at. Twice, so a
-    # choice that moved can pull its neighbours along.
-    chosen = {f: p for f, p in base.items()}
-    anchors = None if confirmed is None else set(checked)
-    for _ in range(2):
-        picked = {}
-        # With checked labels known, only their measurements steer the choice (as for the starting
-        # points); otherwise every frame's current choice does.
-        steer = chosen if anchors is None else {f: p for f, p in chosen.items() if f in anchors}
-        for frame, found in options.items():
-            guess = predict(steer, frame, order) or predict(chosen, frame, order)
-            fallback = chosen.get(frame)
-            if guess is None:
-                picked[frame] = fallback
-                continue
-            best = min(found, key=lambda o: math.hypot(o["x"] - guess[0], o["y"] - guess[1]))
-            near = math.hypot(best["x"] - guess[0], best["y"] - guess[1]) * to_1080 <= TRAJECTORY_PX_1080
-            picked[frame] = (best["x"], best["y"]) if near else fallback
-        chosen = {f: p for f, p in picked.items() if p is not None}
-
-    placed = {}
-    if placer is not None and chosen:
-        reach_px = PLACE_REACH_1080 * height / REFERENCE_HEIGHT
-        items, frames = [], []
-        for frame, point in chosen.items():
-            centre, crop = min(crops.get(frame, []), key=lambda c: math.hypot(c[0][0] - point[0], c[0][1] - point[1]),
-                               default=(None, None))
-            if centre is not None and math.hypot(centre[0] - point[0], centre[1] - point[1]) <= reach_px:
-                items.append((crop, centre, point))
-                frames.append(frame)
-        placed = dict(zip(frames, placer.place(items, height)))
+    chosen = choose(measured, plan, geometry.to_1080)
+    placed = place(chosen, measured, placer, height)
+    steer = steering(chosen, plan.anchors)
     out: Dict[int, Suggestion] = {}
     for frame, point in chosen.items():
-        centroid_point = point
-        x, y, sure = placed.get(frame, (point[0], point[1], None))
-        point = (x, y)
-        entry = min(options[frame], key=lambda o: math.hypot(o["x"] - point[0], o["y"] - point[1]))
-        guess = (predict(chosen if anchors is None else {f: p for f, p in chosen.items() if f in anchors},
-                         frame, order) or predict(chosen, frame, order))
-        path = None if guess is None else math.hypot(point[0] - guess[0], point[1] - guess[1]) * to_1080
-        seed = labels.get(frame)
-        move = None if seed is None else math.hypot(point[0] - seed[0], point[1] - seed[1]) * to_1080
-        ball_here = entry["contrast"] >= BALL_CONTRAST
-        if sure is not None:              # the placer's self-check: 64% sure vs 55% by the rule below,
-            trusted = ball_here and sure  # at the same 0.09% of them over 5 px off
-        else:
-            trusted = (ball_here and path is not None and path <= TRUST_PATH_PX_1080 and entry["blobs"] <= 1
-                       and entry["ratio"] >= TRUST_PEAK_SHARE
-                       and math.hypot(point[0] - centroid_point[0], point[1] - centroid_point[1]) * to_1080
-                       <= TRUST_PLACE_PX_1080)
-        out[frame] = {"x": round(point[0], 3), "y": round(point[1], 3), "seed": seed, "from": entry["from"],
-                      "move": None if move is None else round(move, 3),
-                      "path": None if path is None else round(path, 3),
-                      "blobs": entry["blobs"], "ratio": round(entry["ratio"], 3),
-                      "contrast": round(entry["contrast"], 2), "trusted": bool(trusted),
-                      "ball_here": bool(ball_here),
-                      "centroid": (round(centroid_point[0], 3), round(centroid_point[1], 3))}
+        guess = path_guess(steer, chosen, frame, plan.order)
+        out[frame] = to_suggestion(frame, measured[frame], point, placed, guess, plan.labels.get(frame), geometry.to_1080)
     return out
+
+
+class Plan(NamedTuple):
+    """Which frames a pass measures and which labels steer the path through them."""
+    order: List[int]               # every label frame
+    labels: Dict[int, Point]       # the frames with a ball
+    checked: Dict[int, Point]      # the labels a person has checked (every label when unknown)
+    anchors: Optional[Set[int]]    # frames whose choices alone steer the path; None: every frame's
+    frames: List[int]              # the label frames to measure
+
+
+def plan_pass(seeds: Dict[int, Optional[Point]], confirmed: Optional[Iterable[int]],
+              only: Optional[Iterable[int]]) -> Plan:
+    order = sorted(seeds)
+    labels = {f: p for f, p in seeds.items() if p is not None}
+    checked = labels if confirmed is None else {f: labels[f] for f in confirmed if f in labels}
+    anchors = None if confirmed is None else set(checked)
+    frames = order if only is None else sorted(set(only) & set(order))
+    return Plan(order, labels, checked, anchors, frames)
+
+
+def search_centres(plan: Plan, width: int, height: int) -> Dict[int, List[Tuple[str, Point]]]:
+    """Where to look on each frame: its label, and where the labels either side put the ball when
+    that is somewhere else (or the frame has no label). frame -> [("label" | "path", point)]."""
+    labels, centres = plan.labels, {}
+    for frame in plan.frames:
+        spots = [("label", labels[frame])] if frame in labels else []
+        guess = predict(plan.checked, frame, plan.order) or predict(labels, frame, plan.order)
+        if guess is not None and 0 <= guess[0] < width and 0 <= guess[1] < height and (
+                frame not in labels or math.hypot(guess[0] - labels[frame][0], guess[1] - labels[frame][1]) > 2.0):
+            spots.append(("path", guess))
+        if spots:
+            centres[frame] = spots
+    return centres
+
+
+def read_wanted(capture, wanted: Set[int], last: int, stop) -> Iterator[Tuple[int, np.ndarray]]:
+    """(index, image) for each wanted frame up to `last`, in order, grabbing past the rest; ends
+    early when the clip does or `stop` says so."""
+    index = 0
+    while index <= last and not stop():
+        if index in wanted:
+            ok, image = capture.read()
+            if not ok:
+                return
+            yield index, image
+        elif not capture.grab():
+            return
+        index += 1
+
+
+def measure_clip(capture, centres: Dict[int, List[Tuple[str, Point]]], geometry: ClipGeometry, placer,
+                 stop) -> Dict[int, Measurement]:
+    """One pass over the video, keeping only the frames still needed; each label frame is measured
+    once the last neighbour it is compared against has been read."""
+    offsets = geometry.offsets
+    wanted = {frame + o for frame in centres for o in (0,) + offsets}
+    pending = sorted(centres)
+    kept: Dict[int, np.ndarray] = {}
+    measured: Dict[int, Measurement] = {}
+    for index, image in read_wanted(capture, wanted, max(pending) + max(offsets), stop):
+        kept[index] = image
+        measured.update(measure_due(pending, index, kept, centres, geometry, placer))
+        for old in [k for k in kept if pending and k < pending[0] + min(offsets)]:
+            del kept[old]
+    if not stop():
+        measured.update(measure_due(pending, math.inf, kept, centres, geometry, placer))   # the clip ended first
+    return measured
+
+
+def measure_due(pending: List[int], upto: float, kept: Dict[int, np.ndarray], centres, geometry: ClipGeometry,
+                placer) -> Dict[int, Measurement]:
+    """Measure, and take off `pending`, every frame whose last neighbour has been read by `upto`."""
+    out: Dict[int, Measurement] = {}
+    while pending and pending[0] + max(geometry.offsets) <= upto:
+        frame = pending.pop(0)
+        others = [kept[frame + o] for o in geometry.offsets if frame + o in kept]
+        if len(others) < 2:
+            continue
+        found = measure_frame(kept[frame], others, centres[frame], geometry)
+        if found is None:
+            continue
+        if placer is not None:
+            step = geometry.step
+            images = [kept.get(frame - step, kept[frame]), kept[frame], kept.get(frame + step, kept[frame])]
+            found.crops = [(centre, placer.cut(images, centre, geometry.height)) for _, centre in centres[frame]]
+        out[frame] = found
+    return out
+
+
+def measure_frame(image: np.ndarray, others: List[np.ndarray], spots: List[Tuple[str, Point]],
+                  geometry: ClipGeometry) -> Optional[Measurement]:
+    """Every candidate on one frame: around each starting point, the centroid of what differs from
+    the neighbours and each distinct peak nearby; None where nothing moved."""
+    candidates: List[Candidate] = []
+    base = None
+    for kind, centre in spots:
+        box = geometry.box(centre)
+        change = change_map(image, others, box)
+        near = blobs(change, box[:2], centre, geometry.reach)
+        point = centroid(change, box[:2], centre, geometry.radius)
+        points = ([(point[0], point[1])] if point is not None else []) + [(b[0], b[1]) for b in near]
+        for p in points:
+            candidates.append(Candidate(p[0], p[1], kind, **blob_features(change, box[:2], p, geometry.reach, near)))
+        if point is not None and base is None:
+            base = (point[0], point[1])          # the label's own centroid first, else the path's
+    return Measurement(candidates, base) if candidates else None
+
+
+def steering(chosen: Dict[int, Point], anchors: Optional[Set[int]]) -> Dict[int, Point]:
+    """The points that steer the path: with checked labels known, only their measurements (as for
+    the starting points); otherwise every frame's current choice."""
+    return chosen if anchors is None else {f: p for f, p in chosen.items() if f in anchors}
+
+
+def path_guess(steer: Dict[int, Point], chosen: Dict[int, Point], frame: int, order: List[int]) -> Optional[Point]:
+    """Where the path through the steering points puts the ball at `frame`, falling back to the
+    path through every choice when the steering points are too few there."""
+    return predict(steer, frame, order) or predict(chosen, frame, order)
+
+
+def choose(measured: Dict[int, Measurement], plan: Plan, to_1080: float) -> Dict[int, Point]:
+    """Per frame, the candidate the path through the neighbours' choices points at, starting from
+    each frame's own centroid. Twice, so a choice that moved can pull its neighbours along."""
+    chosen = {f: m.base for f, m in measured.items() if m.base is not None}
+    for _ in range(2):
+        steer = steering(chosen, plan.anchors)
+        picked: Dict[int, Optional[Point]] = {}
+        for frame, found in measured.items():
+            guess = path_guess(steer, chosen, frame, plan.order)
+            picked[frame] = nearest_candidate(found.candidates, guess, chosen.get(frame), to_1080)
+        chosen = {f: p for f, p in picked.items() if p is not None}
+    return chosen
+
+
+def nearest_candidate(candidates: List[Candidate], guess: Optional[Point], fallback: Optional[Point],
+                      to_1080: float) -> Optional[Point]:
+    """The candidate nearest `guess` when it is within TRAJECTORY_PX_1080 of it, else `fallback`."""
+    if guess is None:
+        return fallback
+    best = min(candidates, key=lambda c: math.hypot(c.x - guess[0], c.y - guess[1]))
+    near = math.hypot(best.x - guess[0], best.y - guess[1]) * to_1080 <= TRAJECTORY_PX_1080
+    return (best.x, best.y) if near else fallback
+
+
+def place(chosen: Dict[int, Point], measured: Dict[int, Measurement], placer,
+          height: int) -> Dict[int, Tuple[float, float, Optional[bool]]]:
+    """Each chosen point moved by the placer, from the crop cut nearest to it: frame -> (x, y,
+    sure). A frame whose crops were all cut too far from its choice is left out; nothing is placed
+    without a placer."""
+    if placer is None or not chosen:
+        return {}
+    reach_px = PLACE_REACH_1080 * height / REFERENCE_HEIGHT
+    items, frames = [], []
+    for frame, point in chosen.items():
+        centre, crop = min(measured[frame].crops, key=lambda c: math.hypot(c[0][0] - point[0], c[0][1] - point[1]),
+                           default=(None, None))
+        if centre is not None and math.hypot(centre[0] - point[0], centre[1] - point[1]) <= reach_px:
+            items.append((crop, centre, point))
+            frames.append(frame)
+    return dict(zip(frames, placer.place(items, height)))
+
+
+def is_trusted(ball_here: bool, sure: Optional[bool], path: Optional[float], entry: Candidate,
+               moved_1080: float) -> bool:
+    """A placer's self-check decides (64% sure vs 55% by the rule below, at the same 0.09% of them
+    over 5 px off). Without one: close to the path, the only blob, the window's peak, and placed
+    within TRUST_PLACE_PX_1080 of its measurement."""
+    if sure is not None:
+        return bool(ball_here and sure)
+    return bool(ball_here and path is not None and path <= TRUST_PATH_PX_1080 and entry.blobs <= 1
+                and entry.ratio >= TRUST_PEAK_SHARE and moved_1080 <= TRUST_PLACE_PX_1080)
+
+
+def to_suggestion(frame: int, measurement: Measurement, centroid_point: Point,
+               placed: Dict[int, Tuple[float, float, Optional[bool]]], guess: Optional[Point],
+               label: Optional[Point], to_1080: float) -> Suggestion:
+    """The record for one frame: the chosen point (placed, when a placer was), its distances from
+    the label and the path, the features of the candidate it stands on, and the trust rule."""
+    x, y, sure = placed.get(frame, (centroid_point[0], centroid_point[1], None))
+    point = (x, y)
+    entry = min(measurement.candidates, key=lambda c: math.hypot(c.x - point[0], c.y - point[1]))
+    path = None if guess is None else math.hypot(point[0] - guess[0], point[1] - guess[1]) * to_1080
+    move = None if label is None else math.hypot(point[0] - label[0], point[1] - label[1]) * to_1080
+    ball_here = entry.contrast >= BALL_CONTRAST
+    moved = math.hypot(point[0] - centroid_point[0], point[1] - centroid_point[1]) * to_1080
+    return {"x": round(point[0], 3), "y": round(point[1], 3), "seed": label, "from": entry.kind,
+            "move": None if move is None else round(move, 3),
+            "path": None if path is None else round(path, 3),
+            "blobs": entry.blobs, "ratio": round(entry.ratio, 3), "contrast": round(entry.contrast, 2),
+            "trusted": is_trusted(ball_here, sure, path, entry, moved), "ball_here": bool(ball_here),
+            "centroid": (round(centroid_point[0], 3), round(centroid_point[1], 3))}
