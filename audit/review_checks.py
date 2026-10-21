@@ -1,9 +1,22 @@
-"""Reproduce review findings without changing models, media, or labels.
+"""Historical record: the September 2026 review's defect reproductions. It no longer runs.
 
-These assertions document CURRENT defects, not desired behavior. Replace each
-with a regression test for the corrected behavior when implementing its fix.
-Run from the repository root with the tennis-analysis interpreter.
+Each assertion below demonstrated a defect as it existed at the September 7,
+2026 review (see audit/PROJECT_REVIEW.md); its results are saved in
+audit/review_checks.json and audit/review_checks.log. Those defects have since
+been fixed, so the assertions now fail, and the script also passes
+``Config(motion_raw_ball_color_gate=...)``, a field that was later removed.
+The fixed behaviour is asserted by tests/test_fixes.py; run the suite with
+``python -m pytest -q`` from the repository root.
+
+Kept unchanged below so the review's evidence stays readable. Running it exits
+immediately rather than overwriting the saved results.
 """
+if __name__ == "__main__":
+    raise SystemExit(
+        "audit/review_checks.py documents the September 2026 review defects, which are fixed; "
+        "it no longer runs. See tests/test_fixes.py (python -m pytest -q) for the regression tests."
+    )
+
 from pathlib import Path
 import json
 import queue

@@ -1,9 +1,7 @@
-"""Synthetic regression checks. No match media or labels are used."""
+"""Synthetic regression checks for the reviewed defects. No match media or labels are used."""
 from pathlib import Path
-import queue
 import json
 import tempfile
-import sys
 import threading
 from types import SimpleNamespace
 import unittest
@@ -12,13 +10,12 @@ from unittest.mock import patch
 import torch
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from review_checks import Capture, metric_probe
+from tests._helpers import Capture, metric_probe
 from finetune.train_gridtracknet import better
+from tennis_tracker import detectors
 from tennis_tracker.config import Config
 from tennis_tracker.detectors import GridTrackNetBallDetector
+from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
 from tennis_tracker.video_io import VideoWriter
 from tennis_tracker.motion import preprocess_frame_cuda, refine_raw_motion_temporal_cpu, filter_boost_mask
 from ball_in_play_selector.config import SelectorConfig
@@ -30,6 +27,53 @@ from finetune.data_policy import is_verified
 from validate_tracking import validate
 from ball_in_play_selector.core import frame_result
 from tennis_tracker.pipeline import _frame_result_to_json
+
+# Frame rates whose phase stride is 1 and 2 (see tennis_tracker.frame_rate).
+_FPS_FOR_STRIDE = {1: 30.0, 2: 60.0}
+_CPU = torch.device("cpu")
+
+
+class CpuGridTrackNet(GridTrackNetBallDetector):
+    """The real constructor, run on the CPU with an injected model, decoder and frame encoder.
+
+    The constructor insists on CUDA and loads weights from disk; both are
+    replaced for its duration only. ``on_publish`` sees every prefix the
+    prepass declares final.
+    """
+
+    def __init__(self, cfg, model, decode, frame_tensor, on_publish=None):
+        with patch.object(torch.cuda, "is_available", return_value=True), \
+             patch.object(torch, "device", return_value=_CPU), \
+             patch.object(torch.cuda, "synchronize"), \
+             patch.object(detectors, "load_model", return_value=model):
+            super().__init__("unused.npz", cfg)
+        self._decode = decode
+        self._frame_tensor = frame_tensor
+        self._on_publish = on_publish
+
+    def _publish(self, upto):
+        super()._publish(upto)
+        if self._on_publish is not None:
+            self._on_publish(upto)
+
+
+class FailingWriter(VideoWriter):
+    """An OpenCV-backed writer whose encoder blocks on the first frame until released, then fails."""
+
+    def __init__(self, path, cfg):
+        self.entered, self.release, self.drained = threading.Event(), threading.Event(), threading.Event()
+        super().__init__(path, 30.0, 64, 32, cfg, encoder=EncoderChoice(None, (ENCODER_OPENCV,)))
+
+    def _raw_write(self, frame):
+        self.entered.set()
+        self.release.wait(1)
+        raise RuntimeError("encoder failed")
+
+    def _drain(self):
+        try:
+            super()._drain()
+        finally:
+            self.drained.set()
 
 
 class FixTests(unittest.TestCase):
@@ -156,12 +200,6 @@ class FixTests(unittest.TestCase):
     def test_finalized_misses_are_immutable(self):
         for stride, count in ((1, 23), (2, 47)):
             with self.subTest(stride=stride):
-                detector = object.__new__(GridTrackNetBallDetector)
-                detector.cfg, detector.device = Config(), torch.device("cpu")
-                detector.precomputed = [[] for _ in range(count)]
-                detector._worker, detector._worker_error = None, None
-                detector._frame_tensor = lambda frame, device: torch.tensor([float(frame[0, 0, 0])])
-                detector.model = lambda batch: batch
                 seen = set()
                 def decode(batch, width, height, threshold):
                     decoded = []
@@ -171,39 +209,45 @@ class FixTests(unittest.TestCase):
                             decoded.append(((float(index), 20.) if index in seen else None, .9))
                             seen.add(index)
                     return decoded
-                detector._decode = decode
                 publications = []
+                detector = None
                 def publish(upto):
                     for previous in publications:
                         self.assertEqual(detector.precomputed[:len(previous)], previous)
                     publications.append([list(row) for row in detector.precomputed[:upto]])
-                detector._publish = publish
-                with patch.object(torch.cuda, "synchronize"):
-                    detector._prepass(Capture(count), stride, 1920, 1080)
-                self.assertIsNone(detector._worker_error)
-                self.assertFalse(any(detector.precomputed))
+                detector = CpuGridTrackNet(
+                    Config(device="0"), model=lambda batch: batch, decode=decode,
+                    frame_tensor=lambda frame, device: torch.tensor([float(frame[0, 0, 0])]),
+                    on_publish=publish,
+                )
+                with patch.object(detectors.cv2, "VideoCapture", return_value=Capture(count)), \
+                     patch.object(torch.cuda, "synchronize"):
+                    results = detector.detect_clip(Path("synthetic.mp4"), _FPS_FOR_STRIDE[stride], 1920, 1080, count)
+                self.assertEqual(len(results), count)
+                self.assertFalse(any(results))
+                self.assertEqual([detector.detections_at(index) for index in range(count)], [[]] * count)
 
     def test_writer_failure_does_not_block_full_queue(self):
-        writer = object.__new__(VideoWriter)
-        writer._proc = writer._cv = None
-        writer._q = queue.Queue(maxsize=1)
-        writer._q.put("queued")
-        writer._thread_error = RuntimeError("encoder failed")
-        writer._thread = threading.Thread(target=lambda: None)
-        writer._thread.start()
-        writer._thread.join()
-        errors = []
-        def close():
-            try:
-                writer.close()
-            except RuntimeError as error:
-                errors.append(str(error))
-        closer = threading.Thread(target=close, daemon=True)
-        closer.start()
-        closer.join(1)
-        self.assertFalse(closer.is_alive())
-        self.assertIn("encoder failed", errors[0])
-
+        with tempfile.TemporaryDirectory() as directory:
+            writer = FailingWriter(str(Path(directory) / "out.avi"),
+                                   Config(use_async_writer=True, async_queue=1))
+            frame = np.zeros((32, 64, 3), np.uint8)
+            writer.write(frame)                # taken by the drain thread, which then blocks
+            self.assertTrue(writer.entered.wait(1))
+            writer.write(frame)                # fills the one-slot queue
+            writer.release.set()               # the encoder now fails with the queue still full
+            self.assertTrue(writer.drained.wait(1))
+            errors = []
+            def close():
+                try:
+                    writer.close()
+                except RuntimeError as error:
+                    errors.append(str(error))
+            closer = threading.Thread(target=close, daemon=True)
+            closer.start()
+            closer.join(1)
+            self.assertFalse(closer.is_alive())
+            self.assertIn("encoder failed", errors[0])
 
 if __name__ == "__main__":
     unittest.main()
