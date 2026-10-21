@@ -1,7 +1,7 @@
 """The label tool's mouse: what a press, a wheel turn or a move does in the single-frame view,
 and which events the tool must not act on (its own wheel posts, anything while it is moving the
 pointer, a click ahead of the displayed view). The grid and the sheet take their own clicks
-(``label_views``); the HUD chips and the inset take theirs (``label_frame_view``)."""
+(``label_grid``, ``label_sheet``); the HUD chips and the inset take theirs (``label_frame_view``)."""
 
 from __future__ import annotations
 

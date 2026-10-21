@@ -133,7 +133,8 @@ python evaluate_archive.py --archive finetune --mode raw --clips video13
 
 ```text
 clean_tracker.py                         Command-line entry point
-evaluate_archive.py                      Detector/pipeline scoring on hand-labelled clips (evaluation/archive.py)
+evaluate_archive.py                      Detector/pipeline scoring on hand-labelled clips (evaluation/archive.py,
+                                         pipeline_score.py scores one pipeline run's clip)
 validate_tracking.py                     Tracking JSON vs. hand labels (evaluation/tracking.py)
 check_parity.py                          Frozen Pomona benchmark gate (evaluation/parity.py)
 evaluation/                              The scorers behind those three entry points
@@ -173,16 +174,20 @@ models/                                  Player and court TensorRT engines
 sample/                                  Sample video and validation annotations
 finetune.bat / finetune.ps1              Front door for the fine-tuning workspace
 finetune/ft.py                           Front door for the labelling and training workflow
+finetune/menu.py                         Its interactive menu
 finetune/commands.py, interpreter.py     Its in-process commands and the venv hand-over
 finetune/labeling/label_tool.py          Manual label editing (label_cli, label_store, label_source,
-                                         label_window, label_keys, label_mouse, label_frame_view,
-                                         label_views, label_draw and label_hints hold its pieces)
+                                         label_window, label_cursor, label_keys, label_mouse, label_frame_view,
+                                         label_grid, label_sheet, label_draw and label_hints hold its pieces)
 finetune/labeling/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
+finetune/labeling/refiner_sheet.py       A zoomed sheet of where two versions of that CNN disagree
 finetune/labeling/refiner_training.py    Training that CNN on the frames you have checked
-finetune/data/labels.py                  Label file format; label_audit.py checks labels
+finetune/data/labels.py                  Label file format; label_check.py checks a file, label_audit.py
+                                         audits labels against the detector
 finetune/data/workspace.py, fileio.py    Workspace layout, clip facts, atomic writes
 finetune/data/data_policy.py             Which clips may be trained, validated or scored on
-finetune/data/import_data.py, realign.py Source conversion and temporal realignment
+finetune/data/import_data.py, realign.py Source conversion and temporal realignment (realign_solve.py
+                                         is the offset solver)
 finetune/data/import_sources.py          What the dataset importers share
 finetune/training/train_gridtracknet.py  Training; loop.py is the training loop, metrics.py the
                                          detector metric a run is judged by (data/scoring.py scores it)

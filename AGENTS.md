@@ -47,31 +47,32 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   always, unsure ones within 3 px of the draft; see `Suggestions.offer_for` in
   `label_hints.py` for the measurement);
   `x` keeps the draft, `y` takes a hint beside a reviewed label. `ft.py hints sheet <clip>`
-  renders a zoomed PNG of where two versions disagree, for judging marks by eye. A trajectory
+  (`refiner_sheet.py`) renders a zoomed PNG of where two versions disagree, for judging marks by eye. A trajectory
   prior on the hints was measured and makes them worse (see the module docstring).
-- `finetune/ft.py`: workflow front door (menu, launchers, script commands;
-  `commands.py` has the in-process commands, `interpreter.py` the venv
-  hand-over). The rest of the package is three
+- `finetune/ft.py`: workflow front door (launchers, script commands;
+  `menu.py` is the interactive menu, `commands.py` has the in-process commands,
+  `interpreter.py` the venv hand-over). The rest of the package is three
   subpackages. `finetune/labeling/`: `label_tool.py` (manual edits: the tool's
   state, navigation and edits, the actions the key table names), split into
   `label_cli.py` (its command line), `label_store.py` (a clip's rows and
   sidecars), `label_source.py` (one clip of a labelling run, and the prefetcher
   that decodes ahead of the cursor), `label_window.py` (window plumbing and the
-  key tables), `label_keys.py` (what the keys do), `label_mouse.py` (what the
-  mouse does), `label_frame_view.py` (the single-frame picture and HUD),
-  `label_views.py` (the grid and trajectory-sheet views, each owning its state,
+  key tables), `label_cursor.py` (parking the OS pointer on the ball),
+  `label_keys.py` (what the keys do), `label_mouse.py` (what the mouse does),
+  `label_frame_view.py` (the single-frame picture and HUD), `label_grid.py` and
+  `label_sheet.py` (the grid and trajectory-sheet views, each owning its state,
   picture and keys), `label_draw.py` (the filters, marks and text every view
   draws with) and `label_hints.py` (the suggestions), with `refine.py` and
   `cnn_refiner.py` above. `finetune/data/`: `labels.py`, the label
-  file format; `label_audit.py`, checks labels against the video and the raw
-  detector; `workspace.py`, where the workspace keeps things and a clip's video
+  file format; `label_check.py`, checks a label file against its video's facts;
+  `label_audit.py`, checks labels against the raw detector and flags frames; `workspace.py`, where the workspace keeps things and a clip's video
   facts, and the one place `clips.csv` and `exclude.txt` are read and written
   (`TENNIS_WORKSPACE` relocates the workspace); `scoring.py`, the detector metric;
   `data_policy.py`, which clips may be trained, validated or scored on;
   `fileio.py`, atomic workspace writes; `alignment.py`, the one label-vs-detector
   agreement the audit and `realign.py` share; `import_data.py` (its importers;
-  `import_sources.py` holds what they share) and `realign.py`,
-  source conversion and temporal realignment. `finetune/training/`:
+  `import_sources.py` holds what they share) and `realign.py` (with the pure
+  solver in `realign_solve.py`), source conversion and temporal realignment. `finetune/training/`:
   `train_gridtracknet.py` (the training run: its command line, data, epochs and
   the winner; `finetune/train_gridtracknet.py` at the old path only hands over
   to it, for the command below), `loop.py` (the loss, one epoch, the validation
@@ -83,8 +84,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   (drafts).
 - `evaluation/`: `tracking.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
-  the pipeline on workspace clips with `finetune/data/scoring.py`, `parity.py` is the
-  Pomona gate. `validate_tracking.py`, `evaluate_archive.py` and `check_parity.py`
+  the pipeline on workspace clips with `finetune/data/scoring.py` (`pipeline_score.py`
+  scores one pipeline run's clip), `parity.py` is the Pomona gate. `validate_tracking.py`, `evaluate_archive.py` and `check_parity.py`
   at the root are thin entry points to them.
 
 ## Environment and commands

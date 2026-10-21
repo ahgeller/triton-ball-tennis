@@ -1,6 +1,6 @@
 """What every view of the label tool is drawn with: the picture filters, the ball marks and
 their colours, text that is cut to fit, and the zoom step the views share. The single-frame
-view (``label_tool``), the grid and the trajectory sheet (``label_views``) all draw from here;
+view (``label_frame_view``), the grid and the trajectory sheet (``label_grid``, ``label_sheet``) all draw from here;
 only the mapping to their own pixels is each view's own."""
 from __future__ import annotations
 

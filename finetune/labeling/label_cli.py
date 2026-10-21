@@ -15,7 +15,7 @@ from finetune.labeling.label_draw import FILTERS
 from finetune.labeling.label_source import Source, build_source, expand
 from finetune.labeling.label_store import SETTINGS_NAME, Settings, load_settings
 from finetune.labeling.label_tool import ZOOM_MAX, Tool
-from finetune.labeling.label_views import GRID_SIZES
+from finetune.labeling.label_grid import GRID_SIZES
 from finetune.data import workspace as ws
 
 

@@ -26,6 +26,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finetune.labeling import label_window as win
+from finetune.labeling.label_cursor import CursorPlacer
 from finetune.labeling.label_draw import FILTERS, ZOOM_STEP
 from finetune.labeling.label_frame_view import FrameView
 from finetune.labeling.label_hints import Suggestions
@@ -33,7 +34,8 @@ from finetune.labeling.label_keys import KeyHandler
 from finetune.labeling.label_mouse import MouseHandler
 from finetune.labeling.label_source import Prefetcher, Source, build_source, expand   # noqa: F401 - the tool's parts, by name
 from finetune.labeling.label_store import Row, rescue_unsaved, save_flags, save_review, save_rows, save_settings
-from finetune.labeling.label_views import GridView, SheetView
+from finetune.labeling.label_grid import GridView
+from finetune.labeling.label_sheet import SheetView
 from finetune.labeling.label_window import WINDOW
 from finetune.data.labels import LabelFormatError, is_visible
 from finetune.labeling.refine import Suggestion
@@ -62,7 +64,7 @@ class Tool:
         self.ui = 1.0                          # HUD/marker scale, so text stays readable when enlarged
         self.hud_h = HUD
         self.client = None                     # last client size seen; a change re-fits and re-measures
-        self.mouse = win.CursorPlacer(self)    # parks the OS pointer on the ball (Windows)
+        self.mouse = CursorPlacer(self)        # parks the OS pointer on the ball (Windows); see label_cursor
         self.viewport = win.ViewportGuard()    # keeps the Qt window's own zoom at x1
         self.hints = Suggestions(sources)      # refine.suggest's measurements, kept current in the background
         self.frame_view = FrameView(self)      # the single-frame picture and HUD; see label_frame_view
@@ -84,8 +86,8 @@ class Tool:
         self.dirty = False
         self.pending_cursor_move = False
         self.last_save = time.monotonic()
-        self.grid_view = GridView(self)   # TAB's page of crops; see label_views
-        self.sheet_view = SheetView(self) # w's trajectory sheet
+        self.grid_view = GridView(self)   # TAB's page of crops; see label_grid
+        self.sheet_view = SheetView(self) # w's trajectory sheet; see label_sheet
 
         self.last_clip = None
         self.presented = None
@@ -365,7 +367,7 @@ class Tool:
         return source.start, source.start + len(source.rows)
 
     # ---------------------------------------------------------------- the grid and the sheet
-    # The two overview views own their state, picture and keys (label_views); these are the
+    # The two overview views own their state, picture and keys (label_grid, label_sheet); these are the
     # actions by name, the surface the key table and the tests use.
     def toggle_grid(self) -> None:
         self.grid_view.toggle()

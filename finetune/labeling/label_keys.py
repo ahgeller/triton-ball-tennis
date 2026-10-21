@@ -1,5 +1,5 @@
 """What the label tool's keys do: the guards every key passes, q, and the single-frame view's
-keys, with the keys the grid shares. The grid's and the sheet's own keys are in ``label_views``.
+keys, with the keys the grid shares. The grid's and the sheet's own keys are in ``label_grid`` and ``label_sheet``.
 
 Every key names a tool action (``tool.confirm``, ``tool.move``, ``tool.jump``...): that is the
 surface the key table in the tests pins, so the handler calls the tool by those names.
