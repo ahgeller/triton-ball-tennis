@@ -117,6 +117,7 @@ def decode_engine_boxes(
     iou_threshold: float,
     output_mode: OutputMode,
     cls_filter: Optional[Sequence[int]] = None,
+    frame_size: Optional[Tuple[int, int]] = None,
 ) -> np.ndarray:
     """One engine output tensor as ``[x1, y1, x2, y2, conf, cls]`` rows in source pixels.
 
@@ -125,6 +126,10 @@ def decode_engine_boxes(
     the NMS threshold for raw heads; postprocessed engines already ran NMS.
     ``output_mode`` is what ``engine_output_mode`` said about the tensor.
     ``cls_filter`` keeps only those class ids (None keeps every class).
+    ``frame_size`` is the source frame's ``(width, height)``; given, every box
+    is clipped onto it, since a box can overhang the engine input on either
+    path and the consumers (ByteTrack, the court-side player filter, the ROI
+    tracker) expect frame pixels.
     """
     if output_mode == OUTPUT_MODE_POSTPROCESSED:
         rows = _postprocessed_rows(preds, conf_threshold)
@@ -138,4 +143,8 @@ def decode_engine_boxes(
         sx, sy = scale
         rows[:, [0, 2]] *= sx
         rows[:, [1, 3]] *= sy
+        if frame_size is not None:
+            width, height = frame_size
+            rows[:, [0, 2]] = np.clip(rows[:, [0, 2]], 0, width - 1)
+            rows[:, [1, 3]] = np.clip(rows[:, [1, 3]], 0, height - 1)
     return rows

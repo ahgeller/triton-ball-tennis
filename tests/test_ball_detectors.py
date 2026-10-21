@@ -19,6 +19,13 @@ from tennis_tracker.config import Config
 from tests._helpers import Capture, CpuGridTrackNet
 
 
+def test_ball_boxes_are_clipped_onto_the_frame():
+    preds = torch.tensor([[[-2.0, 1.0, 5.0, 3.0, 0.9, 0.0]]])      # a postprocessed row past the left edge
+    [(box, conf)] = ball_detectors.decode_ball_predictions(preds, (10.0, 10.0), 0.5, "postprocessed",
+                                                           frame_size=(40, 25))
+    assert box == [0.0, 10.0, 39.0, 24.0] and conf == pytest.approx(0.9)
+
+
 def test_backend_interface_and_cached_token():
     backend = BallDetectorBackend()
     assert not backend.supports_cuda_frame()

@@ -97,13 +97,9 @@ class PlayerDetector:
         """Engine output -> ``[x1, y1, x2, y2, conf, cls]`` rows in frame pixels,
         clipped to the frame, for boxmot.  Class ``_PLAYER_CLASS`` only."""
         scale = (frame_w / float(max(self.session.input_w, 1)), frame_h / float(max(self.session.input_h, 1)))
-        rows = decode_engine_boxes(pred_t, scale, self.cfg.player_conf, self.cfg.player_iou,
-                                   engine_output_mode(pred_t), cls_filter=[_PLAYER_CLASS])
-        if rows.shape[0] == 0:
-            return np.empty((0, POSTPROCESSED_COLUMNS))
-        rows[:, [0, 2]] = np.clip(rows[:, [0, 2]], 0, frame_w - 1)
-        rows[:, [1, 3]] = np.clip(rows[:, [1, 3]], 0, frame_h - 1)
-        return rows
+        return decode_engine_boxes(pred_t, scale, self.cfg.player_conf, self.cfg.player_iou,
+                                   engine_output_mode(pred_t), cls_filter=[_PLAYER_CLASS],
+                                   frame_size=(frame_w, frame_h))
 
     def detect_async_start(self, frame: np.ndarray, frame_index: int,
                            frame_gpu_chw: Optional[torch.Tensor] = None) -> Optional[PlayerPending]:

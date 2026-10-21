@@ -54,6 +54,17 @@ def test_postprocessed_rows_are_thresholded_filtered_and_rescaled():
     assert decode_engine_boxes(torch.zeros((1, 0, 6)), (1.0, 1.0), 0.5, 0.45, OUTPUT_MODE_POSTPROCESSED).shape == (0, 6)
 
 
+def test_rows_are_clipped_onto_the_frame_when_its_size_is_given():
+    rows = torch.tensor([[
+        [-4.0, 2.0, 30.0, 50.0, 0.9, 0.0],     # overhangs the left edge and the bottom
+        [10.0, 10.0, 12.0, 12.0, 0.8, 0.0],    # inside: untouched
+    ]])
+    out = decode_engine_boxes(rows, (2.0, 2.0), 0.5, 0.45, OUTPUT_MODE_POSTPROCESSED, frame_size=(40, 60))
+    assert out[:, :4].tolist() == [[0.0, 4.0, 39.0, 59.0], [20.0, 20.0, 24.0, 24.0]]
+    loose = decode_engine_boxes(rows, (2.0, 2.0), 0.5, 0.45, OUTPUT_MODE_POSTPROCESSED)
+    assert loose[0, :4].tolist() == [-8.0, 4.0, 60.0, 100.0]     # no size, no clipping
+
+
 def _raw_head(anchors, channel_major=True):
     """``[1, 4 + classes, anchors]`` like a YOLO head, or its transpose.  Real
     heads have thousands of anchors, which is how the layout is told apart,

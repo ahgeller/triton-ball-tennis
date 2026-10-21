@@ -353,10 +353,11 @@ def decode_ball_predictions(
     conf_threshold: float,
     output_mode: OutputMode,
     cls_filter: Optional[Sequence[int]] = None,
+    frame_size: Optional[Tuple[int, int]] = None,
 ) -> List[RawDetection]:
     """Turn one engine output tensor into ``(xyxy_box, confidence)`` pairs in source pixels
     (the arguments of ``decode_engine_boxes``, minus the ball's fixed NMS threshold)."""
-    rows = decode_engine_boxes(preds, scale, conf_threshold, _BALL_NMS_IOU, output_mode, cls_filter)
+    rows = decode_engine_boxes(preds, scale, conf_threshold, _BALL_NMS_IOU, output_mode, cls_filter, frame_size)
     return [([float(row[0]), float(row[1]), float(row[2]), float(row[3])], float(row[4])) for row in rows]
 
 
@@ -369,6 +370,8 @@ class TensorRTBallPending:
     event: Optional[torch.cuda.Event]
     # Keeps the engine input buffer alive until the inference reading it is done.
     input_tensor: torch.Tensor
+    # The source frame's (width, height), which the decoded boxes are clipped onto.
+    frame_size: Tuple[int, int]
 
 
 class TensorRTRuntimeBallDetector(BallDetectorBackend):
@@ -433,6 +436,7 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         """Launch inference on ``frame_bgr``; ``frame_index`` is part of the
         interface and not needed here (every call runs its own frame)."""
         out_slot = self.session.next_output_slot()
+        frame_size = (int(frame_bgr.shape[1]), int(frame_bgr.shape[0]))   # HWC on either path
         t = None
         if isinstance(frame_bgr, torch.Tensor):
             t, scale = self.session.preprocess_cuda_hwc_frame(frame_bgr)
@@ -441,11 +445,12 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         if t is None:
             t, scale = self.session.preprocess_frame(frame_bgr)
         outputs = self.session.forward_tensor(t, out_slot=out_slot)
-        return TensorRTBallPending(outputs, scale, self.session.completion_event(), t)
+        return TensorRTBallPending(outputs, scale, self.session.completion_event(), t, frame_size)
 
     def detect_async_finish(self, pending: TensorRTBallPending) -> List[RawDetection]:
         self.session.wait(pending.event)
         return decode_ball_predictions(
-            pending.outputs[0], pending.scale, self.cfg.conf, self.output_mode, self.cls_filter
+            pending.outputs[0], pending.scale, self.cfg.conf, self.output_mode, self.cls_filter,
+            frame_size=pending.frame_size,
         )
 
