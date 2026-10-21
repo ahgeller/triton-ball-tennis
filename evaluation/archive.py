@@ -26,7 +26,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from finetune.data.data_policy import is_scorable, read_review_status
 from finetune.data.detect import ball_detector, detect_points
@@ -238,7 +238,7 @@ def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float
         print(fmt("ALL", DetectorMetrics.of(pooled, 1.0)), "| bad outputs landed on:", pooled_landed)
 
 
-def main() -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=("raw", "pipeline"), default="raw")
     parser.add_argument("--models", nargs="+", default=["gridtracknet"], choices=sorted(MODELS))
@@ -259,7 +259,7 @@ def main() -> int:
     parser.add_argument("--gridtracknet-weights", help="Score a different GridTrackNet .npz (raw mode)")
     parser.add_argument("--gridtracknet-stride", type=int, default=None,
                         help="Force the frame spacing fed to GridTrackNet (1 = consecutive frames even at 60 FPS)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     archive = Path(args.archive) if args.archive else default_archive()
     clips = list_clips(args.clips, archive, args.include_excluded)

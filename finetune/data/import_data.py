@@ -36,7 +36,7 @@ import re
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -254,7 +254,7 @@ def import_tracknet(src: Path, manifest: Manifest, options: ImportOptions, prefi
 
 # --------------------------------------------------------------------------- main
 
-def main() -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("sources", nargs="+",
                         choices=("all", "archive", "video11", "tracknetv2", "grid", "prof", "tracknet"),
@@ -269,7 +269,7 @@ def main() -> int:
     parser.add_argument("--link", action="store_true", help="Hard-link videos instead of copying (same drive only)")
     parser.add_argument("--force", action="store_true", help="Re-convert clips that are already in the workspace")
     parser.add_argument("--dry-run", action="store_true", help="List what would be imported and stop")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     wanted = ["archive", "video11", "grid", "prof"] if "all" in args.sources else list(dict.fromkeys(args.sources))
     if "tracknet" in wanted and args.src is None:

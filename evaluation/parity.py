@@ -9,7 +9,7 @@ import math
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence
 
 from evaluation.tracking import validate
 
@@ -149,14 +149,14 @@ def check(prediction_path: Path, annotation_path: Path, video_path: Path) -> Dic
     return summary
 
 
-def main() -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Check clean tracker against the frozen baseline")
     parser.add_argument("--predictions", default=str(root / "output" / "tracking.json"))
     parser.add_argument("--annotations", default=str(root / "sample" / "pomona_annotations.json"))
     parser.add_argument("--input", default=str(root / "sample" / "pomona.mp4"))
     parser.add_argument("--existing", action="store_true", help="Check an existing JSON instead of running the tracker first")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     prediction_path = Path(args.predictions).resolve()
     annotation_path = Path(args.annotations).resolve()
     video_path = Path(args.input).resolve()

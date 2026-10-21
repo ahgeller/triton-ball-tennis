@@ -2,6 +2,9 @@
 imports other scripts make keep working, and the package's two scorers are the ones they name."""
 import subprocess
 import sys
+from pathlib import Path
+
+import pytest
 
 from tennis_tracker.paths import ROOT
 
@@ -17,6 +20,27 @@ def test_root_scripts_front_the_package_modules():
     assert check_parity.check is parity.check and check_parity.BASELINE is parity.BASELINE
     assert evaluate_archive.main is archive.main
     assert parity.validate is tracking.validate              # check_parity gates on the tracking scorer
+
+
+def test_every_script_main_takes_argv_and_returns_a_status():
+    """main(argv=None) -> int everywhere, invoked as raise SystemExit(main()): a test can drive a
+    script without patching sys.argv, and the exit status is the return value, never implicit."""
+    import ast
+    import inspect
+    from evaluation import archive, parity, tracking
+    from finetune.data import import_data, realign
+    from finetune.training import pretrack, train_gridtracknet
+    for module in (archive, parity, tracking, import_data, realign, pretrack, train_gridtracknet):
+        signature = inspect.signature(module.main)
+        assert list(signature.parameters) == ["argv"] and signature.return_annotation in (int, "int"), module.__name__
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert source.rstrip().endswith("raise SystemExit(main())"), module.__name__
+    with pytest.raises(SystemExit) as stop:
+        archive.main(["--mode", "nope"])
+    assert stop.value.code == 2
+    with pytest.raises(SystemExit):
+        train_gridtracknet.main(["--epochs", "x"])
+    assert train_gridtracknet.main(["--self-test"]) == 0
 
 
 def test_the_documented_commands_still_answer_help():

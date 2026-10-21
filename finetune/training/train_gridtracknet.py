@@ -28,7 +28,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -187,7 +187,7 @@ def self_test() -> None:
     print("train_gridtracknet self-test passed")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--videos", type=Path, default=ws.VIDEOS)
     parser.add_argument("--labels", type=Path, default=ws.LABELS)
@@ -220,12 +220,17 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--max-train-steps", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--max-val-steps", type=int, help=argparse.SUPPRESS)
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
     if args.self_test:
         self_test()
-        return
+        return 0
     train(args)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
