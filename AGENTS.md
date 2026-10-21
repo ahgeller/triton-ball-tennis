@@ -11,9 +11,13 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   frames at 768x432 become 15 input channels. Output is five confidence/x-offset/
   y-offset grids at 48x27. Width-axis normalization reproduces the upstream export;
   its values are buffers, not trainable BatchNorm parameters.
-- `tennis_tracker/detectors.py`: progressive GridTrackNet prepass and TensorRT
-  player/court backends. At about 60 FPS, even and odd phases each run at about
-  30 FPS. Preserve source-frame indices and temporal order.
+- `tennis_tracker/ball_detectors.py`: progressive GridTrackNet prepass and the
+  single-frame TensorRT ball engine. At about 60 FPS, even and odd phases each
+  run at about 30 FPS. Preserve source-frame indices and temporal order.
+  `engine_session.py`: the TensorRT session the ball, player and court engines
+  share. `player_detector.py`: TensorRT players with ByteTrack association.
+  `court_detector.py`: court keypoints every N frames, last good result cached.
+  `detectors.py` only re-exports these.
 - `tennis_tracker/pipeline.py`: orders the stages, calls the selector and court
   events, reports. `run_context.py`: data the stages pass each other. `pass1.py`
   (with `frame_window.py`): decoding, background/motion state, ROI collection,
@@ -40,7 +44,15 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   prior on the hints was measured and makes them worse (see the module docstring).
 - `finetune/ft.py`: workflow front door; `train_gridtracknet.py`: training;
   `pretrack.py`: drafts; `label_tool.py`: manual edits; `import_data.py` and
-  `realign.py`: source conversion and temporal realignment.
+  `realign.py`: source conversion and temporal realignment. The label tool is
+  split into `label_store.py` (a clip's rows and sidecars), `label_source.py`
+  (one clip of a labelling run), `label_window.py` (window plumbing) and
+  `label_hints.py` (the suggestions). `labels.py`: the label file format;
+  `label_audit.py`: checks labels against the video and the raw detector;
+  `workspace.py`: where the workspace keeps things and a clip's video facts;
+  `scoring.py`: the detector metric; `detect.py`: the raw prepass over a clip;
+  `data_policy.py`: which clips may be trained, validated or scored on;
+  `fileio.py`: atomic workspace writes.
 
 ## Environment and commands
 

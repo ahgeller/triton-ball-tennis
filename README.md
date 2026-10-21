@@ -147,7 +147,11 @@ tennis_tracker/export.py                 Tracking JSON export
 tennis_tracker/motion.py                 CUDA background model and motion masks
 tennis_tracker/motion_debug.py           Motion-debug video drawing
 tennis_tracker/tracking.py               ROI tracking for motion search
-tennis_tracker/detectors.py              GridTrackNet prepass, TensorRT ball/player/court backends
+tennis_tracker/ball_detectors.py         GridTrackNet prepass and the TensorRT ball engine
+tennis_tracker/engine_session.py         TensorRT session shared by the engine backends
+tennis_tracker/player_detector.py        TensorRT player detection with ByteTrack association
+tennis_tracker/court_detector.py         Court keypoint engine, run every N frames
+tennis_tracker/detectors.py              Re-exports the detector backends
 tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
 tennis_tracker/court_geometry.py         Court keypoints, side guides, polygon, homography
 tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs
@@ -162,7 +166,17 @@ models/ctb_regr_bounce.cbm               CatBoost bounce model (--court)
 models/                                  Player and court TensorRT engines
 sample/                                  Sample video and validation annotations
 finetune.bat / finetune.ps1              Front door for the fine-tuning workspace
-finetune/                                Labelling, import, pre-labelling, and training tools
+finetune/ft.py                           Front door for the labelling and training workflow
+finetune/label_tool.py                   Manual label editing (label_store, label_source,
+                                         label_window and label_hints hold its pieces)
+finetune/labels.py                       Label file format; label_audit.py checks labels
+finetune/refine.py, cnn_refiner.py       Sub-pixel label suggestions and the CNN that places them
+finetune/pretrack.py, detect.py          Drafts from the raw GridTrackNet prepass
+finetune/train_gridtracknet.py           Training; scoring.py is the detector metric
+finetune/import_data.py, realign.py      Source conversion and temporal realignment
+finetune/workspace.py, fileio.py         Workspace layout, clip facts, atomic writes
+finetune/data_policy.py                  Which clips may be trained, validated or scored on
+finetune/labels/                         Hand-corrected own-camera labels
 tests/                                   Synthetic regression tests (pytest)
 audit/                                   Review reports, logs and verification scripts
 output/                                  Generated videos, JSON, and reports (ignored)
