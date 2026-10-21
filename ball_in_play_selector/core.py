@@ -7,7 +7,7 @@ trajectory and deliberately has no hidden handoff state.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -440,19 +440,27 @@ def _refine_trajectory(results, diag: float = _REFERENCE_DIAG) -> None:
 
 
 def select_ball_in_play(
-    detections_by_frame,
-    fps,
-    width,
-    height,
-    court_polygon=None,
-    boost_masks=None,
-    raw_motions=None,
-    player_boxes_by_frame=None,
-    court_keypoints=None,
-    debug=False,
-    **_,
-):
-    """Return a complete, schema-compatible trajectory selection."""
+    detections_by_frame: Sequence[Sequence[Tuple[Sequence[float], float]]],
+    fps: float,
+    width: int,
+    height: int,
+    court_polygon: Optional[np.ndarray] = None,
+    boost_masks: Optional[Sequence[Any]] = None,
+    raw_motions: Optional[Sequence[Any]] = None,
+    player_boxes_by_frame: Optional[Sequence[Any]] = None,
+    debug: bool = False,
+) -> Tuple[List[Optional[FrameResult]], Optional[Track], List[Track]]:
+    """Select one ball trajectory from per-frame detector candidates.
+
+    ``detections_by_frame[t]`` holds ``(bbox_xyxy, confidence)`` pairs for
+    source frame ``t``.  ``boost_masks`` / ``raw_motions`` are per-frame motion
+    masks (uint8 arrays or the packed tuples ``utils.ensure_mask_u8`` accepts),
+    ``player_boxes_by_frame[t]`` a dict or list of player boxes.
+
+    Returns ``(per_frame, chosen, tracks)``: one ``FrameResult`` or ``None`` per
+    source frame, the stitched chosen track (``None`` when nothing qualified),
+    and every scored track for diagnostics.
+    """
     total = len(detections_by_frame)
     cfg = SelectorConfig(fps=fps, width=width, height=height).auto_scale()
     resolution_scale = cfg.diag / 2203.0
@@ -731,4 +739,4 @@ def select_ball_in_play(
                 results[frame] = None
                 result = None
         previous = result
-    return results, chosen, tracks, []
+    return results, chosen, tracks

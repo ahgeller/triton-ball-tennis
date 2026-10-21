@@ -19,28 +19,6 @@ class Detection:
     on_motion: bool = False  # overlaps boost/motion mask
 
 @dataclass
-class MotionTrack:
-    """A continuous trajectory built purely from motion blobs over time."""
-    track_id: int
-    points: List[Tuple[int, float, float]] = field(default_factory=list)  # (frame, cx, cy)
-    smoothed: List[Tuple[float, float]] = field(default_factory=list) # EMA smoothed (cx, cy)
-    
-    @property
-    def start_frame(self) -> int:
-        return self.points[0][0] if self.points else -1
-        
-    @property
-    def end_frame(self) -> int:
-        return self.points[-1][0] if self.points else -1
-
-    def get_position_at(self, frame_idx: int) -> Optional[Tuple[float, float]]:
-        """Return the smoothed position at exactly `frame_idx`, or None if no data."""
-        for i, (f, _, _) in enumerate(self.points):
-            if f == frame_idx and i < len(self.smoothed):
-                return self.smoothed[i]
-        return None
-
-@dataclass
 class Track:
     track_id: int
     cfg: SelectorConfig

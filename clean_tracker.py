@@ -79,7 +79,7 @@ def _self_test() -> None:
         mask = np.zeros((360, 640), dtype=np.uint8)
         mask[20:25, x:x + 5] = 255
         masks.append(mask)
-    results, chosen, tracks, _ = select_ball_in_play(
+    results, chosen, tracks = select_ball_in_play(
         detections, 30.0, 640, 360, boost_masks=masks, raw_motions=masks
     )
     assert chosen is not None and tracks
@@ -87,7 +87,7 @@ def _self_test() -> None:
 
     # The first internal gap is safe to fill because both real endpoints exist.
     first_gap_detections = detections[:1] + [[], []] + detections[3:]
-    results, _, _, _ = select_ball_in_play(
+    results, _, _ = select_ball_in_play(
         first_gap_detections, 30.0, 640, 360,
         boost_masks=masks, raw_motions=masks,
     )
@@ -107,7 +107,7 @@ def _self_test() -> None:
         mask[100:105, x:x + 5] = 255
         sampled_masks.append(mask)
         sampled_players.append({1: (0, 0, 640, 300)})
-    results, _, _, _ = select_ball_in_play(
+    results, _, _ = select_ball_in_play(
         sampled_detections,
         60.0,
         640,
@@ -155,7 +155,7 @@ def _self_test() -> None:
     lost_detections = detections[:10] + [[] for _ in range(5)]
     lost_masks = masks[:10] + [np.zeros((360, 640), dtype=np.uint8) for _ in range(5)]
     lost_masks[10][20:25, 130:135] = 255
-    results, _, _, _ = select_ball_in_play(
+    results, _, _ = select_ball_in_play(
         lost_detections, 30.0, 640, 360,
         boost_masks=lost_masks, raw_motions=lost_masks,
     )
@@ -163,7 +163,7 @@ def _self_test() -> None:
     assert all(result is None for result in results[11:])
 
     weak = [[([10 + frame, 20, 14 + frame, 24], 0.2)] for frame in range(4)]
-    results, chosen, _, _ = select_ball_in_play(weak, 30.0, 640, 360)
+    results, chosen, _ = select_ball_in_play(weak, 30.0, 640, 360)
     assert chosen is None and all(result is None for result in results)
 
     # A lone weak/no-motion wall hit cannot anchor a visible connector.
@@ -213,7 +213,7 @@ def _self_test() -> None:
     weak_anchor_masks = masks[:10] + [
         np.zeros((360, 640), dtype=np.uint8), masks[11]
     ]
-    results, _, _, _ = select_ball_in_play(
+    results, _, _ = select_ball_in_play(
         weak_anchor_detections, 30.0, 640, 360,
         boost_masks=weak_anchor_masks, raw_motions=weak_anchor_masks,
     )

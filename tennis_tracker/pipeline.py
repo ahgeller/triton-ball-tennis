@@ -498,8 +498,6 @@ def _validate_io_paths(cfg) -> Path:
         outputs.append(("pre-YOLO video", cfg.output_yolo_input_debug_path))
     if cfg.save_guide_video:
         outputs.append(("guide video", cfg.output_guide_path))
-    if getattr(cfg, "save_motion_tracks_video", False):
-        outputs.append(("motion-tracks video", cfg.output_motion_tracks_debug_path))
     if getattr(cfg, "tracking_json", None):
         outputs.append(("tracking JSON", cfg.tracking_json))
 
@@ -579,12 +577,11 @@ def run(cfg):
 
     # Writers (main output writer is created at pass 2 start to avoid long idle FFmpeg/NVENC process)
     writer = None
-    dbg_writer = yolo_dbg_writer = guide_writer = motion_tracks_writer = None
+    dbg_writer = yolo_dbg_writer = guide_writer = None
     needs_pass2_outputs = bool(
         getattr(cfg, "save_tracking_video", True)
         or cfg.save_motion_debug
         or cfg.save_guide_video
-        or getattr(cfg, "save_motion_tracks_video", False)
     )
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
@@ -595,9 +592,6 @@ def run(cfg):
     if cfg.save_guide_video:
         os.makedirs(os.path.dirname(cfg.output_guide_path) or ".", exist_ok=True)
         guide_writer = VideoWriter(cfg.output_guide_path, fps, w, h, cfg)
-    if getattr(cfg, "save_motion_tracks_video", False):
-        os.makedirs(os.path.dirname(cfg.output_motion_tracks_debug_path) or ".", exist_ok=True)
-        motion_tracks_writer = VideoWriter(cfg.output_motion_tracks_debug_path, fps, w, h, cfg)
 
     # Preprocessing mode
     use_cuda = cfg.enable_preprocess and is_cuda and HAS_CUDA
@@ -1240,14 +1234,12 @@ def run(cfg):
 
     print("[selector] Running ball-in-play selection...")
     selector_select_t0 = time.perf_counter() if info_timing else 0.0
-    per_frame, chosen_track, all_tracks, motion_tracks_dbg = select_ball_in_play(
+    per_frame, chosen_track, all_tracks = select_ball_in_play(
         all_frame_dets, fps, w, h,
         court_polygon=court_poly,
         boost_masks=all_boost_masks,
         raw_motions=all_raw_motions,
         player_boxes_by_frame=all_player_boxes,
-        court_keypoints=last_kps,
-        emit_guide_debug_meta=bool(cfg.save_guide_video),
         debug=bool(cfg.print_selector_tracks))
     bounce_events = []
     rally_legs = []
@@ -2149,32 +2141,6 @@ def run(cfg):
             if info_timing:
                 timing["pass2_write_debug"] = timing.get("pass2_write_debug", 0.0) + (time.perf_counter() - dbg_write_t0)
 
-        # -- Motion-tracks debug video: ONLY motion polylines + ROI box --
-        if motion_tracks_writer is not None:
-            mt_vis = frame.copy()
-            WIN_PAST = 90  # frames of past trail drawn per track
-            for trk in motion_tracks_dbg:
-                if not trk.points:
-                    continue
-                # Quick reject: track hasn't started yet, or ended too long ago.
-                if trk.points[0][0] > fi or trk.points[-1][0] < fi - WIN_PAST:
-                    continue
-                past_pts = [(int(p[1]), int(p[2])) for p in trk.points
-                            if (fi - WIN_PAST) <= p[0] <= fi]
-                if len(past_pts) < 2:
-                    continue
-                color = _get_track_color(int(trk.track_id))
-                arr = np.asarray(past_pts, dtype=np.int32).reshape(-1, 1, 2)
-                cv2.polylines(mt_vis, [arr], False, color, 2, cv2.LINE_AA)
-
-            # ROI box(es) for this frame - cyan rectangles
-            if fi < len(all_rois) and all_rois[fi] is not None:
-                for rx1, ry1, rx2, ry2 in all_rois[fi]:
-                    cv2.rectangle(mt_vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)),
-                                  (0, 255, 255), 2, cv2.LINE_AA)
-
-            motion_tracks_writer.write(mt_vis)
-
         pass2_frames_rendered += 1
         if cfg.progress_every and (fi + 1) % cfg.progress_every == 0:
             elapsed = time.time() - t0
@@ -2190,8 +2156,6 @@ def run(cfg):
         yolo_dbg_writer.close()
     if guide_writer:
         guide_writer.close()
-    if motion_tracks_writer:
-        motion_tracks_writer.close()
     if info_timing:
         timing["pass2_total"] = time.perf_counter() - pass2_perf_t0
 
@@ -2229,7 +2193,5 @@ def run(cfg):
         print(f"[done] Pre-YOLO debug:  {cfg.output_yolo_input_debug_path}")
     if cfg.save_guide_video:
         print(f"[done] Guide Debug:  {cfg.output_guide_path}")
-    if getattr(cfg, "save_motion_tracks_video", False):
-        print(f"[done] Motion Tracks Debug:  {cfg.output_motion_tracks_debug_path}")
     if info_timing:
         _print_timing_summary(timing, elapsed, N, pass2_frames_rendered)

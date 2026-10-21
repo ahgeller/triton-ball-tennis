@@ -110,8 +110,6 @@ class Config:
     debug_probe_motion_style: bool = True
     save_guide_video: bool = False
     output_guide_path: str = "output_videos/prof_test_guide_debug.mp4"
-    save_motion_tracks_video: bool = False
-    output_motion_tracks_debug_path: str = "output_videos/prof_test_motion_tracks_debug.mp4"
     guide_interp_max_gap: int = 12
     print_selector_tracks: bool = True
     selector_track_limit: int = 0  # 0 = print all
