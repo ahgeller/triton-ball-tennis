@@ -36,7 +36,6 @@ from finetune.data.labels import DraftRow, write_draft as write_draft_rows
 from finetune.data.workspace import VideoMeta, draft_csv, label_csv, video_meta, videos_in
 from finetune.data.detect import ball_detector, detect_points
 from tennis_tracker.frame_rate import require_phase_stride
-from tennis_tracker.paths import COURT_ENGINE, PLAYER_ENGINE
 
 RAW_DRAFT_CONF = 0.25          # raw drafts keep guesses down to this confidence, so nearly every frame has one
 PIPELINE_CONF = 0.50           # the tracker's own default threshold
@@ -68,22 +67,11 @@ def raw_rows(video: Path, weights: Path, conf: float, device: str, meta: VideoMe
 
 
 def pipeline_rows(video: Path, weights: Path, conf: Optional[float], device: str, json_path: Path) -> Dict[int, Guess]:
-    from tennis_tracker.config import Config
-    from tennis_tracker.pipeline import run
+    """The full tracker's answer per frame it filled (selector + fills), as draft guesses."""
+    from tennis_tracker.headless import run_headless     # the pipeline: CUDA and TensorRT, only for this source
 
-    cfg = Config(
-        input_video=str(video),
-        output_video=str(json_path.with_suffix(".mp4")),
-        tracking_json=str(json_path),
-        model_path=str(weights),
-        player_model_path=str(PLAYER_ENGINE),
-        court_model_path=str(COURT_ENGINE),
-        conf=PIPELINE_CONF if conf is None else conf,
-        device=device,
-        save_tracking_video=False,
-        print_selector_tracks=False,
-    )
-    rows = run(cfg).frame_rows()
+    rows = run_headless(video, model_path=weights, conf=PIPELINE_CONF if conf is None else conf, device=device,
+                        tracking_json=json_path).frame_rows()
     return {
         row["frame"]: (row["x"], row["y"], row.get("source", "det"), float(row.get("conf", 0.0)))
         for row in rows if row.get("present")

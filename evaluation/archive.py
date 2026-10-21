@@ -26,7 +26,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from finetune.data.data_policy import is_scorable, read_review_status
 from finetune.data.detect import ball_detector, detect_points
@@ -35,10 +35,7 @@ from finetune.data.detector_metrics import HIT_PX, DetectorMetrics, Point, scale
 from finetune.data import workspace as ws
 from finetune.data.workspace import clip_of, find_video, natural_key, read_exclusions, video_meta
 from evaluation.pipeline_score import ClipScore, score_pipeline_clip
-from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
-
-if TYPE_CHECKING:
-    from tennis_tracker.config import Config
+from tennis_tracker.paths import GRIDTRACKNET_WEIGHTS, ROOT
 
 ARCHIVE_VARIABLE = "TENNIS_ARCHIVE"
 MODELS = {
@@ -189,25 +186,9 @@ def run_raw(models: List[str], clips: List[ClipPair], thresholds: List[float], d
         report_raw(name, per_model[name], thresholds)
 
 
-def tracker_config(video_path: Path, name: str, conf: float, device: str, out_dir: Path, json_path: Path) -> "Config":
-    from tennis_tracker.config import Config
-    return Config(
-        input_video=str(video_path),
-        output_video=str(out_dir / f"{video_path.stem}_{name}.mp4"),
-        tracking_json=str(json_path),
-        model_path=str(MODELS[name]),
-        player_model_path=str(PLAYER_ENGINE),
-        court_model_path=str(COURT_ENGINE),
-        conf=conf,
-        device=device,
-        save_tracking_video=False,
-        print_selector_tracks=False,
-    )
-
-
 def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float], device: str,
                  out_dir: Path, reuse_json: bool = False) -> None:
-    from tennis_tracker.pipeline import run
+    from tennis_tracker.headless import run_headless, tracking_payload   # the pipeline: CUDA and TensorRT, only here
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in models:
@@ -221,8 +202,9 @@ def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float
                       f"these numbers are from whenever this file was written")
                 payload = json.loads(json_path.read_text(encoding="utf-8"))
             else:
-                result = run(tracker_config(video_path, name, conf[name], device, out_dir, json_path))
-                payload = {"frames": result.frame_rows(), "last_valid_court_keypoints": result.last_valid_court_keypoints}
+                result = run_headless(video_path, model_path=MODELS[name], conf=conf[name], device=device,
+                                      tracking_json=json_path, output_video=out_dir / f"{video_path.stem}_{name}.mp4")
+                payload = tracking_payload(result)
             results.append((video_path.stem, score_pipeline_clip(labels, payload, meta.width)))
         print(f"\n=== pipeline [{name}] per clip ===")
         pooled = []
