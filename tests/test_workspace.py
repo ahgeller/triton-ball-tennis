@@ -1,0 +1,96 @@
+"""finetune.workspace: the workspace layout, its two records (clips.csv, exclude.txt) and the
+TENNIS_WORKSPACE override, on folders under tmp_path. No real workspace file is read."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from finetune import workspace
+from finetune.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, find_video, label_csv,
+                                label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
+                                require_video, review_json, suspect_json, videos_in, write_manifest)
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_a_clip_names_its_files(tmp_path):
+    assert label_csv("rally7", tmp_path) == tmp_path / "rally7_ball.csv"
+    assert draft_csv("rally7", tmp_path) == tmp_path / "rally7_ball.csv.draft"
+    assert review_json("rally7", tmp_path) == tmp_path / "rally7_ball.review.json"
+    assert suspect_json("rally7", tmp_path) == tmp_path / "rally7_ball.suspect.json"
+    assert clip_of(label_csv("rally7", tmp_path)) == clip_of(draft_csv("rally7", tmp_path)) == "rally7"
+
+
+def test_label_files_come_in_natural_clip_order(tmp_path):
+    for name in ("video10_ball.csv", "video2_ball.csv", "video1_ball.csv.draft", "notes.txt"):
+        (tmp_path / name).write_text("")
+    assert [p.name for p in label_files(tmp_path)] == ["video2_ball.csv", "video10_ball.csv"]
+    assert labelled_clips(tmp_path) == ["video2", "video10"]
+    assert label_files(tmp_path / "missing") == []
+    assert natural_key("video10") > natural_key("video2")
+
+
+def test_videos_are_found_whatever_their_container(tmp_path):
+    for name in ("a.mov", "b.MP4", "b.txt", "c.avi"):
+        (tmp_path / name).write_bytes(b"")
+    assert find_video("a", tmp_path) == tmp_path / "a.mov"
+    assert find_video("b", tmp_path) == tmp_path / "b.MP4"
+    assert find_video("zzz", tmp_path) is None
+    assert videos_in(tmp_path) == {"a": tmp_path / "a.mov", "b": tmp_path / "b.MP4", "c": tmp_path / "c.avi"}
+    assert videos_in(tmp_path / "missing") == {}
+    assert require_video("c", tmp_path) == tmp_path / "c.avi"
+    with pytest.raises(FileNotFoundError, match="zzz"):
+        require_video("zzz", tmp_path)
+
+
+def test_manifest_round_trip_fills_every_column_and_sorts_naturally(tmp_path):
+    path = tmp_path / "clips.csv"
+    assert read_manifest(path) == {}
+    write_manifest({"video10": {"clip": "video10", "source": "prof"},
+                    "video2": {"clip": "video2", "source": "custom", "note": "n"}}, path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ",".join(MANIFEST_COLUMNS)
+    assert [line.split(",")[0] for line in lines[1:]] == ["video2", "video10"]
+    rows = read_manifest(path)
+    assert set(rows) == {"video2", "video10"}
+    assert set(rows["video2"]) == set(MANIFEST_COLUMNS)
+    assert rows["video2"]["note"] == "n" and rows["video2"]["camera"] == "" and rows["video10"]["source"] == "prof"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_exclusions_are_listed_once_with_a_header_and_comments_ignored(tmp_path):
+    assert read_exclusions(tmp_path) == []
+    add_exclusion("clipA", "first reason", tmp_path)
+    add_exclusion("clipA", "second reason", tmp_path)
+    add_exclusion("clipB", "other", tmp_path)
+    lines = (tmp_path / "exclude.txt").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3 and lines[0].startswith("#") and "first reason" in lines[1]
+    assert read_exclusions(tmp_path) == ["clipA", "clipB"]
+    (tmp_path / "exclude.txt").write_text("# header\nvideo7  # audit\n\ngrid_match9\n", encoding="utf-8")
+    assert read_exclusions(tmp_path) == ["video7", "grid_match9"]
+
+
+def test_the_default_paths_follow_the_patched_workspace(workspace_dir):
+    """The module-level defaults are read when called, so one patch moves every path."""
+    assert label_csv("x") == workspace_dir / "labels" / "x_ball.csv"
+    assert find_video("x") is None
+    assert read_manifest() == {} and read_exclusions() == []
+    add_exclusion("x", "why")
+    assert (workspace_dir / "exclude.txt").is_file() and read_exclusions() == ["x"]
+    write_manifest({"x": {"clip": "x"}})
+    assert read_manifest()["x"]["clip"] == "x" and workspace.MANIFEST.parent == workspace_dir
+
+
+def test_tennis_workspace_relocates_the_workspace_without_touching_the_code_paths(tmp_path):
+    env = dict(os.environ, TENNIS_WORKSPACE=str(tmp_path))
+    code = ("from finetune import workspace as w; "
+            "print(w.WORKSPACE); print(w.LABELS); print(w.MANIFEST); print(w.ROOT); print(w.REPO_WEIGHTS)")
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
+    lines = out.stdout.splitlines()
+    assert lines[:3] == [str(tmp_path.resolve()), str(tmp_path.resolve() / "labels"), str(tmp_path.resolve() / "clips.csv")]
+    assert lines[3] == str(ROOT) and lines[4] == str(ROOT / "models" / "gridtracknet_weights_torch.npz")
+    env.pop("TENNIS_WORKSPACE")
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
+    assert out.stdout.splitlines()[0] == str(ROOT / "finetune")

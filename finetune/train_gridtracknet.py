@@ -47,11 +47,12 @@ from tennis_tracker.gridtracknet import (
     FRAMES_PER_UNIT, GRID_COLS, GRID_ROWS, HEIGHT, WIDTH, GridTrackNet, decode_predictions, frame_tensor, load_model,
 )
 from tennis_tracker.frame_rate import require_phase_stride
-from finetune.data_policy import is_trainable, is_verified, read_exclusions, read_review_status
+from finetune.data_policy import is_trainable, is_verified, read_review_status
 from finetune.fileio import write_atomic
 from finetune.labels import Labels, read_labels as read_label_points
 from finetune.scoring import REFERENCE_HEIGHT, scale_for_width, score
-from finetune.workspace import REPO_WEIGHTS, WORKSPACE, clip_of, find_video, label_files, read_manifest as read_clips_csv
+from finetune import workspace as ws
+from finetune.workspace import MANIFEST_NAME, clip_of, find_video, label_files, read_exclusions, read_manifest
 from finetune.workspace import video_meta   # noqa: F401 - looked up by name here (tests patch it)
 
 DATA_VERSION = 4
@@ -77,11 +78,6 @@ def read_labels(path: Path, width: int, height: int) -> Dict[int, Optional[List[
             for frame, point in labels.items()}
 
 
-def read_manifest(labels: Path) -> Dict[str, dict]:
-    """clip -> clips.csv row (source, camera, ...) from next to the labels folder (empty if none)."""
-    return read_clips_csv(labels.parent / "clips.csv")
-
-
 def matches(clip: str, patterns: Optional[List[str]]) -> bool:
     return bool(patterns) and any(fnmatch.fnmatchcase(clip, pattern) for pattern in patterns)
 
@@ -89,7 +85,7 @@ def matches(clip: str, patterns: Optional[List[str]]) -> bool:
 def find_clips(videos: Path, labels: Path, sources: Optional[List[str]] = None,
                exclude_clips: Optional[List[str]] = None, include_excluded: bool = False,
                cameras: Optional[List[str]] = None) -> List[Clip]:
-    manifest = read_manifest(labels)
+    manifest = read_manifest(labels.parent / MANIFEST_NAME)
     review_status = read_review_status(labels.parent)
     excluded = set() if include_excluded else set(read_exclusions(labels.parent))
     if excluded:
@@ -491,7 +487,7 @@ def validation_split(clips: List[Clip], labels: Path, patterns: Optional[List[st
     of which must have reviewed labels, and never the whole set."""
     names = [clip for clip, _, _, _ in clips]
     val_clips = resolve_val_clips(names, patterns)
-    metadata = read_manifest(labels)
+    metadata = read_manifest(labels.parent / MANIFEST_NAME)
     val_groups = {metadata.get(name, {}).get("group") for name in val_clips} - {None, ""}
     val_clips = [name for name in names if name in val_clips or metadata.get(name, {}).get("group") in val_groups]
     review_status = read_review_status(labels.parent)
@@ -652,13 +648,13 @@ def self_test() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--videos", type=Path, default=WORKSPACE / "videos")
-    parser.add_argument("--labels", type=Path, default=WORKSPACE / "labels")
-    parser.add_argument("--weights", type=Path, default=REPO_WEIGHTS,
+    parser.add_argument("--videos", type=Path, default=ws.VIDEOS)
+    parser.add_argument("--labels", type=Path, default=ws.LABELS)
+    parser.add_argument("--weights", type=Path, default=ws.REPO_WEIGHTS,
                         help="Starting weights (also the .npz template for saving)")
-    parser.add_argument("--save", type=Path, default=WORKSPACE / "models" / "gridtracknet_best.npz")
-    parser.add_argument("--data-dir", type=Path, default=WORKSPACE / "cache" / "data")
-    parser.add_argument("--run-dir", type=Path, default=WORKSPACE / "runs" / "train")
+    parser.add_argument("--save", type=Path, default=ws.BEST_WEIGHTS)
+    parser.add_argument("--data-dir", type=Path, default=ws.CACHE / "data")
+    parser.add_argument("--run-dir", type=Path, default=ws.RUNS / "train")
     parser.add_argument("--val-clips", nargs="*", help="Held-out clip stems or globs (default: video10 if present, else the last clip)")
     parser.add_argument("--sources", nargs="*", help="Only use clips whose clips.csv source is listed (e.g. custom grid)")
     parser.add_argument("--exclude-clips", nargs="*", help="Clip stems or globs to leave out entirely")

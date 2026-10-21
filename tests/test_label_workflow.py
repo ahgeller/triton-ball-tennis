@@ -418,7 +418,7 @@ class LabelWorkflowTests(unittest.TestCase):
             (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")
             (labels / "clip_ball.suspect.json").write_text(json.dumps(
                 {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
-            with patch.object(label_audit, "LABELS", labels), patch.object(label_audit, "read_manifest", lambda *_: {}):
+            with patch.multiple("finetune.workspace", LABELS=labels, MANIFEST=labels / "clips.csv"):
                 label_audit.write_suspects("clip", "check", [1, 3], "audit")
                 self.assertEqual(label_audit.read_suspects("clip")["check"], [3])   # 3's label moved since
                 self.assertEqual(label_audit.outstanding_suspects("clip")["check"], [3])

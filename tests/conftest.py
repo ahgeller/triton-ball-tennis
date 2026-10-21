@@ -10,6 +10,27 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture
+def workspace_dir(tmp_path, monkeypatch):
+    """Point the fine-tuning workspace (``finetune.workspace``) at a fresh folder under tmp_path,
+    with empty ``labels/`` and ``videos/``. The finetune modules read the paths from that module
+    when called, so this is the only place to patch; no real label, video or model is touched.
+    Returns the folder."""
+    from finetune import workspace
+
+    root = tmp_path / "workspace"
+    (root / "labels").mkdir(parents=True)
+    (root / "videos").mkdir()
+    for name, path in (("WORKSPACE", root), ("VIDEOS", root / "videos"), ("LABELS", root / "labels"),
+                       ("MODELS", root / "models"), ("RUNS", root / "runs"), ("CACHE", root / "cache"),
+                       ("MANIFEST", root / workspace.MANIFEST_NAME), ("EXCLUDE_FILE", root / workspace.EXCLUDE_NAME),
+                       ("REVIEW_STATUS", root / workspace.REVIEW_STATUS_NAME),
+                       ("REPO_WEIGHTS", root / "models" / "tracker.npz"),
+                       ("BEST_WEIGHTS", root / "models" / "gridtracknet_best.npz")):
+        monkeypatch.setattr(workspace, name, path)
+    return root
+
+
 class _NoOpStream:
     """Stands in for ``torch.cuda.Stream``; every method is a no-op."""
 

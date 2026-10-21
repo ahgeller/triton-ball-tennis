@@ -1,16 +1,16 @@
-"""finetune.label_audit on synthetic label files in a temporary folder; no workspace file is read."""
+"""finetune.label_audit on synthetic label files in a temporary workspace; no workspace file is read."""
 import contextlib
 import io
 import json
 from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import patch
 
+import pytest
+
 from finetune import label_audit
-from finetune.label_audit import (AUDIT_MIN_COVERAGE, AUDIT_MIN_FAST, ClipAudit, add_exclusion, audit_labels,
-                                  check_label_file, outstanding_suspects, read_suspects, shift_labels,
-                                  write_suspects)
+from finetune.label_audit import (AUDIT_MIN_COVERAGE, AUDIT_MIN_FAST, ClipAudit, audit_labels, check_label_file,
+                                  outstanding_suspects, read_suspects, shift_labels, write_suspects)
 from finetune.labels import read_labels
 from finetune.workspace import VideoMeta
 
@@ -30,17 +30,13 @@ def moving_ball(frames, speed):
 
 
 class Workspace(unittest.TestCase):
-    """Every path the module touches is pointed at a fresh temporary folder."""
+    """Every path the module touches is under the ``workspace_dir`` fixture's folder; ``self.folder``
+    is its labels folder."""
 
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.folder = Path(self.directory.name)
-        self.addCleanup(self.directory.cleanup)
-        for name, value in (("LABELS", self.folder), ("MANIFEST", self.folder / "clips.csv"),
-                            ("EXCLUDE_FILE", self.folder / "exclude.txt"), ("read_manifest", lambda *_: {})):
-            patcher = patch.object(label_audit, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+    @pytest.fixture(autouse=True)
+    def _workspace(self, workspace_dir):
+        self.workspace = workspace_dir
+        self.folder = workspace_dir / "labels"
 
     def label_file(self, clip, points):
         return write_csv(self.folder / f"{clip}_ball.csv", points)
@@ -113,18 +109,6 @@ class SuspectSidecarTests(Workspace):
 
     def test_nothing_flagged_reads_as_empty(self):
         self.assertEqual(outstanding_suspects("absent"), {"unplaceable": [], "check": []})
-
-
-class ExclusionTests(Workspace):
-    def test_header_once_and_no_duplicate_clip(self):
-        add_exclusion("clipA", "first reason")
-        add_exclusion("clipA", "second reason")
-        add_exclusion("clipB", "other")
-        lines = (self.folder / "exclude.txt").read_text().splitlines()
-        self.assertEqual(len(lines), 3)
-        self.assertTrue(lines[0].startswith("#"))
-        self.assertEqual([line.split("#", 1)[0].strip() for line in lines[1:]], ["clipA", "clipB"])
-        self.assertIn("first reason", lines[1])
 
 
 class ClipAuditTests(unittest.TestCase):
@@ -239,7 +223,7 @@ class AuditLabelsTests(Workspace):
         self.assertIn("+2 label frame(s) off -> fixed", output)
         shifted = read_labels(self.folder / "clip_ball.csv", WIDTH, HEIGHT)
         self.assertEqual(shifted, {frame + 2: point for frame, point in visible.items() if frame + 2 < 40})
-        self.assertFalse((self.folder / "exclude.txt").exists())
+        self.assertFalse((self.workspace / "exclude.txt").exists())
 
     def test_fix_excludes_a_clip_nothing_lines_up(self):
         visible = moving_ball(range(30), 20)
@@ -247,7 +231,7 @@ class AuditLabelsTests(Workspace):
         suspects, output = self.run_audit({frame: (1500.0, 900.0) for frame in range(30)}, fix=True)
         self.assertEqual(suspects, 1)
         self.assertIn("-> excluded", output)
-        self.assertIn("clip  # audit", (self.folder / "exclude.txt").read_text())
+        self.assertIn("clip  # audit", (self.workspace / "exclude.txt").read_text())
 
     def test_patterns_pick_clips_and_a_clip_without_a_video_is_skipped(self):
         visible = moving_ball(range(30), 10)

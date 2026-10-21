@@ -47,24 +47,14 @@ import cv2
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from finetune.fileio import atomic_csv, backup_copy
+from finetune.fileio import backup_copy
 from finetune.labels import LabelPoint, read_labels, reviewed_frames, write_labels
-from finetune.workspace import (LABELS, MANIFEST, VIDEO_SUFFIXES, VIDEOS, label_csv, natural_key,
-                                review_json, video_meta)
+from finetune import workspace as ws
+from finetune.workspace import (DEFAULT_SOURCES, MANIFEST_COLUMNS, VIDEO_SUFFIXES, clip_of, label_csv, natural_key,
+                                read_manifest, review_json, video_meta, write_manifest)
 from tennis_tracker.frame_rate import require_phase_stride
 
-MANIFEST_COLUMNS = ["clip", "source", "section", "group", "width", "height", "fps", "stride",
-                    "label_frames", "visible", "camera", "motion_px", "origin", "note"]
 ENCODE_TIMEOUT_S = 3600          # an ffmpeg encode of one clip that takes longer than this is stuck
-
-DESKTOP = Path(r"C:\Users\Andrew\Desktop")
-DEFAULT_SOURCES = {
-    "archive": DESKTOP / "gridtracknet_finetuning" / "archive",
-    "video11": DESKTOP / "V5Test" / "held_back_custom_768" / "sources" / "custom" / "video11",
-    "tracknetv2": DESKTOP / "V5Test" / "archive" / "TrackNetV2" / "TrackNetV2",
-    "grid": DESKTOP / "V5Test" / "archive" / "Match-Data-20260716T144245Z-1-001" / "Match-Data",
-    "prof": DESKTOP / "prof" / "Dataset",
-}
 PROF_FIRST = 13          # video1..video12 are the own-camera clips; the prof set carries the numbering on
 PROF_FPS = 30.0          # the set ships one JPEG per frame of a 30 FPS broadcast
 GRID_LABEL_CANVAS = (1280, 720)   # GridTrackNet's FrameGenerator wrote 1280x720 PNGs; Labels.csv is in that space
@@ -87,7 +77,7 @@ def protect_existing(dst_csv: Path) -> None:
     beside itself first, as ft.py and realign.py do."""
     if not dst_csv.is_file():
         return
-    settled = reviewed_frames(review_json(dst_csv.name[: -len("_ball.csv")], dst_csv.parent))
+    settled = reviewed_frames(review_json(clip_of(dst_csv), dst_csv.parent))
     if settled:
         raise ReviewedLabelsError(f"{dst_csv.name} has {len(settled)} hand-reviewed row(s); not overwriting it "
                                   f"(move its review sidecar aside first if you really mean to)")
@@ -190,13 +180,11 @@ def frames_to_video(frames: List[Path], dst: Path, fps: float) -> str:
 # --------------------------------------------------------------------------- manifest
 
 class Manifest:
-    def __init__(self, path: Path = MANIFEST):
-        self.path = path
-        self.rows: Dict[str, dict] = {}
-        if path.is_file():
-            with path.open(newline="", encoding="utf-8") as handle:
-                for row in csv.DictReader(handle):
-                    self.rows[row["clip"]] = {key: row.get(key, "") for key in MANIFEST_COLUMNS}
+    """clips.csv as the importers fill it: ``put`` a clip's row, ``save`` when a source is done."""
+
+    def __init__(self, path: Optional[Path] = None):
+        self.path = ws.MANIFEST if path is None else path
+        self.rows: Dict[str, dict] = read_manifest(self.path)
 
     def put(self, clip: str, **fields) -> None:
         row = {key: "" for key in MANIFEST_COLUMNS}
@@ -206,15 +194,7 @@ class Manifest:
         self.rows[clip] = row
 
     def save(self) -> None:
-        with atomic_csv(self.path) as rows:
-            rows.writerow(MANIFEST_COLUMNS)
-            for clip in sorted(self.rows, key=natural_key):
-                rows.writerow([self.rows[clip].get(key, "") for key in MANIFEST_COLUMNS])
-
-
-def load_manifest(path: Path = MANIFEST) -> Dict[str, dict]:
-    """clip -> manifest row (empty when no clips.csv has been written yet)."""
-    return Manifest(path).rows
+        write_manifest(self.rows, self.path)
 
 
 def record(manifest: Manifest, clip: str, video: Path, source: str, section: str, group: str,
@@ -243,8 +223,8 @@ def import_archive(src: Path, manifest: Manifest, force: bool, link: bool, dry_r
             print(f"[skip] {csv_path.name}: no video next to it")
             continue
         video = videos[0]
-        dst_video = VIDEOS / f"{clip}{video.suffix.lower()}"
-        dst_csv = LABELS / f"{clip}_ball.csv"
+        dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
+        dst_csv = label_csv(clip)
         if dry_run:
             print(f"[plan] {clip}: copy {video.name} + {csv_path.name}")
             count += 1
@@ -281,8 +261,8 @@ def import_tracknet_frames(folder: Path, clip: str, manifest: Manifest, source: 
         print(f"[skip] {clip}: {len(missing)} labelled frames have no image (first {missing[:3]})")
         return False
     ordered = sorted(raw)
-    dst_video = VIDEOS / f"{clip}.mp4"
-    dst_csv = LABELS / f"{clip}_ball.csv"
+    dst_video = ws.VIDEOS / f"{clip}.mp4"
+    dst_csv = label_csv(clip)
     if dry_run:
         print(f"[plan] {clip}: encode {len(ordered)} frames from {folder}")
         return True
@@ -329,8 +309,8 @@ def import_tracknetv2(src: Path, manifest: Manifest, force: bool, link: bool, dr
         section = relative[0] if len(relative) > 1 else ""
         match = relative[-1]
         clip = "_".join(part for part in (prefix, section, match, rally) if part)
-        dst_video = VIDEOS / f"{clip}{video.suffix.lower()}"
-        dst_csv = LABELS / f"{clip}_ball.csv"
+        dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
+        dst_csv = label_csv(clip)
         if dry_run:
             print(f"[plan] {clip}: copy {video.name} + convert {csv_path.name}")
             count += 1
@@ -370,10 +350,10 @@ def import_grid(src: Path, manifest: Manifest, force: bool, link: bool, dry_run:
         clip = f"grid_{match_dir.name}"
         videos = [p for p in match_dir.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES and not p.name.startswith("._")]
         raw = read_tracknet_csv(label_csv, keep_occluded)
-        dst_csv = LABELS / f"{clip}_ball.csv"
+        dst_csv = label_csv(clip)
         if videos:
             video = videos[0]
-            dst_video = VIDEOS / f"{clip}{video.suffix.lower()}"
+            dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
             if dry_run:
                 print(f"[plan] {clip}: copy '{video.name}' + convert {len(raw)} labels")
                 count += 1
@@ -474,8 +454,8 @@ def main() -> int:
     wanted = ["archive", "video11", "grid", "prof"] if "all" in args.sources else list(dict.fromkeys(args.sources))
     if "tracknet" in wanted and args.src is None:
         parser.error("'tracknet' needs --src <folder>")
-    VIDEOS.mkdir(exist_ok=True)
-    LABELS.mkdir(exist_ok=True)
+    ws.VIDEOS.mkdir(exist_ok=True)
+    ws.LABELS.mkdir(exist_ok=True)
     manifest = Manifest()
     importers = {
         "archive": lambda src: import_archive(src, manifest, args.force, args.link, args.dry_run),

@@ -32,7 +32,6 @@ and cut the frames over 5 px off from 3.4% to 2.6%, at three times the training 
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import re
 import sys
@@ -54,7 +53,8 @@ from finetune import refine
 from finetune.fileio import write_atomic
 from finetune.labels import Labels, read_labels, reviewed_frames
 from finetune.scoring import REFERENCE_HEIGHT
-from finetune.workspace import WORKSPACE as HERE, find_video, label_csv, labelled_clips, review_json, video_meta
+from finetune.workspace import (MANIFEST, WORKSPACE as HERE, find_video, label_csv, labelled_clips, read_manifest,
+                                review_json, video_meta)
 from finetune.workspace import CACHE as WORKSPACE_CACHE, MODELS as WORKSPACE_MODELS
 
 MODELS = WORKSPACE_MODELS / "refiner"
@@ -317,11 +317,7 @@ def gather_crops(log: Callable[..., None] = lambda *parts: print(*parts, flush=T
 def folds(clips: Sequence[str], sizes: Dict[str, int]) -> Dict[str, int]:
     """{clip: fold}: whole groups (the TrackNet clips of one game together, other clips alone),
     balanced by frame count, the same every run."""
-    try:
-        with (HERE / "clips.csv").open(newline="", encoding="utf-8") as handle:
-            origin = {r["clip"]: r.get("origin", "") for r in csv.DictReader(handle)}
-    except OSError:
-        origin = {}
+    origin = {clip: row["origin"] for clip, row in read_manifest(MANIFEST).items()}
     group_of = {}
     for clip in clips:
         parts = re.split(r"[\\/]", origin.get(clip, ""))

@@ -21,13 +21,13 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from finetune.fileio import atomic_csv, backup_copy, write_atomic
+from finetune.fileio import backup_copy, write_atomic
 from finetune.labels import (LabelFormatError, Labels, Suspects, read_label_rows, read_labels,
                              read_suspects as read_suspect_file, write_labels)
 from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
-from finetune.workspace import (EXCLUDE_FILE, LABELS, MANIFEST, REPO_WEIGHTS, VIDEOS, VideoMeta, clip_of,
-                                label_csv, label_files, natural_key, read_manifest, suspect_json, video_meta,
-                                videos_in)
+from finetune import workspace as ws
+from finetune.workspace import (VideoMeta, add_exclusion, clip_of, label_csv, label_files, read_manifest, suspect_json,
+                                video_meta, videos_in, write_manifest)
 from tennis_tracker.frame_rate import phase_stride
 
 LABEL_COVERAGE = 0.9         # check: fewer labelled frames than this share of the span is a gap
@@ -114,13 +114,13 @@ def read_suspects(clip: str) -> Dict[str, List[int]]:
     check        the detector disagrees with the label here. Usually that is the detector losing a
                  ball at the racket rather than a bad label, so it is a prompt, not a defect
     """
-    flags = read_suspect_file(suspect_json(clip, LABELS))
+    flags = read_suspect_file(suspect_json(clip))
     return {"unplaceable": flags["unplaceable"], "check": flags["check"]}
 
 
 def write_suspects(clip: str, kind: str, frames: List[int], note: str) -> None:
     """Record (or clear) one kind of flag, leaving the other kind alone."""
-    path = suspect_json(clip, LABELS)
+    path = suspect_json(clip)
     flags: Suspects = read_suspect_file(path)
     flags[kind] = sorted(set(int(f) for f in frames))
     flags["notes"][kind] = note
@@ -142,10 +142,10 @@ def write_suspects(clip: str, kind: str, frames: List[int], note: str) -> None:
 def read_label_points(clip: str) -> Labels:
     """frame -> (x, y), or None where the label says no ball, from the clip's label file (the
     frame size taken from clips.csv, 1080p when the clip is not listed)."""
-    path = label_csv(clip, LABELS)
+    path = label_csv(clip)
     if not path.is_file():
         return {}
-    width, height = frame_size(read_manifest(MANIFEST).get(clip, {}))
+    width, height = frame_size(read_manifest().get(clip, {}))
     return read_labels(path, int(width), int(height))
 
 
@@ -169,16 +169,6 @@ def outstanding_suspects(clip: str) -> Dict[str, List[int]]:
     blind = {frame for frame, point in read_label_points(clip).items() if point is None} if flagged["unplaceable"] else set()
     return {"unplaceable": [f for f in flagged["unplaceable"] if f not in blind],
             "check": list(flagged["check"])}
-
-
-def add_exclusion(clip: str, reason: str) -> None:
-    lines = EXCLUDE_FILE.read_text(encoding="utf-8").splitlines() if EXCLUDE_FILE.is_file() else []
-    if any(line.split("#", 1)[0].strip() == clip for line in lines):
-        return
-    if not lines:
-        lines = ["# clips the trainer skips by default (ft.py check --audit --fix writes these; edit freely)"]
-    lines.append(f"{clip}  # {reason}")
-    write_atomic(EXCLUDE_FILE, "\n".join(lines) + "\n")
 
 
 # --------------------------------------------------------------------------- against the detector
@@ -255,7 +245,7 @@ class ClipAudit:
 
 def _audit_clips(patterns: Optional[List[str]], manifest: Dict[str, dict]) -> List[str]:
     """The labelled clips an audit covers: those matching `patterns`, or every tennis clip."""
-    clips = [clip_of(p) for p in label_files(LABELS)]
+    clips = [clip_of(p) for p in label_files()]
     if patterns:
         return [c for c in clips if matches_any(c, patterns)]
     # tennis clips only by default: the tennis detector cannot audit shuttlecock labels
@@ -296,7 +286,7 @@ def _audit_one(clip: str, video: Path, detector, fix: bool, mark: bool) -> bool:
 
     meta = video_meta(video)
     stride = _audit_stride(clip, meta.fps)
-    labels = read_labels(label_csv(clip, LABELS), meta.width, meta.height)
+    labels = read_labels(label_csv(clip), meta.width, meta.height)
     visible = {f: p for f, p in labels.items() if p is not None}
     confident = {f: (x, y) for f, (x, y, conf) in detect_points(detector, video, meta).items() if conf >= AUDIT_CONF}
     audit = ClipAudit(visible, confident, stride, scale_for_width(meta.width), meta.total)
@@ -315,9 +305,9 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
     shift. Catches public clips whose labels were made on a different cut of the video."""
     from finetune.detect import ball_detector   # the lazy GPU import: ft.py must load without torch
 
-    videos = videos_in(VIDEOS)
-    clips = _audit_clips(patterns, read_manifest(MANIFEST))
-    weights_path = Path(weights).resolve() if weights else REPO_WEIGHTS
+    videos = videos_in()
+    clips = _audit_clips(patterns, read_manifest())
+    weights_path = Path(weights).resolve() if weights else ws.REPO_WEIGHTS
     detector = ball_detector(weights_path)
     print(f"\naudit: {len(clips)} clips against {weights_path.name} "
           f"(agree = detector within {AUDIT_AGREE_PX:.0f} px of the label, measured on the fast labels; "
@@ -333,17 +323,9 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
 
 # --------------------------------------------------------------------------- repairs
 
-def write_manifest(rows: Dict[str, dict]) -> None:
-    from finetune.import_data import MANIFEST_COLUMNS   # import_data needs cv2; ft.py must not (ensure_interpreter)
-    with atomic_csv(MANIFEST) as writer:
-        writer.writerow(MANIFEST_COLUMNS)
-        for name in sorted(rows, key=natural_key):
-            writer.writerow([rows[name].get(key, "") for key in MANIFEST_COLUMNS])
-
-
 def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: int) -> None:
     """Renumber a clip's label rows by delta_frames (dropping rows that leave the video) and record it."""
-    path = label_csv(clip, LABELS)
+    path = label_csv(clip)
     if delta_frames == 0:
         return
     if any(path.with_suffix(suffix).exists() for suffix in (".review.json", ".suspect.json")):
@@ -352,8 +334,8 @@ def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: i
                if 0 <= frame + delta_frames < total}
     backup_copy(path, "shift")
     rows, _ = write_labels(path, shifted, width, height)
-    manifest = read_manifest(MANIFEST)
-    if clip in manifest and MANIFEST.is_file():
+    manifest = read_manifest()
+    if clip in manifest and ws.MANIFEST.is_file():
         manifest[clip]["label_frames"] = str(rows)
         note = manifest[clip].get("note", "")
         manifest[clip]["note"] = (note + "; " if note else "") + f"audit {dt.date.today()}: shifted {delta_frames:+d} frames"

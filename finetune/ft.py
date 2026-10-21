@@ -40,22 +40,22 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 
 # Only stdlib-backed finetune modules at the top: ft.py must import without cv2, numpy or torch so
 # ensure_interpreter can hand over to an interpreter that has them.
-from finetune.data_policy import OWN_SOURCES, evaluation_clips, read_exclusions as read_exclusions_in, read_review_status
+from finetune.data_policy import OWN_SOURCES, evaluation_clips, read_review_status
 from finetune.fileio import write_atomic
-from finetune.label_audit import (audit_labels, check_label_file, matches_any, outstanding_suspects, read_suspects,
-                                  write_manifest)
+from finetune.label_audit import audit_labels, check_label_file, matches_any, outstanding_suspects, read_suspects
 from finetune.labels import LabelFormatError, read_labels, read_review, settled_frames
 from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
-from finetune.workspace import (BEST_WEIGHTS, LABELS, MANIFEST, REPO_WEIGHTS, ROOT, RUNS, VIDEOS, WORKSPACE, clip_of,
-                                draft_csv, label_csv, label_files, natural_key, read_manifest, review_json, video_meta,
-                                videos_in)
+from finetune import workspace as ws
+from finetune.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_csv, label_csv, label_files, natural_key,
+                                read_exclusions, read_manifest, review_json, video_meta, videos_in, write_manifest)
 from tennis_tracker.frame_rate import phase_stride
 
 # cheapest first: cv2 rules out most interpreters fast. Exit 3 means usable for training but with an
 # OpenCV whose windows are not Qt's, which the label tool refuses (see label_tool.highgui_backend).
 TRAINING_IMPORTS = ("import sys, cv2, numpy, torch; sys.exit(0 if any(line.strip().startswith('GUI:') "
                     "and 'QT' in line.upper() for line in cv2.getBuildInformation().splitlines()) else 3)")
-PYTHON_CACHE = WORKSPACE / ".training-python"
+SCRIPTS = Path(__file__).resolve().parent           # where the sibling scripts live (not the data workspace)
+PYTHON_CACHE = SCRIPTS / ".training-python"
 PROBE_TIMEOUT_S = 120              # an interpreter that takes longer than this to import torch is not usable
 QT_NEEDED_EXIT = 3                 # probe_interpreter's "usable, but its cv2 is not the Qt build"
 LISTED_CLIPS = 12                  # how many clip names status prints before "..."
@@ -177,7 +177,7 @@ def ensure_interpreter() -> Optional[int]:
 
 
 def run_script(script: str, arguments: List[str]) -> int:
-    command = [sys.executable, str(WORKSPACE / script if not script.startswith("..") else ROOT / script[3:]), *arguments]
+    command = [sys.executable, str(SCRIPTS / script if not script.startswith("..") else ROOT / script[3:]), *arguments]
     print("$", " ".join(f'"{part}"' if " " in part else part for part in command), flush=True)
     return wait_child(command, cwd=str(ROOT))
 
@@ -192,7 +192,7 @@ def label_stats(csv_path: Path, width: int, height: int) -> Tuple[int, int]:
 
 def review_progress(clip: str, rows: int) -> str:
     try:
-        state = read_review(review_json(clip, LABELS))
+        state = read_review(review_json(clip))
     except LabelFormatError as error:
         print(f"[warn] {error}")
         return "review file unreadable"
@@ -211,11 +211,7 @@ def sha8(path: Path) -> str:
 
 
 def drafted_clips() -> Set[str]:
-    return {clip_of(p) for p in LABELS.glob("*_ball.csv.draft")} if LABELS.is_dir() else set()
-
-
-def read_exclusions() -> List[str]:
-    return read_exclusions_in(WORKSPACE)
+    return {clip_of(p) for p in ws.LABELS.glob("*_ball.csv.draft")} if ws.LABELS.is_dir() else set()
 
 
 # --------------------------------------------------------------------------- commands
@@ -260,16 +256,24 @@ def print_source_table(finals: Dict[str, Path], manifest: Dict[str, dict], video
               + ("   -> python finetune/ft.py camera" if "untagged" in cameras else ""))
 
 
+def shown(path: Path) -> str:
+    """A path as status prints it: relative to the repository when it is inside it."""
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def print_models() -> None:
     print("\nmodels")
-    if REPO_WEIGHTS.is_file():
-        print(f"  tracker uses   {REPO_WEIGHTS.relative_to(ROOT)}  sha {sha8(REPO_WEIGHTS)}  "
-              f"{dt.datetime.fromtimestamp(REPO_WEIGHTS.stat().st_mtime):%Y-%m-%d %H:%M}")
-    if BEST_WEIGHTS.is_file():
-        same = sha8(BEST_WEIGHTS) == sha8(REPO_WEIGHTS) if REPO_WEIGHTS.is_file() else False
-        print(f"  last winner    {BEST_WEIGHTS.relative_to(ROOT)}  sha {sha8(BEST_WEIGHTS)}  "
+    if ws.REPO_WEIGHTS.is_file():
+        print(f"  tracker uses   {shown(ws.REPO_WEIGHTS)}  sha {sha8(ws.REPO_WEIGHTS)}  "
+              f"{dt.datetime.fromtimestamp(ws.REPO_WEIGHTS.stat().st_mtime):%Y-%m-%d %H:%M}")
+    if ws.BEST_WEIGHTS.is_file():
+        same = sha8(ws.BEST_WEIGHTS) == sha8(ws.REPO_WEIGHTS) if ws.REPO_WEIGHTS.is_file() else False
+        print(f"  last winner    {shown(ws.BEST_WEIGHTS)}  sha {sha8(ws.BEST_WEIGHTS)}  "
               f"{'(already promoted)' if same else '-> python finetune/ft.py promote'}")
-    for winner in sorted(RUNS.glob("*/winner.json"), key=lambda p: p.stat().st_mtime)[-3:]:
+    for winner in sorted(ws.RUNS.glob("*/winner.json"), key=lambda p: p.stat().st_mtime)[-3:]:
         try:
             payload = json.loads(winner.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
@@ -281,15 +285,15 @@ def print_models() -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    manifest = read_manifest(MANIFEST)
-    videos = videos_in(VIDEOS)
-    finals = {clip_of(p): p for p in label_files(LABELS)}
+    manifest = read_manifest()
+    videos = videos_in()
+    finals = {clip_of(p): p for p in label_files()}
     drafts = drafted_clips()
     if not videos and not finals:
-        print(f"Workspace {WORKSPACE} is empty. Start with:  python finetune/ft.py import all")
+        print(f"Workspace {ws.WORKSPACE} is empty. Start with:  python finetune/ft.py import all")
         return 0
 
-    print(f"workspace  {WORKSPACE}")
+    print(f"workspace  {ws.WORKSPACE}")
     print_source_table(finals, manifest, videos)
     own = [clip for clip in sorted(finals, key=natural_key) if (manifest.get(clip, {}).get("source") or "custom") in OWN_SOURCES]
     if own:
@@ -324,7 +328,7 @@ def cmd_import(args: argparse.Namespace) -> int:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    VIDEOS.mkdir(exist_ok=True)
+    ws.VIDEOS.mkdir(exist_ok=True)
     added = []
     for source in args.videos:
         source = Path(source)
@@ -339,9 +343,9 @@ def cmd_add(args: argparse.Namespace) -> int:
             continue
         if phase_stride(fps) is None:
             print(f"[skip] {source.name}: {fps:.2f} FPS is neither 30 nor 60. Re-encode first, e.g.\n"
-                  f"       ffmpeg -i \"{source}\" -vf fps=30 -c:v libx264 -crf 12 \"{VIDEOS / (name + '.mp4')}\"")
+                  f"       ffmpeg -i \"{source}\" -vf fps=30 -c:v libx264 -crf 12 \"{ws.VIDEOS / (name + '.mp4')}\"")
             continue
-        destination = VIDEOS / f"{name}{source.suffix.lower()}"
+        destination = ws.VIDEOS / f"{name}{source.suffix.lower()}"
         if destination.exists() and not args.force:
             print(f"[keep] {destination.name} already exists (use --force to overwrite)")
         else:
@@ -373,10 +377,10 @@ def cmd_label(args: argparse.Namespace) -> int:
     if clip in read_exclusions():
         print(f"[warn] {clip} is in exclude.txt: its labels belong to a different cut of the video,"
               " so every frame looks wrong. There is nothing here worth correcting by hand.")
-    if not any(VIDEOS.glob(f"{clip}.*")):
-        print(f"No video named {clip}.* in {VIDEOS}. Add one with:  python finetune/ft.py add <path> --name {clip}")
+    if not any(ws.VIDEOS.glob(f"{clip}.*")):
+        print(f"No video named {clip}.* in {ws.VIDEOS}. Add one with:  python finetune/ft.py add <path> --name {clip}")
         return 1
-    if not label_csv(clip, LABELS).is_file() and not draft_csv(clip, LABELS).is_file():
+    if not label_csv(clip).is_file() and not draft_csv(clip).is_file():
         print(f"[label] no labels for {clip} yet; pre-labelling first")
         code = run_script("pretrack.py", ["--clips", clip])
         if code:
@@ -390,7 +394,7 @@ def cmd_label(args: argparse.Namespace) -> int:
 def read_review_frames(clip: str) -> List[int]:
     """Frames you have settled in the click tool, by looking at them: confirmed or corrected. A
     damaged review file is an error naming it, never an empty answer."""
-    return sorted(settled_frames(read_review(review_json(clip, LABELS))))
+    return sorted(settled_frames(read_review(review_json(clip))))
 
 
 def offer_realign(clip: str, settled_before: Set[int]) -> None:
@@ -419,18 +423,18 @@ def offer_realign(clip: str, settled_before: Set[int]) -> None:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    videos = videos_in(VIDEOS)
-    manifest = read_manifest(MANIFEST)
+    videos = videos_in()
+    manifest = read_manifest()
     problems = 0
     checked = 0
-    for csv_path in label_files(LABELS):
+    for csv_path in label_files():
         clip = clip_of(csv_path)
         if not matches_any(clip, args.clips):
             continue
         checked += 1
         video = videos.get(clip)
         if video is None:
-            print(f"[fail] {clip}: no video in {VIDEOS}")
+            print(f"[fail] {clip}: no video in {ws.VIDEOS}")
             problems += 1
             continue
         try:
@@ -457,8 +461,8 @@ def cmd_check(args: argparse.Namespace) -> int:
 def cmd_eval(args: argparse.Namespace) -> int:
     clips = args.clips
     if not clips and not args.all:
-        clips = evaluation_clips(read_manifest(MANIFEST), read_review_status(WORKSPACE))
-    command = ["--mode", "raw", "--models", "gridtracknet", "--archive", str(WORKSPACE)]
+        clips = evaluation_clips(read_manifest(), read_review_status(ws.WORKSPACE))
+    command = ["--mode", "raw", "--models", "gridtracknet", "--archive", str(ws.WORKSPACE)]
     if args.weights:
         command += ["--gridtracknet-weights", str(Path(args.weights).resolve())]
     if clips:
@@ -475,19 +479,19 @@ def cmd_hints(args: argparse.Namespace) -> int:
 
 
 def cmd_promote(args: argparse.Namespace) -> int:
-    source = Path(args.weights) if args.weights else BEST_WEIGHTS
+    source = Path(args.weights) if args.weights else ws.BEST_WEIGHTS
     if not source.is_file():
         print(f"No weights at {source}; train first (python finetune/ft.py train)")
         return 1
-    if REPO_WEIGHTS.is_file():
-        if sha8(source) == sha8(REPO_WEIGHTS):
-            print(f"{REPO_WEIGHTS.name} already is {source.name}; nothing to do")
+    if ws.REPO_WEIGHTS.is_file():
+        if sha8(source) == sha8(ws.REPO_WEIGHTS):
+            print(f"{ws.REPO_WEIGHTS.name} already is {source.name}; nothing to do")
             return 0
-        backup = REPO_WEIGHTS.with_name(f"{REPO_WEIGHTS.stem}_prev_{dt.datetime.now():%Y%m%d_%H%M%S}.npz")
-        shutil.copyfile(REPO_WEIGHTS, backup)
-        print(f"[backup ] {REPO_WEIGHTS.name} -> {backup.name}")
-    shutil.copyfile(source, REPO_WEIGHTS)
-    print(f"[promote] {source} -> {REPO_WEIGHTS}")
+        backup = ws.REPO_WEIGHTS.with_name(f"{ws.REPO_WEIGHTS.stem}_prev_{dt.datetime.now():%Y%m%d_%H%M%S}.npz")
+        shutil.copyfile(ws.REPO_WEIGHTS, backup)
+        print(f"[backup ] {ws.REPO_WEIGHTS.name} -> {backup.name}")
+    shutil.copyfile(source, ws.REPO_WEIGHTS)
+    print(f"[promote] {source} -> {ws.REPO_WEIGHTS}")
     print("next: python finetune/ft.py eval      (own-camera clips)\n"
           "      python check_parity.py          (the Pomona gate; a new model may legitimately move its numbers)")
     return 0
@@ -541,11 +545,11 @@ def measure_camera_motion(video: Path) -> Tuple[float, float, float]:
 
 def cmd_camera(args: argparse.Namespace) -> int:
     """Tag every clip in clips.csv as a fixed or moving camera (needed by the background channel)."""
-    manifest = read_manifest(MANIFEST)
+    manifest = read_manifest()
     if not manifest:
         print("No clips.csv yet; run  python finetune/ft.py import all  first")
         return 1
-    videos = videos_in(VIDEOS)
+    videos = videos_in()
     clips = [c for c in sorted(manifest, key=natural_key) if matches_any(c, args.clips)]
     counts: Dict[str, int] = {}
     print(f"  {'clip':36s} {'p75 px':>7s} {'max px':>7s} {'cuts':>5s}  camera")
@@ -575,11 +579,10 @@ def cmd_camera(args: argparse.Namespace) -> int:
 
 
 def cmd_paths(args: argparse.Namespace) -> int:
-    from finetune.import_data import DEFAULT_SOURCES   # see write_manifest
     print(f"python     {sys.executable}")
-    print(f"workspace  {WORKSPACE}")
+    print(f"workspace  {ws.WORKSPACE}")
     print(f"repo       {ROOT}")
-    print(f"weights    {REPO_WEIGHTS}")
+    print(f"weights    {ws.REPO_WEIGHTS}")
     for name, path in DEFAULT_SOURCES.items():
         print(f"source {name:11s} {'ok ' if path.exists() else 'MISSING'} {path}")
     return 0
@@ -597,12 +600,12 @@ def _ask(prompt: str) -> Optional[str]:
 
 
 def _final_labels() -> Set[str]:
-    return {clip_of(p) for p in label_files(LABELS)}
+    return {clip_of(p) for p in label_files()}
 
 
 def _summary_lines() -> List[str]:
-    manifest = read_manifest(MANIFEST)
-    videos = videos_in(VIDEOS)
+    manifest = read_manifest()
+    videos = videos_in()
     finals = _final_labels()
     if not videos and not finals:
         return ["the workspace is empty - pick 8 to import every labelled clip on this PC, or 2 to add a video"]
@@ -617,10 +620,10 @@ def _summary_lines() -> List[str]:
     if pending:
         lines.append(f"{len(pending)} video(s) still need labels: " + ", ".join(pending[:6])
                      + (" ..." if len(pending) > 6 else "") + "   -> pick 3")
-    if REPO_WEIGHTS.is_file():
-        lines.append(f"tracker model: {REPO_WEIGHTS.name} "
-                     f"({dt.datetime.fromtimestamp(REPO_WEIGHTS.stat().st_mtime):%Y-%m-%d %H:%M})")
-        if BEST_WEIGHTS.is_file() and sha8(BEST_WEIGHTS) != sha8(REPO_WEIGHTS):
+    if ws.REPO_WEIGHTS.is_file():
+        lines.append(f"tracker model: {ws.REPO_WEIGHTS.name} "
+                     f"({dt.datetime.fromtimestamp(ws.REPO_WEIGHTS.stat().st_mtime):%Y-%m-%d %H:%M})")
+        if ws.BEST_WEIGHTS.is_file() and sha8(ws.BEST_WEIGHTS) != sha8(ws.REPO_WEIGHTS):
             lines.append("a training winner is waiting - pick 7 to make it the tracker's model")
     return lines
 
@@ -633,7 +636,7 @@ def _menu_add() -> None:
     path = Path(answer.strip('"').strip("'"))
     run_cli(["add", str(path)])
     clip = re.sub(r"[^A-Za-z0-9_.-]+", "_", path.stem)
-    if any(VIDEOS.glob(f"{clip}.*")):
+    if any(ws.VIDEOS.glob(f"{clip}.*")):
         follow = _ask(f"open the click tool on {clip} now? [Y/n] ")
         if follow is not None and follow.lower() in ("", "y", "yes"):
             run_cli(["label", clip])
@@ -747,9 +750,9 @@ def _print_label_menu(manifest: Dict[str, dict], pending: List[str], labelled: L
 
 
 def _menu_label() -> None:
-    manifest = read_manifest(MANIFEST)
+    manifest = read_manifest()
     choices, pending, labelled, tags, suspects = _label_menu_rows(
-        manifest, videos_in(VIDEOS), _final_labels(), drafted_clips(), set(read_exclusions()))
+        manifest, videos_in(), _final_labels(), drafted_clips(), set(read_exclusions()))
     if not choices:
         print("nothing to label yet: no videos in finetune/videos (pick 2 to add one, or 8 to import)")
         return
@@ -792,10 +795,10 @@ def _menu_train() -> None:
 
 
 def _menu_promote() -> None:
-    if not BEST_WEIGHTS.is_file():
+    if not ws.BEST_WEIGHTS.is_file():
         print("no training winner yet - train first (option 6)")
         return
-    confirm = _ask(f"make {BEST_WEIGHTS.name} the tracker's model? the current one is backed up first [y/N] ")
+    confirm = _ask(f"make {ws.BEST_WEIGHTS.name} the tracker's model? the current one is backed up first [y/N] ")
     if confirm and confirm.lower().startswith("y"):
         run_cli(["promote"])
 

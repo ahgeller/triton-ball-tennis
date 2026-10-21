@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import pytest
 
-from finetune import data_policy, fileio, labels
+from finetune import data_policy, fileio, labels, workspace
 from finetune.import_data import ReviewedLabelsError, convert_rows, protect_existing, read_tracknet_csv
 from finetune.workspace import VideoMeta, video_meta
 
@@ -181,9 +181,9 @@ def test_import_refuses_to_overwrite_hand_reviewed_labels_and_backs_up_the_rest(
 # --------------------------------------------------------------------------- data policy
 
 def test_eligibility_policy(tmp_path):
-    assert data_policy.read_exclusions(tmp_path) == []
-    (tmp_path / "exclude.txt").write_text("# header\nvideo7  # audit\n\ngrid_match9\n", encoding="utf-8")
-    assert data_policy.read_exclusions(tmp_path) == ["video7", "grid_match9"]
+    assert data_policy.read_review_status(tmp_path) is None
+    (tmp_path / workspace.REVIEW_STATUS_NAME).write_text('{"verified_video_min": 13}', encoding="utf-8")
+    assert data_policy.read_review_status(tmp_path) == {"verified_video_min": 13}
     status = {"verified_video_min": 13, "verified_clips": ["grid_match4"]}
     assert data_policy.is_trainable("video13", "prof", status)
     assert not data_policy.is_trainable("video13", "custom-uncorrected", status)
