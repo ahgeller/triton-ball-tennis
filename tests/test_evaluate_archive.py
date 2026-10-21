@@ -20,6 +20,14 @@ def _archive(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def test_list_clips_leaves_out_clips_in_exclude_txt_unless_asked(tmp_path, capsys):
+    archive = _archive(tmp_path)
+    (archive / "exclude.txt").write_text("video1  # audit: labels belong to another cut\n", encoding="utf-8")
+    assert list_clips(None, archive) == []
+    assert "[skip] video1: listed in exclude.txt" in capsys.readouterr().out
+    assert [video.stem for video, _ in list_clips(None, archive, include_excluded=True)] == ["video1", "video2"]
+
+
 def test_list_clips_keeps_verified_clips_that_have_a_video(tmp_path, capsys):
     archive = _archive(tmp_path)
     assert list_clips(None, archive) == [(archive / "videos" / "video1.mp4", archive / "labels" / "video1_ball.csv")]

@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
-from finetune.data.data_policy import OWN_SOURCES
+from finetune.data.data_policy import OWN_SOURCES, clip_source
 from finetune.data.fileio import backup_copy, copy_atomic
 from finetune.data.label_audit import audit_labels
 from finetune.data.label_check import check_label_file, matches_any
@@ -85,7 +85,7 @@ def print_source_table(finals: Dict[str, Path], manifest: Dict[str, dict], video
     for clip, csv_path in finals.items():
         row = manifest.get(clip)
         rows, visible = clip_counts(clip, csv_path, row, videos)
-        bucket = per_source.setdefault(row["source"] if row else "custom", {"clips": 0, "frames": 0, "visible": 0})
+        bucket = per_source.setdefault(clip_source(clip, manifest), {"clips": 0, "frames": 0, "visible": 0})
         bucket["clips"] += 1
         bucket["frames"] += rows
         bucket["visible"] += visible
@@ -137,7 +137,7 @@ def print_models() -> None:
 
 def print_own_camera_clips(finals: Dict[str, Path], manifest: Dict[str, dict]) -> None:
     """The clips from the user's own cameras, with their size, label counts and review progress."""
-    own = [clip for clip in sorted(finals, key=natural_key) if (manifest.get(clip, {}).get("source") or "custom") in OWN_SOURCES]
+    own = [clip for clip in sorted(finals, key=natural_key) if clip_source(clip, manifest) in OWN_SOURCES]
     if not own:
         return
     print("\nown-camera clips")
@@ -241,7 +241,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print(f"[backup ] {ws.REPO_WEIGHTS.name} -> {backup.name}")
     copy_atomic(source, ws.REPO_WEIGHTS)
     print(f"[promote] {source} -> {ws.REPO_WEIGHTS}")
-    print("next: python finetune/ft.py eval      (own-camera clips)\n"
+    print("next: python finetune/ft.py eval      (the reviewed clips)\n"
           "      python check_parity.py          (the Pomona gate; a new model may legitimately move its numbers)")
     return 0
 

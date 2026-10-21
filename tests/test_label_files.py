@@ -231,10 +231,36 @@ def test_eligibility_policy(tmp_path):
     assert not data_policy.is_trainable("video13", "custom-uncorrected", status)
     assert not data_policy.is_trainable("video12", "custom", status)
     assert data_policy.is_trainable("video12", "custom", None)
+    assert not data_policy.is_trainable("video13", "prof", status, {"video13"})         # exclude.txt
     manifest = {"video1": {"source": "custom"}, "video13": {"source": "prof"}, "grid_match4": {"source": "grid"}}
-    assert data_policy.evaluation_clips(manifest, status) == ["video13", "grid_match4"]
-    assert data_policy.evaluation_clips(manifest, None) == ["video1"]       # no policy: own camera only
-    assert data_policy.evaluation_clips({}, None) is None                   # no manifest: the whole folder
+    labelled = ["video1", "video13", "grid_match4", "video14"]
+    assert data_policy.evaluation_clips(labelled, manifest, status, set()) == ["video13", "grid_match4", "video14"]
+    assert data_policy.evaluation_clips(labelled, manifest, status, {"video13"}) == ["grid_match4", "video14"]
+    assert data_policy.evaluation_clips(labelled, manifest, None, set()) == ["video1"]       # no policy: own camera only
+    assert data_policy.evaluation_clips(["a", "b"], {}, None, {"b"}) == ["a"]              # no manifest: every clip is own
+    assert data_policy.evaluation_clips(["grid_match4"], manifest, None, set()) == []       # nothing qualifies: empty, not "all"
+
+
+def test_a_clip_has_one_source_everywhere():
+    manifest = {"video1": {"source": "custom"}, "video13": {"source": ""}}
+    assert data_policy.clip_source("video1", manifest) == "custom"
+    assert data_policy.clip_source("video13", manifest) == "unknown"          # listed without a source
+    assert data_policy.clip_source("rally", manifest) == "unknown"            # not listed, but clips.csv exists
+    assert data_policy.clip_source("rally", {}) == "custom"                   # no clips.csv at all: the user's own
+    assert "unknown" in data_policy.UNTRUSTED_SOURCES
+    assert data_policy.is_scorable("video13", {"verified_video_min": 13}, set())
+    assert not data_policy.is_scorable("video13", {"verified_video_min": 13}, {"video13"})
+    assert not data_policy.is_scorable("video12", {"verified_video_min": 13}, set())
+
+
+def test_a_damaged_review_policy_is_an_error_that_names_it(tmp_path):
+    path = tmp_path / workspace.REVIEW_STATUS_NAME
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(labels.LabelFormatError, match=str(path).replace("\\", "\\\\")):
+        data_policy.read_review_status(tmp_path)
+    path.write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(labels.LabelFormatError, match="not a JSON object"):
+        data_policy.read_review_status(tmp_path)
 
 
 def test_verified_policy_does_not_clear_grid_matches():

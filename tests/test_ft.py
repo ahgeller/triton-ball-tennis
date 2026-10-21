@@ -147,6 +147,21 @@ def test_commands_hand_their_arguments_to_the_right_script(workspace_dir):
     assert launched[5] == ("labeling/label_tool.py", ["video10", "video11", "--zoom", "3.0"])
 
 
+def test_eval_scores_the_clips_the_policy_admits_and_says_when_none_do(workspace_dir, capsys):
+    launched = []
+    with patch.object(ft, "run_module", lambda module, arguments: launched.append(arguments) or 0):
+        assert ft.run_cli(["eval"]) == 1                                  # nothing labelled: nothing to score
+        assert "no clips qualify" in capsys.readouterr().out
+        for clip in ("video13", "video14", "video2"):
+            write_labels(workspace_dir / "labels" / f"{clip}_ball.csv", {0: (1.0, 2.0)}, *SIZE)
+        (workspace_dir / "review_status.json").write_text('{"verified_video_min": 13}', encoding="utf-8")
+        workspace.add_exclusion("video14", "audit")
+        assert ft.run_cli(["eval"]) == 0
+        assert ft.run_cli(["eval", "--all"]) == 0
+    assert launched[0][-2:] == ["--clips", "video13"]                     # video2 unreviewed, video14 excluded
+    assert launched[1][-1] == "--include-excluded" and "--clips" not in launched[1]
+
+
 def test_label_pre_labels_a_clip_that_has_no_labels_yet(workspace_dir, capsys):
     (workspace_dir / "videos" / "fresh.mp4").write_bytes(b"")
     launched = []

@@ -24,7 +24,7 @@ The same actions exist as commands for scripts and power use:
 | `ft.py check --audit --mark` | as `--audit`, plus record every frame the detector disputes so the click tool can walk you to them |
 | `ft.py check` | validate every label file against its video (cadence, range, columns); `--audit [--fix]` cross-checks with the detector |
 | `ft.py camera` | measure camera motion per clip and tag `clips.csv` `fixed` / `moving` (the background channel only learns from fixed) |
-| `ft.py eval` | raw detector recall / wrong / false-alarm on the own-camera clips (`--all`, `--clips`, `--weights`) |
+| `ft.py eval` | raw detector recall / wrong / false-alarm on the reviewed clips not in `exclude.txt` (`--clips` narrows; `--all` scores every labelled clip; `--weights`) |
 | `ft.py train ...` | fine-tune or train from scratch; keeps the better of new vs starting weights |
 | `ft.py promote` | make the winner the tracker's model (`models/gridtracknet_weights_torch.npz`, old one backed up) |
 | `ft.py paths` | which python, which folders |

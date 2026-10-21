@@ -26,14 +26,14 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Set, Tuple
 
-from finetune.data.data_policy import is_verified, read_review_status
+from finetune.data.data_policy import is_scorable, read_review_status
 from finetune.data.detect import ball_detector, detect_points
 from finetune.data.labels import read_labels
 from finetune.data.detector_metrics import HIT_PX, DetectorMetrics, Point, scale_for_width
 from finetune.data import workspace as ws
-from finetune.data.workspace import clip_of, find_video, natural_key, video_meta
+from finetune.data.workspace import clip_of, find_video, natural_key, read_exclusions, video_meta
 from evaluation.pipeline_score import ClipScore, score_pipeline_clip
 from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
 
@@ -75,18 +75,35 @@ def default_archive() -> Path:
     return Path(override) if override else ws.current().root
 
 
-def list_clips(names: Optional[List[str]], archive: Path) -> List[ClipPair]:
-    """Pairs of (video, label csv); accepts the flat archive layout or finetune/{videos,labels}."""
+def _archive_folders(archive: Path) -> Tuple[Path, List[Path]]:
+    """(the labels folder, the folders a video may sit in): finetune/{videos,labels} or the flat
+    archive layout, where both share one folder."""
     label_dir = archive / "labels" if (archive / "labels").is_dir() else archive
     video_dirs = [archive / "videos", archive] if (archive / "videos").is_dir() else [archive]
-    clips = []
+    return label_dir, video_dirs
+
+
+def _skip_reason(clip: str, status: Optional[dict], excluded: Set[str], include_excluded: bool) -> Optional[str]:
+    """Why a clip's labels may not stand as ground truth (``data_policy.is_scorable``), or None."""
+    if include_excluded or is_scorable(clip, status, excluded):
+        return None
+    return "listed in exclude.txt" if clip in excluded else "labels are still under review"
+
+
+def list_clips(names: Optional[List[str]], archive: Path, include_excluded: bool = False) -> List[ClipPair]:
+    """Pairs of (video, label csv) whose labels may stand as ground truth (reviewed, not in
+    exclude.txt; every clip with ``include_excluded``), narrowed to the stems or globs in `names`."""
+    label_dir, video_dirs = _archive_folders(archive)
     review_status = read_review_status(archive)
+    excluded = set(read_exclusions(archive))
+    clips = []
     for csv_path in sorted(label_dir.glob("*_ball.csv"), key=lambda path: natural_key(path.stem)):
         clip = clip_of(csv_path)
         if names and not any(fnmatch.fnmatchcase(clip, pattern) for pattern in names):
             continue
-        if not is_verified(clip, review_status):
-            print(f"[skip] {clip}: labels are still under review")
+        reason = _skip_reason(clip, review_status, excluded, include_excluded)
+        if reason:
+            print(f"[skip] {clip}: {reason}")
             continue
         video = next((found for found in (find_video(clip, folder) for folder in video_dirs) if found is not None), None)
         if video is None:
@@ -233,6 +250,9 @@ def main() -> int:
     parser.add_argument("--archive", default=None,
                         help="Label set: the flat archive folder or a finetune-style folder with videos/ and "
                              f"labels/ (default: ${ARCHIVE_VARIABLE}, else finetune/)")
+    parser.add_argument("--include-excluded", action="store_true",
+                        help="Score every labelled clip, including those exclude.txt lists or the review policy "
+                             "holds back (their numbers are not for choosing a model)")
     parser.add_argument("--reuse-json", action="store_true",
                         help="Pipeline mode: score existing JSONs in --out-dir instead of re-running. "
                              "Off by default -- reusing them after a code change silently scores the old code.")
@@ -242,7 +262,7 @@ def main() -> int:
     args = parser.parse_args()
 
     archive = Path(args.archive) if args.archive else default_archive()
-    clips = list_clips(args.clips, archive)
+    clips = list_clips(args.clips, archive, args.include_excluded)
     if not clips:
         print(f"No clips found in {archive}")
         return 1

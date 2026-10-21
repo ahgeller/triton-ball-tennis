@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from finetune.data.data_policy import is_trainable, is_verified, read_review_status
+from finetune.data.data_policy import clip_source, is_trainable, is_verified, read_review_status
 from finetune.data.workspace import MANIFEST_NAME, clip_of, find_video, label_files, read_exclusions, read_manifest
 
 DEFAULT_VAL_CLIP = "video10"
@@ -37,13 +37,13 @@ class ClipSelection:
 
     def admits(self, clip: str, row: Dict[str, str], source: str, review_status: dict, excluded: Set[str]) -> bool:
         """Whether a labelled clip with this manifest row and source is in the selection."""
-        if not self.include_excluded and not is_trainable(clip, source, review_status):
+        if not self.include_excluded and not is_trainable(clip, source, review_status, excluded):
             return False
         if self.sources and source not in self.sources:
             return False
         if self.cameras and (row.get("camera") or "untagged") not in self.cameras:
             return False
-        return not (matches(clip, self.exclude_clips) or clip in excluded)
+        return not matches(clip, self.exclude_clips)
 
 
 def _excluded_clips(selection: ClipSelection, labels: Path, manifest: Dict[str, Dict[str, str]]) -> Set[str]:
@@ -66,7 +66,7 @@ def find_clips(videos: Path, labels: Path, selection: ClipSelection = ClipSelect
     for csv_path in label_files(labels):
         clip = clip_of(csv_path)
         row = manifest.get(clip, {})
-        source = row.get("source") or ("custom" if not manifest else "unknown")
+        source = clip_source(clip, manifest)
         if not selection.admits(clip, row, source, review_status, excluded):
             continue
         video = find_video(clip, videos)

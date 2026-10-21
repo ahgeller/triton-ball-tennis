@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from finetune import ft
 from finetune.commands import drafted_clips, sha8
-from finetune.data.data_policy import OWN_SOURCES
+from finetune.data.data_policy import OWN_SOURCES, clip_source, is_trainable, read_review_status
 from finetune.data.label_audit import outstanding_flags
 from finetune.data import workspace as ws
 from finetune.data.workspace import clip_of, label_files, natural_key, read_exclusions, read_manifest, videos_in
@@ -22,19 +22,26 @@ def _final_labels() -> Set[str]:
     return {clip_of(p) for p in label_files()}
 
 
+def _clips_line(finals: Set[str], manifest: Dict[str, dict]) -> str:
+    """How many labelled clips the trainer would admit by default (``data_policy.is_trainable``:
+    reviewed, trusted source, not in exclude.txt), and how many of those are the user's own."""
+    excluded = set(read_exclusions())
+    status = read_review_status(ws.WORKSPACE)
+    ready = {c for c in finals if is_trainable(c, clip_source(c, manifest), status, excluded)}
+    own = [c for c in ready if clip_source(c, manifest) in OWN_SOURCES]
+    line = f"{len(ready)} of {len(finals)} labelled clips ready for training ({len(own)} from your own camera)"
+    if excluded & finals:
+        line += f", {len(excluded & finals)} excluded"
+    return line
+
+
 def _summary_lines() -> List[str]:
     manifest = read_manifest()
     videos = videos_in()
     finals = _final_labels()
     if not videos and not finals:
         return ["the workspace is empty - pick 8 to import every labelled clip on this PC, or 2 to add a video"]
-    lines = []
-    own = [c for c in finals if (manifest.get(c, {}).get("source") or "custom") in OWN_SOURCES]
-    excluded = [c for c in read_exclusions() if c in finals]
-    line = f"{len(finals)} labelled clips ready for training ({len(own)} from your own camera)"
-    if excluded:
-        line += f", {len(excluded)} excluded"
-    lines.append(line)
+    lines = [_clips_line(finals, manifest)]
     pending = sorted(set(videos) - finals, key=natural_key)
     if pending:
         lines.append(f"{len(pending)} video(s) still need labels: " + ", ".join(pending[:6])
@@ -260,7 +267,7 @@ MENU = [
     ("2", "add video", "copy a new video in and let the detector draft its labels", _menu_add),
     ("3", "label", "open the click tool to correct a clip's labels", _menu_label),
     ("4", "check labels", "validate every label file against its video", _menu_check),
-    ("5", "evaluate", "score the current detector on your own-camera clips", lambda: ft.run_cli(["eval"])),
+    ("5", "evaluate", "score the current detector on the reviewed clips", lambda: ft.run_cli(["eval"])),
     ("6", "train", "fine-tune the model on the labelled clips", _menu_train),
     ("7", "promote", "make the last training winner the tracker's model", _menu_promote),
     ("8", "import", "pull every labelled clip on this PC into the workspace", _menu_import),

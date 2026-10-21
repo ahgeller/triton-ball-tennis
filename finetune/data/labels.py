@@ -146,8 +146,9 @@ def write_labels(path: Path, labels: Mapping[int, LabelPoint], width: int, heigh
 
 # --------------------------------------------------------------------------- sidecars
 
-def _read_json_object(path: Path, what: str) -> Optional[dict]:
-    """The JSON object in a sidecar, None when the file is missing, LabelFormatError otherwise."""
+def read_json_object(path: Path, what: str) -> Optional[dict]:
+    """The JSON object in a sidecar (or any workspace record kept as one), None when the file is
+    missing, LabelFormatError naming the file otherwise."""
     if not path.is_file():
         return None
     try:
@@ -176,7 +177,7 @@ def read_review(path: Path) -> Optional[dict]:
     """The review sidecar's content, or None when there is none yet. A damaged file is an error
     naming the file: it is somebody's record of which frames they checked, so it is never
     silently replaced by a fresh one."""
-    return _read_json_object(path, "review file")
+    return read_json_object(path, "review file")
 
 
 def reviewed_frames(clip: str, labels: Optional[Path] = None) -> Set[int]:
@@ -193,7 +194,7 @@ def read_flags(path: Path) -> Flags:
     """The flag sidecar, normalised: the ``unplaceable`` and ``check`` frame lists (an older
     audit's ``frames`` list counts as ``check``), the ``answered`` map, the ``notes`` map and the
     audit date. All empty when there is no file."""
-    blob = _read_json_object(path, "flag file")
+    blob = read_json_object(path, "flag file")
     if blob is None:
         return {"generated": "", "notes": {}, "unplaceable": [], "check": [], "answered": {}}
     answered = blob.get("answered")
