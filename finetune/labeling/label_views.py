@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from finetune.labeling.label_draw import (FILTERS, HINT_TRUSTED, HINT_UNSURE, ZOOM_STEP, draw_ticks, enhance, fit_text,
-                                          hit, mark_plan)
+from finetune.labeling.label_draw import (FILTERS, HINT_TRUSTED, HINT_UNSURE, ZOOM_STEP, draw_ticks, draw_tile_mark, enhance,
+                                          fit_text, hit, mark_plan)
 from finetune.labeling.label_store import Row
 from finetune.labeling.label_window import KEY_TAB, KEYS_CONFIRM, KEYS_ZOOM_IN, KEYS_ZOOM_OUT
-from finetune.labeling.refine import Point
+from finetune.labeling.refine import Point, Suggestion
 
 if TYPE_CHECKING:
     from finetune.labeling.label_tool import Tool
@@ -150,51 +150,18 @@ class GridView:
         # tool.frame reads every tile from the right clip without touching the cursor.
         for slot, index in enumerate(self.indices):
             row = rows[index]
-            image = tool.frame(row.frame)
             rows_of = max(1, self.size // 4)
             left, right = slot % 4 * tool.view_w // 4, (slot % 4 + 1) * tool.view_w // 4
             top, bottom = slot // 4 * tool.view_h // rows_of, (slot // 4 + 1) * tool.view_h // rows_of
             y0 = top + band
-            width, height = right - left, bottom - y0
-            scale = width / 96.0 * self.zoom if row.visible else min(width / tool.width, height / tool.height)
-            cx, cy = self.centers[index] if row.visible else (tool.width / 2, tool.height / 2)
-            ox, oy = cx - width / (2 * scale), cy - height / (2 * scale)
-            # Pixel centres sit at k + 0.5 in frame coordinates, as in the single-frame view (see Tool.to_view).
-            matrix = np.array([[scale, 0, scale * (0.5 - ox) - 0.5],
-                               [0, scale, scale * (0.5 - oy) - 0.5]], np.float64)
-            tile = cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_NEAREST)
-            if FILTERS[tool.filter] not in ("off", "motion"):    # motion needs the frame before
-                tile = enhance(tile, FILTERS[tool.filter])
-            color = (70, 210, 70) if row.settled else (0, 210, 255)
-            hint = tool.suggestion_for(index)
             offer = tool.offer_for(index)
             if offer is not None:
                 offers[index] = (offer["x"], offer["y"])
-            to_tile = lambda point: (math.floor((point[0] - ox) * scale), math.floor((point[1] - oy) * scale))
-            plan = mark_plan(row, hint, offer, (255, 255, 255))
-            for point, colour in plan.ticks:
-                draw_ticks(tile, *to_tile(point), colour, ui)
-            if plan.mark is not None:
-                px, py = to_tile(plan.mark)                 # the tile pixel holding the ball
-                inner, outer = int(round(8 * ui)), int(round(17 * ui))
-                # Drawn on the tile, so a mark near its edge cannot spill onto a neighbour, and
-                # leaving the actual ball center unobstructed, including at high zoom.
-                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    start, end = (px + dx * inner, py + dy * inner), (px + dx * outer, py + dy * outer)
-                    cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
-                    cv2.line(tile, start, end, plan.colour, max(1, int(round(ui))))
+            tile, ox, oy, scale = self.tile(index, right - left, bottom - y0, offer)
             canvas[y0:bottom, left:right] = tile
-            title = (f"{slot + 1}  " if slot < 9 else "") + \
-                f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
-            if not row.visible:
-                title += "  absent"
-            if offer is not None:
-                title += "  HINT sure" if offer["trusted"] else "  HINT unsure"
-            else:
-                verdict = tool.hint_verdict(index)
-                if verdict is not None:
-                    title += "  hint ok" if verdict == "agrees" else "  hint differs"
-            cv2.putText(canvas, fit_text(title, width - 12, .5 * ui, max(1, int(ui))),
+            title = self.title(index, slot, offer)
+            color = (70, 210, 70) if row.settled else (0, 210, 255)
+            cv2.putText(canvas, fit_text(title, right - left - 12, .5 * ui, max(1, int(ui))),
                         (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
                         color, max(1, int(ui)))
             cv2.rectangle(canvas, (left, top), (right-1, bottom-1), (255, 180, 50) if index == tool.cursor else (65, 65, 65), 2)
@@ -212,6 +179,45 @@ class GridView:
         tool.shown_offers = offers
         self.cache_key, self.cache = key, canvas
         return canvas
+
+    def tile(self, index: int, width: int, height: int, offer: Optional[Suggestion]) -> Tuple[np.ndarray, float, float, float]:
+        """One tile of `width` x `height`: the row's frame about its ball (the whole frame when
+        there is none), filtered and marked. (the picture, its frame origin x and y, its scale)."""
+        tool = self.tool
+        row = tool.rows[index]
+        ui = tool.ui
+        image = tool.frame(row.frame)
+        scale = width / 96.0 * self.zoom if row.visible else min(width / tool.width, height / tool.height)
+        cx, cy = self.centers[index] if row.visible else (tool.width / 2, tool.height / 2)
+        ox, oy = cx - width / (2 * scale), cy - height / (2 * scale)
+        # Pixel centres sit at k + 0.5 in frame coordinates, as in the single-frame view (see Tool.to_view).
+        matrix = np.array([[scale, 0, scale * (0.5 - ox) - 0.5],
+                           [0, scale, scale * (0.5 - oy) - 0.5]], np.float64)
+        tile = cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_NEAREST)
+        if FILTERS[tool.filter] not in ("off", "motion"):    # motion needs the frame before
+            tile = enhance(tile, FILTERS[tool.filter])
+        to_tile = lambda point: (math.floor((point[0] - ox) * scale), math.floor((point[1] - oy) * scale))
+        plan = mark_plan(row, tool.suggestion_for(index), offer, (255, 255, 255))
+        for point, colour in plan.ticks:
+            draw_ticks(tile, *to_tile(point), colour, ui)
+        if plan.mark is not None:
+            draw_tile_mark(tile, *to_tile(plan.mark), plan.colour, ui)
+        return tile, ox, oy, scale
+
+    def title(self, index: int, slot: int, offer: Optional[Suggestion]) -> str:
+        """A tile's strip: its slot number (the key that selects it), frame, state and hint."""
+        row = self.tool.rows[index]
+        title = (f"{slot + 1}  " if slot < 9 else "") + \
+            f"f{row.frame}  {'EDITED' if row.edited else 'OK' if row.reviewed else 'CHECK'}"
+        if not row.visible:
+            title += "  absent"
+        if offer is not None:
+            title += "  HINT sure" if offer["trusted"] else "  HINT unsure"
+        else:
+            verdict = self.tool.hint_verdict(index)
+            if verdict is not None:
+                title += "  hint ok" if verdict == "agrees" else "  hint differs"
+        return title
 
     # ---------------------------------------------------------------- the hand
     def on_mouse(self, event: int, x: int, y: int) -> None:
@@ -238,6 +244,8 @@ class GridView:
     def handle_key(self, code: int, direction: int) -> bool:
         """What a key does on a grid page; False for a key the grid reads like the single frame."""
         tool = self.tool
+        if self.edit_key(code):
+            return True
         if code in KEYS_CONFIRM:
             tool.confirm_grid()
         elif direction:
@@ -246,7 +254,18 @@ class GridView:
             tool.grid_step(-1 if code == ord(",") else 1)
         elif ord("1") <= code <= ord("9"):
             tool.grid_select(code - ord("1"))
-        elif code == ord("y"):
+        elif code in KEYS_ZOOM_IN + KEYS_ZOOM_OUT:
+            factor = ZOOM_STEP if code in KEYS_ZOOM_IN else 1 / ZOOM_STEP
+            self.zoom = min(4., max(.5, self.zoom * factor))
+        elif code != ord("r"):            # r: only the displayed page can be batch-confirmed (SPACE)
+            return False
+        return True
+
+    def edit_key(self, code: int) -> bool:
+        """The grid keys that say something about the selected tile's label, or go to a frame
+        worth a look: y, x, v, e, f and b. False for any other key."""
+        tool = self.tool
+        if code == ord("y"):
             if tool.take_suggestion():
                 tool.grid_step(1)
         elif code == ord("x"):
@@ -260,10 +279,7 @@ class GridView:
         elif code in (ord("f"), ord("b")):
             tool.jump(1 if code == ord("f") else -1)
             tool.prepare_grid(tool.cursor)
-        elif code in KEYS_ZOOM_IN + KEYS_ZOOM_OUT:
-            factor = ZOOM_STEP if code in KEYS_ZOOM_IN else 1 / ZOOM_STEP
-            self.zoom = min(4., max(.5, self.zoom * factor))
-        elif code != ord("r"):            # r: only the displayed page can be batch-confirmed (SPACE)
+        else:
             return False
         return True
 
@@ -357,31 +373,8 @@ class SheetView:
             if hint is not None:
                 cv2.circle(display, to_sheet(hint["x"], hint["y"]), max(2, int(round(2 * ui))),
                            HINT_TRUSTED if hint["trusted"] else HINT_UNSURE, -1, cv2.LINE_AA)
-        self.points = []
-        last = None
-        for index in indices:
-            row = rows[index]
-            if not row.visible:
-                last = None
-                continue
-            point = to_sheet(row.x, row.y)
-            if last is not None:
-                cv2.line(display, last, point, (200, 200, 200), thin, cv2.LINE_AA)
-            last = point
-            self.points.append((index,) + point)
-        differs = 0
-        for index, px, py in self.points:
-            row = rows[index]
-            colour = (70, 210, 70) if row.settled else (0, 220, 255)
-            cv2.circle(display, (px, py), max(2, int(round(3 * ui))), colour, -1, cv2.LINE_AA)
-            if tool.hint_verdict(index) == "differs":
-                differs += 1
-                cv2.circle(display, (px, py), int(round(8 * ui)), (0, 0, 255), thin, cv2.LINE_AA)
-            if index == selected:
-                cv2.circle(display, (px, py), int(round(12 * ui)), (255, 255, 255), thin, cv2.LINE_AA)
-            if (index - self.start) % 10 == 0:
-                cv2.putText(display, str(row.frame), (px + int(6 * ui), py - int(6 * ui)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42 * ui, (255, 255, 255), thin, cv2.LINE_AA)
+        self.points = self.trace(display, indices, to_sheet)
+        differs = self.draw_points(display, selected)
         shown = [rows[i] for i in indices]
         line1 = (f"{rows[indices[0]].clip}  TRAJECTORY  frames {shown[0].frame}-{shown[-1].frame}  "
                  f"{sum(r.visible for r in shown)} with a ball  reviewed {sum(r.settled for r in shown)}/{len(shown)}"
@@ -394,3 +387,41 @@ class SheetView:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48 * ui, (180, 180, 180), thin, cv2.LINE_AA)
         self.cache_key, self.cache = key, canvas
         return canvas
+
+    def trace(self, display: np.ndarray, indices: List[int], to_sheet) -> List[Tuple[int, int, int]]:
+        """Join the labels of `indices` in order with a grey line, broken at every frame with no
+        ball; (row index, view x, view y) of each label drawn."""
+        points, last = [], None
+        thin = max(1, int(round(self.tool.ui)))
+        for index in indices:
+            row = self.tool.rows[index]
+            if not row.visible:
+                last = None
+                continue
+            point = to_sheet(row.x, row.y)
+            if last is not None:
+                cv2.line(display, last, point, (200, 200, 200), thin, cv2.LINE_AA)
+            last = point
+            points.append((index,) + point)
+        return points
+
+    def draw_points(self, display: np.ndarray, selected: int) -> int:
+        """A dot per label on the trace (green settled, yellow not), ringed red where a trusted
+        suggestion differs, white on the selected frame, every tenth captioned with its frame
+        number; how many differ."""
+        tool = self.tool
+        ui, thin = tool.ui, max(1, int(round(tool.ui)))
+        differs = 0
+        for index, px, py in self.points:
+            row = tool.rows[index]
+            colour = (70, 210, 70) if row.settled else (0, 220, 255)
+            cv2.circle(display, (px, py), max(2, int(round(3 * ui))), colour, -1, cv2.LINE_AA)
+            if tool.hint_verdict(index) == "differs":
+                differs += 1
+                cv2.circle(display, (px, py), int(round(8 * ui)), (0, 0, 255), thin, cv2.LINE_AA)
+            if index == selected:
+                cv2.circle(display, (px, py), int(round(12 * ui)), (255, 255, 255), thin, cv2.LINE_AA)
+            if (index - self.start) % 10 == 0:
+                cv2.putText(display, str(row.frame), (px + int(6 * ui), py - int(6 * ui)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42 * ui, (255, 255, 255), thin, cv2.LINE_AA)
+        return differs

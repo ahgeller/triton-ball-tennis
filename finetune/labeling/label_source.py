@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -41,6 +41,40 @@ def frame_signature(image: np.ndarray) -> bytes:
     # INTER_AREA cost as much as the decode itself, and just as distinct between frames.
     return hashlib.blake2b(cv2.resize(image, SIGNATURE_SIZE, interpolation=cv2.INTER_LINEAR).tobytes(),
                            digest_size=8).digest()
+
+
+def ran_out(source: "Source") -> None:
+    """The capture gave nothing: remember where the video ends, so a label past it fails fast
+    (not four times), unless this was frame 0 - a capture that did not open, which a reopen
+    may yet fix."""
+    if source.position > 0:
+        source.end = source.position
+    source.position = -1
+
+
+def walk_to(source: "Source", index: int) -> bool:
+    """Grab forward from the capture's position to just before `index`, fingerprinting every
+    LANDMARK-th frame and keeping the label frames close to the target. False when the video
+    ran out first."""
+    while 0 <= source.position < index:
+        if not source.capture.grab():
+            ran_out(source)
+            return False
+        at = source.position
+        landmark = at % LANDMARK == 0 and at not in source.sig_of
+        # A label frame just short of the target is worth keeping too: stepping back from here
+        # lands on it, and near the start of a clip (no seek allowed) that used to reopen the
+        # clip and walk from frame 0 on every press of `a`.
+        keep = (at in source.label_frames and index - at <= SEEK_BACKUP
+                and at not in source.frame_cache)
+        if landmark or keep:
+            ok, passed = source.capture.retrieve()     # a landmark for a later seek to prove itself
+            if ok:                                     # against; one frame in eight costs little
+                source.sig_of.setdefault(at, frame_signature(passed))
+                if keep:
+                    source.remember_frame(at, passed)
+        source.position += 1
+    return True
 
 
 class Source:
@@ -127,31 +161,11 @@ class Source:
             cached = self.frame_cache.get(index)         # a proven seek decodes through the frame
             if cached is not None:
                 return cached
-        while 0 <= self.position < index:
-            if not self.capture.grab():
-                if self.position > 0:                    # ran off the end: remember where, so a
-                    self.end = self.position             # label past it fails fast, not four times
-                self.position = -1                       # (a failure at 0 is a capture that did not
-                return None                              # open, which a reopen may yet fix)
-            at = self.position
-            landmark = at % LANDMARK == 0 and at not in self.sig_of
-            # A label frame just short of the target is worth keeping too: stepping back from here
-            # lands on it, and near the start of a clip (no seek allowed) that used to reopen the
-            # clip and walk from frame 0 on every press of `a`.
-            keep = (at in self.label_frames and index - at <= SEEK_BACKUP
-                    and at not in self.frame_cache)
-            if landmark or keep:
-                ok, passed = self.capture.retrieve()     # a landmark for a later seek to prove itself
-                if ok:                                   # against; one frame in eight costs little
-                    self.sig_of.setdefault(at, frame_signature(passed))
-                    if keep:
-                        self.remember_frame(at, passed)
-            self.position += 1
+        if not walk_to(self, index):
+            return None
         ok, image = self.capture.read()
         if not ok:
-            if self.position > 0:
-                self.end = self.position
-            self.position = -1
+            ran_out(self)
             return None
         at, self.position = self.position, self.position + 1
         signature = frame_signature(image)
@@ -194,6 +208,23 @@ class Source:
             return False                                 # nothing on record here to prove it by
         if not self.capture.set(cv2.CAP_PROP_POS_FRAMES, target):
             return False
+        decoded, offset = self.decode_run(target, index)
+        if offset is None:
+            return False
+        for claimed_at, signature, image in decoded:
+            truly = claimed_at + offset
+            if truly < 0:
+                continue
+            self.sig_of.setdefault(truly, signature)
+            if image is not None and truly in self.label_frames:
+                self.remember_frame(truly, image)
+        self.position = decoded[-1][0] + offset + 1
+        return True
+
+    def decode_run(self, target: int, index: int) -> Tuple[List[Tuple[int, bytes, Optional[np.ndarray]]], Optional[int]]:
+        """Read from the seek's claimed landing `target` through `index` and on until the run is
+        proven (at most SEEK_VERIFY frames): [(claimed index, fingerprint, image or None)] and the
+        proven shift, None when no shift fits. Only the newest cache_limit images are held."""
         decoded, claimed, offset = [], target, None
         while len(decoded) < SEEK_VERIFY:
             ok, image = self.capture.read()
@@ -208,17 +239,7 @@ class Source:
                 offset = self.match_offset(decoded)
                 if offset is not None:
                     break
-        if offset is None:
-            return False
-        for claimed_at, signature, image in decoded:
-            truly = claimed_at + offset
-            if truly < 0:
-                continue
-            self.sig_of.setdefault(truly, signature)
-            if image is not None and truly in self.label_frames:
-                self.remember_frame(truly, image)
-        self.position = decoded[-1][0] + offset + 1
-        return True
+        return decoded, offset
 
     def match_offset(self, decoded) -> Optional[int]:
         """The shift that makes the tail of a decoded run agree with the fingerprints on record, or
@@ -316,17 +337,22 @@ def build_source(clip: str, videos: Path, labels: Path) -> Optional[Source]:
         print(f"[skip] {clip}: {error}")
         return None
     if state is not None:
-        try:
-            cursor = int(state.get("cursor") or 0)
-        except (TypeError, ValueError):
-            cursor = 0
-        index_of = {row.frame: i for i, row in enumerate(rows)}
-        if state.get("frame") in index_of:        # rows can be added or dropped (check --fix, realign)
-            cursor = index_of[state["frame"]]     # between sessions: the frame is what to come back to
-        source.cursor = max(0, min(cursor, len(rows) - 1))
-        source.saved_cursor = source.cursor
-        try:
-            source.zoom = float(state.get("zoom") or DEFAULT_ZOOM)
-        except (TypeError, ValueError):
-            source.zoom = DEFAULT_ZOOM
+        resume_from(source, state)
     return source
+
+
+def resume_from(source: Source, state: dict) -> None:
+    """Put the source's cursor and zoom where the review sidecar says the last session stopped."""
+    try:
+        cursor = int(state.get("cursor") or 0)
+    except (TypeError, ValueError):
+        cursor = 0
+    index_of = {row.frame: i for i, row in enumerate(source.rows)}
+    if state.get("frame") in index_of:            # rows can be added or dropped (check --fix, realign)
+        cursor = index_of[state["frame"]]         # between sessions: the frame is what to come back to
+    source.cursor = max(0, min(cursor, len(source.rows) - 1))
+    source.saved_cursor = source.cursor
+    try:
+        source.zoom = float(state.get("zoom") or DEFAULT_ZOOM)
+    except (TypeError, ValueError):
+        source.zoom = DEFAULT_ZOOM

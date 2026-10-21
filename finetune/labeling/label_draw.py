@@ -19,6 +19,7 @@ FILTERS = ("off", "dim white", "ball pop", "motion")   # h cycles these; see enh
 HINT_TRUSTED = (0, 150, 255)     # BGR: the suggestion's mark when it is trusted ...
 HINT_UNSURE = (70, 110, 150)     # ... and when it is only a guess
 DRAFT_MARK = (160, 160, 160)     # the draft label's ticks while the suggestion is the mark on offer
+GHOST = (255, 200, 0)            # the dashed guess on a frame with no ball, and its dot in the inset
 
 Colour = Tuple[int, int, int]
 
@@ -111,6 +112,96 @@ def draw_ticks(image: np.ndarray, hx: int, hy: int, colour: Colour, ui: float) -
         start, end = (hx + dx * near, hy + dy * near), (hx + dx * far, hy + dy * far)
         cv2.line(image, start, end, (0, 0, 0), thin + 2, cv2.LINE_AA)
         cv2.line(image, start, end, colour, thin, cv2.LINE_AA)
+
+
+def draw_mark(image: np.ndarray, cx: int, cy: int, radius: int, colour: Colour, ui: float) -> None:
+    """The label's mark in the single-frame view: a thin circle with four ticks pointing in from
+    just outside it, leaving the ball itself clear."""
+    thin = max(1, int(round(ui)))
+    cv2.circle(image, (cx, cy), radius, colour, thin, cv2.LINE_AA)
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        cv2.line(image, (cx + dx * (radius - int(3 * ui)), cy + dy * (radius - int(3 * ui))),
+                 (cx + dx * (radius + int(8 * ui)), cy + dy * (radius + int(8 * ui))), colour, thin)
+
+
+def draw_tile_mark(tile: np.ndarray, px: int, py: int, colour: Colour, ui: float) -> None:
+    """A grid tile's mark: four ticks pointing in at the ball pixel, drawn on the tile itself so
+    one near its edge cannot spill onto a neighbour, and leaving the ball itself unobstructed."""
+    inner, outer = int(round(8 * ui)), int(round(17 * ui))
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        start, end = (px + dx * inner, py + dy * inner), (px + dx * outer, py + dy * outer)
+        cv2.line(tile, start, end, (0, 0, 0), max(3, int(round(3 * ui))))
+        cv2.line(tile, start, end, colour, max(1, int(round(ui))))
+
+
+def draw_ghost(image: np.ndarray, gx: int, gy: int, radius: int, ui: float) -> None:
+    """The neighbours' idea of where the ball is: dashed, so it cannot be mistaken for a label."""
+    thin = max(1, int(round(ui)))
+    for start in range(0, 360, 45):
+        cv2.ellipse(image, (gx, gy), (radius, radius), 0, start, start + 25, GHOST, thin, cv2.LINE_AA)
+    cv2.putText(image, "guess - click to place", (gx + radius + int(6 * ui), gy + int(5 * ui)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45 * ui, GHOST, thin, cv2.LINE_AA)
+
+
+def draw_badge(image: np.ndarray, text: str, fill: Colour, text_colour: Colour, ui: float,
+               right_edge: Optional[int] = None) -> None:
+    """A filled box with bold text along the top of the view: at the top-left corner, or ending a
+    little short of `right_edge` when one is given."""
+    (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui, 2)
+    if right_edge is None:
+        box = ((int(10 * ui), int(10 * ui)), (int(26 * ui) + text_w, int(24 * ui) + text_h))
+        origin = (int(18 * ui), int(17 * ui) + text_h)
+    else:
+        left = right_edge - text_w - int(26 * ui)
+        box = ((left, int(10 * ui)), (right_edge - int(10 * ui), int(24 * ui) + text_h))
+        origin = (left + int(8 * ui), int(17 * ui) + text_h)
+    cv2.rectangle(image, box[0], box[1], fill, -1)
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui, text_colour, 2, cv2.LINE_AA)
+
+
+def review_badge(row: Row) -> Optional[Tuple[str, Colour]]:
+    """(text, fill) of the badge a row's frame wears: an open audit flag, an edit, a review; None
+    for an untouched row."""
+    if row.suspect:
+        return "CHECK THIS", (200, 60, 200)
+    if row.edited:
+        return "EDITED", (60, 140, 255)
+    if row.reviewed:
+        return "REVIEWED", (70, 190, 70)
+    return None
+
+
+class ChipRow:
+    """Clickable chips laid along a HUD strip right to left, each measured before it is drawn so
+    the text to their left can be cut short of them. `boxes` are in display pixels (the strip
+    sits `top` pixels below the view's own origin)."""
+
+    def __init__(self, hud: np.ndarray, hud_h: int, y0: int, ui: float) -> None:
+        self.hud, self.y0, self.ui = hud, y0, ui
+        self.thin = max(1, int(round(ui)))
+        self.pad = int(6 * ui)
+        (_, glyph_h), _ = cv2.getTextSize("Xy8", cv2.FONT_HERSHEY_SIMPLEX, 0.42 * ui, self.thin)
+        self.top = max(0, (hud_h - glyph_h - self.pad) // 2)
+        self.bottom = min(hud_h - 1, self.top + glyph_h + self.pad)
+
+    def chip(self, right_edge: int, text: str, lit: bool) -> Tuple[int, Tuple[int, int, int, int]]:
+        """Draw one chip ending at `right_edge`; (its left edge, its box for a click test)."""
+        ui, pad, thin = self.ui, self.pad, self.thin
+        (text_w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.42 * ui, thin)
+        left_edge = max(0, right_edge - text_w - 2 * pad)
+        cv2.rectangle(self.hud, (left_edge, self.top), (right_edge, self.bottom),
+                      (70, 190, 70) if lit else (55, 55, 55), -1)
+        cv2.putText(self.hud, text, (left_edge + pad, self.bottom - pad // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42 * ui, (0, 0, 0) if lit else (190, 190, 190), thin, cv2.LINE_AA)
+        return left_edge, (left_edge, self.y0 + self.top, right_edge, self.y0 + self.bottom)
+
+    def caption(self, right_edge: int, text: str) -> int:
+        """A dim caption ending at `right_edge`; the edge to its left."""
+        (caption_w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * self.ui, self.thin)
+        edge = max(0, right_edge - self.pad - caption_w)
+        cv2.putText(self.hud, text, (edge, self.bottom - self.pad // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.4 * self.ui,
+                    (150, 150, 150), self.thin, cv2.LINE_AA)
+        return edge
 
 
 def fit_text(text: str, width: int, scale: float, thin: int) -> str:

@@ -225,30 +225,42 @@ class ViewportGuard:
         delta = flags >> 16
         now = time.monotonic()
         self.wheel_debts = [debt for debt in self.wheel_debts if now - debt[1] < 1.0]
-        probe = self.probe
-        if probe is not None:
-            if probe.stage < 2 and delta == 1:              # a reading came back
-                probe.seen.append((x, y))
-                probe.stage += 1
-                if probe.stage == 2:                         # both read: pay the two 1/1200ths back
-                    for screen in probe.screens:
-                        post_wheel(-1, screen)
+        if self.probe is not None:
+            if self.probe_answer(x, y, delta, view_w):
                 return True
-            if 2 <= probe.stage < 4 and delta == -1:
-                probe.stage += 1
-                if probe.stage == 4:
-                    self.probe = None
-                    tolerance = max(PROBE_TOLERANCE_PX, PROBE_TOLERANCE_SHARE * view_w)   # readings are whole pixels
-                    if not probe.void and any(abs(seen[0] - want[0]) > tolerance or abs(seen[1] - want[1]) > tolerance
-                                              for seen, want in zip(probe.seen, probe.want)):
-                        self.reset_needed = True     # rebuilt from the main loop, not from here
-                return True
-            if now - probe.sent > 1.0:
+            if now - self.probe.sent > 1.0:
                 self.probe = None                            # never answered: forget it
         if delta < 0 and self.wheel_debts and self.wheel_debts[0][0] == delta:
             self.wheel_debts.pop(0)
             return True
         return False
+
+    def probe_answer(self, x: int, y: int, delta: int, view_w: int) -> bool:
+        """Take a wheel event as the probe in flight's next answer: a reading (stage 0-1), then
+        the repayments (2-3), the last of which judges the window. False when it is not one."""
+        probe = self.probe
+        if probe.stage < 2 and delta == 1:              # a reading came back
+            probe.seen.append((x, y))
+            probe.stage += 1
+            if probe.stage == 2:                         # both read: pay the two 1/1200ths back
+                for screen in probe.screens:
+                    post_wheel(-1, screen)
+            return True
+        if 2 <= probe.stage < 4 and delta == -1:
+            probe.stage += 1
+            if probe.stage == 4:
+                self.probe = None
+                if not probe.void and self.probe_failed(probe, view_w):
+                    self.reset_needed = True     # rebuilt from the main loop, not from here
+            return True
+        return False
+
+    @staticmethod
+    def probe_failed(probe: ViewportProbe, view_w: int) -> bool:
+        """Whether either reading sits further from where it should be than whole-pixel readings allow."""
+        tolerance = max(PROBE_TOLERANCE_PX, PROBE_TOLERANCE_SHARE * view_w)
+        return any(abs(seen[0] - want[0]) > tolerance or abs(seen[1] - want[1]) > tolerance
+                   for seen, want in zip(probe.seen, probe.want))
 
     def repay_wheel(self, delta: int) -> None:
         """A zoom-in notch just zoomed the window too: post the opposite one at the same spot. A
@@ -417,7 +429,11 @@ class CursorPlacer:
         where = cursor_screen()
         if where is None or abs(where[0] - target[0]) > 2 or abs(where[1] - target[1]) > 2:
             return                                        # the pointer has moved on since: not ours
-        error_x, error_y = seen[0] - view_x, seen[1] - view_y
+        self.mend_map(seen[0] - view_x, seen[1] - view_y, view_x, view_y, tries)
+
+    def mend_map(self, error_x: float, error_y: float, view_x: float, view_y: float, tries: int) -> None:
+        """Learn the map's offset from where a warp landed, and warp again; after WARP_TRIES the
+        map is measured afresh instead."""
         if abs(error_x) < 1.0 and abs(error_y) < 1.0:
             return                                        # dead on: nothing to mend
         scale_x, scale_y, offset_x, offset_y = self.cursor_map

@@ -6,11 +6,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
 
 from finetune.data.fileio import write_atomic
 from finetune.data.labels import (Flags, answered_point, format_point, frame_list, is_visible, read_flags, read_label_rows,
                                   read_review, write_flags, write_label_cells)
+from finetune.data.workspace import unsaved_csv
+
+if TYPE_CHECKING:
+    from finetune.labeling.label_source import Source
 
 CONFIDENT_CONF = 0.70       # a draft at or above this confidence is not "uncertain"
 SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: filter, inset, trail
@@ -73,6 +77,23 @@ def load_rows(csv_path: Path, width: int, height: int, origin: str = "det") -> L
 def save_rows(csv_path: Path, rows: List[Row], width: int, height: int) -> None:
     write_label_cells(csv_path, [(row.frame, *format_point((row.x, row.y) if row.visible else None, width, height))
                                  for row in rows])
+
+
+def rescue_unsaved(sources: Iterable[Source]) -> None:
+    """Labels that still could not be written at exit go to <clip>_ball.unsaved.csv beside the
+    real file, so closing the tool never throws edits away. Nothing reads that file; copy it
+    over the label file once whatever held it open has let go."""
+    for source in sources:
+        if not source.dirty:
+            continue
+        rescue = unsaved_csv(source.clip, source.out_csv.parent)
+        try:
+            save_rows(rescue, source.rows, source.width, source.height)
+            print(f"[save] {source.out_csv.name} could not be written; your labels are in {rescue.name}")
+        except OSError as error:
+            # The last resort has failed and the tool is closing: there is nowhere left to put
+            # these rows, so say so plainly and go on to rescue the other clips of the run.
+            print(f"[error] {source.clip}: unsaved labels lost, {rescue.name} failed too: {error}")
 
 
 def save_flags(path: Path, rows: List[Row]) -> None:
