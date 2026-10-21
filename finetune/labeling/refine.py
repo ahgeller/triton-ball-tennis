@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tuple, TypedDict
+from pathlib import Path
+from typing import (Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Protocol, Sequence, Set, Tuple,
+                    TypedDict)
 
 import cv2
 import numpy as np
@@ -39,6 +41,9 @@ import numpy as np
 from finetune.data.scoring import REFERENCE_HEIGHT
 
 Point = Tuple[float, float]
+Box = Tuple[int, int, int, int]            # (x0, y0, x1, y1) of a patch cut from a frame
+Placement = Tuple[float, float, Optional[bool]]   # where a placer put a point, and whether it is sure
+                                                  # (None for a placer without a self-check)
 
 ITERATIONS = 3             # centroid -> recentre the window -> centroid ...
 RADIUS_720P = 7            # centroid half-width at 720p; scaled with the clip height. 9 drifted onto
@@ -91,7 +96,18 @@ def search_radius_px(height: int) -> int:
     return max(6, int(round(SEARCH_720P * height / 720.0)))
 
 
-def change_map(current: np.ndarray, others: List[np.ndarray], box) -> np.ndarray:
+class CropPlacer(Protocol):
+    """What a pass needs from a placer (``cnn_refiner.Placer``, or a stand-in): the crop it wants
+    cut around a point, and where it puts each chosen point from that crop."""
+
+    def cut_crop(self, images: Sequence[np.ndarray], point: Point, height: int) -> np.ndarray:
+        """The crop around `point` of the label frame and its neighbours, for `place`."""
+
+    def place(self, items: List[Tuple[np.ndarray, Point, Point]], height: int) -> List[Placement]:
+        """(crop, the point it was cut around, the point to start from) per frame -> a Placement each."""
+
+
+def change_map(current: np.ndarray, others: List[np.ndarray], box: Box) -> np.ndarray:
     """What differs from every neighbour, inside box = (x0, y0, x1, y1), yellow pixels weighted up."""
     x0, y0, x1, y1 = box
     here = current[y0:y1, x0:x1].astype(np.int16)
@@ -136,7 +152,7 @@ def motion_centroid(previous: np.ndarray, current: np.ndarray, following: np.nda
     return centroid(change_map(current, [previous, following], box), box[:2], seed, radius)
 
 
-def blobs(change: np.ndarray, origin, centre, reach: int) -> List[Tuple[float, float, float]]:
+def blobs(change: np.ndarray, origin: Tuple[int, int], centre: Point, reach: int) -> List[Tuple[float, float, float]]:
     """(x, y, peak) of every distinct local peak of `change` within `reach` of `centre`, each
     measured by a small centroid of its own."""
     height, width = change.shape
@@ -176,8 +192,9 @@ def blob_features(change: np.ndarray, origin: Tuple[int, int], point: Tuple[floa
 def predict(points: Dict[int, Tuple[float, float]], frame: int, order: List[int], span: int = 3,
             reach: int = 8) -> Optional[Tuple[float, float]]:
     """Where the path through the nearest `span` known points either side - within `reach` label
-    frames - puts the ball at `frame` (a robust parabola, or a line through three), or None. Only
-    ever a starting point or a chooser between measured blobs - never offered as a measurement."""
+    frames - puts the ball at `frame` (a parabola, or a line through three, with the worst point
+    dropped once when it sits further than 2 px off the fit), or None. Only ever a starting point
+    or a chooser between measured blobs - never offered as a measurement."""
     if frame not in order:
         return None
     at = order.index(frame)
@@ -189,14 +206,18 @@ def predict(points: Dict[int, Tuple[float, float]], frame: int, order: List[int]
     t = np.array(near, dtype=np.float64)
     xy = np.array([points[g] for g in near], dtype=np.float64)
     degree = 2 if len(near) >= 4 else 1
-    for _ in range(2):
-        fx, fy = np.polyfit(t, xy[:, 0], degree), np.polyfit(t, xy[:, 1], degree)
-        residual = np.hypot(np.polyval(fx, t) - xy[:, 0], np.polyval(fy, t) - xy[:, 1])
-        if residual.max() <= 2.0 or len(t) <= degree + 2:
-            break
+    fx, fy, residual = fit_path(t, xy, degree)
+    if residual.max() > 2.0 and len(t) > degree + 2:       # one outlier rejection: refit without the worst point
         keep = residual < residual.max()
-        t, xy = t[keep], xy[keep]
+        fx, fy, _ = fit_path(t[keep], xy[keep], degree)
     return float(np.polyval(fx, frame)), float(np.polyval(fy, frame))
+
+
+def fit_path(t: np.ndarray, xy: np.ndarray, degree: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """x and y each fitted against t by a polynomial of `degree`; (x coefficients, y coefficients,
+    each point's distance from the fit)."""
+    fx, fy = np.polyfit(t, xy[:, 0], degree), np.polyfit(t, xy[:, 1], degree)
+    return fx, fy, np.hypot(np.polyval(fx, t) - xy[:, 0], np.polyval(fy, t) - xy[:, 1])
 
 
 def label_spacing(frames: Iterable[int]) -> int:
@@ -269,11 +290,11 @@ class PassOptions:
     spacing: Optional[int] = None               # label frames apart; None: measured from the seeds
     confirmed: Optional[Iterable[int]] = None
     only: Optional[Iterable[int]] = None
-    placer: Optional[object] = None             # cnn_refiner.Placer, or anything with cut_crop and place
+    placer: Optional[CropPlacer] = None         # cnn_refiner.Placer, or anything with cut_crop and place
     stop: Callable[[], bool] = _never
 
 
-def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]],
+def suggest(video: Path, seeds: Dict[int, Optional[Tuple[float, float]]],
             options: PassOptions = PassOptions()) -> Dict[int, Suggestion]:
     """A suggestion for every label frame, reading the video once from the start.
 
@@ -347,7 +368,8 @@ def search_centres(plan: Plan, width: int, height: int) -> Dict[int, List[Tuple[
     return centres
 
 
-def read_wanted(capture, wanted: Set[int], last: int, stop) -> Iterator[Tuple[int, np.ndarray]]:
+def read_wanted(capture: cv2.VideoCapture, wanted: Set[int], last: int,
+                stop: Callable[[], bool]) -> Iterator[Tuple[int, np.ndarray]]:
     """(index, image) for each wanted frame up to `last`, in order, grabbing past the rest; ends
     early when the clip does or `stop` says so."""
     index = 0
@@ -362,8 +384,8 @@ def read_wanted(capture, wanted: Set[int], last: int, stop) -> Iterator[Tuple[in
         index += 1
 
 
-def measure_clip(capture, centres: Dict[int, List[Tuple[str, Point]]], geometry: ClipGeometry, placer,
-                 stop) -> Dict[int, Measurement]:
+def measure_clip(capture: cv2.VideoCapture, centres: Dict[int, List[Tuple[str, Point]]], geometry: ClipGeometry,
+                 placer: Optional[CropPlacer], stop: Callable[[], bool]) -> Dict[int, Measurement]:
     """One pass over the video, keeping only the frames still needed; each label frame is measured
     once the last neighbour it is compared against has been read."""
     offsets = geometry.offsets
@@ -381,8 +403,8 @@ def measure_clip(capture, centres: Dict[int, List[Tuple[str, Point]]], geometry:
     return measured
 
 
-def measure_due(pending: List[int], upto: float, kept: Dict[int, np.ndarray], centres, geometry: ClipGeometry,
-                placer) -> Dict[int, Measurement]:
+def measure_due(pending: List[int], upto: float, kept: Dict[int, np.ndarray], centres: Dict[int, List[Tuple[str, Point]]],
+                geometry: ClipGeometry, placer: Optional[CropPlacer]) -> Dict[int, Measurement]:
     """Measure, and take off `pending`, every frame whose last neighbour has been read by `upto`."""
     out: Dict[int, Measurement] = {}
     while pending and pending[0] + max(geometry.offsets) <= upto:
@@ -456,8 +478,8 @@ def nearest_candidate(candidates: List[Candidate], guess: Optional[Point], fallb
     return (best.x, best.y) if near else fallback
 
 
-def place(chosen: Dict[int, Point], measured: Dict[int, Measurement], placer,
-          height: int) -> Dict[int, Tuple[float, float, Optional[bool]]]:
+def place(chosen: Dict[int, Point], measured: Dict[int, Measurement], placer: Optional[CropPlacer],
+          height: int) -> Dict[int, Placement]:
     """Each chosen point moved by the placer, from the crop cut nearest to it: frame -> (x, y,
     sure). A frame whose crops were all cut too far from its choice is left out; nothing is placed
     without a placer."""
@@ -485,9 +507,8 @@ def is_trusted(ball_here: bool, sure: Optional[bool], path: Optional[float], ent
                 and entry.ratio >= TRUST_PEAK_SHARE and moved_1080 <= TRUST_PLACE_PX_1080)
 
 
-def to_suggestion(frame: int, measurement: Measurement, centroid_point: Point,
-               placed: Dict[int, Tuple[float, float, Optional[bool]]], guess: Optional[Point],
-               label: Optional[Point], to_1080: float) -> Suggestion:
+def to_suggestion(frame: int, measurement: Measurement, centroid_point: Point, placed: Dict[int, Placement],
+                  guess: Optional[Point], label: Optional[Point], to_1080: float) -> Suggestion:
     """The record for one frame: the chosen point (placed, when a placer was), its distances from
     the label and the path, the features of the candidate it stands on, and the trust rule."""
     x, y, sure = placed.get(frame, (centroid_point[0], centroid_point[1], None))
