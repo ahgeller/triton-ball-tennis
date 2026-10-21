@@ -27,7 +27,7 @@ from finetune import ft
 from finetune.data_policy import is_verified
 from validate_tracking import validate
 from ball_in_play_selector.core import frame_result
-from tennis_tracker.pipeline import _frame_result_to_json
+from tennis_tracker.export import frame_result_to_json
 
 # Frame rates whose phase stride is 1 and 2 (see tennis_tracker.frame_rate).
 _FPS_FOR_STRIDE = {1: 30.0, 2: 60.0}
@@ -117,7 +117,7 @@ class FixTests(unittest.TestCase):
         detection = SimpleNamespace(cx=100., cy=103., conf=.9, x1=98, y1=101, x2=102, y2=105)
         result = frame_result(100, 103, "det", detection=detection)
         result.cy = 100.5
-        row = _frame_result_to_json(0, result)
+        row = frame_result_to_json(0, result)
         self.assertEqual(row["measurement"]["y"], 103.)
         self.assertEqual(row["y"], 100.5)
         self.assertEqual(row["position_kind"], "filtered")

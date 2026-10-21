@@ -13,7 +13,6 @@ import torch.nn.functional as F
 from .config import Config
 from .court_geometry import build_court_side_guides
 from .frame_window import FrameWindow
-from .rendering import draw_court_side_guides
 
 
 _KERNEL_CACHE = {}
@@ -349,91 +348,6 @@ def build_court_side_protect_mask(h, w, court_keypoints):
             protect = m if protect is None else (protect | m)
 
     return protect if protect is not None and np.any(protect) else None
-
-def _probe_component_boxes(mask_u8: Optional[np.ndarray], limit: int = 100) -> List[Tuple[int, int, int, int]]:
-    if mask_u8 is None or mask_u8.size == 0 or cv2.countNonZero(mask_u8) == 0:
-        return []
-    # Display-only box limits; these never filter tracking evidence.
-    min_area, max_area, max_dim, max_aspect, min_fill = 2, 260, 38, 5.5, 0.14
-    num, _, stats, _ = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
-    boxes: List[Tuple[int, int, int, int]] = []
-    for i in range(1, num):
-        area = int(stats[i, cv2.CC_STAT_AREA])
-        x = int(stats[i, cv2.CC_STAT_LEFT])
-        y = int(stats[i, cv2.CC_STAT_TOP])
-        bw = int(stats[i, cv2.CC_STAT_WIDTH])
-        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
-        if area < min_area or area > max_area or bw > max_dim or bh > max_dim:
-            continue
-        aspect = max(bw, bh) / max(min(bw, bh), 1)
-        fill = area / max(bw * bh, 1)
-        if aspect > max_aspect or fill < min_fill:
-            continue
-        boxes.append((x, y, bw, bh))
-        if len(boxes) >= int(limit):
-            break
-    return boxes
-
-def _draw_probe_motion_overlay(
-    frame: np.ndarray,
-    raw_motion: Optional[np.ndarray],
-    boost_mask: Optional[np.ndarray],
-    cfg: Config,
-    protect_mask: Optional[np.ndarray] = None,
-    rois_dbg: Optional[List[Tuple[int, int, int, int]]] = None,
-) -> np.ndarray:
-    """Probe-style debug view: direct raw/boost pixels plus compact component boxes."""
-    out = frame.copy()
-    raw_mask = raw_motion > 0 if raw_motion is not None else np.zeros(out.shape[:2], dtype=bool)
-    boost_vis = boost_mask > 0 if boost_mask is not None else np.zeros(out.shape[:2], dtype=bool)
-    if protect_mask is not None:
-        raw_mask = raw_mask & (~protect_mask)
-        boost_vis = boost_vis & (~protect_mask)
-
-    raw_only = raw_mask & (~boost_vis)
-    both = raw_mask & boost_vis
-    out[raw_only] = (0, 180, 0)
-    out[both] = (0, 255, 255)
-    out[boost_vis & (~raw_mask)] = (255, 220, 0)
-
-    for x, y, bw, bh in _probe_component_boxes(raw_motion):
-        cv2.rectangle(out, (x, y), (x + bw, y + bh), (255, 255, 0), 1, cv2.LINE_AA)
-
-    if rois_dbg:
-        for rx1, ry1, rx2, ry2 in rois_dbg:
-            cv2.rectangle(out, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 1, cv2.LINE_AA)
-
-    cv2.rectangle(out, (0, 0), (min(out.shape[1], 900), 58), (0, 0, 0), cv2.FILLED)
-    cv2.putText(out, "Raw motion probe view: green=refined raw, yellow=raw+boost, cyan boxes=compact raw components",
-                (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1, cv2.LINE_AA)
-    cv2.putText(out, "Debug drawing only; tracker/ROI/selector still use the existing pipeline masks",
-                (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (210, 210, 210), 1, cv2.LINE_AA)
-    return out
-
-def draw_motion_debug_frame(frame, raw_motion, boost_mask, cfg,
-                            court_keypoints=None, protect_mask=None, rois_dbg=None):
-    """The motion-debug video frame: the raw and boost masks painted over the
-    source frame, plus the court side guides, or the probe-style overlay when
-    ``cfg.debug_probe_motion_style`` is set. Drawing only."""
-    if raw_motion is None and boost_mask is None:
-        return frame.copy()
-    if bool(cfg.debug_probe_motion_style):
-        return _draw_probe_motion_overlay(
-            frame, raw_motion, boost_mask, cfg,
-            protect_mask=protect_mask,
-            rois_dbg=rois_dbg,
-        )
-    out = frame.copy()
-    motion_vis = (raw_motion > 0) if (raw_motion is not None and cfg.debug_show_raw_motion) else np.zeros(out.shape[:2], dtype=bool)
-    boost_vis = (boost_mask > 0) if boost_mask is not None else np.zeros_like(motion_vis)
-    if protect_mask is not None:
-        motion_vis = motion_vis & (~protect_mask)
-        boost_vis = boost_vis & (~protect_mask)
-    out[motion_vis & (~boost_vis)] = (0, 0, 128)
-    out[boost_vis] = (0, 255, 255)
-    if court_keypoints is not None:
-        draw_court_side_guides(out, court_keypoints, color=(0, 0, 255), thickness=2)
-    return out
 
 def _hsv_to_bgr_cuda(h_t, s_t, v_t):
     """Convert HSV tensors (all 0-1 range) to BGR tensor (0-255 uint8)."""

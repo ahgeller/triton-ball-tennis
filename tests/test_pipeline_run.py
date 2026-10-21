@@ -2,9 +2,9 @@
 
 ``run`` needs a CUDA device, a GridTrackNet weight file and TensorRT engines.
 Here it runs on the CPU against a synthetic clip: the ``fake_cuda`` fixture
-makes ``torch.device("cuda:0")`` the CPU, and the three model backends plus
-the video writer are replaced in ``tennis_tracker.pipeline`` by scripted
-fakes with the same surface.  Everything else -- decoding, the CUDA motion
+makes ``torch.device("cuda:0")`` the CPU, and the three model backends (in
+``tennis_tracker.pipeline``) plus the video writer (in ``pass1``/``pass2``) are
+replaced by scripted fakes with the same surface.  Everything else -- decoding, the CUDA motion
 path (on CPU tensors), ROI tracking, the selector, pass-2 rendering and the
 JSON export -- is the real code.
 
@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 import pytest
 
-from tennis_tracker import pipeline
+from tennis_tracker import pass1, pass2, pipeline
 from tennis_tracker.config import Config
 from tennis_tracker.detectors import CourtDetector
 
@@ -294,7 +294,7 @@ class CapturingVideoWriter:
     def __init__(self, path: str, fps: float, w: int, h: int, cfg: Config, encoder=None):
         self._path = str(path)
         self.fps, self.w, self.h = float(fps), int(w), int(h)
-        self._encoder = "capture"
+        self.encoder = "capture"
         self.hashes: List[str] = []
         self.closed = False
         type(self).streams[self._path] = self
@@ -375,7 +375,8 @@ def install_fakes(monkeypatch, script=None):
     monkeypatch.setattr(pipeline, "GridTrackNetBallDetector", FakeGridTrackNet)
     monkeypatch.setattr(pipeline, "CourtDetector", FakeCourtDetector)
     monkeypatch.setattr(pipeline, "PlayerDetector", FakePlayerDetector)
-    monkeypatch.setattr(pipeline, "VideoWriter", CapturingVideoWriter)
+    monkeypatch.setattr(pass1, "VideoWriter", CapturingVideoWriter)     # detector-input writer
+    monkeypatch.setattr(pass2, "VideoWriter", CapturingVideoWriter)     # tracking and debug writers
 
 
 def comparable_json(payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -68,7 +68,7 @@ def ffmpeg_has_encoder(ffmpeg: Optional[str], encoder: str) -> bool:
     return bool(ok)
 
 
-def _detect_device(requested: str) -> Tuple[str, str]:
+def detect_device(requested: str) -> Tuple[str, str]:
     """Resolve ``Config.device``: an explicit value is returned as given, ``auto``
     picks CUDA device 0 when there is one.  The tracking runtime rejects
     anything that is not a CUDA index, so there is no CPU/MPS fallback."""
@@ -223,7 +223,7 @@ def find_ball_class_id_from_names(names: Any, override: Optional[str] = None) ->
     return None, None
 
 
-def _resolve_engine_path(model_path: Optional[str]) -> Optional[Path]:
+def resolve_engine_path(model_path: Optional[str]) -> Optional[Path]:
     """The ``.engine`` file for a model path (a ``.pt``/``.onnx`` sibling or the
     path itself); None when unset or missing on disk."""
     if not model_path:

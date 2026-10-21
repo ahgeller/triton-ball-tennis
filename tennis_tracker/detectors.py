@@ -34,7 +34,7 @@ from .config import Config
 from .frame_rate import require_phase_stride
 from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
 from .motion import _nms_xyxy_np, _xywh_to_xyxy_np
-from .utils import _resolve_engine_path, engine_is_trt10, iter_engine_io, read_engine_header
+from .utils import resolve_engine_path, engine_is_trt10, iter_engine_io, read_engine_header
 
 # One ball detection: an xyxy box in source pixels and its confidence.
 Detection = Tuple[List[float], float]
@@ -328,7 +328,7 @@ def _open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> 
     if not model_path:
         print(f"[{label}] No engine configured, {label} detection disabled")
         return None
-    engine_path = _resolve_engine_path(model_path)
+    engine_path = resolve_engine_path(model_path)
     if engine_path is None:
         raise FileNotFoundError(f"[{label}] TensorRT engine not found for '{model_path}'")
     session = _TensorRTRuntimeSession(

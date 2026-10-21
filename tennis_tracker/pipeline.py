@@ -1,470 +1,37 @@
-import json
-import math
-import os
+"""The tracking run: open inputs, pass 1, selection, court events, pass 2, export.
+
+``run(cfg)`` is the entry point ``clean_tracker.py`` and ``evaluate_archive.py``
+call.  Each stage takes and returns explicit data (see ``run_context``,
+``pass1`` and ``pass2``); this module only orders them and reports.
+"""
+from __future__ import annotations
+
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+
 import cv2
-import numpy as np
 import torch
-from ball_in_play_selector import PackedMask, select_ball_in_play, FrameResult
+from ball_in_play_selector import select_ball_in_play
 
 from .config import Config
-from .utils import _detect_device, check_capabilities, _resolve_engine_path, find_ball_class_id_from_names, read_engine_class_names
-from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
-from .frame_window import FrameWindow
-from .motion import BackgroundModel, preprocess_frame_cuda, build_court_side_protect_mask, draw_motion_debug_frame
-from .tracking import ROIMotionTracker
-from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
-from .rendering import MOTION_DEBUG_SOURCE_COLOR, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, build_display_path, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_DISPLAY_PATH, COLOR_DISPLAY_PATH_INTERP
-from .court_minimap import draw_court_minimap
+from .court_geometry import build_court_polygon
 from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
-from .video_io import ThreadedFrameReader, VideoWriter
+from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
+from .export import write_tracking_json
+from .pass1 import Pass1Result, collect_pass1, erase_ghost_rois
+from .pass2 import render_pass2
+from .rendering import build_display_path, print_selector_track_summary, print_timing_summary
+from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
+from .utils import check_capabilities, detect_device, find_ball_class_id_from_names, read_engine_class_names, resolve_engine_path
+
+_DEFAULT_FPS = 24.0                 # when the container reports none
+# The display path interpolates across at least this much time, within these frame bounds.
+_DISPLAY_PATH_GAP_SECONDS = 0.60
+_DISPLAY_PATH_GAP_MIN_FRAMES, _DISPLAY_PATH_GAP_MAX_FRAMES = 10, 24
 
 
-def _json_safe(value):
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, tuple):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    return str(value)
-
-
-def _frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict[str, Any]:
-    row: Dict[str, Any] = {"frame": int(frame_idx), "present": False}
-    if result is None:
-        return row
-    row.update({
-        "present": result.cx is not None and result.cy is not None,
-        "x": None if result.cx is None else float(result.cx),
-        "y": None if result.cy is None else float(result.cy),
-        "conf": float(result.conf),
-        "source": str(result.source),
-        "interpolated": bool(result.interpolated),
-        "bbox": _json_safe(result.bbox),
-        "measurement": (
-            {"x": float(result.measurement[0]), "y": float(result.measurement[1]),
-             "conf": float(result.conf), "bbox": _json_safe(result.bbox)}
-            if result.measurement is not None else None
-        ),
-        "position_kind": (
-            "measurement" if result.measurement == (result.cx, result.cy)
-            else "filtered" if result.measurement is not None else "recovered"
-        ),
-        "search": {
-            "x": float(result.search_cx),
-            "y": float(result.search_cy),
-            "radius": float(result.search_radius),
-        },
-        "selection": {"source": str(result.source), "reason": str(result.source_reason)},
-    })
-    return row
-
-
-def _track_to_json(track) -> Optional[Dict[str, Any]]:
-    if track is None:
-        return None
-    observations = []
-    for obs in getattr(track, "observations", []) or []:
-        observations.append({
-            "frame": int(getattr(obs, "frame", 0)),
-            "x": float(getattr(obs, "cx", 0.0)),
-            "y": float(getattr(obs, "cy", 0.0)),
-            "bbox": [
-                float(getattr(obs, "x1", 0.0)),
-                float(getattr(obs, "y1", 0.0)),
-                float(getattr(obs, "x2", 0.0)),
-                float(getattr(obs, "y2", 0.0)),
-            ],
-            "conf": float(getattr(obs, "conf", 0.0)),
-            "area": float(getattr(obs, "area", 0.0)),
-            "on_motion": bool(getattr(obs, "on_motion", False)),
-        })
-
-    return {
-        "track_id": int(getattr(track, "track_id", -1)),
-        "score": float(getattr(track, "score", 0.0)),
-        "num_obs": int(getattr(track, "num_obs", 0)),
-        "span": int(getattr(track, "span", 0)),
-        "first_frame": int(getattr(track, "first_frame", 0)),
-        "last_obs_frame": int(getattr(track, "last_obs_frame", 0)),
-        "score_breakdown": _json_safe(getattr(track, "score_breakdown", {}) or {}),
-        "observations": observations,
-    }
-
-
-def _last_valid_court_keypoints(all_court_kps: Optional[List[Any]]) -> Optional[Any]:
-    if not all_court_kps:
-        return None
-    for kps in reversed(all_court_kps):
-        if kps and len(kps) >= 16:
-            return kps
-    return None
-
-
-def _count_reason(reason_counts: Dict[str, int], reason: str) -> None:
-    reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
-
-
-def _mask_has_pixels(mask: Optional[PackedMask]) -> bool:
-    return mask is not None      # PackedMask.pack never stores an empty mask
-
-
-def _extract_motion_candidates(
-    mask_obj,
-    mask_source: str,
-    frame_idx: int,
-    search_x: Optional[float],
-    search_y: Optional[float],
-    selected_x: Optional[float],
-    selected_y: Optional[float],
-    max_candidates: int = 5,
-) -> List[Dict[str, Any]]:
-    if mask_obj is None:
-        return []
-    mask = mask_obj.unpack()
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candidates: List[Dict[str, Any]] = []
-    for contour in contours:
-        area = float(cv2.contourArea(contour))
-        if area <= 0.0:
-            continue
-        x, y, w_box, h_box = cv2.boundingRect(contour)
-        if w_box <= 0 or h_box <= 0:
-            continue
-        moments = cv2.moments(contour)
-        if abs(float(moments.get("m00", 0.0))) <= 1e-9:
-            continue
-        cx = float(moments["m10"] / moments["m00"])
-        cy = float(moments["m01"] / moments["m00"])
-        perimeter = float(cv2.arcLength(contour, True))
-        compactness = (
-            float(4.0 * math.pi * area / max(perimeter * perimeter, 1e-9))
-            if perimeter > 0.0 else 0.0
-        )
-        aspect_ratio = float(max(w_box, h_box) / max(min(w_box, h_box), 1))
-        fill_ratio = float(area / max(float(w_box * h_box), 1.0))
-
-        dist_to_search = None
-        if search_x is not None and search_y is not None:
-            dist_to_search = float(math.hypot(cx - float(search_x), cy - float(search_y)))
-        dist_to_selected = None
-        if selected_x is not None and selected_y is not None:
-            dist_to_selected = float(math.hypot(cx - float(selected_x), cy - float(selected_y)))
-
-        # Debug-only ranking: favor compact, filled components near the active search point.
-        score = 0.0
-        score += 50.0 * max(0.0, min(1.0, compactness))
-        score += 25.0 * max(0.0, min(1.0, fill_ratio))
-        score += 15.0 * min(area, 600.0) / 600.0
-        if dist_to_search is not None:
-            score -= min(dist_to_search, 300.0) / 6.0
-        if aspect_ratio > 1.0:
-            score -= max(0.0, aspect_ratio - 1.0) * 4.0
-
-        candidates.append({
-            "frame": int(frame_idx),
-            "mask": str(mask_source),
-            "x": cx,
-            "y": cy,
-            "bbox": [int(x), int(y), int(x + w_box), int(y + h_box)],
-            "area": area,
-            "compactness": compactness,
-            "aspect_ratio": aspect_ratio,
-            "fill_ratio": fill_ratio,
-            "distance_to_search": dist_to_search,
-            "distance_to_selected": dist_to_selected,
-            "score": float(score),
-        })
-
-    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
-    return candidates[:max(1, int(max_candidates))]
-
-
-def _choose_motion_mask(boost_mask, raw_motion) -> Tuple[Optional[Any], str, bool, bool]:
-    has_boost = _mask_has_pixels(boost_mask)
-    has_raw = _mask_has_pixels(raw_motion)
-    if has_boost:
-        return boost_mask, "boost", has_boost, has_raw
-    if has_raw:
-        return raw_motion, "raw", has_boost, has_raw
-    return None, "none", has_boost, has_raw
-
-
-def _result_position(result: Optional[FrameResult]) -> Tuple[Optional[float], Optional[float]]:
-    if result is None:
-        return None, None
-    if result.cx is None or result.cy is None:
-        return None, None
-    return float(result.cx), float(result.cy)
-
-
-def _result_search(
-    result: Optional[FrameResult],
-    prev_pos: Optional[Tuple[float, float]],
-    diag: float,
-) -> Tuple[Optional[float], Optional[float], float, str]:
-    if result is not None:
-        sx = float(result.search_cx)
-        sy = float(result.search_cy)
-        sr = float(result.search_radius)
-        if sr > 0.0 and (sx != 0.0 or sy != 0.0):
-            return sx, sy, sr, "result_search"
-        rx, ry = _result_position(result)
-        if rx is not None and ry is not None:
-            return rx, ry, max(24.0, 0.035 * diag), "result_position"
-    if prev_pos is not None:
-        return float(prev_pos[0]), float(prev_pos[1]), max(28.0, 0.045 * diag), "previous_position"
-    return None, None, 0.0, "none"
-
-
-def _motion_diagnostic_reason(
-    selected_source: Optional[str],
-    has_detections: bool,
-    mask_source: str,
-    candidates: List[Dict[str, Any]],
-    search_x: Optional[float],
-    search_y: Optional[float],
-    search_radius: float,
-) -> str:
-    if selected_source == "motion":
-        return "accepted_motion"
-    if has_detections:
-        return "detection_available"
-    if mask_source == "none":
-        return "no_motion_mask"
-    if not candidates:
-        return "no_blob"
-    if search_x is None or search_y is None:
-        return "no_search_anchor"
-
-    best_dist = candidates[0].get("distance_to_search")
-    if best_dist is not None:
-        gate = max(18.0, float(search_radius) if search_radius > 0.0 else 0.0)
-        if float(best_dist) > gate:
-            return "blob_too_far_from_search"
-
-    if selected_source == "interp":
-        return "interp_selected_over_motion_candidate"
-    if selected_source:
-        return "non_motion_selected_over_motion_candidate"
-    return "lost_despite_motion_candidate"
-
-
-def _pass2_cache_budget_mb(cfg) -> float:
-    """How much RAM pass 2's frame cache may use.
-
-    ``pass2_cache_max_mb`` > 0 is an explicit override.  Otherwise take half of
-    the memory actually free right now, capped by ``pass2_cache_ceiling_mb`` --
-    a fixed budget cannot know whether a 12 GiB clip fits on this machine.
-    """
-    explicit = int(cfg.pass2_cache_max_mb or 0)
-    if explicit > 0:
-        return float(explicit)
-    ceiling = float(max(1, int(cfg.pass2_cache_ceiling_mb)))
-    try:
-        import psutil
-
-        free_mb = psutil.virtual_memory().available / (1024.0 * 1024.0)
-    except Exception:
-        return 0.0          # cannot tell how much is free: do not risk the machine
-    return min(0.5 * free_mb, ceiling)
-
-
-def _build_motion_diagnostics(
-    per_frame: List[Optional[FrameResult]],
-    detections_by_frame: List[List[Tuple[list, float]]],
-    boost_masks: List[Any],
-    raw_motions: List[Any],
-    width: int,
-    height: int,
-    max_candidates_per_frame: int = 5,
-) -> Dict[str, Any]:
-    diag = math.sqrt(float(width) ** 2 + float(height) ** 2)
-    total_frames = max(len(per_frame), len(detections_by_frame), len(boost_masks), len(raw_motions))
-    reason_counts: Dict[str, int] = {}
-    mask_counts: Dict[str, int] = {}
-    selected_source_counts: Dict[str, int] = {}
-    diagnostic_frames: List[Dict[str, Any]] = []
-    prev_pos: Optional[Tuple[float, float]] = None
-    detector_gap_frames = 0
-    candidate_gap_frames = 0
-
-    for frame_idx in range(total_frames):
-        result = per_frame[frame_idx] if frame_idx < len(per_frame) else None
-        selected_x, selected_y = _result_position(result)
-        selected_source = None
-        if result is not None:
-            selected_source = str(result.source or "")
-            if selected_source:
-                selected_source_counts[selected_source] = int(selected_source_counts.get(selected_source, 0)) + 1
-
-        dets = detections_by_frame[frame_idx] if frame_idx < len(detections_by_frame) else []
-        has_detections = bool(dets)
-        if not has_detections:
-            detector_gap_frames += 1
-
-        boost = boost_masks[frame_idx] if frame_idx < len(boost_masks) else None
-        raw = raw_motions[frame_idx] if frame_idx < len(raw_motions) else None
-        chosen_mask, mask_source, has_boost, has_raw = _choose_motion_mask(boost, raw)
-        mask_counts[mask_source] = int(mask_counts.get(mask_source, 0)) + 1
-
-        search_x, search_y, search_radius, search_source = _result_search(result, prev_pos, diag)
-        candidates = _extract_motion_candidates(
-            chosen_mask,
-            mask_source,
-            frame_idx,
-            search_x,
-            search_y,
-            selected_x,
-            selected_y,
-            max_candidates=max_candidates_per_frame,
-        )
-        if candidates and not has_detections and selected_source != "motion":
-            candidate_gap_frames += 1
-
-        reason = _motion_diagnostic_reason(
-            selected_source,
-            has_detections,
-            mask_source,
-            candidates,
-            search_x,
-            search_y,
-            search_radius,
-        )
-        _count_reason(reason_counts, reason)
-
-        should_export_frame = (
-            selected_source == "motion" or
-            (not has_detections and selected_source != "motion") or
-            bool(candidates and not has_detections)
-        )
-        if should_export_frame:
-            diagnostic_frames.append({
-                "frame": int(frame_idx),
-                "selected_source": selected_source,
-                "reason": reason,
-                "has_detections": bool(has_detections),
-                "mask_source": mask_source,
-                "has_boost_mask": bool(has_boost),
-                "has_raw_motion": bool(has_raw),
-                "search": {
-                    "x": search_x,
-                    "y": search_y,
-                    "radius": float(search_radius),
-                    "source": search_source,
-                },
-                "selected_position": {
-                    "x": selected_x,
-                    "y": selected_y,
-                },
-                "candidate_count_exported": int(len(candidates)),
-                "candidates": candidates,
-            })
-
-        if selected_x is not None and selected_y is not None:
-            prev_pos = (selected_x, selected_y)
-
-    return {
-        "schema_version": 1,
-        "summary": {
-            "frames_analyzed": int(total_frames),
-            "detector_gap_frames": int(detector_gap_frames),
-            "detector_gap_frames_with_motion_candidate": int(candidate_gap_frames),
-            "reason_counts": dict(sorted(reason_counts.items())),
-            "mask_source_counts": dict(sorted(mask_counts.items())),
-            "selected_source_counts": dict(sorted(selected_source_counts.items())),
-            "max_candidates_per_frame": int(max_candidates_per_frame),
-        },
-        "frames": diagnostic_frames,
-    }
-
-
-def _write_tracking_json(
-    path: str,
-    cfg: Config,
-    fps: float,
-    width: int,
-    height: int,
-    total_frames: int,
-    elapsed_sec: float,
-    filled_frames: int,
-    per_frame: List[Optional[FrameResult]],
-    chosen_track,
-    all_tracks,
-    detections_by_frame: Optional[List[List[Tuple[list, float]]]] = None,
-    boost_masks: Optional[List[Any]] = None,
-    raw_motions: Optional[List[Any]] = None,
-    court_keypoints_by_frame: Optional[List[Any]] = None,
-    player_boxes_by_frame: Optional[List[Any]] = None,
-    timing: Optional[Dict[str, float]] = None,
-    pass2_frames_rendered: int = 0,
-) -> None:
-    out_path = Path(path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    frame_rows = []
-    for i in range(int(total_frames)):
-        row = _frame_result_to_json(i, per_frame[i] if i < len(per_frame) else None)
-        if court_keypoints_by_frame is not None and i < len(court_keypoints_by_frame):
-            row["court_keypoints"] = _json_safe(court_keypoints_by_frame[i])
-        if player_boxes_by_frame is not None and i < len(player_boxes_by_frame):
-            row["player_boxes"] = _json_safe(player_boxes_by_frame[i])
-        frame_rows.append(row)
-
-    payload = {
-        "schema_version": 1,
-        "video": {
-            "input": str(cfg.input_video),
-            "output": str(cfg.output_video),
-            "fps": float(fps),
-            "width": int(width),
-            "height": int(height),
-            "total_frames": int(total_frames),
-        },
-        "summary": {
-            "filled_frames": int(filled_frames),
-            "filled_percent": float(100.0 * filled_frames / max(1, total_frames)),
-            "elapsed_sec": float(elapsed_sec),
-            "effective_fps": float(total_frames / max(elapsed_sec, 1e-9)),
-            "pass2_frames_rendered": int(pass2_frames_rendered),
-            "chosen_track_id": (
-                None if chosen_track is None else int(getattr(chosen_track, "track_id", -1))
-            ),
-            "track_count": int(len(all_tracks or [])),
-        },
-        "config": _json_safe(vars(cfg)),
-        "timing": _json_safe(timing or {}),
-        "last_valid_court_keypoints": _json_safe(_last_valid_court_keypoints(court_keypoints_by_frame)),
-        "chosen_track": _track_to_json(chosen_track),
-        "tracks": [_track_to_json(t) for t in (all_tracks or [])],
-        "motion_diagnostics": (
-            _build_motion_diagnostics(
-                per_frame,
-                detections_by_frame or [],
-                boost_masks or [],
-                raw_motions or [],
-                int(width),
-                int(height),
-            )
-            if bool(cfg.motion_diagnostics)
-            else {}
-        ),
-        "frames": frame_rows,
-    }
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
-
-def _validate_io_paths(cfg) -> Path:
+def validate_io_paths(cfg: Config) -> Path:
+    """The resolved input path; raises when an output would overwrite it or another output."""
     input_path = Path(cfg.input_video).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"Input video not found: {input_path}")
@@ -492,19 +59,34 @@ def _validate_io_paths(cfg) -> Path:
     return input_path
 
 
-def _detector_can_overlap(detector: BallDetectorBackend) -> bool:
-    return bool(detector.use_async and int(detector.async_slots) >= 2)
+def _build_ball_detector(cfg: Config) -> BallDetectorBackend:
+    """GridTrackNet for ``.npz`` weights, else the TensorRT engine next to ``model_path``."""
+    model_path = Path(cfg.model_path).expanduser().resolve()
+    if model_path.suffix.lower() == ".npz":
+        if not model_path.is_file():
+            raise FileNotFoundError(f"GridTrackNet weights not found: {model_path}")
+        return GridTrackNetBallDetector(str(model_path), cfg)
+    engine_path = resolve_engine_path(cfg.model_path)
+    if engine_path is None:
+        raise RuntimeError(
+            f"Ball TensorRT engine not found for model_path='{cfg.model_path}'. "
+            "Expected a .engine file."
+        )
+    names = read_engine_class_names(engine_path)
+    ball_cls_id, ball_cls_name = find_ball_class_id_from_names(names, cfg.ball_class_name)
+    print(f"[init] Model classes: {names}")
+    print(f"[init] Ball class: id={ball_cls_id}, name='{ball_cls_name}'")
+    return TensorRTRuntimeBallDetector(str(engine_path), cfg, ball_cls_id, names=names)
 
 
-def run(cfg):
-    input_path = _validate_io_paths(cfg)
-    t0 = time.time()
-    info_timing = bool(cfg.info_timing)
-    timing = {} if info_timing else None
-    init_perf_t0 = time.perf_counter() if info_timing else 0.0
+def _open_inputs(cfg: Config) -> RunContext:
+    """Validate the config, pick the device and encoder, build the detectors and open the clip."""
+    input_path = validate_io_paths(cfg)
+    started_at = time.time()
+    timing = Timing(cfg.info_timing)
+    init_t0 = timing.start()
 
-    # Platform detection
-    device_str, _ = _detect_device(cfg.device)
+    device_str, _ = detect_device(cfg.device)
     if not str(device_str).isdigit():
         raise RuntimeError("The tracking runtime requires an NVIDIA CUDA device index such as --device 0.")
     device_index = int(device_str)
@@ -512,1294 +94,121 @@ def run(cfg):
         raise RuntimeError(f"CUDA device {device_index} is unavailable.")
     cfg.device = str(device_index)
     cfg, encoder = check_capabilities(cfg, device_str)
-    cuda_device = torch.device(f"cuda:{device_index}")
+    device = torch.device(f"cuda:{device_index}")
 
-    model_names = None
-    detector: BallDetectorBackend
-    ball_cls_id = None
-    ball_cls_name = None
+    detector = _build_ball_detector(cfg)
 
-    model_path = Path(cfg.model_path).expanduser().resolve()
-    if model_path.suffix.lower() == ".npz":
-        if not model_path.is_file():
-            raise FileNotFoundError(f"GridTrackNet weights not found: {model_path}")
-        detector = GridTrackNetBallDetector(str(model_path), cfg)
-    else:
-        trt_engine_path = _resolve_engine_path(cfg.model_path)
-        if trt_engine_path is None:
-            raise RuntimeError(
-                f"Ball TensorRT engine not found for model_path='{cfg.model_path}'. "
-                "Expected a .engine file."
-            )
-        model_names = read_engine_class_names(trt_engine_path)
-        ball_cls_id, ball_cls_name = find_ball_class_id_from_names(model_names, cfg.ball_class_name)
-        print(f"[init] Model classes: {model_names}")
-        print(f"[init] Ball class: id={ball_cls_id}, name='{ball_cls_name}'")
-        detector = TensorRTRuntimeBallDetector(
-            str(trt_engine_path), cfg, ball_cls_id, names=model_names
-        )
-
-    # Open video
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
         raise RuntimeError(f"Could not open input video: {input_path}")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(f"[init] Video: {w}x{h} @ {fps:.1f}fps, ~{total} frames")
-    if isinstance(detector, GridTrackNetBallDetector):
-        detector.prepare_video(input_path, fps, w, h, total)
-
-    court_det = CourtDetector(cfg)
-    player_det = PlayerDetector(cfg, court_keypoints=None)
-
-    # Writers (main output writer is created at pass 2 start to avoid long idle FFmpeg/NVENC process)
-    writer = None
-    dbg_writer = detector_input_writer = track_debug_writer = None
-    needs_pass2_outputs = bool(
-        cfg.save_tracking_video
-        or cfg.save_motion_debug
-        or cfg.save_track_debug_video
+    video = VideoInfo(
+        path=input_path,
+        fps=cap.get(cv2.CAP_PROP_FPS) or _DEFAULT_FPS,
+        width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+        height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        frame_count_hint=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
     )
-    print("[preprocess] CUDA S+V motion path" if cfg.enable_preprocess else "[preprocess] disabled")
+    print(f"[init] Video: {video.width}x{video.height} @ {video.fps:.1f}fps, ~{video.frame_count_hint} frames")
+    if isinstance(detector, GridTrackNetBallDetector):
+        detector.prepare_video(input_path, video.fps, video.width, video.height, video.frame_count_hint)
 
-    # Threaded frame reader - overlaps decode with GPU inference
-    reader = ThreadedFrameReader(cap, prefetch=max(2, int(cfg.frame_reader_prefetch)))
-    frame_curr = reader.read()
-    frame_next = reader.read() if frame_curr is not None else None
-    if frame_curr is None:
-        reader.release()
-        raise RuntimeError(f"No frames in video: {input_path}")
+    return RunContext(
+        cfg=cfg,
+        video=video,
+        capture=cap,
+        device=device,
+        encoder=encoder,
+        detector=detector,
+        court_detector=CourtDetector(cfg),
+        player_detector=PlayerDetector(cfg, court_keypoints=None),
+        timing=timing,
+        started_at=started_at,
+        init_t0=init_t0,
+    )
 
-    # Debug writers open only once the clip is known to have frames, so an
-    # empty clip leaks no encoder process.
-    if cfg.save_motion_debug:
-        os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
-        dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg, encoder=encoder)
-    if cfg.save_detector_input_debug:
-        os.makedirs(os.path.dirname(cfg.output_detector_input_debug_path) or ".", exist_ok=True)
-        detector_input_writer = VideoWriter(cfg.output_detector_input_debug_path, fps, w, h, cfg, encoder=encoder)
-    if cfg.save_track_debug_video:
-        os.makedirs(os.path.dirname(cfg.output_track_debug_path) or ".", exist_ok=True)
-        track_debug_writer = VideoWriter(cfg.output_track_debug_path, fps, w, h, cfg, encoder=encoder)
 
-    window = FrameWindow(cuda_device, cfg.enable_preprocess, frame_curr, frame_next)
-    background = BackgroundModel(cfg, cuda_device)
-    if info_timing:
-        timing["init_total"] = time.perf_counter() - init_perf_t0
-    pass1_perf_t0 = time.perf_counter() if info_timing else 0.0
-
-    # ==============================================================
-    # PASS 1 - Collect detections, preprocess frames, store metadata
-    # ==============================================================
-    print("[pass 1] Collecting detections...")
-    all_frame_dets = []       # per-frame list of (bbox, conf)
-    all_boost_masks = []      # per-frame boost mask (or None)
-    all_raw_motions = []      # per-frame raw motion (or None)
-    all_rois = []             # per-frame ROI boundary (or None)
-    all_ghost_rois = []       # per-frame ghost-deleted ROI boxes (shown red in debug)
-    all_player_boxes = []     # per-frame player bboxes
-    all_court_kps = []        # per-frame court keypoints
-    frame_idx = 0
-
-    # ROI motion tracker - limits motion/CC to region near ball
-    roi_tracker = ROIMotionTracker(cfg, w, h, fps)
-    roi_used_count = 0
-    fullframe_count = 0
-    side_mask_cache = None
-    side_mask_cache_key = None
-    protect_mask_cuda_cache = None
-    protect_mask_cuda_cache_key = None
-    pre_cuda_perf: Optional[Dict[str, float]] = {"pre_cuda_total": 0.0, "pre_cuda_raw_d2h": 0.0, "pre_cuda_cc_filter": 0.0} if info_timing else None
-
-    # Skip-frame detection state
-    skip_n = max(1, int(cfg.skip_frame_detect))
-    skip_require_roi = bool(cfg.skip_frame_require_roi)
-    skip_detect_saved = 0       # count of frames the detector did not run on
-    skip_preprocess_dim = bool(cfg.skip_preprocess_dim)
-    last_aux_detect_frame = -10**9
-    aux_force_interval = max(1, int(cfg.aux_force_interval))
-    use_cuda_pre_frame = bool(cfg.enable_preprocess and detector.supports_cuda_frame())
-    can_overlap_ball_inference = _detector_can_overlap(detector)
-    if use_cuda_pre_frame:
-        print("[pass 1] CUDA zero-copy preprocess->detector path enabled")
-    cache_pass2_frames = None
-    if needs_pass2_outputs and cfg.cache_input_frames_pass2 and total > 0:
-        est_mb = (float(total) * float(w) * float(h) * 3.0) / (1024.0 * 1024.0)
-        budget_mb = _pass2_cache_budget_mb(cfg)
-        if est_mb <= budget_mb:
-            cache_pass2_frames = []
-            print(f"[pass 1] RAM frame cache enabled ({est_mb:.0f} MiB est, {budget_mb:.0f} MiB budget)")
-        else:
-            print(f"[pass 1] RAM frame cache disabled ({est_mb:.0f} MiB needed > {budget_mb:.0f} MiB budget)")
-
-    pending_det = None
-
-    def _commit_frame(record, dets):
-        if info_timing:
-            store_t0 = time.perf_counter()
-        dropped_ghost_rois = roi_tracker.update_from_dets(dets, record["frame_idx"])
-        all_frame_dets.append(dets)
-        all_boost_masks.append(PackedMask.pack(record["boost_mask_u8"], roi=record["roi_for_pack"]))
-        all_raw_motions.append(PackedMask.pack(record["raw_motion_u8"], roi=record["roi_for_pack"]))
-
-        # Retroactively delete motion from ghost tracks that timed out
-        if dropped_ghost_rois:
-            for fr_idx, rx1, ry1, rx2, ry2 in dropped_ghost_rois:
-                # We only delete strictly historical frames, not the current one being packed
-                if 0 <= fr_idx < len(all_raw_motions) and fr_idx != record["frame_idx"]:
-                    # (FPS FIX) We no longer unpack/pack masks here retroactively frame-by-frame.
-                    # We only record the ghost ROI boxes, and do ONE batched mask erase at the end of Pass 1.
-
-                    # For all_rois (visual boxes on the track-debug video)
-                    # We need to find the specific ROI in the list that matches these bounds
-                    if all_rois[fr_idx] is not None:
-                        new_rois = []
-                        for r_box in all_rois[fr_idx]:
-                            # Allow a tiny bit of float/int drift, though they should be identical ints
-                            if abs(r_box[0]-rx1)<=2 and abs(r_box[1]-ry1)<=2 and abs(r_box[2]-rx2)<=2 and abs(r_box[3]-ry2)<=2:
-                                # Record the ghost box for debug visualization and batched deletion
-                                while len(all_ghost_rois) <= fr_idx:
-                                    all_ghost_rois.append([])
-                                all_ghost_rois[fr_idx].append((rx1, ry1, rx2, ry2))
-                                continue  # This is the ghost ROI, delete it!
-                            new_rois.append(r_box)
-
-                        all_rois[fr_idx] = new_rois if len(new_rois) > 0 else None
-
-        all_rois.append(record.get("rois_list"))
-        all_ghost_rois.append([])  # placeholder; ghosts filled retroactively
-        all_player_boxes.append(record["player_dict"])
-        all_court_kps.append(record["court_kps"])
-        if detector_input_writer is not None:
-            # Stream debug-preprocessed frames immediately to avoid huge RAM growth.
-            if record["pre_frame"] is not None:
-                detector_input_writer.write(record["pre_frame"])
-            elif record["pre_frame_cuda"] is not None:
-                detector_input_writer.write(record["pre_frame_cuda"].detach().cpu().numpy())
-        if info_timing:
-            timing["pass1_store"] = timing.get("pass1_store", 0.0) + (time.perf_counter() - store_t0)
-
-    def _finish_pending(pending):
-        if info_timing:
-            det_t0 = time.perf_counter()
-        dets = detector.detect_async_finish(pending["handle"])
-        if info_timing:
-            timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
-        _commit_frame(pending["record"], dets)
-
-    while not window.exhausted:
-        frame_curr = window.curr
-        # Keep previous pending handle; finish it after current preprocess/start
-        # so frame N preprocess overlaps frame N-1 inference.
-        prev_pending = pending_det
-        pending_det = None
-
-        raw_motion_u8 = boost_mask_u8 = None
-        pre_frame_cuda = None
-        pre_frame = frame_curr
-        det_pending = None
-        player_pending = None
-        roi_for_pack = None
-        rois = rois_visual = None   # set by the ROI tracker when preprocessing runs
-
-        if cache_pass2_frames is not None:
-            try:
-                cache_pass2_frames.append(frame_curr)
-            except MemoryError:
-                cache_pass2_frames = None
-                print("[pass 1] RAM frame cache disabled (MemoryError)")
-
-        # Fold this frame into the background model before measuring motion against it.
-        if cfg.enable_preprocess:
-            background.update(window.curr_gpu.v, window.curr_gpu.s)
-        # Skip-frame detection: when skip_n > 1 run the detector every Nth frame
-        # and let the selector interpolate the short gaps.
-        _do_detect = True
-        if skip_n > 1 and frame_idx % skip_n != 0:
-            # Only skip when ROI tracker says ball is visible (smooth motion)
-            if skip_require_roi and any(
-                getattr(track, "frames_since_det", 10**9) <= 3
-                for track in getattr(roi_tracker, "tracks", [])
-            ):
-                _do_detect = False
-            elif not skip_require_roi:
-                _do_detect = False
-
-        # Player + court detection: decouple from critical path by syncing with detector frames.
-        if info_timing:
-            aux_t0 = time.perf_counter()
-        do_aux_detect = True
-        if cfg.aux_detect_on_detect_frames and not _do_detect:
-            do_aux_detect = (frame_idx - last_aux_detect_frame) >= aux_force_interval
-        if do_aux_detect:
-            court_kps = court_det.detect(frame_curr, frame_idx=frame_idx)
-            player_det.set_court_keypoints(court_kps)
-            player_pending = player_det.detect_async_start(
-                frame_curr,
-                frame_idx,
-                frame_gpu_t=window.curr_gpu.chw if window.curr_gpu is not None else None,
-            )
-            player_boxes = [list(pb) for pb in player_det.cached_boxes] if player_det.cached_boxes else []
-            last_aux_detect_frame = frame_idx
-        else:
-            court_kps = court_det.keypoints
-            player_det.set_court_keypoints(court_kps)
-            player_boxes = [list(pb) for pb in player_det.cached_boxes] if player_det.cached_boxes else []
-        if info_timing:
-            timing["pass1_aux_detect"] = timing.get("pass1_aux_detect", 0.0) + (time.perf_counter() - aux_t0)
-        if info_timing:
-            pre_t0 = time.perf_counter()
-        if cfg.enable_preprocess:
-            if info_timing:
-                pre_mask_t0 = time.perf_counter()
-            # Build court-side protect mask once via cache and reuse everywhere.
-            side_key = court_keypoints_key(court_kps)
-            if side_key != side_mask_cache_key:
-                side_mask_cache = build_court_side_protect_mask(
-                    frame_curr.shape[0], frame_curr.shape[1], court_kps
-                )
-                side_mask_cache_key = side_key
-            protect_mask = side_mask_cache
-            if info_timing:
-                timing["pass1_pre_mask_build"] = timing.get("pass1_pre_mask_build", 0.0) + (time.perf_counter() - pre_mask_t0)
-
-            if protect_mask is not None:
-                if (protect_mask_cuda_cache is None) or (side_key != protect_mask_cuda_cache_key):
-                    protect_mask_cuda_cache = torch.from_numpy(protect_mask).to(cuda_device)
-                    protect_mask_cuda_cache_key = side_key
-                protect_mask_cuda = protect_mask_cuda_cache
-            else:
-                protect_mask_cuda_cache = None
-                protect_mask_cuda_cache_key = None
-
-            rois, rois_visual = roi_tracker.next_rois(frame_idx)
-            if rois:
-                min_x = min(r[0] for r in rois)
-                min_y = min(r[1] for r in rois)
-                max_x = max(r[2] for r in rois)
-                max_y = max(r[3] for r in rois)
-                roi_for_pack = (min_x, min_y, max_x, max_y)
-                roi_used_count += len(rois)
-            else:
-                roi_for_pack = None
-                fullframe_count += 1
-            _skip_dim = bool(
-                detector.uses_raw_frames
-                or (
-                    skip_preprocess_dim
-                    and len(roi_tracker.tracks) > 0
-                    and roi_tracker.ball_visible
-                )
-            )
-            need_cpu_pre_frame = bool(
-                detector_input_writer is not None
-                or (not use_cuda_pre_frame and not detector.uses_raw_frames)
-            )
-            pre = preprocess_frame_cuda(window, background, cfg,
-                                        rois=rois,
-                                        protect_mask=protect_mask_cuda,
-                                        skip_dim=_skip_dim,
-                                        return_cuda_frame=bool(use_cuda_pre_frame and _do_detect),
-                                        need_cpu_frame=need_cpu_pre_frame,
-                                        need_detector_boost=not detector.uses_raw_frames,
-                                        perf=pre_cuda_perf)
-            pre_frame, pre_frame_cuda = pre.detector_frame, pre.detector_frame_cuda
-            raw_motion_u8, boost_mask_u8 = pre.raw_motion, pre.boost_mask
-            if detector.uses_raw_frames:
-                pre_frame = frame_curr
-            # Start current frame inference as soon as detector input is ready.
-            # With per-pending CUDA events + output slots, this is safe and allows
-            # overlap with post-mask CPU work below.
-            if _do_detect:
-                if prev_pending is not None and not can_overlap_ball_inference:
-                    _finish_pending(prev_pending)
-                    prev_pending = None
-                det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
-                det_pending = detector.detect_async_start(det_input, frame_index=frame_idx)
-
-            # Side-line motion is not excluded: the selector decides what to do
-            # with sideline/alley motion. The side mask only protects the
-            # detector-input dimming above.
-            if info_timing:
-                postmask_t0 = time.perf_counter()
-            background.remember_motion(raw_motion_u8)
-            if info_timing:
-                timing["pass1_pre_postmask"] = timing.get("pass1_pre_postmask", 0.0) + (time.perf_counter() - postmask_t0)
-
-        if player_pending is not None:
-            if info_timing:
-                aux_finish_t0 = time.perf_counter()
-            player_boxes = player_det.detect_async_finish(player_pending)
-            player_pending = None
-            if info_timing:
-                timing["pass1_aux_detect"] = timing.get("pass1_aux_detect", 0.0) + (time.perf_counter() - aux_finish_t0)
-        if info_timing:
-            timing["pass1_preprocess"] = timing.get("pass1_preprocess", 0.0) + (time.perf_counter() - pre_t0)
-
-        # Finish previous frame inference after current frame preprocess.
-        if prev_pending is not None:
-            _finish_pending(prev_pending)
-
-        # Detect ball on this frame.
-        # Cross-frame overlap: launch current frame now, finish it next iteration.
-        if _do_detect:
-            if det_pending is None:
-                det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
-                if info_timing:
-                    det_t0 = time.perf_counter()
-                det_pending = detector.detect_async_start(det_input, frame_index=frame_idx)
-                if info_timing:
-                    timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
-            pending_det = {
-                "handle": det_pending,
-                "record": {
-                    "frame_idx": frame_idx,
-                    "raw_motion_u8": raw_motion_u8,
-                    "boost_mask_u8": boost_mask_u8,
-                    "roi_for_pack": roi_for_pack,
-                    "rois_list": rois_visual if rois_visual is not None else roi_tracker.last_rois,
-                    "player_dict": dict(player_det.get_player_dict()),
-                    "court_kps": court_kps,
-                    "pre_frame": pre_frame,
-                    "pre_frame_cuda": pre_frame_cuda,
-                },
-            }
-        else:
-            skip_detect_saved += 1
-            _commit_frame(
-                {
-                    "frame_idx": frame_idx,
-                    "raw_motion_u8": raw_motion_u8,
-                    "boost_mask_u8": boost_mask_u8,
-                    "roi_for_pack": roi_for_pack,
-                    "rois_list": rois_visual if rois_visual is not None else roi_tracker.last_rois,
-                    "player_dict": dict(player_det.get_player_dict()),
-                    "court_kps": court_kps,
-                    "pre_frame": pre_frame,
-                    "pre_frame_cuda": pre_frame_cuda,
-                },
-                [],
-            )
-
-        frame_idx += 1
-        if cfg.progress_every and frame_idx % cfg.progress_every == 0:
-            elapsed = time.time() - t0
-            print(f"  [pass1 {frame_idx}/{total}] {frame_idx/elapsed:.1f} fps")
-
-        # Slide window
-        if info_timing:
-            slide_t0 = time.perf_counter()
-        window.slide(reader.read())
-        if info_timing:
-            timing["pass1_slide"] = timing.get("pass1_slide", 0.0) + (time.perf_counter() - slide_t0)
-
-    # Drain the last pending ball inference.
-    if pending_det is not None:
-        _finish_pending(pending_det)
-        pending_det = None
-
-    reader.release()
-    N = frame_idx
-    if info_timing:
-        timing["pass1_total"] = time.perf_counter() - pass1_perf_t0
-        if pre_cuda_perf is not None and float(pre_cuda_perf.get("pre_cuda_total", 0.0)) > 0.0:
-            pre_total = float(pre_cuda_perf.get("pre_cuda_total", 0.0))
-            pre_d2h = float(pre_cuda_perf.get("pre_cuda_raw_d2h", 0.0))
-            pre_cc = float(pre_cuda_perf.get("pre_cuda_cc_filter", 0.0))
-            pre_other = max(0.0, pre_total - pre_d2h - pre_cc)
-            timing["pass1_pre_cuda_total"] = pre_total
-            timing["pass1_pre_cuda_d2h"] = pre_d2h
-            timing["pass1_pre_cuda_cc"] = pre_cc
-            timing["pass1_pre_cuda_gpu_other"] = pre_other
-    t_pass1 = time.time() - t0
-    det_frames = sum(1 for d in all_frame_dets if d)
-    print(f"[pass 1] Done: {N} frames in {t_pass1:.1f}s "
-          f"({N/t_pass1:.1f} fps), detections in {det_frames} frames")
-    if skip_n > 1:
-        print(f"[pass 1] Skip-frame detection: {skip_detect_saved}/{N} frames skipped "
-              f"(every {skip_n}th frame, {100.0*skip_detect_saved/max(N,1):.1f}% saved)")
-    if cfg.roi_motion_enabled:
-        print(f"[pass 1] ROI motion: {roi_used_count} ROI frames, "
-              f"{fullframe_count} full-frame frames")
-    print("[pass 1] Executing batched ghost ROI deletion...")
-    batch_t0 = time.perf_counter()
-    erased_frames = 0
-    for fr_idx, ghosts in enumerate(all_ghost_rois):
-        if not ghosts:
-            continue
-
-        rm_obj = all_raw_motions[fr_idx] if 0 <= fr_idx < len(all_raw_motions) else None
-        bm_obj = all_boost_masks[fr_idx] if 0 <= fr_idx < len(all_boost_masks) else None
-
-        if rm_obj is None and bm_obj is None:
-            continue
-
-        erased_frames += 1
-        rm_unpacked = rm_obj.unpack() if rm_obj is not None else None
-        bm_unpacked = bm_obj.unpack() if bm_obj is not None else None
-
-        any_change = False
-        for rx1, ry1, rx2, ry2 in ghosts:
-            if rm_unpacked is not None and np.any(rm_unpacked[ry1:ry2, rx1:rx2]):
-                rm_unpacked[ry1:ry2, rx1:rx2] = 0
-                any_change = True
-            if bm_unpacked is not None and np.any(bm_unpacked[ry1:ry2, rx1:rx2]):
-                bm_unpacked[ry1:ry2, rx1:rx2] = 0
-                any_change = True
-
-        if not any_change:
-            continue
-
-        if rm_unpacked is not None:
-            all_raw_motions[fr_idx] = PackedMask.pack(rm_unpacked, roi=rm_obj.roi)
-        if bm_unpacked is not None:
-            all_boost_masks[fr_idx] = PackedMask.pack(bm_unpacked, roi=bm_obj.roi)
-
-    print(f"[pass 1] Batched ghost deletion cleaned {erased_frames} frames in {time.perf_counter() - batch_t0:.2f}s")
-
-    # ==============================================================
-    # SELECTOR - pick the in-play ball track
-    # ==============================================================
-    selector_perf_t0 = time.perf_counter() if info_timing else 0.0
-    selector_poly_t0 = time.perf_counter() if info_timing else 0.0
-    court_poly, last_kps = build_court_polygon(all_court_kps)
-    if info_timing:
-        timing["selector_build_poly"] = timing.get("selector_build_poly", 0.0) + (time.perf_counter() - selector_poly_t0)
+def _select(ctx: RunContext, pass1: Pass1Result) -> Selection:
+    """Run the ball-in-play selector over pass 1's evidence and derive the display path."""
+    cfg, video, timing = ctx.cfg, ctx.video, ctx.timing
+    n = pass1.frame_count
+    selector_t0 = timing.start()
+    poly_t0 = timing.start()
+    court_polygon, last_kps = build_court_polygon(pass1.court_keypoints)
+    timing.add("selector_build_poly", poly_t0)
 
     print("[selector] Running ball-in-play selection...")
-    selector_select_t0 = time.perf_counter() if info_timing else 0.0
+    select_t0 = timing.start()
     per_frame, chosen_track, all_tracks = select_ball_in_play(
-        all_frame_dets, fps, w, h,
-        court_polygon=court_poly,
-        boost_masks=all_boost_masks,
-        raw_motions=all_raw_motions,
-        player_boxes_by_frame=all_player_boxes,
+        pass1.detections, video.fps, video.width, video.height,
+        court_polygon=court_polygon,
+        boost_masks=pass1.boost_masks,
+        raw_motions=pass1.raw_motions,
+        player_boxes_by_frame=pass1.player_boxes,
         debug=bool(cfg.print_selector_tracks))
-    bounce_events = []
-    rally_legs = []
-    contact_events = []
-    if bool(cfg.draw_court_minimap):
-        if not cfg.bounce_model_path:
-            raise RuntimeError("--court requires Config.bounce_model_path")
-        bounce_t0 = time.perf_counter()
-        bounces = predict_bounce_events(per_frame, all_player_boxes, fps, w, h, cfg.bounce_model_path)
-        bounce_events = bounces.confirmed
-        contact_events = detect_player_contacts(per_frame, all_player_boxes, fps, w, h)
-        kinematic_bounces = infer_kinematic_bounces(per_frame, all_player_boxes, fps, w, h)
-        rally_legs = assemble_rally_legs(
-            per_frame, all_player_boxes, fps, w, h, all_court_kps,
-            contact_events, bounces, kinematic_bounces,
-        )
-        inferred_legs = sum(leg["quality"] == "inferred" for leg in rally_legs)
-        volleys = sum(leg["outcome"] == "volley" for leg in rally_legs)
-        print(
-            f"[court minibar] {len(bounce_events)} confirmed bounce(s), "
-            f"{len(contact_events)} player contact(s), {len(rally_legs)} leg(s) "
-            f"({inferred_legs} inferred, {volleys} volley) "
-            f"in {time.perf_counter() - bounce_t0:.3f}s"
-        )
-    if info_timing:
-        timing["selector_select"] = timing.get("selector_select", 0.0) + (time.perf_counter() - selector_select_t0)
+    timing.add("selector_select", select_t0)
 
     print(f"[selector] {len(all_tracks)} total tracks")
-    selector_post_t0 = time.perf_counter() if info_timing else 0.0
+    post_t0 = timing.start()
     if cfg.print_selector_tracks:
-        _print_selector_track_summary(
-            all_tracks,
-            chosen_track,
-            total_frames=N,
-            limit=max(int(cfg.selector_track_limit), 0)
-        )
-    # The clean selector owns its bounded tail; no hidden legacy post-processing.
-    display_path_gap = max(
+        print_selector_track_summary(all_tracks, chosen_track, total_frames=n,
+                                     limit=max(int(cfg.selector_track_limit), 0))
+    # The selector owns its bounded tail; the display path is for the debug video only.
+    path_gap = max(
         max(1, int(cfg.display_path_max_gap)),
-        min(24, max(10, int(round(float(fps) * 0.60))))
+        min(_DISPLAY_PATH_GAP_MAX_FRAMES,
+            max(_DISPLAY_PATH_GAP_MIN_FRAMES, int(round(float(video.fps) * _DISPLAY_PATH_GAP_SECONDS)))),
     )
-    display_path = build_display_path(
-        chosen_track,
-        N,
-        max_interp_gap=display_path_gap,
-        frame_w=w,
-        frame_h=h
+    display_path = build_display_path(chosen_track, n, max_interp_gap=path_gap,
+                                      frame_w=video.width, frame_h=video.height)
+    if cfg.save_track_debug_video:
+        # Where the chosen track's path is sparse, fill from the final per-frame
+        # output so late-rally segments stay visible.  Never from other tracks:
+        # the path must only reflect the chosen track's positions.
+        for fi, res in enumerate(per_frame):
+            if fi in display_path or res is None or res.cx is None or res.cy is None:
+                continue
+            display_path[fi] = (float(res.cx), float(res.cy), res.source in ("det", "motion"))
+    timing.add("selector_post", post_t0)
+    timing.add("selector_total", selector_t0)
+    return Selection(per_frame, chosen_track, all_tracks, court_polygon, last_kps, display_path)
+
+
+def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> CourtEvents:
+    """Bounces, contacts and rally legs for the court minimap; empty when it is off."""
+    cfg, video = ctx.cfg, ctx.video
+    if not bool(cfg.draw_court_minimap):
+        return CourtEvents()
+    if not cfg.bounce_model_path:
+        raise RuntimeError("--court requires Config.bounce_model_path")
+    t0 = time.perf_counter()
+    per_frame, player_boxes = selection.per_frame, pass1.player_boxes
+    fps, w, h = video.fps, video.width, video.height
+    bounces = predict_bounce_events(per_frame, player_boxes, fps, w, h, cfg.bounce_model_path)
+    contacts = detect_player_contacts(per_frame, player_boxes, fps, w, h)
+    kinematic_bounces = infer_kinematic_bounces(per_frame, player_boxes, fps, w, h)
+    rally_legs = assemble_rally_legs(per_frame, player_boxes, fps, w, h, pass1.court_keypoints,
+                                     contacts, bounces, kinematic_bounces)
+    inferred_legs = sum(leg["quality"] == "inferred" for leg in rally_legs)
+    volleys = sum(leg["outcome"] == "volley" for leg in rally_legs)
+    print(
+        f"[court minibar] {len(bounces.confirmed)} confirmed bounce(s), "
+        f"{len(contacts)} player contact(s), {len(rally_legs)} leg(s) "
+        f"({inferred_legs} inferred, {volleys} volley) "
+        f"in {time.perf_counter() - t0:.3f}s"
     )
-
-    # Pre-process top candidate tracks for visualization (Pass 2)
-    # Map: track_id -> { frame_idx: (cx, cy, is_obs) }
-    vis_tracks = {}
-    vis_track_list = sorted(all_tracks, key=lambda t: float(t.score), reverse=True)
-    for trk in vis_track_list:
-        tid = int(trk.track_id)
-        vis_tracks[tid] = {}
-        for o in trk.observations:
-            vis_tracks[tid][o.frame] = (o.cx, o.cy, True)
-    # Debug-display fallback: if the chosen track's display path is sparse, fill from
-    # the final per-frame selector output so late-rally segments stay visible.
-    if track_debug_writer is not None:
-        for gi, gr in enumerate(per_frame):
-            if gi in display_path or gr is None or gr.cx is None or gr.cy is None:
-                continue
-            src = str(getattr(gr, "source", ""))
-            exact = src in ("det", "motion")
-            display_path[gi] = (float(gr.cx), float(gr.cy), exact)
-
-        # Note: we intentionally do NOT backfill display_path from other (orange/blue) tracks.
-        # The white path must only reflect the chosen track's positions.  Non-chosen tracks
-        # are already visible in the track-debug video via vis_tracks (their own colored dots/lines).
-        # Backfilling would make the white path "snap to" orange/blue positions in gaps,
-        # which is the opposite of what we want (orange/blue should follow green, not vice versa).
-    if info_timing:
-        timing["selector_post"] = timing.get("selector_post", 0.0) + (time.perf_counter() - selector_post_t0)
-        timing["selector_total"] = time.perf_counter() - selector_perf_t0
-
-    # ==============================================================
-    # PASS 2 - Render output video with debug visualization
-    # ==============================================================
-    video_outputs_enabled = needs_pass2_outputs
-    if video_outputs_enabled:
-        print("[pass 2] Rendering selected video output(s)...")
-    else:
-        print("[pass 2] Skipped (no video outputs selected)")
-    pass2_perf_t0 = time.perf_counter() if info_timing else 0.0
-    pass2_frames_rendered = 0
-    if cfg.save_tracking_video:
-        os.makedirs(os.path.dirname(cfg.output_video) or ".", exist_ok=True)
-        writer = VideoWriter(cfg.output_video, fps, w, h, cfg, encoder=encoder)
-        print(f"[writer] Tracking encoder: {writer._encoder}")
-    else:
-        writer = None
-    use_cached_frames = bool(video_outputs_enabled and cache_pass2_frames is not None and len(cache_pass2_frames) == N)
-    if use_cached_frames:
-        cap2 = None
-        print(f"[pass 2] Using RAM frame cache ({len(cache_pass2_frames)} frames)")
-    elif video_outputs_enabled:
-        cap2 = cv2.VideoCapture(str(input_path))
-        if cache_pass2_frames is not None:
-            print("[pass 2] RAM frame cache incomplete; falling back to video decode")
-    else:
-        cap2 = None
-    # list of (raw_x, raw_y, smooth_x, smooth_y, source, conf) or None for gaps
-    trail = []
-    trail_max = max(10, int(round(fps * 0.25)))
-    display_path_trail = []  # list of (x, y, exact) or None for gaps in the display path
-    display_path_trail_max = max(40, trail_max + 20)
-    # Display-only smoothing for the magenta motion-search center (orange MOT path).
-    # This does not affect selector logic; it only stabilizes the debug overlay.
-    last_motion_search_dbg = None  # (x, y)
-    last_motion_search_dbg_frame = -1
-    draw_main_search_regions = bool(cfg.draw_search_regions)
-    draw_main_ball_trail = bool(cfg.draw_ball_trail)
-
-    # Per-track short history for visualization: tid -> list of (x, y)
-    vis_track_trails = {int(t.track_id): [] for t in vis_track_list}
-    vis_trail_len = 120  # Long enough to show full rally segments in the track-debug video
-    # Pre-build score lookup for label rendering (avoids repeated attribute access per frame)
-    vis_track_scores = {int(t.track_id): float(t.score) for t in vis_track_list}
-
-    trail_kps = last_kps
-    ground_model = None
-    ground_model_kps_key = None
-    pending_lost_gap = False
-    # O(1) anchor state: latest estimated ball radius from green detections.
-    cached_anchor_radius = float(max(cfg.ball_marker_min_radius, 4))
-    cached_anchor_radius_cap = float(max(cfg.ball_marker_max_radius * 3, cfg.ball_marker_min_radius))
-    raw_motion_tracks = []
-    _dbg_protect_cache = None
-    _dbg_protect_cache_key = None
-
-    for fi in range(N if video_outputs_enabled else 0):
-        if info_timing:
-            read_t0 = time.perf_counter()
-        if use_cached_frames:
-            frame = cache_pass2_frames[fi]
-        else:
-            ret, frame = cap2.read()
-            if not ret:
-                break
-        if info_timing:
-            timing["pass2_read"] = timing.get("pass2_read", 0.0) + (time.perf_counter() - read_t0)
-
-        if info_timing:
-            render_t0 = time.perf_counter()
-            debug_write_elapsed = 0.0
-        dets = all_frame_dets[fi]
-        frame_result = per_frame[fi]
-        display_result = frame_result
-        frame_out = frame.copy()
-        debug_frame = frame.copy() if track_debug_writer is not None else None
-        court_kps = all_court_kps[fi]
-        if court_kps and len(court_kps) >= 16:
-            trail_kps = court_kps
-        kps_key = court_keypoints_key(trail_kps)
-        if kps_key != ground_model_kps_key:
-            ground_model = build_ground_projection_model(trail_kps)
-            ground_model_kps_key = kps_key
-
-        # Draw court
-        if cfg.draw_court:
-            if court_kps:
-                court_det.keypoints = court_kps
-                court_det.draw(frame_out)
-                if debug_frame is not None:
-                    court_det.draw(debug_frame)
-        if ground_model is not None:
-            _draw_homography_net_line(frame_out, ground_model)
-            if debug_frame is not None:
-                _draw_homography_net_line(debug_frame, ground_model)
-
-        # Draw court polygon outline (thin grey)
-        if court_poly is not None:
-            cv2.drawContours(frame_out, [court_poly.astype(np.int32)], 0,
-                             (100, 100, 100), 1)
-            if debug_frame is not None:
-                cv2.drawContours(debug_frame, [court_poly.astype(np.int32)], 0,
-                                 (100, 100, 100), 1)
-
-
-        # Draw players
-        if cfg.draw_players:
-            for pid, pbox in all_player_boxes[fi].items():
-                if pbox is None or len(pbox) < 4:
-                    continue
-                px1, py1, px2, py2 = map(int, pbox)
-                cv2.rectangle(frame_out, (px1, py1), (px2, py2), (0, 0, 255), 2)
-                if debug_frame is not None:
-                    cv2.rectangle(debug_frame, (px1, py1), (px2, py2), (0, 0, 255), 2)
-
-        # Rejected raw proposals belong only in the optional track-debug view.
-        for ball_box, ball_conf in dets:
-            ix1, iy1, ix2, iy2 = map(int, ball_box)
-            if debug_frame is not None:
-                cv2.rectangle(debug_frame, (ix1, iy1), (ix2, iy2), COLOR_RAW, 1)
-                cv2.line(debug_frame, (ix1, iy2), (ix2, iy2), (0, 0, 255), 1)
-
-        # Draw Motion ROIs (cleaned of ghost histories)
-        if debug_frame is not None and all_rois[fi] is not None:
-            for rx1, ry1, rx2, ry2 in all_rois[fi]:
-                cv2.rectangle(debug_frame, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 2)
-                cv2.putText(debug_frame, "ROI", (int(rx1), max(15, int(ry1) - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-
-        # Draw candidate tracks (circles + IDs)
-        # Draw them underneath the chosen track result so the final choice pops on top.
-        # ONLY draw on the track-debug frame to keep main output clean.
-        if debug_frame is not None:
-            for trk in vis_track_list:
-                tid = int(trk.track_id)
-                tdata = vis_tracks.get(tid, {})
-                pt = tdata.get(fi)
-
-                # Update trail
-                is_active_frame = (pt is not None)
-                if is_active_frame:
-                    vis_track_trails[tid].append((pt[0], pt[1]))
-                elif vis_track_trails[tid] and vis_track_trails[tid][-1] is not None:
-                    # Add a break for gaps
-                    vis_track_trails[tid].append(None)
-
-                # Trim trail
-                while len(vis_track_trails[tid]) > vis_trail_len:
-                    vis_track_trails[tid].pop(0)
-
-                # Draw trail
-                tcolor = _get_track_color(tid)
-                trail_pts = vis_track_trails[tid]
-                if len(trail_pts) > 1:
-                    # Filter None
-                    valid_segments = []
-                    curr_seg = []
-                    for p in trail_pts:
-                        if p is None:
-                            if len(curr_seg) > 1:
-                                valid_segments.append(curr_seg)
-                            curr_seg = []
-                        else:
-                            curr_seg.append(p)
-                    if len(curr_seg) > 1:
-                        valid_segments.append(curr_seg)
-
-                    for seg in valid_segments:
-                        for i in range(1, len(seg)):
-                            p0 = (int(seg[i-1][0]), int(seg[i-1][1]))
-                            p1 = (int(seg[i][0]), int(seg[i][1]))
-                            cv2.line(debug_frame, p0, p1, tcolor, 1, cv2.LINE_AA)
-
-                # Draw current position and ID+score
-                if is_active_frame:
-                    cx, cy = int(pt[0]), int(pt[1])
-                    is_chosen_trk = (chosen_track is not None and tid == int(chosen_track.track_id))
-                    dot_r = 5 if is_chosen_trk else 3
-                    dot_th = -1 if is_chosen_trk else 2
-                    # Dark outline so label is readable on any background
-                    cv2.circle(debug_frame, (cx, cy), dot_r + 2, (15, 15, 15), -1)
-                    cv2.circle(debug_frame, (cx, cy), dot_r, tcolor, dot_th)
-                    scr = vis_track_scores.get(tid, 0.0)
-                    label = f"{tid}({scr:.0f})"
-                    cv2.putText(debug_frame, label, (cx + 6, cy + 6),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (15, 15, 15), 2)
-                    cv2.putText(debug_frame, label, (cx + 6, cy + 6),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, tcolor, 1)
-
-        # Draw chosen result - color-coded by source
-        if display_result is not None:
-            rcx, rcy = int(display_result.cx), int(display_result.cy)
-            trail_cx, trail_cy = rcx, rcy
-
-            if display_result.source == 'det':
-                # GREEN - detector observation
-                marker_radius = 6
-                if display_result.bbox:
-                    bx1f, by1f, bx2f, by2f = map(float, display_result.bbox)
-                    bx1, by1, bx2, by2 = map(int, (bx1f, by1f, bx2f, by2f))
-                    # High-contrast box: dark halo + bright box + emphasized bottom edge.
-                    cv2.rectangle(frame_out, (bx1, by1), (bx2, by2), (15, 15, 15), 4)
-                    cv2.rectangle(frame_out, (bx1, by1), (bx2, by2), COLOR_DET, 2)
-                    cv2.line(frame_out, (bx1, by2), (bx2, by2), (255, 255, 255), 2)
-                    if debug_frame is not None:
-                        cv2.rectangle(debug_frame, (bx1, by1), (bx2, by2), (15, 15, 15), 4)
-                        cv2.rectangle(debug_frame, (bx1, by1), (bx2, by2), COLOR_DET, 2)
-                        cv2.line(debug_frame, (bx1, by2), (bx2, by2), (255, 255, 255), 2)
-                    bw = max(bx2f - bx1f, 1.0)
-                    bh = max(by2f - by1f, 1.0)
-                    det_anchor_radius = 0.5 * max(bw, bh)
-                    cached_anchor_radius = float(np.clip(
-                        0.80 * cached_anchor_radius + 0.20 * det_anchor_radius,
-                        cfg.ball_marker_min_radius,
-                        cached_anchor_radius_cap
-                    ))
-
-                    ball_px = max(int(round(bw)), int(round(bh)), 1)
-                    marker_radius = int(np.clip(
-                        round(ball_px * cfg.ball_marker_box_scale),
-                        cfg.ball_marker_min_radius, cfg.ball_marker_max_radius))
-                # Draw marker at measured center (not at bottom anchor) to avoid fake-ball look.
-                cv2.circle(frame_out, (rcx, rcy), marker_radius + 2, (15, 15, 15), 2)
-                cv2.circle(frame_out, (rcx, rcy), marker_radius, COLOR_DET, -1)
-                cv2.putText(frame_out, "DET", (rcx + 10, rcy - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_DET, 1)
-                if debug_frame is not None:
-                    cv2.circle(debug_frame, (rcx, rcy), marker_radius + 2, (15, 15, 15), 2)
-                    cv2.circle(debug_frame, (rcx, rcy), marker_radius, COLOR_DET, -1)
-                    cv2.putText(debug_frame, "DET", (rcx + 10, rcy - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_DET, 1)
-
-            elif display_result.source == 'motion':
-                # ORANGE - motion blob + search region
-                m_rad = int(np.clip(round(cached_anchor_radius), 4, 12))
-                cv2.circle(frame_out, (rcx, rcy), m_rad, COLOR_MOTION, -1)
-                cv2.putText(frame_out, "MOT", (rcx + 10, rcy - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_MOTION, 1)
-                if debug_frame is not None:
-                    cv2.circle(debug_frame, (rcx, rcy), m_rad, COLOR_MOTION, -1)
-                    cv2.putText(debug_frame, "MOT", (rcx + 10, rcy - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_MOTION, 1)
-                # Draw search region
-                if display_result.search_radius > 0:
-                    scx = int(display_result.search_cx)
-                    scy = int(display_result.search_cy)
-                    if last_motion_search_dbg is not None and last_motion_search_dbg_frame == (fi - 1):
-                        pscx, pscy = last_motion_search_dbg
-                        dx = scx - pscx
-                        dy = scy - pscy
-                        d = float((dx * dx + dy * dy) ** 0.5)
-                        max_step_dbg = 64.0
-                        if d > max_step_dbg and d > 1e-6:
-                            s = max_step_dbg / d
-                            scx = int(round(pscx + dx * s))
-                            scy = int(round(pscy + dy * s))
-                    last_motion_search_dbg = (scx, scy)
-                    last_motion_search_dbg_frame = fi
-                    if draw_main_search_regions:
-                        cv2.circle(frame_out, (scx, scy),
-                                   int(display_result.search_radius), COLOR_SEARCH, 1)
-                        cv2.line(frame_out, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
-                        # Small cross at predicted position
-                        cv2.drawMarker(frame_out, (scx, scy), COLOR_SEARCH,
-                                       cv2.MARKER_CROSS, 12, 1)
-                    if debug_frame is not None:
-                        cv2.circle(debug_frame, (scx, scy),
-                                   int(display_result.search_radius), COLOR_SEARCH, 1)
-                        cv2.line(debug_frame, (scx, scy), (rcx, rcy), COLOR_SEARCH, 1)
-                        cv2.drawMarker(debug_frame, (scx, scy), COLOR_SEARCH,
-                                       cv2.MARKER_CROSS, 12, 1)
-                else:
-                    last_motion_search_dbg = None
-                    last_motion_search_dbg_frame = -1
-
-            elif display_result.source == 'interp':
-                last_motion_search_dbg = None
-                last_motion_search_dbg_frame = -1
-                # YELLOW - prolonged guessed/stuck
-                i_rad = int(np.clip(round(cached_anchor_radius), 4, 12))
-                cv2.circle(frame_out, (rcx, rcy), i_rad, COLOR_INTERP, -1)
-                cv2.putText(frame_out, "PHY", (rcx + 10, rcy - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_INTERP, 1)
-                if debug_frame is not None:
-                    cv2.circle(debug_frame, (rcx, rcy), i_rad, COLOR_INTERP, -1)
-                    cv2.putText(debug_frame, "PHY", (rcx + 10, rcy - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_INTERP, 1)
-
-            # State circle (court-scaled radius): the selector's search region.
-            if display_result.source in ('det', 'interp') and float(display_result.search_radius) > 0.0:
-                scx = int(round(float(display_result.search_cx)))
-                scy = int(round(float(display_result.search_cy)))
-                sr = int(round(float(display_result.search_radius)))
-                scol = COLOR_DET if display_result.source == 'det' else COLOR_INTERP
-                if draw_main_search_regions:
-                    cv2.circle(frame_out, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
-                    cv2.circle(frame_out, (scx, scy), sr, scol, 1, cv2.LINE_AA)
-                if debug_frame is not None:
-                    cv2.circle(debug_frame, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
-                    cv2.circle(debug_frame, (scx, scy), sr, scol, 1, cv2.LINE_AA)
-
-            # Piecewise arc smoothing:
-            # smooth within segment, reset segment on jump or direction reversal.
-            src = display_result.source
-            conf = float(display_result.conf)
-            prev, prev2 = _trail_prev2(trail)
-            prev_src = None
-            if prev is not None:
-                prev_src = prev[4]
-                # Source transition: det resuming after motion/interp.
-                # Don't force-break - instead check if the positions are reasonably close.
-                # A break only happens if the distance exceeds the jump threshold below.
-
-            if prev is not None:
-                if not pending_lost_gap:
-                    x_span, y_span = court_axis_spans(trail_kps, w, h)
-                    dx = abs(trail_cx - prev[0])
-                    dy = abs(trail_cy - prev[1])
-                    jx_c, jy_c = _trail_jump_fracs(src, cfg)
-                    jx_p, jy_p = _trail_jump_fracs(prev_src, cfg)
-                    jx = max(jx_c, jx_p)
-                    jy = max(jy_c, jy_p)
-                    hard_x_px = max(jx * x_span, 34.0)
-                    hard_y_px = max(jy * y_span, 26.0)
-                    dist = float(np.hypot(dx, dy))
-                    pair_diag = float(np.hypot(x_span, y_span))
-                    source_transition = (src != prev_src)
-                    bridge_px = max(0.035 * pair_diag, 18.0)
-                    transition_px = max(0.020 * pair_diag, 14.0)
-
-                    # Source transitions: connect if the jump is within a reasonable
-                    # distance. Too tight = gaps everywhere. Too wide = connects to noise.
-                    if source_transition:
-                        if dist > bridge_px:
-                            trail.append(None)
-                            prev = None
-                        elif prev_src == "interp" and src == "det" and dist > transition_px:
-                            trail.append(None)
-                            prev = None
-
-                    if prev is not None:
-                        if dx > hard_x_px or dy > hard_y_px:
-                            # Allow small source-transition mismatch (e.g., blue->green reacquire).
-                            if not (source_transition and dist <= bridge_px):
-                                trail.append(None)
-                                prev = None
-                        elif prev2 is not None and _trail_direction_break(prev2, prev, (trail_cx, trail_cy)):
-                            # Direction-change segment breaks should be stricter on confident sources only.
-                            if not (src == "interp" or prev_src == "interp" or
-                                    (source_transition and dist <= bridge_px * 1.4)):
-                                trail.append(None)
-                                prev = None
-
-            # The selector already smooths soft points; render its exact path so
-            # estimates meet detections instead of lagging behind them.
-            smooth_x, smooth_y = trail_cx, trail_cy
-
-            # Recovering from a fully-lost run hard-breaks the segment.
-            if pending_lost_gap and prev is not None:
-                trail.append(None)
-            pending_lost_gap = False
-            trail.append((trail_cx, trail_cy, smooth_x, smooth_y, src, conf))
-        else:
-            # Nothing selected this frame: break the segment before the next recovered point.
-            if trail and trail[-1] is not None:
-                pending_lost_gap = True
-            trail.append(None)
-
-        # Trim trail
-        while len(trail) > trail_max:
-            trail.pop(0)
-
-        # Draw the trail, newest segments brightest and thickest.
-        for i in range(1, len(trail)):
-            if trail[i] is None or trail[i-1] is None:
-                continue
-            src = trail[i][4]
-            p0 = (trail[i-1][2], trail[i-1][3])
-            p1 = (trail[i][2], trail[i][3])
-
-            # Track-debug view: show chosen trail state colors for all sources.
-            if debug_frame is not None:
-                gbase = _trail_base_color(src)
-                galpha = 0.55 + 0.45 * (i / len(trail))
-                gcolor = (int(gbase[0] * galpha), int(gbase[1] * galpha), int(gbase[2] * galpha))
-                gth = max(2, int(3 * galpha))
-                cv2.line(debug_frame, p0, p1, (15, 15, 15), gth + 1, cv2.LINE_AA)
-                cv2.line(debug_frame, p0, p1, gcolor, gth, cv2.LINE_AA)
-
-            if draw_main_ball_trail:
-                alpha = 0.55 + 0.45 * (i / len(trail))
-                base = _trail_base_color(src)
-                color = (int(base[0] * alpha), int(base[1] * alpha), int(base[2] * alpha))
-                line_th = max(2, int(round(3 * alpha)))
-                cv2.line(frame_out, p0, p1, (15, 15, 15), line_th + 1, cv2.LINE_AA)
-                cv2.line(frame_out, p0, p1, color, line_th, cv2.LINE_AA)
-
-        if bool(cfg.draw_court_minimap):
-            draw_court_minimap(
-                frame_out,
-                ground_model,
-                all_player_boxes[fi],
-                rally_legs,
-                fi,
-                fps,
-                contact_events=contact_events,
-            )
-
-        # HUD
-        cv2.putText(frame_out, f"F{fi}", (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        if display_result:
-            chosen_id = int(chosen_track.track_id) if chosen_track else -1
-            source_label = {"det": "DET", "motion": "MOT"}.get(display_result.source, "PHY")
-            hud_text = f"ID:{chosen_id} {source_label} c={display_result.conf:.2f}"
-            cv2.putText(frame_out, hud_text, (60, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-            if debug_frame is not None:
-                 cv2.putText(debug_frame, f"F{fi}", (10, 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                 cv2.putText(debug_frame, hud_text, (60, 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-        # Track-debug stream: the chosen track's display path over time.
-        path_point = display_path.get(fi)
-        if path_point is None and display_result is not None:
-            # Keep the path continuous when the chosen track's path ends early, so
-            # the end of the video does not lose it visually.
-            g_exact_fallback = True
-            path_point = (float(display_result.cx), float(display_result.cy), g_exact_fallback)
-        if path_point is not None:
-            ggx, ggy, gexact = path_point
-            path_pt = (int(round(ggx)), int(round(ggy)), bool(gexact))
-            display_path_trail.append(path_pt)
-        elif display_path_trail and display_path_trail[-1] is not None:
-            display_path_trail.append(None)
-        while len(display_path_trail) > display_path_trail_max:
-            display_path_trail.pop(0)
-
-        if debug_frame is not None:
-            if display_result is None:
-                for i in range(1, len(display_path_trail)):
-                    p0 = display_path_trail[i - 1]
-                    p1 = display_path_trail[i]
-                    if p0 is None or p1 is None:
-                        continue
-                    if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > max(200.0, w * 0.15):
-                        continue
-                    seg_exact = bool(p0[2] and p1[2])
-                    seg_color = COLOR_DISPLAY_PATH if seg_exact else COLOR_DISPLAY_PATH_INTERP
-                    seg_th = 2 if seg_exact else 1
-                    cv2.line(debug_frame, (p0[0], p0[1]), (p1[0], p1[1]),
-                             (15, 15, 15), seg_th + 1, cv2.LINE_AA)
-                    cv2.line(debug_frame, (p0[0], p0[1]), (p1[0], p1[1]),
-                             seg_color, seg_th, cv2.LINE_AA)
-
-            if path_point is not None and display_result is None:
-                ggx, ggy, gexact = path_point
-                gc = (int(round(ggx)), int(round(ggy)))
-                gcol = COLOR_DISPLAY_PATH if gexact else COLOR_DISPLAY_PATH_INTERP
-                gr = 6 if gexact else 4
-                cv2.circle(debug_frame, gc, gr + 2, (15, 15, 15), 2)
-                cv2.circle(debug_frame, gc, gr, gcol, -1)
-            cv2.putText(debug_frame, f"F{fi}", (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            if chosen_track is not None:
-                cv2.putText(debug_frame, f"track={chosen_track.track_id}",
-                            (60, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (255, 255, 255), 1)
-            if info_timing:
-                debug_write_t0 = time.perf_counter()
-            track_debug_writer.write(debug_frame)
-            if info_timing:
-                debug_write_dt = time.perf_counter() - debug_write_t0
-                debug_write_elapsed += debug_write_dt
-                timing["pass2_write_track_debug"] = timing.get("pass2_write_track_debug", 0.0) + debug_write_dt
-
-        if info_timing:
-            render_dt = time.perf_counter() - render_t0 - debug_write_elapsed
-            timing["pass2_render"] = timing.get("pass2_render", 0.0) + max(0.0, render_dt)
-            main_write_t0 = time.perf_counter()
-        if writer is not None:
-            writer.write(frame_out)
-        if info_timing and writer is not None:
-            timing["pass2_write_main"] = timing.get("pass2_write_main", 0.0) + (time.perf_counter() - main_write_t0)
-
-        # Debug videos
-        if dbg_writer is not None:
-            if info_timing:
-                dbg_write_t0 = time.perf_counter()
-            raw_m = None if all_raw_motions[fi] is None else all_raw_motions[fi].unpack()
-            boost_m = None if all_boost_masks[fi] is None else all_boost_masks[fi].unpack()
-            # Cache the protect mask to avoid recomputing build_court_side_protect_mask
-            # every frame - court keypoints rarely change.
-            _dbg_protect_key = court_keypoints_key(court_kps)
-            if fi == 0 or _dbg_protect_key != _dbg_protect_cache_key:
-                _dbg_protect_cache = build_court_side_protect_mask(h, w, court_kps) if court_kps else None
-                _dbg_protect_cache_key = _dbg_protect_key
-            vis = draw_motion_debug_frame(frame, raw_m, boost_m, cfg,
-                                          court_keypoints=court_kps,
-                                          protect_mask=_dbg_protect_cache,
-                                          rois_dbg=all_rois[fi] if fi < len(all_rois) else None)
-
-            # -- Draw motion detection ROI boxes onto vis --
-            # Green = survived   Red = ghost-pruned (didn't reattach)
-            if (not cfg.debug_probe_motion_style) and fi < len(all_rois) and all_rois[fi] is not None:
-                for rx1, ry1, rx2, ry2 in all_rois[fi]:
-                    cv2.rectangle(vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 1)
-
-            if frame_result is not None:
-                vis_fx = float(frame_result.cx or 0.0)
-                vis_fy = float(frame_result.cy or 0.0)
-                vis_bbox = frame_result.bbox
-                vis_src = str(frame_result.source)
-                vis_sr = float(frame_result.search_radius or 0.0)
-                vis_scx = float(frame_result.search_cx or vis_fx)
-                vis_scy = float(frame_result.search_cy or vis_fy)
-                ball_col = MOTION_DEBUG_SOURCE_COLOR[vis_src]
-
-                if vis_fx > 0 or vis_fy > 0:
-                    cx_i = int(round(vis_fx))
-                    cy_i = int(round(vis_fy))
-
-                    if vis_bbox is not None and len(vis_bbox) == 4:
-                        # -- detector bounding box --
-                        bx1, by1, bx2, by2 = (int(round(v)) for v in vis_bbox)
-                        cv2.rectangle(vis, (bx1, by1), (bx2, by2), ball_col, 2)
-                        cv2.putText(vis, vis_src[:3].upper(),
-                                    (bx1, max(by1 - 4, 12)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, ball_col, 1)
-                    else:
-                        # -- Estimated ball box from cached radius (motion/interp) --
-                        br = max(int(round(cached_anchor_radius)), 6)
-                        cv2.rectangle(vis, (cx_i - br, cy_i - br), (cx_i + br, cy_i + br),
-                                      ball_col, 1)
-                        cv2.putText(vis, vis_src[:3].upper(),
-                                    (cx_i - br, max(cy_i - br - 3, 12)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ball_col, 1)
-
-                    # -- Ball center dot --
-                    cv2.circle(vis, (cx_i, cy_i), 4, ball_col, -1)
-
-                    # -- Physics / KF search radius circle --
-                    # Show for ALL non-det frames. If search_radius is populated (motion/interp),
-                    # use it; otherwise fall back to a reasonable estimate.
-                    if vis_src != 'det':
-                        draw_sr = int(round(vis_sr)) if vis_sr > 1 else max(int(round(cached_anchor_radius * 2.5)), 20)
-                        draw_scx = int(round(vis_scx)) if vis_scx > 0 else cx_i
-                        draw_scy = int(round(vis_scy)) if vis_scy > 0 else cy_i
-                        # Dashed-style: draw half-opacity outer ring + crosshair
-                        cv2.circle(vis, (draw_scx, draw_scy), draw_sr,
-                                   (255, 0, 220), 1, cv2.LINE_AA)
-                        cv2.drawMarker(vis, (draw_scx, draw_scy),
-                                       (255, 0, 220), cv2.MARKER_CROSS, 12, 1)
-                        # Label the search radius size
-                        cv2.putText(vis, f"r={draw_sr}",
-                                    (draw_scx + draw_sr + 3, draw_scy),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 220), 1)
-
-
-            # Extract motion blob centroids from boost_m within each ROI.
-            # Using actual contour centroids instead of ROI center/bottom gives the
-            # correct ball position when motion is asymmetrically distributed in the ROI.
-            current_blobs = []
-            if (not cfg.debug_probe_motion_style) and fi < len(all_rois) and all_rois[fi] is not None:
-                for rx1, ry1, rx2, ry2 in all_rois[fi]:
-                    irx1, iry1 = int(rx1), int(ry1)
-                    irx2, iry2 = int(rx2), int(ry2)
-                    found_in_roi = False
-                    if boost_m is not None and boost_m.size > 0:
-                        roi_mask = boost_m[iry1:iry2, irx1:irx2]
-                        if roi_mask.size > 0 and roi_mask.max() > 0:
-                            cnts, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                            for cnt in cnts:
-                                area = cv2.contourArea(cnt)
-                                if area < 1.0:
-                                    continue
-                                bx_r, by_r, bw_r, bh_r = cv2.boundingRect(cnt)
-                                # Anchor to bottom-center of blob bounding rect,
-                                # matching green trail which anchors at bottom of the detector bbox.
-                                cx = irx1 + bx_r + bw_r / 2.0
-                                cy = iry1 + by_r + bh_r
-                                blob_r = min(10.0, max(4.0, math.sqrt(area / math.pi)))
-                                current_blobs.append((float(cx), float(cy), float(blob_r)))
-                                found_in_roi = True
-                    if not found_in_roi:
-                        # Fallback: use ROI center when boost_m has no blobs here
-                        blob_cx = (rx1 + rx2) / 2.0
-                        blob_cy = (ry1 + ry2) / 2.0
-                        blob_r = min(10.0, max(4.0, min(rx2 - rx1, ry2 - ry1) * 0.12))
-                        current_blobs.append((float(blob_cx), float(blob_cy), float(blob_r)))
-
-            # Reduced from max(120, w*0.08) - the old value (~153px for 1920px video)
-            # allowed unrelated motion regions to be merged into the same track.
-            MAX_DIST = max(40.0, w * 0.025)
-            unmatched = current_blobs.copy()
-            for trk in raw_motion_tracks:
-                last_fi, last_x, last_y, last_r = trk[-1]
-                if fi - last_fi <= 3:  # Allow 3 frame gap
-                    best_dist = MAX_DIST
-                    best_match = None
-                    for b in unmatched:
-                        dist = math.hypot(b[0] - last_x, b[1] - last_y)
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_match = b
-                    if best_match is not None:
-                        trk.append((fi, best_match[0], best_match[1], best_match[2]))
-                        unmatched.remove(best_match)
-            for b in unmatched:
-                raw_motion_tracks.append([(fi, b[0], b[1], b[2])])
-
-            # Periodically prune old tracks
-            MAX_AGE = 150
-            if fi % 100 == 0:
-                raw_motion_tracks = [t for t in raw_motion_tracks if fi - t[-1][0] <= MAX_AGE]
-
-            # Draw filtered, smoothed, and faded comet trails
-            for trk in raw_motion_tracks:
-                valid_pts = [pt for pt in trk if fi - pt[0] <= MAX_AGE]
-                # Remove random isolated dots and very short noise tracks
-                if len(valid_pts) < 2:
-                    continue
-
-                # Filter out points that are too dense to avoid splprep waves/crashing
-                unique_pts = [valid_pts[0]]
-                for pt in valid_pts[1:]:
-                    if math.hypot(pt[1] - unique_pts[-1][1], pt[2] - unique_pts[-1][2]) > 2.0:
-                        unique_pts.append(pt)
-
-                # Always append the actual current head if it was filtered out
-                if valid_pts[-1] not in unique_pts:
-                    unique_pts.append(valid_pts[-1])
-
-                if len(unique_pts) < 4:
-                    # Fallback to straight lines if too few unique points
-                    for i in range(1, len(unique_pts)):
-                        age = fi - unique_pts[i][0]
-                        ratio = max(0.0, 1.0 - (age / float(MAX_AGE)))
-                        color = (int(0 * ratio), int(140 * ratio), int(255 * ratio))
-                        th = max(1, int(4 * ratio))
-                        pt1 = (int(unique_pts[i-1][1]), int(unique_pts[i-1][2]))
-                        pt2 = (int(unique_pts[i][1]), int(unique_pts[i][2]))
-                        if math.hypot(pt2[0]-pt1[0], pt2[1]-pt1[1]) < 60.0:
-                            cv2.line(vis, pt1, pt2, color, th, cv2.LINE_AA)
-                else:
-                    try:
-                        import scipy.ndimage
-                        pts_arr = np.array([[pt[1], pt[2]] for pt in unique_pts])
-                        x_raw, y_raw = pts_arr[:, 0], pts_arr[:, 1]
-
-                        # Apply a 1D Gaussian smooth to kill the high-frequency pixel jitter
-                        # that causes B-splines to severely wiggle/wave
-                        x_smooth = scipy.ndimage.gaussian_filter1d(x_raw, sigma=1.5)
-                        y_smooth = scipy.ndimage.gaussian_filter1d(y_raw, sigma=1.5)
-
-                        # splprep generates a smooth B-spline. s > 0 allows the spline
-                        # to relax further instead of forcing exact intersection
-                        tck, u = scipy.interpolate.splprep([x_smooth, y_smooth], s=len(x_smooth))
-
-                        num_smooth_pts = max(100, len(unique_pts) * 5)
-                        u_fine = np.linspace(0, 1.0, num_smooth_pts)
-                        x_fine, y_fine = scipy.interpolate.splev(u_fine, tck)
-
-                        ages = [fi - pt[0] for pt in unique_pts]
-                        ages_fine = np.interp(u_fine, u, ages)
-
-                        for i in range(1, len(x_fine)):
-                            age = ages_fine[i]
-                            ratio = max(0.0, 1.0 - (age / float(MAX_AGE)))
-                            color = (int(0 * ratio), int(140 * ratio), int(255 * ratio))
-                            th = max(1, int(4 * ratio))
-
-                            pt1 = (int(x_fine[i-1]), int(y_fine[i-1]))
-                            pt2 = (int(x_fine[i]), int(y_fine[i]))
-
-                            if math.hypot(pt2[0]-pt1[0], pt2[1]-pt1[1]) < 80.0:
-                                cv2.line(vis, pt1, pt2, color, th, cv2.LINE_AA)
-                    except Exception as e:
-                        # Fallback if splprep fails
-                        for i in range(1, len(unique_pts)):
-                            age = fi - unique_pts[i][0]
-                            ratio = max(0.0, 1.0 - (age / float(MAX_AGE)))
-                            color = (int(0 * ratio), int(140 * ratio), int(255 * ratio))
-                            th = max(1, int(4 * ratio))
-                            pt1 = (int(unique_pts[i-1][1]), int(unique_pts[i-1][2]))
-                            pt2 = (int(unique_pts[i][1]), int(unique_pts[i][2]))
-                            if math.hypot(pt2[0]-pt1[0], pt2[1]-pt1[1]) < 60.0:
-                                cv2.line(vis, pt1, pt2, color, th, cv2.LINE_AA)
-
-                # Draw the trail head prominently if active
-                head_age = fi - valid_pts[-1][0]
-                if head_age == 0:
-                    sr_list = [pt[3] for pt in valid_pts[-10:]] # Only use recent for EMA
-                    sr = sr_list[0]
-                    for r in sr_list[1:]:
-                        sr = 0.10 * r + 0.90 * sr
-
-                    pt_head = (int(valid_pts[-1][1]), int(valid_pts[-1][2]))
-                    rad = max(2, int(sr))
-                    cv2.circle(vis, pt_head, rad, (0, 140, 255), -1)
-
-            dbg_writer.write(vis)
-            if info_timing:
-                timing["pass2_write_debug"] = timing.get("pass2_write_debug", 0.0) + (time.perf_counter() - dbg_write_t0)
-
-        pass2_frames_rendered += 1
-        if cfg.progress_every and (fi + 1) % cfg.progress_every == 0:
-            elapsed = time.time() - t0
-            print(f"  [pass2 {fi+1}/{N}] rendering...")
-
-    if cap2 is not None:
-        cap2.release()
-    if writer is not None:
-        writer.close()
-    if dbg_writer:
-        dbg_writer.close()
-    if detector_input_writer:
-        detector_input_writer.close()
-    if track_debug_writer:
-        track_debug_writer.close()
-    if info_timing:
-        timing["pass2_total"] = time.perf_counter() - pass2_perf_t0
-
-    elapsed = time.time() - t0
-    filled = sum(1 for r in per_frame if r is not None)
+    return CourtEvents(list(bounces.confirmed), list(contacts), list(rally_legs))
+
+
+def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered: int) -> None:
+    """Write the tracking JSON and report what was produced."""
+    cfg = ctx.cfg
+    n = pass1.frame_count
+    elapsed = ctx.elapsed()
+    filled = selection.filled_frames
     if cfg.tracking_json:
-        _write_tracking_json(
-            cfg.tracking_json,
-            cfg,
-            fps,
-            w,
-            h,
-            N,
-            elapsed,
-            filled,
-            per_frame,
-            chosen_track,
-            all_tracks,
-            detections_by_frame=all_frame_dets,
-            boost_masks=all_boost_masks,
-            raw_motions=all_raw_motions,
-            court_keypoints_by_frame=all_court_kps,
-            player_boxes_by_frame=all_player_boxes,
-            timing=timing,
-            pass2_frames_rendered=pass2_frames_rendered,
-        )
+        write_tracking_json(ctx, pass1, selection, elapsed_sec=elapsed, pass2_frames_rendered=rendered)
         print(f"[done] Tracking JSON: {cfg.tracking_json}")
-    print(f"\n[done] {filled}/{N} frames filled ({100*filled/max(1,N):.1f}%)")
+    print(f"\n[done] {filled}/{n} frames filled ({100*filled/max(1,n):.1f}%)")
     print(f"[done] {elapsed:.1f}s total")
     if cfg.save_tracking_video:
         print(f"[done] Tracking video: {cfg.output_video}")
@@ -1809,5 +218,16 @@ def run(cfg):
         print(f"[done] Detector input debug:  {cfg.output_detector_input_debug_path}")
     if cfg.save_track_debug_video:
         print(f"[done] Track debug:  {cfg.output_track_debug_path}")
-    if info_timing:
-        _print_timing_summary(timing, elapsed, N, pass2_frames_rendered)
+    if ctx.timing.enabled:
+        print_timing_summary(ctx.timing.values, elapsed, n, rendered)
+
+
+def run(cfg: Config) -> None:
+    """Track the ball through ``cfg.input_video`` and write the configured outputs."""
+    ctx = _open_inputs(cfg)
+    pass1 = collect_pass1(ctx)
+    erase_ghost_rois(pass1)
+    selection = _select(ctx, pass1)
+    events = _court_events(ctx, pass1, selection)
+    rendered = render_pass2(ctx, pass1, selection, events)
+    _finish(ctx, pass1, selection, rendered)
