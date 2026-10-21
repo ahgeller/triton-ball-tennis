@@ -22,7 +22,8 @@ import csv
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict, get_args
+from typing import (Callable, Dict, Iterable, List, Literal, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict,
+                    TypeGuard, TypeVar, get_args)
 
 from finetune.data.fileio import atomic_csv, write_atomic
 from finetune.data.workspace import review_json
@@ -217,16 +218,37 @@ def reviewed_frames(clip: str, labels: Optional[Path] = None) -> Set[int]:
     return set(frame_list(state, "reviewed", path)) | set(frame_list(state, "edited", path))
 
 
-def json_map(state: Mapping, key: str, path: Path) -> dict:
-    """The object under `key` in a sidecar's object (missing or null: empty). Anything else is a
-    LabelFormatError naming `path`, as ``frame_list`` does for the frame lists: the ``answered``
-    map is the record of somebody's answers, never guessed at or written over."""
+MapValue = TypeVar("MapValue")
+
+
+def _is_note(value: object) -> TypeGuard[str]:
+    """A ``notes`` entry: what the audit wants looked at, as text."""
+    return isinstance(value, str)
+
+
+def _is_answer(value: object) -> TypeGuard[Optional[List[float]]]:
+    """An ``answered`` entry: None (answered as no ball) or the [x, y] it was answered at."""
+    return value is None or (isinstance(value, list) and len(value) == 2
+                             and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value))
+
+
+def json_map(state: Mapping[str, object], key: str, path: Path,
+             holds: Callable[[object], TypeGuard[MapValue]], what: str) -> Dict[str, MapValue]:
+    """The object under `key` in a sidecar's object (missing or null: empty), every value of it
+    one `holds` accepts. Anything else is a LabelFormatError naming `path`, as ``frame_list`` does
+    for the frame lists: the ``answered`` map is the record of somebody's answers, never guessed
+    at or written over."""
     value = state.get(key)
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise LabelFormatError(f"{path}: {key!r} is not an object (got {type(value).__name__})")
-    return dict(value)
+    checked: Dict[str, MapValue] = {}
+    for name, item in value.items():
+        if not holds(item):
+            raise LabelFormatError(f"{path}: {key!r} entry {name!r} is not {what} (got {item!r})")
+        checked[name] = item
+    return checked
 
 
 def read_flags(path: Path) -> Flags:
@@ -237,10 +259,10 @@ def read_flags(path: Path) -> Flags:
     if blob is None:
         return {"generated": "", "notes": {}, "unplaceable": [], "check": [], "answered": {}}
     return {"generated": str(blob.get("generated") or ""),
-            "notes": json_map(blob, "notes", path),
+            "notes": json_map(blob, "notes", path, _is_note, "a note"),
             "unplaceable": frame_list(blob, "unplaceable", path),
             "check": frame_list(blob, "check" if "check" in blob else "frames", path),
-            "answered": json_map(blob, "answered", path)}
+            "answered": json_map(blob, "answered", path, _is_answer, "null or an [x, y] point")}
 
 
 def write_flags(path: Path, flags: Flags) -> None:

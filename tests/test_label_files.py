@@ -123,7 +123,9 @@ def test_flag_sidecar_reads_the_legacy_frames_list_as_check(tmp_path):
     assert path.name in str(caught.value)
 
 
-@pytest.mark.parametrize("field, value", [("answered", [1, 2]), ("answered", "7"), ("notes", ["check"]), ("notes", 3)])
+@pytest.mark.parametrize("field, value", [("answered", [1, 2]), ("answered", "7"), ("notes", ["check"]), ("notes", 3),
+                                          ("answered", {"4": [1.5]}), ("answered", {"4": "1.5,2.5"}),
+                                          ("answered", {"4": [True, 2.5]}), ("notes", {"check": 3})])
 def test_a_malformed_answered_or_notes_map_is_an_error_not_an_empty_one(tmp_path, field, value):
     """The answered map is the record of somebody's answers: a reader that silently read it as
     {} would let the next audit write {} over it."""
