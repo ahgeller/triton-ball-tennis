@@ -142,10 +142,11 @@ def _build_engine_from_onnx(
     engine_path: Path,
     *,
     fp16: bool,
-    strict_fp16_io: bool,
     workspace_mb: int,
     label: str,
 ) -> None:
+    """Build ``engine_path`` from ``onnx_path``; FP16 I/O is checked afterwards
+    by ``_verify_engine_precision``, not enforced here."""
     trt = _import_tensorrt("build")
     if not onnx_path.exists():
         raise FileNotFoundError(f"[{label}] ONNX not found for TRT build: {onnx_path}")
@@ -155,11 +156,7 @@ def _build_engine_from_onnx(
     network = _parse_onnx(trt, logger, builder, onnx_path, label)
 
     config = builder.create_builder_config()
-    workspace_bytes = int(workspace_mb) * _MIB
-    if hasattr(config, "set_memory_pool_limit"):
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_bytes)
-    else:
-        config.max_workspace_size = workspace_bytes
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(workspace_mb) * _MIB)
 
     if fp16:
         if not builder.platform_has_fast_fp16:
@@ -242,7 +239,6 @@ def _ensure_target(
             target.onnx_path,
             target.engine_path,
             fp16=bool(half),
-            strict_fp16_io=bool(strict_fp16_io),
             workspace_mb=int(workspace_mb),
             label=target.label,
         )

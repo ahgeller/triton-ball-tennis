@@ -109,9 +109,9 @@ def read_engine_class_names(engine_path: Optional[Path]) -> Dict[int, str]:
 class EngineIO:
     """One input or output tensor of a deserialized TensorRT engine.
 
-    ``index`` is the TensorRT 8 binding index (also the I/O tensor index on
-    TensorRT 10); ``dtype`` is the raw ``trt.DataType``; ``profile_shape`` is
-    the optimisation profile's max shape, filled only for dynamic inputs.
+    ``index`` is the I/O tensor index; ``dtype`` is the raw ``trt.DataType``;
+    ``profile_shape`` is the optimisation profile's max shape, filled only for
+    dynamic inputs.
     """
 
     index: int
@@ -126,29 +126,23 @@ class EngineIO:
         return -1 in self.shape
 
 
-def engine_is_trt10(engine: Any) -> bool:
-    """TensorRT 10 dropped the binding API; TensorRT 8 engines still carry it."""
-    return not hasattr(engine, "num_bindings")
-
-
 def iter_engine_io(engine: Any, trt: Any) -> Iterator[EngineIO]:
-    """Walk an engine's I/O tensors with the TensorRT 10 tensor API or the
-    TensorRT 8 binding API, whichever the engine exposes."""
-    if engine_is_trt10(engine):
-        for index in range(engine.num_io_tensors):
-            name = engine.get_tensor_name(index)
-            is_input = engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
-            shape = tuple(engine.get_tensor_shape(name))
-            profile_shape = None
-            if is_input and -1 in shape:
-                profile_shape = tuple(engine.get_tensor_profile_shape(name, 0)[2])
-            yield EngineIO(index, name, engine.get_tensor_dtype(name), is_input, shape, profile_shape)
-        return
-    for index in range(engine.num_bindings):
-        name = engine.get_binding_name(index)
-        is_input = bool(engine.binding_is_input(index))
-        shape = tuple(engine.get_binding_shape(index))
+    """Walk an engine's I/O tensors with the TensorRT 10 tensor API.
+
+    An engine that only exposes the TensorRT 8 binding API raises: the
+    requirements pin TensorRT 10, and ``build_trt_engines.py`` rebuilds the
+    engines for it.
+    """
+    if not hasattr(engine, "num_io_tensors"):
+        raise RuntimeError(
+            "TensorRT engine exposes only the TensorRT 8 binding API; this tracker requires "
+            "TensorRT 10 (requirements.txt) and engines rebuilt for it with build_trt_engines.py"
+        )
+    for index in range(engine.num_io_tensors):
+        name = engine.get_tensor_name(index)
+        is_input = engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
+        shape = tuple(engine.get_tensor_shape(name))
         profile_shape = None
         if is_input and -1 in shape:
-            profile_shape = tuple(engine.get_profile_shape(0, index)[1])
-        yield EngineIO(index, name, engine.get_binding_dtype(index), is_input, shape, profile_shape)
+            profile_shape = tuple(engine.get_tensor_profile_shape(name, 0)[2])
+        yield EngineIO(index, name, engine.get_tensor_dtype(name), is_input, shape, profile_shape)

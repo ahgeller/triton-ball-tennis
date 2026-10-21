@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from .config import Config
-from .engine_files import engine_is_trt10, iter_engine_io, read_engine_header, resolve_engine_path
+from .engine_files import iter_engine_io, read_engine_header, resolve_engine_path
 
 
 def _import_tensorrt() -> Any:
@@ -62,10 +62,10 @@ class _Binding(NamedTuple):
 class _TensorRTRuntimeSession:
     """A deserialized TensorRT engine with device buffers and GPU preprocessing.
 
-    Works with the TensorRT 10 tensor API and the TensorRT 8 binding API.
-    Inference runs on its own CUDA stream when ``async_execute`` is set and the
-    context supports it; ``output_slots`` > 1 keeps that many output buffer
-    sets so a caller can launch frame N+1 before reading frame N.
+    Uses the TensorRT 10 tensor API (``iter_engine_io`` rejects a TensorRT 8
+    engine).  Inference runs on its own CUDA stream when ``async_execute`` is
+    set; ``output_slots`` > 1 keeps that many output buffer sets so a caller
+    can launch frame N+1 before reading frame N.
     """
 
     def __init__(
@@ -80,11 +80,8 @@ class _TensorRTRuntimeSession:
         trt = _import_tensorrt()
         self.device = device if device is not None else torch.device("cuda:0")
         self.engine, self.context = _deserialize_engine(trt, engine_path)
-        self.is_trt10 = engine_is_trt10(self.engine)
 
-        self._has_async_v3 = hasattr(self.context, "execute_async_v3")
-        self._has_async_v2 = hasattr(self.context, "execute_async_v2")
-        self.use_async = bool(async_execute) and (self._has_async_v3 or self._has_async_v2)
+        self.use_async = bool(async_execute) and hasattr(self.context, "execute_async_v3")
         self.stream = torch.cuda.Stream(device=self.device) if self.use_async else None
 
         self.bindings: "OrderedDict[str, _Binding]" = OrderedDict()
@@ -100,12 +97,12 @@ class _TensorRTRuntimeSession:
                 self.input_name = io.name
                 if io.dynamic:
                     self.dynamic = True
-                    self._set_input_shape(io.name, io.index, io.profile_shape)
+                    self.context.set_input_shape(io.name, io.profile_shape)
                 if np_dtype == np.float16:
                     self.fp16 = True
             else:
                 self.output_names.append(io.name)
-            shape_now = self._current_shape(io.name, io.index)
+            shape_now = tuple(self.context.get_tensor_shape(io.name))
             tensor = torch.empty(shape_now, dtype=_torch_dtype(np_dtype), device=self.device)
             self.bindings[io.name] = _Binding(io.name, io.index, np_dtype, shape_now, tensor, int(tensor.data_ptr()))
 
@@ -140,27 +137,16 @@ class _TensorRTRuntimeSession:
 
     # --- shapes -----------------------------------------------------------
 
-    def _current_shape(self, name: str, index: int) -> Tuple[int, ...]:
-        if self.is_trt10:
-            return tuple(self.context.get_tensor_shape(name))
-        return tuple(self.context.get_binding_shape(index))
-
-    def _set_input_shape(self, name: str, index: int, shape: Tuple[int, ...]) -> None:
-        if self.is_trt10:
-            self.context.set_input_shape(name, shape)
-        else:
-            self.context.set_binding_shape(index, shape)
-
     def _reshape_for(self, t: torch.Tensor) -> None:
         """Dynamic engines: adopt ``t``'s shape and reallocate outputs that grew."""
         if not self.dynamic or tuple(t.shape) == tuple(self.bindings[self.input_name].shape):
             return
         inp = self.bindings[self.input_name]
-        self._set_input_shape(inp.name, inp.index, tuple(t.shape))
+        self.context.set_input_shape(inp.name, tuple(t.shape))
         self.bindings[self.input_name] = inp._replace(shape=tuple(t.shape))
         for name in self.output_names:
             binding = self.bindings[name]
-            shape_new = self._current_shape(name, binding.index)
+            shape_new = tuple(self.context.get_tensor_shape(name))
             for slot in self.output_slots:
                 if tuple(slot[name].shape) != shape_new:
                     slot[name] = torch.empty(shape_new, dtype=slot[name].dtype, device=self.device)
@@ -239,15 +225,11 @@ class _TensorRTRuntimeSession:
             addrs[name] = int(slot[name].data_ptr())
         ptrs = [addrs[name] for name in self.binding_order]
 
-        if self.is_trt10 and hasattr(self.context, "set_tensor_address"):
-            for name in [self.input_name, *self.output_names]:
-                self.context.set_tensor_address(name, addrs[name])
+        for name in [self.input_name, *self.output_names]:
+            self.context.set_tensor_address(name, addrs[name])
         if self.use_async:
             self.stream.wait_stream(torch.cuda.current_stream(device=self.device))
-            if self.is_trt10 and self._has_async_v3:
-                ok = self.context.execute_async_v3(stream_handle=int(self.stream.cuda_stream))
-            else:
-                ok = self.context.execute_async_v2(ptrs, int(self.stream.cuda_stream))
+            ok = self.context.execute_async_v3(stream_handle=int(self.stream.cuda_stream))
             if ok is False:
                 raise RuntimeError("TensorRT async execution failed.")
         else:

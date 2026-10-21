@@ -126,62 +126,30 @@ class FakeEngine10:
         return self._tensor(name).shape
 
     def get_tensor_profile_shape(self, name, profile_index):
+        """(min, opt, max) of the optimisation profile, as TensorRT returns them."""
         t = self._tensor(name)
-        return [t.profile_max, t.profile_max, t.profile_max]
+        return [t.profile_min, t.profile_opt, t.profile_max]
 
     def create_execution_context(self):
         return FakeContext10(self)
 
 
-class FakeContext8:
-    """TensorRT 8 execution context: binding API."""
-
-    def __init__(self, engine):
-        self.engine = engine
-        self.shapes = [t.shape for t in engine.tensors]
-        self.executions = []
-
-    def get_binding_shape(self, index):
-        return self.shapes[index]
-
-    def set_binding_shape(self, index, shape):
-        self.shapes[index] = tuple(shape)
-
-    def execute_v2(self, ptrs):
-        self.executions.append(list(ptrs))
-        return True
-
-
 class FakeEngine8:
+    """A TensorRT 8 engine exposes the binding API and no I/O tensor table."""
+
     def __init__(self, tensors):
         self.tensors = tensors
         self.num_bindings = len(tensors)
 
-    def get_binding_name(self, index):
-        return self.tensors[index].name
-
-    def get_binding_dtype(self, index):
-        return self.tensors[index].dtype
-
-    def binding_is_input(self, index):
-        return self.tensors[index].is_input
-
-    def get_binding_shape(self, index):
-        return self.tensors[index].shape
-
-    def get_profile_shape(self, profile_index, index):
-        t = self.tensors[index]
-        return [t.profile_max, t.profile_max, t.profile_max]
-
-    def get_binding_index(self, name):
-        return next(i for i, t in enumerate(self.tensors) if t.name == name)
-
-    def create_execution_context(self):
-        return FakeContext8(self)
-
 
 def _tensor(name, dtype, is_input, shape, profile_max=None):
-    return SimpleNamespace(name=name, dtype=dtype, is_input=is_input, shape=tuple(shape), profile_max=profile_max)
+    """A fake I/O tensor; a dynamic input's profile is (1, ..., max) with ``opt`` between."""
+    profile_min = profile_opt = None
+    if profile_max is not None:
+        profile_min = (1,) + tuple(profile_max[1:])
+        profile_opt = (max(1, profile_max[0] // 2),) + tuple(profile_max[1:])
+    return SimpleNamespace(name=name, dtype=dtype, is_input=is_input, shape=tuple(shape),
+                           profile_min=profile_min, profile_opt=profile_opt, profile_max=profile_max)
 
 
 def _fake_trt(engine):
@@ -214,21 +182,27 @@ def _fake_trt(engine):
     )
 
 
-def test_iter_engine_io_reads_both_apis():
+def test_iter_engine_io_reads_the_tensor_api_and_the_profile_max():
     tensors = [
-        _tensor("images", "HALF", True, (-1, 3, 8, 8), profile_max=(2, 3, 8, 8)),
+        _tensor("images", "HALF", True, (-1, 3, 8, 8), profile_max=(4, 3, 8, 8)),
         _tensor("output0", "FLOAT", False, (-1, 4, 6)),
     ]
     trt = _fake_trt(None)
-    for engine in (FakeEngine10(tensors), FakeEngine8(tensors)):
-        table = list(iter_engine_io(engine, trt))
-        assert table == [
-            EngineIO(0, "images", "HALF", True, (-1, 3, 8, 8), (2, 3, 8, 8)),
-            EngineIO(1, "output0", "FLOAT", False, (-1, 4, 6), None),
-        ]
-        assert table[0].dynamic and table[1].dynamic
-        static = list(iter_engine_io(engine.__class__([_tensor("images", "FLOAT", True, (1, 3, 8, 8))]), trt))
-        assert static == [EngineIO(0, "images", "FLOAT", True, (1, 3, 8, 8), None)] and not static[0].dynamic
+    engine = FakeEngine10(tensors)
+    assert engine.get_tensor_profile_shape("images", 0) == [(1, 3, 8, 8), (2, 3, 8, 8), (4, 3, 8, 8)]
+    table = list(iter_engine_io(engine, trt))
+    assert table == [
+        EngineIO(0, "images", "HALF", True, (-1, 3, 8, 8), (4, 3, 8, 8)),   # max, not min or opt
+        EngineIO(1, "output0", "FLOAT", False, (-1, 4, 6), None),
+    ]
+    assert table[0].dynamic and table[1].dynamic
+    static = list(iter_engine_io(FakeEngine10([_tensor("images", "FLOAT", True, (1, 3, 8, 8))]), trt))
+    assert static == [EngineIO(0, "images", "FLOAT", True, (1, 3, 8, 8), None)] and not static[0].dynamic
+
+
+def test_iter_engine_io_rejects_a_tensorrt8_engine():
+    with pytest.raises(RuntimeError, match="TensorRT 8 binding API.*TensorRT 10"):
+        list(iter_engine_io(FakeEngine8([_tensor("images", "FLOAT", True, (1, 3, 8, 8))]), _fake_trt(None)))
 
 
 @pytest.fixture
@@ -243,9 +217,8 @@ def _session_for(monkeypatch, engine, tmp_path, **kwargs):
     return _TensorRTRuntimeSession(str(engine_file), device=torch.device("cpu"), async_execute=False, **kwargs)
 
 
-@pytest.mark.parametrize("engine_cls", [FakeEngine10, FakeEngine8])
-def test_session_binds_tensors_and_runs_with_slot_buffers(monkeypatch, tmp_path, cuda_available, engine_cls):
-    engine = engine_cls([
+def test_session_binds_tensors_and_runs_with_slot_buffers(monkeypatch, tmp_path, cuda_available):
+    engine = FakeEngine10([
         _tensor("output0", "FLOAT", False, (1, 4, 6)),
         _tensor("images", "HALF", True, (1, 3, 8, 8)),
     ])
@@ -268,19 +241,27 @@ def test_session_binds_tensors_and_runs_with_slot_buffers(monkeypatch, tmp_path,
     outputs = session.forward_tensor(t)
     assert outputs[0] is session.output_slots[0]["output0"]
     assert session.context.executions == [[outputs[0].data_ptr(), t.data_ptr()]]
+    assert session.context.addresses == {"images": t.data_ptr(), "output0": outputs[0].data_ptr()}
     with pytest.raises(RuntimeError):
         session.forward_tensor(torch.zeros((1, 3, 4, 4), dtype=torch.float16))
 
 
+def test_session_rejects_a_tensorrt8_engine(monkeypatch, tmp_path, cuda_available):
+    engine = FakeEngine8([_tensor("images", "FLOAT", True, (1, 3, 8, 8))])
+    engine.create_execution_context = lambda: SimpleNamespace()
+    with pytest.raises(RuntimeError, match="TensorRT 10"):
+        _session_for(monkeypatch, engine, tmp_path)
+
+
 def test_session_handles_dynamic_shapes(monkeypatch, tmp_path, cuda_available):
     engine = FakeEngine10([
-        _tensor("images", "FLOAT", True, (-1, 3, 8, 8), profile_max=(2, 3, 8, 8)),
+        _tensor("images", "FLOAT", True, (-1, 3, 8, 8), profile_max=(4, 3, 8, 8)),
         _tensor("output0", "FLOAT", False, (-1, 4, 6)),
     ])
     session = _session_for(monkeypatch, engine, tmp_path)
     assert session.dynamic
-    assert session.bindings["images"].shape == (2, 3, 8, 8)  # the profile's max shape
-    assert session.bindings["output0"].data.shape == (2, 4, 6)
+    assert session.bindings["images"].shape == (4, 3, 8, 8)  # the profile's max shape, not its opt (2)
+    assert session.bindings["output0"].data.shape == (4, 4, 6)
 
     outputs = session.forward_tensor(torch.zeros((1, 3, 8, 8)))
     assert outputs[0].shape == (1, 4, 6)
