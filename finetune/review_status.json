@@ -1,11 +1,16 @@
 {
-  "verified_video_min": 1,
   "verified_clips": [
     "PomonaPitzer_Women_vs._UCSD-cut-merged-1778697988405",
     "grid_match1", "grid_match4", "grid_match7", "grid_match8", "grid_match16", "grid_match17",
     "grid_match19", "grid_match21", "grid_match22", "grid_match23", "grid_match24", "grid_match26",
-    "grid_match31"
+    "grid_match31",
+    "video1", "video2", "video3", "video4", "video5", "video6", "video7", "video8", "video9", "video10",
+    "video11", "video12", "video13", "video14", "video15", "video16", "video17", "video18", "video19",
+    "video20", "video21", "video22", "video23", "video24", "video25", "video26", "video27", "video28",
+    "video29", "video30", "video31", "video32", "video33", "video34", "video35", "video36", "video37",
+    "video38", "video39", "video40", "video41", "video42", "video43", "video44", "video45", "video46",
+    "video47", "video48", "video49", "video50", "video51", "video52", "video53"
   ],
-  "note": "User confirmed video13 and onward manually verified on 2026-09-07; on 2026-10-18 the user had reviewed every video clip (video1-video53), the Pomona clip and grid_match 1, 4, 7, 8, 16, 17, 19, 21, 22, 23, 24, 26 and 31 (see AGENTS.md, 'Label review status'); this file was brought in line with that on 2026-10-21. Other grid_match clips remain under review and are excluded from evaluation and default training. Update this file when the user clears additional clips. In-progress clips are ones a person is labelling now; the label tool's suggestion network (the CNN refiner) leaves them out of its training, calibration and checks until they are taken off the list.",
+  "note": "Every clip named here was reviewed by hand in the label tool: video13 and onward on 2026-09-07, and by 2026-10-18 the rest of video1-video53, the Pomona clip and grid_match 1, 4, 7, 8, 16, 17, 19, 21, 22, 23, 24, 26 and 31 (see AGENTS.md, 'Label review status'). Clips are listed one by one, with no verified_video_min, so a clip added later is unreviewed until it is added here. Other grid_match clips remain under review and are excluded from evaluation and default training. In-progress clips are ones a person is labelling now; the label tool's suggestion network (the CNN refiner) leaves them out of its training, calibration and checks until they are taken off the list.",
   "in_progress_clips": ["grid_match36"]
 }

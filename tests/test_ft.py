@@ -211,6 +211,24 @@ def test_add_videos_names_copies_and_reports_what_it_could_not_add(workspace_dir
     assert sorted(p.name for p in (workspace_dir / "videos").iterdir()) == ["good.avi", "renamed.avi"]
 
 
+def test_add_videos_records_the_clip_as_the_users_own_in_the_manifest(workspace_dir):
+    # A workspace with a clips.csv treats an unlisted clip as an unknown source, which the trainer
+    # keeps out; adding a video therefore writes its row: own camera, size, frame rate, origin.
+    workspace.write_manifest({"video1": {"clip": "video1", "source": "custom", "label_frames": "5", "visible": "4"}})
+    good = write_clip(workspace_dir / "good.avi", 3, SIZE)
+    assert ft.add_videos([good], prelabel=False) == (["good"], 0)
+    manifest = workspace.read_manifest()
+    assert sorted(manifest) == ["good", "video1"] and manifest["video1"]["label_frames"] == "5"
+    row = manifest["good"]
+    assert (row["source"], row["width"], row["height"], row["fps"], row["stride"]) == ("custom", "64", "36", "30.000", "1")
+    assert row["origin"] == str(good) and row["label_frames"] == "" and row["visible"] == ""
+    # Adding it again keeps what the row already says (a source or origin the user edited).
+    manifest["good"].update(source="prof", origin="elsewhere")
+    workspace.write_manifest(manifest)
+    assert ft.add_videos([good], prelabel=False) == (["good"], 0)
+    assert (workspace.read_manifest()["good"]["source"], workspace.read_manifest()["good"]["origin"]) == ("prof", "elsewhere")
+
+
 @pytest.mark.parametrize("argv, expected", [
     (["add", "a.mp4"], {"name": None, "force": False, "prelabel": True, "pretrack_arguments": []}),
     (["add", "a.mp4", "--name", "rally", "--force", "--no-prelabel", "--batch", "4"],

@@ -28,9 +28,10 @@ from typing import Collection, Dict, List, Optional, Sequence
 from finetune.data.labels import read_json_object
 from finetune.data.workspace import REVIEW_STATUS_NAME
 
-OWN_SOURCES = ("custom", "custom-uncorrected")                     # the user's own camera
+OWN_SOURCE = "custom"                                              # the user's own camera, labelled by hand
+OWN_SOURCES = (OWN_SOURCE, "custom-uncorrected")                   # the user's own camera
 UNTRUSTED_SOURCES = frozenset({"custom-uncorrected", "unknown"})   # machine labels nobody checked
-UNMANIFESTED_SOURCE = "custom"     # every clip of a workspace with no clips.csv at all: nothing was imported, so the user's own
+UNMANIFESTED_SOURCE = OWN_SOURCE   # every clip of a workspace with no clips.csv at all: nothing was imported, so the user's own
 UNLISTED_SOURCE = "unknown"        # a clip a clips.csv exists but does not list: untrusted until it is imported or tagged
 
 
@@ -68,12 +69,34 @@ def is_verified(clip: str, status: Optional[dict]) -> bool:
 
 def is_scorable(clip: str, status: Optional[dict], excluded: Collection[str]) -> bool:
     """May a clip's labels stand as ground truth for evaluation: reviewed, and not in exclude.txt."""
-    return is_verified(clip, status) and clip not in excluded
+    return unscorable_reason(clip, status, excluded) is None
 
 
 def is_trainable(clip: str, source: str, status: Optional[dict], excluded: Collection[str] = ()) -> bool:
     """May the trainer learn from this clip: labels it could be scored on, from a trusted source."""
-    return is_scorable(clip, status, excluded) and source not in UNTRUSTED_SOURCES
+    return untrainable_reason(clip, source, status, excluded) is None
+
+
+def unscorable_reason(clip: str, status: Optional[dict], excluded: Collection[str]) -> Optional[str]:
+    """Why a clip's labels may not stand as ground truth, in the words the evaluator and the
+    trainer print after ``[skip] <clip>:``; None when they may (``is_scorable``)."""
+    if clip in excluded:
+        return "listed in exclude.txt"
+    if not is_verified(clip, status):
+        return "labels are still under review"
+    return None
+
+
+def untrainable_reason(clip: str, source: str, status: Optional[dict], excluded: Collection[str] = ()) -> Optional[str]:
+    """Why the trainer leaves a clip out by default; None when it may learn from it (``is_trainable``)."""
+    reason = unscorable_reason(clip, status, excluded)
+    if reason is not None:
+        return reason
+    if source == UNLISTED_SOURCE:
+        return "not listed in clips.csv (import it, or tag its source there)"
+    if source in UNTRUSTED_SOURCES:
+        return f"source {source!r} is machine labels nobody checked"
+    return None
 
 
 def evaluation_clips(labelled: Sequence[str], manifest: Dict[str, dict], status: Optional[dict],

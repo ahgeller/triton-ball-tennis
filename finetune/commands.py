@@ -77,8 +77,9 @@ def label_frame_size(video: Optional[Path], csv_path: Path) -> Tuple[int, int]:
 
 
 def clip_counts(clip: str, csv_path: Path, row: Optional[Dict[str, str]], videos: Dict[str, Path]) -> Tuple[int, int]:
-    """(label rows, visible balls): from clips.csv when the clip is listed, else counted from the file."""
-    if row:
+    """(label rows, visible balls): from clips.csv when the clip is listed with counts, else counted
+    from the file (a clip ``ft.py add`` recorded has a row before it has labels)."""
+    if row and row.get("label_frames") and row.get("visible"):
         return int(row["label_frames"]), int(row["visible"])
     return label_stats(csv_path, *label_frame_size(videos.get(clip), csv_path))
 

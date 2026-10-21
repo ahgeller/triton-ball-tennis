@@ -301,8 +301,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         rows = manifest.rows.values()
         print(f"\n{total} clips processed; clips.csv now lists {len(rows)} clips, "
-              f"{sum(int(r['label_frames']) for r in rows)} label frames, "
-              f"{sum(int(r['visible']) for r in rows)} visible balls -> python finetune/ft.py status")
+              f"{sum(int(r['label_frames'] or 0) for r in rows)} label frames, "
+              f"{sum(int(r['visible'] or 0) for r in rows)} visible balls -> python finetune/ft.py status")
     return 0
 
 

@@ -22,6 +22,7 @@ def test_label_stats_and_counts_prefer_the_manifest_row(workspace_dir, capsys):
     assert clip_counts("rally", csv_path, {"label_frames": "9", "visible": "7"}, {}) == (9, 7)
     # No video to size the sentinel by: counted as 1080p, where a 64x36 clip's "no ball" corner is a point
     assert clip_counts("rally", csv_path, None, {}) == (3, 3)
+    assert clip_counts("rally", csv_path, {"label_frames": "", "visible": ""}, {}) == (3, 3)   # added, not yet counted
     video = write_clip(workspace_dir / "videos" / "rally.avi", 3, SIZE)
     assert clip_counts("rally", csv_path, None, {"rally": video}) == (3, 2)
     assert clip_counts("rally", csv_path, None, {"rally": workspace_dir / "videos" / "missing.avi"}) == (3, 3)

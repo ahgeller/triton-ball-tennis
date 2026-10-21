@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
-from finetune.data.data_policy import is_scorable, read_review_status
+from finetune.data.data_policy import read_review_status, unscorable_reason
 from finetune.data.detect import ball_detector, detect_points
 from finetune.data.labels import read_labels
 from finetune.data.detector_metrics import HIT_PX, DetectorMetrics, Point, scale_for_width
@@ -81,10 +81,8 @@ def _archive_folders(archive: Path) -> Tuple[Path, List[Path]]:
 
 
 def _skip_reason(clip: str, status: Optional[dict], excluded: Set[str], include_excluded: bool) -> Optional[str]:
-    """Why a clip's labels may not stand as ground truth (``data_policy.is_scorable``), or None."""
-    if include_excluded or is_scorable(clip, status, excluded):
-        return None
-    return "listed in exclude.txt" if clip in excluded else "labels are still under review"
+    """Why a clip's labels may not stand as ground truth (``data_policy.unscorable_reason``), or None."""
+    return None if include_excluded else unscorable_reason(clip, status, excluded)
 
 
 def list_clips(names: Optional[List[str]], archive: Path, include_excluded: bool = False) -> List[ClipPair]:

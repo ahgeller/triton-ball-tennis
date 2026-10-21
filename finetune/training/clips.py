@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from finetune.data.data_policy import clip_source, is_trainable, is_verified, read_review_status
+from finetune.data.data_policy import clip_source, is_trainable, is_verified, read_review_status, untrainable_reason
 from finetune.data.workspace import MANIFEST_NAME, clip_of, find_video, label_files, read_exclusions, read_manifest
 
 DEFAULT_VAL_CLIP = "video10"
@@ -50,15 +50,16 @@ def _excluded_clips(selection: ClipSelection, labels: Path, manifest: Dict[str, 
     """The clips exclude.txt keeps out of this selection (none with --include-excluded); also the
     place a --cameras request meets a manifest without camera tags."""
     excluded = set() if selection.include_excluded else set(read_exclusions(labels.parent))
-    if excluded:
-        print(f"[data] skipping {len(excluded)} clip(s) listed in exclude.txt (--include-excluded to keep them)")
     if selection.cameras and not any(row.get("camera") for row in manifest.values()):
         raise ValueError("--cameras needs camera tags in clips.csv: run  python finetune/ft.py camera  first")
     return excluded
 
 
 def find_clips(videos: Path, labels: Path, selection: ClipSelection = ClipSelection()) -> List[Clip]:
-    """Every (clip, video, label csv, source) the selection admits, in label-file order."""
+    """Every (clip, video, label csv, source) the selection admits, in label-file order. A labelled
+    clip the records keep out (exclude.txt, the review policy, an untrusted source) is announced
+    with a ``[skip]`` line, as the evaluator does, so a clip missing from a run is never a mystery;
+    the run's own --sources / --cameras / --exclude-clips choices are not."""
     manifest = read_manifest(labels.parent / MANIFEST_NAME)
     review_status = read_review_status(labels.parent)
     excluded = _excluded_clips(selection, labels, manifest)
@@ -68,6 +69,9 @@ def find_clips(videos: Path, labels: Path, selection: ClipSelection = ClipSelect
         row = manifest.get(clip, {})
         source = clip_source(clip, manifest)
         if not selection.admits(clip, row, source, review_status, excluded):
+            reason = None if selection.include_excluded else untrainable_reason(clip, source, review_status, excluded)
+            if reason:
+                print(f"[skip] {clip}: {reason} (--include-excluded keeps it)")
             continue
         video = find_video(clip, videos)
         if video is None:

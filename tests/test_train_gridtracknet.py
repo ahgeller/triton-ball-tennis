@@ -69,7 +69,14 @@ def test_find_clips_applies_exclusions_review_policy_sources_and_cameras(tmp_pat
                   ("grid_match4", "grid", "fixed")],
         exclude=["grid_match4  # audit"], review_status={"verified_video_min": 13, "verified_clips": []})
     assert names(find_clips(videos, labels)) == ["video13"]        # video1 unverified, video14 untrusted, grid excluded, tnv2 unknown
-    assert "skipping 1 clip(s) listed in exclude.txt" in capsys.readouterr().out
+    assert [line for line in capsys.readouterr().out.splitlines() if line.startswith("[skip]")] == [
+        "[skip] grid_match4: listed in exclude.txt (--include-excluded keeps it)",
+        "[skip] tnv2_a: labels are still under review (--include-excluded keeps it)",     # unreviewed before unlisted
+        "[skip] video1: labels are still under review (--include-excluded keeps it)",
+        "[skip] video14: source 'custom-uncorrected' is machine labels nobody checked (--include-excluded keeps it)",
+    ]
+    assert names(find_clips(videos, labels, ClipSelection(include_excluded=True, sources=["prof"]))) == ["video13"]
+    assert "[skip]" not in capsys.readouterr().out                 # a run's own choices are not announced
     everything = ["grid_match4", "tnv2_a", "video1", "video13", "video14"]      # natural clip order
     assert names(find_clips(videos, labels, ClipSelection(include_excluded=True))) == everything
     assert names(find_clips(videos, labels, ClipSelection(include_excluded=True, sources=["custom", "grid"]))) == ["grid_match4", "video1"]

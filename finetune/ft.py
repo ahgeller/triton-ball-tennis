@@ -32,7 +32,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -40,11 +40,13 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 # Only stdlib-backed finetune modules at the top: ft.py must import without cv2, numpy or torch so
 # ensure_interpreter can hand over to an interpreter that has them.
 from finetune.commands import cmd_camera, cmd_check, cmd_paths, cmd_promote, cmd_status
-from finetune.data.data_policy import evaluation_clips, read_review_status
+from finetune.data.data_policy import OWN_SOURCE, evaluation_clips, read_review_status
 from finetune.data.label_flags import open_flags, outstanding_flags
 from finetune.data.labels import reviewed_frames
 from finetune.data import workspace as ws
-from finetune.data.workspace import draft_csv, label_csv, labelled_clips, read_exclusions, read_manifest, video_meta
+from finetune.data.workspace import (
+    MANIFEST_COLUMNS, draft_csv, label_csv, labelled_clips, read_exclusions, read_manifest, video_meta, write_manifest,
+)
 from finetune.interpreter import ensure_interpreter, wait_child
 from tennis_tracker.frame_rate import phase_stride
 from tennis_tracker.paths import ROOT
@@ -91,29 +93,44 @@ def clip_name(source: Path) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", source.stem)
 
 
-def _copy_video_in(source: Path, name: str, force: bool) -> bool:
-    """Copy one video into the workspace as `name`; False when it is not a usable clip (a missing
-    file, an unreadable video, a frame rate that is neither 30 nor 60). An existing copy is kept
-    unless `force`."""
+def _copy_video_in(source: Path, name: str, force: bool) -> Optional[Tuple[float, int, int, int]]:
+    """Copy one video into the workspace as `name` and return its (fps, width, height, frames);
+    None when it is not a usable clip (a missing file, an unreadable video, a frame rate that is
+    neither 30 nor 60). An existing copy is kept unless `force`."""
     if not source.is_file():
         print(f"[skip] not a file: {source}")
-        return False
+        return None
     try:
-        fps, width, height, total = video_meta(source)
+        meta = video_meta(source)
     except RuntimeError as error:
         print(f"[skip] {error}")
-        return False
+        return None
+    fps, width, height, total = meta
     if phase_stride(fps) is None:
         print(f"[skip] {source.name}: {fps:.2f} FPS is neither 30 nor 60. Re-encode first, e.g.\n"
               f"       ffmpeg -i \"{source}\" -vf fps=30 -c:v libx264 -crf 12 \"{ws.current().videos / (name + '.mp4')}\"")
-        return False
+        return None
     destination = ws.current().videos / f"{name}{source.suffix.lower()}"
     if destination.exists() and not force:
         print(f"[keep] {destination.name} already exists (use --force to overwrite)")
     else:
         shutil.copyfile(source, destination)
         print(f"[add ] {destination.name}: {width}x{height} @{fps:.2f} FPS, {total} frames")
-    return True
+    return meta
+
+
+def _record_own_clip(manifest: Dict[str, dict], clip: str, source: Path, meta: Tuple[float, int, int, int]) -> None:
+    """Give an added video its clips.csv row: the user's own camera (``OWN_SOURCE``), its size and
+    frame rate, and where it came from. Without a row a clip in a workspace that has a manifest
+    counts as an unknown source, which the trainer keeps out even once its labels are reviewed.
+    The label counts stay empty until something counts them (``commands.clip_counts`` then reads
+    the file); an existing row keeps everything but the video facts."""
+    fps, width, height, _ = meta
+    row = {key: "" for key in MANIFEST_COLUMNS}
+    row.update(manifest.get(clip, {}))
+    row.update(clip=clip, source=row["source"] or OWN_SOURCE, width=width, height=height,
+               fps=f"{fps:.3f}", stride=phase_stride(fps), origin=row["origin"] or str(source))
+    manifest[clip] = row
 
 
 def add_videos(sources: List[Path], *, name: Optional[str] = None, force: bool = False, prelabel: bool = True,
@@ -124,12 +141,17 @@ def add_videos(sources: List[Path], *, name: Optional[str] = None, force: bool =
     The options are ``ft.py add``'s flags one for one (--name, --force, --no-prelabel and the
     pretrack.py options passed through), each independent of the others, so they are keywords."""
     ws.current().videos.mkdir(exist_ok=True)
+    manifest = read_manifest()
     added = []
     for source in sources:
         source = Path(source)
         clip = name if (name and len(sources) == 1) else clip_name(source)
-        if _copy_video_in(source, clip, force):
+        meta = _copy_video_in(source, clip, force)
+        if meta is not None:
             added.append(clip)
+            _record_own_clip(manifest, clip, source, meta)
+    if added:
+        write_manifest(manifest)
     if added and prelabel:
         return added, run_script("training/pretrack.py", ["--clips", *added, *pretrack_arguments])
     return added, 0
