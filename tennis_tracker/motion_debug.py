@@ -281,33 +281,44 @@ class RawMotionTrails:
         if frame_idx % _TRAIL_PRUNE_EVERY == 0:
             self.trails = [t for t in self.trails if frame_idx - t[-1][0] <= _TRAIL_MAX_AGE_FRAMES]
 
+    @staticmethod
+    def _spline_points(valid: Sequence[TrailSample]) -> List[TrailSample]:
+        """The samples with those too dense for the spline dropped, the current head always kept."""
+        unique = [valid[0]]
+        for pt in valid[1:]:
+            if math.hypot(pt[1] - unique[-1][1], pt[2] - unique[-1][2]) > _UNIQUE_POINT_MIN_DIST_PX:
+                unique.append(pt)
+        if valid[-1] not in unique:
+            unique.append(valid[-1])
+        return unique
+
+    def _draw_trail(self, vis: np.ndarray, frame_idx: int, unique: Sequence[TrailSample]) -> None:
+        """A spline through the samples when scipy can fit one, else straight segments."""
+        if len(unique) < _SPLINE_MIN_POINTS or scipy is None:
+            if scipy is None and not self._warned_no_scipy:
+                print("[debug] scipy not installed: raw-motion trails are drawn as straight segments")
+                self._warned_no_scipy = True
+            _draw_straight_trail(vis, frame_idx, unique)
+            return
+        try:
+            _draw_spline_trail(vis, frame_idx, unique)
+        except Exception:
+            _draw_straight_trail(vis, frame_idx, unique)      # the fit failed
+
+    @staticmethod
+    def _draw_head(vis: np.ndarray, valid: Sequence[TrailSample]) -> None:
+        """The dot at a live trail's head, sized by a running average of its recent blob radii."""
+        radius = valid[-_HEAD_RADIUS_SAMPLES:][0][3]
+        for pt in valid[-_HEAD_RADIUS_SAMPLES:][1:]:
+            radius = _HEAD_RADIUS_EMA_NEW * pt[3] + _HEAD_RADIUS_EMA_KEEP * radius
+        head = (int(valid[-1][1]), int(valid[-1][2]))
+        cv2.circle(vis, head, max(2, int(radius)), COLOR_TRAIL, -1)
+
     def draw(self, vis: np.ndarray, frame_idx: int) -> None:
         for trail in self.trails:
             valid = [pt for pt in trail if frame_idx - pt[0] <= _TRAIL_MAX_AGE_FRAMES]
             if len(valid) < _TRAIL_MIN_SAMPLES:
                 continue       # isolated dots and very short noise trails
-            # Drop points too dense for the spline, but keep the current head.
-            unique = [valid[0]]
-            for pt in valid[1:]:
-                if math.hypot(pt[1] - unique[-1][1], pt[2] - unique[-1][2]) > _UNIQUE_POINT_MIN_DIST_PX:
-                    unique.append(pt)
-            if valid[-1] not in unique:
-                unique.append(valid[-1])
-
-            if len(unique) < _SPLINE_MIN_POINTS or scipy is None:
-                if scipy is None and not self._warned_no_scipy:
-                    print("[debug] scipy not installed: raw-motion trails are drawn as straight segments")
-                    self._warned_no_scipy = True
-                _draw_straight_trail(vis, frame_idx, unique)
-            else:
-                try:
-                    _draw_spline_trail(vis, frame_idx, unique)
-                except Exception:
-                    _draw_straight_trail(vis, frame_idx, unique)      # the fit failed
-
+            self._draw_trail(vis, frame_idx, self._spline_points(valid))
             if frame_idx - valid[-1][0] == 0:
-                radius = valid[-_HEAD_RADIUS_SAMPLES:][0][3]
-                for pt in valid[-_HEAD_RADIUS_SAMPLES:][1:]:
-                    radius = _HEAD_RADIUS_EMA_NEW * pt[3] + _HEAD_RADIUS_EMA_KEEP * radius
-                head = (int(valid[-1][1]), int(valid[-1][2]))
-                cv2.circle(vis, head, max(2, int(radius)), COLOR_TRAIL, -1)
+                self._draw_head(vis, valid)

@@ -484,6 +484,32 @@ def _nonempty(mask_u8: np.ndarray) -> Optional[np.ndarray]:
     return mask_u8 if mask_u8.any() else None
 
 
+class _MaskReader:
+    """Brings raw-motion masks to the CPU and keeps their ball-sized components, charging the
+    time each step took to ``perf`` (when timing is on)."""
+
+    def __init__(self, cfg: Config, perf: Optional[Dict[str, float]]) -> None:
+        self.cfg = cfg
+        self.perf = perf
+        self.min_area, self.max_area = cfg.boost_min_blob_area, cfg.boost_max_blob_area
+
+    def download(self, tensor: torch.Tensor) -> np.ndarray:
+        perf = self.perf
+        t_d2h = time.perf_counter() if perf is not None else 0.0
+        out = tensor.contiguous().byte().cpu().numpy() * 255
+        if perf is not None:
+            perf["pre_cuda_raw_d2h"] = perf.get("pre_cuda_raw_d2h", 0.0) + (time.perf_counter() - t_d2h)
+        return out
+
+    def components(self, mask_u8: np.ndarray, timed: bool) -> np.ndarray:
+        perf = self.perf
+        t_cc = time.perf_counter() if (perf is not None and timed) else 0.0
+        out = filter_boost_mask(mask_u8, self.min_area, self.max_area, self.cfg)
+        if perf is not None and timed:
+            perf["pre_cuda_cc_filter"] = perf.get("pre_cuda_cc_filter", 0.0) + (time.perf_counter() - t_cc)
+        return out
+
+
 def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optional[torch.Tensor],
                  cfg: Config, rois: Optional[List[Roi]], need_detector_boost: bool,
                  perf: Optional[Dict[str, float]]) -> _BoostMasks:
@@ -498,38 +524,28 @@ def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optiona
     if raw_motion is None:
         return _BoostMasks(None, None, None, False)
     boost_source = raw_motion_ungated if need_detector_boost and raw_motion_ungated is not None else raw_motion
-    wide_distinct = boost_source is not raw_motion
-    min_area, max_area = cfg.boost_min_blob_area, cfg.boost_max_blob_area
-
-    def download(tensor: torch.Tensor) -> np.ndarray:
-        t_d2h = time.perf_counter() if perf is not None else 0.0
-        out = tensor.contiguous().byte().cpu().numpy() * 255
-        if perf is not None:
-            perf["pre_cuda_raw_d2h"] = perf.get("pre_cuda_raw_d2h", 0.0) + (time.perf_counter() - t_d2h)
-        return out
-
-    def components(mask_u8: np.ndarray, timed: bool) -> np.ndarray:
-        t_cc = time.perf_counter() if (perf is not None and timed) else 0.0
-        out = filter_boost_mask(mask_u8, min_area, max_area, cfg)
-        if perf is not None and timed:
-            perf["pre_cuda_cc_filter"] = perf.get("pre_cuda_cc_filter", 0.0) + (time.perf_counter() - t_cc)
-        return out
-
+    wide_source = boost_source if boost_source is not raw_motion else None
+    reader = _MaskReader(cfg, perf)
     if rois is not None:
-        raw_u8, narrow, wide = _roi_boost_masks(raw_motion, boost_source if wide_distinct else None, rois, cfg,
-                                                download, components)
+        raw_u8, narrow, wide = _roi_boost_masks(raw_motion, wide_source, rois, cfg, reader)
     else:
-        raw_u8 = _clean_raw_motion_mask(download(raw_motion), cfg)
-        wide_src = download(boost_source) if wide_distinct else None
-        narrow = _nonempty(components(raw_u8, timed=True))
-        wide = _nonempty(components(wide_src, timed=False)) if wide_distinct else narrow
+        raw_u8, narrow, wide = _fullframe_boost_masks(raw_motion, wide_source, cfg, reader)
     return _BoostMasks(raw_u8, narrow, wide, narrow is not None or wide is not None)
 
 
+def _fullframe_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tensor], cfg: Config,
+                           reader: _MaskReader) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    """The raw, narrow and wide masks of a whole frame (``wide_source`` None: the wide mask is
+    the narrow one)."""
+    raw_u8 = _clean_raw_motion_mask(reader.download(raw_motion), cfg)
+    wide_src = reader.download(wide_source) if wide_source is not None else None
+    narrow = _nonempty(reader.components(raw_u8, timed=True))
+    wide = _nonempty(reader.components(wide_src, timed=False)) if wide_source is not None else narrow
+    return raw_u8, narrow, wide
+
+
 def _roi_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tensor], rois: List[Roi], cfg: Config,
-                     download: Callable[[torch.Tensor], np.ndarray],
-                     components: Callable[[np.ndarray, bool], np.ndarray]
-                     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+                     reader: _MaskReader) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     """The raw, narrow and wide masks assembled ROI by ROI (``wide_source`` None: the wide mask
     is the narrow one), each ROI downloaded and filtered on its own."""
     wide_distinct = wide_source is not None
@@ -538,15 +554,15 @@ def _roi_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tenso
     narrow_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
     wide_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8) if wide_distinct else None
     for rx1, ry1, rx2, ry2 in rois:
-        raw_roi = download(raw_motion[ry1:ry2, rx1:rx2])
-        wide_roi = download(wide_source[ry1:ry2, rx1:rx2]) if wide_distinct else None
+        raw_roi = reader.download(raw_motion[ry1:ry2, rx1:rx2])
+        wide_roi = reader.download(wide_source[ry1:ry2, rx1:rx2]) if wide_distinct else None
         raw_roi = _clean_raw_motion_mask(raw_roi, cfg)
         np.maximum(raw_u8[ry1:ry2, rx1:rx2], raw_roi, out=raw_u8[ry1:ry2, rx1:rx2])
         if raw_roi.max() > 0:
-            np.maximum(narrow_u8[ry1:ry2, rx1:rx2], components(raw_roi, timed=True),
+            np.maximum(narrow_u8[ry1:ry2, rx1:rx2], reader.components(raw_roi, timed=True),
                        out=narrow_u8[ry1:ry2, rx1:rx2])
         if wide_distinct and wide_roi.max() > 0:
-            np.maximum(wide_u8[ry1:ry2, rx1:rx2], components(wide_roi, timed=False),
+            np.maximum(wide_u8[ry1:ry2, rx1:rx2], reader.components(wide_roi, timed=False),
                        out=wide_u8[ry1:ry2, rx1:rx2])
     narrow = _nonempty(narrow_u8)
     wide = _nonempty(wide_u8) if wide_distinct else narrow

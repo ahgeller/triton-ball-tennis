@@ -237,14 +237,7 @@ class ROIMotionTracker:
         """
         if not self.cfg.roi_motion_enabled:
             return None, None
-
-        force_fullframe = False
-        if (self.cfg.roi_fullframe_interval > 0 and
-                self._fullframe_counter >= self.cfg.roi_fullframe_interval):
-            self._fullframe_counter = 0
-            force_fullframe = not self.ball_visible
-        self._fullframe_counter += 1
-
+        force_fullframe = self._advance_fullframe_schedule()
         if not self.tracks:
             if force_fullframe:
                 return None, None
@@ -253,6 +246,30 @@ class ROIMotionTracker:
                 return self.last_rois, self.last_rois_visual
             return None, None
 
+        rois, rois_visual = self._track_rois(frame_idx)
+        valid_rois = self._valid_rois(rois)
+        if valid_rois is None:                   # one ROI covers the frame: compute motion full-frame
+            self.last_rois = None
+            return None, None
+        self.last_rois = valid_rois if valid_rois else None
+        self.last_rois_visual = rois_visual if rois_visual else None
+        return (None, None) if force_fullframe else (self.last_rois, self.last_rois_visual)
+
+    def _advance_fullframe_schedule(self) -> bool:
+        """Count this frame against the periodic full-frame probe; whether this is a probe frame
+        (the interval is up and no track has the ball in sight)."""
+        force_fullframe = False
+        if (self.cfg.roi_fullframe_interval > 0 and
+                self._fullframe_counter >= self.cfg.roi_fullframe_interval):
+            self._fullframe_counter = 0
+            force_fullframe = not self.ball_visible
+        self._fullframe_counter += 1
+        return force_fullframe
+
+    def _track_rois(self, frame_idx: int) -> Tuple[List[Box], List[Box]]:
+        """``(motion, visual)`` ROIs about every track's predicted position at ``frame_idx``
+        (tracks whose prediction or radius is not finite are skipped), recording the motion ROI
+        of a track that has lost the ball as a coasting ROI."""
         rois: List[Box] = []
         rois_visual: List[Box] = []
         for t in self.tracks:
@@ -269,17 +286,16 @@ class ROIMotionTracker:
             # retroactive erase O(N) when a track dropped.
             if t.frames_since_det > 0:
                 t.coasting_rois.append((frame_idx, *roi))
+        return rois, rois_visual
 
+    def _valid_rois(self, rois: List[Box]) -> Optional[List[Box]]:
+        """The ROIs with an area, or None when one of them is most of the frame."""
         valid_rois: List[Box] = []
         for rx1, ry1, rx2, ry2 in rois:          # already clipped to the frame by _clip
             w, h = rx2 - rx1, ry2 - ry1
             if w <= 0 or h <= 0:
                 continue
             if w * h >= _FULL_FRAME_AREA_FRAC * (self.frame_w * self.frame_h):
-                self.last_rois = None
-                return None, None
+                return None
             valid_rois.append((rx1, ry1, rx2, ry2))
-
-        self.last_rois = valid_rois if valid_rois else None
-        self.last_rois_visual = rois_visual if rois_visual else None
-        return (None, None) if force_fullframe else (self.last_rois, self.last_rois_visual)
+        return valid_rois

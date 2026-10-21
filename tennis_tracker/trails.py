@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -90,6 +90,30 @@ def _trail_direction_break(prev2: Sequence[float], prev: Sequence[float], curr_x
 TrailPoint = Tuple[int, int, str, float]
 
 
+class _SegmentLimits(NamedTuple):
+    """The pixel distances beyond which a trail segment breaks (see ``BallTrail._breaks_before``)."""
+    hard_x_px: float        # a jump along the court's width axis
+    hard_y_px: float        # ... or its depth axis
+    bridge_px: float        # how far a change of source may bridge
+    transition_px: float    # ... and an interpolated-to-detected one
+
+
+def _transition_too_far(dist: float, src: str, prev_src: str, limits: _SegmentLimits) -> bool:
+    """A source transition connects only within a reasonable distance; too tight leaves gaps
+    everywhere, too wide connects to noise."""
+    if dist > limits.bridge_px:
+        return True
+    return prev_src == "interp" and src == "det" and dist > limits.transition_px
+
+
+def _reversal_breaks(src: str, prev_src: str, dist: float, limits: _SegmentLimits) -> bool:
+    """Reversals only break confident segments: not ones touching an interpolated point, nor a
+    change of source within a (wider) bridging distance."""
+    if src == "interp" or prev_src == "interp":
+        return False
+    return not (src != prev_src and dist <= limits.bridge_px * _TRAIL_DIRECTION_BRIDGE_SCALE)
+
+
 class BallTrail:
     """The chosen ball's recent path, broken into segments at jumps and reversals.
 
@@ -116,38 +140,39 @@ class BallTrail:
                 break
         return prev, prev2
 
+    def _segment_limits(self, src: str, prev_src: str, court_kps: Optional[Sequence[float]]) -> _SegmentLimits:
+        """The distances that break a segment between a ``prev_src`` point and a ``src`` point,
+        scaled by the court's extent on screen."""
+        x_span, y_span = court_axis_spans(court_kps, self.frame_w, self.frame_h)
+        jx_c, jy_c = _trail_jump_fracs(src, self.cfg)
+        jx_p, jy_p = _trail_jump_fracs(prev_src, self.cfg)
+        pair_diag = float(np.hypot(x_span, y_span))
+        return _SegmentLimits(
+            hard_x_px=max(max(jx_c, jx_p) * x_span, _TRAIL_HARD_MIN_X_PX),
+            hard_y_px=max(max(jy_c, jy_p) * y_span, _TRAIL_HARD_MIN_Y_PX),
+            bridge_px=max(_TRAIL_BRIDGE_FRAC * pair_diag, _TRAIL_BRIDGE_MIN_PX),
+            transition_px=max(_TRAIL_TRANSITION_FRAC * pair_diag, _TRAIL_TRANSITION_MIN_PX),
+        )
+
     def _breaks_before(self, x: int, y: int, src: str, court_kps: Optional[Sequence[float]]) -> bool:
         """Whether the segment ends before (x, y): too far from the last point, or a reversal."""
         prev, prev2 = self._last_two()
         if prev is None:
             return False
         prev_src = prev[2]
-        x_span, y_span = court_axis_spans(court_kps, self.frame_w, self.frame_h)
+        limits = self._segment_limits(src, prev_src, court_kps)
         dx, dy = abs(x - prev[0]), abs(y - prev[1])
-        jx_c, jy_c = _trail_jump_fracs(src, self.cfg)
-        jx_p, jy_p = _trail_jump_fracs(prev_src, self.cfg)
-        hard_x_px = max(max(jx_c, jx_p) * x_span, _TRAIL_HARD_MIN_X_PX)
-        hard_y_px = max(max(jy_c, jy_p) * y_span, _TRAIL_HARD_MIN_Y_PX)
         dist = float(np.hypot(dx, dy))
-        pair_diag = float(np.hypot(x_span, y_span))
         source_transition = src != prev_src
-        bridge_px = max(_TRAIL_BRIDGE_FRAC * pair_diag, _TRAIL_BRIDGE_MIN_PX)
-        transition_px = max(_TRAIL_TRANSITION_FRAC * pair_diag, _TRAIL_TRANSITION_MIN_PX)
+        bridged = source_transition and dist <= limits.bridge_px
 
-        # A source transition connects only within a reasonable distance; too
-        # tight leaves gaps everywhere, too wide connects to noise.
-        if source_transition:
-            if dist > bridge_px:
-                return True
-            if prev_src == "interp" and src == "det" and dist > transition_px:
-                return True
-        if dx > hard_x_px or dy > hard_y_px:
+        if source_transition and _transition_too_far(dist, src, prev_src, limits):
+            return True
+        if dx > limits.hard_x_px or dy > limits.hard_y_px:
             # A small source-transition mismatch (e.g. a reacquire) is allowed.
-            return not (source_transition and dist <= bridge_px)
+            return not bridged
         if prev2 is not None and _trail_direction_break(prev2, prev, (x, y)):
-            # Reversals only break confident segments.
-            return not (src == "interp" or prev_src == "interp"
-                        or (source_transition and dist <= bridge_px * _TRAIL_DIRECTION_BRIDGE_SCALE))
+            return _reversal_breaks(src, prev_src, dist, limits)
         return False
 
     def advance(self, result: Optional[FrameResult], court_kps: Optional[Sequence[float]]) -> None:

@@ -84,6 +84,24 @@ class PendingDetection:
     record: FrameRecord
 
 
+@dataclass
+class _Preprocessed:
+    """What preprocessing produced for a frame: the detector's input, the masks, the ROIs and
+    the ball inference it may already have started."""
+
+    detector_frame: Optional[np.ndarray]
+    detector_frame_cuda: Optional[torch.Tensor] = None
+    raw_motion_u8: Optional[np.ndarray] = None
+    boost_mask_u8: Optional[np.ndarray] = None
+    rois_visual: Optional[List[Box]] = None
+    pack_roi: Optional[Box] = None
+    det_pending: Any = None
+
+    @property
+    def detector_input(self) -> Any:
+        return self.detector_frame_cuda if self.detector_frame_cuda is not None else self.detector_frame
+
+
 def pass2_cache_budget_mb(cfg) -> float:
     """How much RAM pass 2's frame cache may use.
 
@@ -279,9 +297,60 @@ class _Pass1Collector:
 
     # -- the loop ---------------------------------------------------------------
 
+    def _cache_frame(self, frame: np.ndarray) -> None:
+        """Keep the decoded frame for pass 2 while the RAM cache lasts."""
+        if self.result.cached_frames is None:
+            return
+        try:
+            self.result.cached_frames.append(frame)
+        except MemoryError:
+            self.result.cached_frames = None
+            print("[pass 1] RAM frame cache disabled (MemoryError)")
+
+    def _preprocess_frame(self, frame_idx: int, frame: np.ndarray, court_kps: Optional[List[float]],
+                          detect_this_frame: bool, prev_pending: Optional[PendingDetection]
+                          ) -> Tuple[_Preprocessed, Optional[PendingDetection]]:
+        """Preprocess the frame and start its ball inference as soon as the input is ready, so
+        it overlaps the CPU work that follows. Returns ``prev_pending`` unchanged, or None when a
+        backend without output slots had to finish the previous frame first."""
+        pre, rois_visual, pack_roi = self._preprocess(frame_idx, court_kps, detect_this_frame)
+        out = _Preprocessed(
+            detector_frame=frame if self.detector.uses_raw_frames else pre.detector_frame,
+            detector_frame_cuda=pre.detector_frame_cuda,
+            raw_motion_u8=pre.raw_motion, boost_mask_u8=pre.boost_mask,
+            rois_visual=rois_visual, pack_roi=pack_roi)
+        if detect_this_frame:
+            if prev_pending is not None and not self.can_overlap_ball_inference:
+                self._finish_pending(prev_pending)
+                prev_pending = None
+            out.det_pending = self.detector.detect_async_start(out.detector_input, frame_index=frame_idx)
+        post_t0 = self.timing.start()
+        self.background.remember_motion(out.raw_motion_u8)
+        self.timing.add("pass1_pre_postmask", post_t0)
+        return out, prev_pending
+
+    def _queue_detection(self, record: FrameRecord, pre: _Preprocessed,
+                         detect_this_frame: bool) -> Optional[PendingDetection]:
+        """The frame's ball inference, started now when preprocessing did not; a frame the
+        skip schedule leaves out is committed at once with no detections."""
+        if not detect_this_frame:
+            self.result.skipped_detect_frames += 1
+            self._commit(record, [])
+            return None
+        det_pending = pre.det_pending
+        if det_pending is None:
+            det_t0 = self.timing.start()
+            det_pending = self.detector.detect_async_start(pre.detector_input, frame_index=record.frame_idx)
+            self.timing.add("pass1_ball_detect", det_t0)
+        return PendingDetection(det_pending, record)
+
+    def _progress(self, frame_idx: int) -> None:
+        if self.cfg.progress_every and frame_idx % self.cfg.progress_every == 0:
+            elapsed = self.ctx.elapsed()
+            print(f"  [pass1 {frame_idx}/{self.video.frame_count_hint}] {frame_idx/elapsed:.1f} fps")
+
     def run(self, reader: ThreadedFrameReader) -> Pass1Result:
         cfg, window, timing = self.cfg, self.window, self.timing
-        detector = self.detector
         pending: Optional[PendingDetection] = None
         frame_idx = 0
         while not window.exhausted:
@@ -289,41 +358,16 @@ class _Pass1Collector:
             # Finish the previous frame's inference after this frame's
             # preprocessing, so the two overlap.
             prev_pending, pending = pending, None
-            if self.result.cached_frames is not None:
-                try:
-                    self.result.cached_frames.append(frame)
-                except MemoryError:
-                    self.result.cached_frames = None
-                    print("[pass 1] RAM frame cache disabled (MemoryError)")
-
+            self._cache_frame(frame)
             if cfg.enable_preprocess:
                 self.background.update(window.curr_gpu.v, window.curr_gpu.s)
             detect_this_frame = self._should_detect(frame_idx)
             court_kps, player_pending = self._aux_detect(frame_idx, frame, detect_this_frame)
 
             pre_t0 = timing.start()
-            detector_frame, detector_frame_cuda = frame, None
-            raw_motion_u8 = boost_mask_u8 = None
-            rois_visual = pack_roi = None
-            det_pending = None
+            pre = _Preprocessed(detector_frame=frame)
             if cfg.enable_preprocess:
-                pre, rois_visual, pack_roi = self._preprocess(frame_idx, court_kps, detect_this_frame)
-                raw_motion_u8, boost_mask_u8 = pre.raw_motion, pre.boost_mask
-                detector_frame_cuda = pre.detector_frame_cuda
-                detector_frame = frame if detector.uses_raw_frames else pre.detector_frame
-                # Start this frame's inference as soon as its input is ready so
-                # it overlaps the CPU work below; a backend without output
-                # slots must finish the previous frame first.
-                if detect_this_frame:
-                    if prev_pending is not None and not self.can_overlap_ball_inference:
-                        self._finish_pending(prev_pending)
-                        prev_pending = None
-                    det_input = detector_frame_cuda if detector_frame_cuda is not None else detector_frame
-                    det_pending = detector.detect_async_start(det_input, frame_index=frame_idx)
-                post_t0 = timing.start()
-                self.background.remember_motion(raw_motion_u8)
-                timing.add("pass1_pre_postmask", post_t0)
-
+                pre, prev_pending = self._preprocess_frame(frame_idx, frame, court_kps, detect_this_frame, prev_pending)
             if player_pending is not None:
                 aux_t0 = timing.start()
                 self.player_detector.detect_async_finish(player_pending)
@@ -335,30 +379,19 @@ class _Pass1Collector:
 
             record = FrameRecord(
                 frame_idx=frame_idx,
-                raw_motion_u8=raw_motion_u8,
-                boost_mask_u8=boost_mask_u8,
-                pack_roi=pack_roi,
-                rois=rois_visual if rois_visual is not None else self.roi_tracker.last_rois,
+                raw_motion_u8=pre.raw_motion_u8,
+                boost_mask_u8=pre.boost_mask_u8,
+                pack_roi=pre.pack_roi,
+                rois=pre.rois_visual if pre.rois_visual is not None else self.roi_tracker.last_rois,
                 player_boxes=dict(self.player_detector.get_player_dict()),
                 court_keypoints=court_kps,
-                detector_frame=detector_frame,
-                detector_frame_cuda=detector_frame_cuda,
+                detector_frame=pre.detector_frame,
+                detector_frame_cuda=pre.detector_frame_cuda,
             )
-            if detect_this_frame:
-                if det_pending is None:
-                    det_t0 = timing.start()
-                    det_input = detector_frame_cuda if detector_frame_cuda is not None else detector_frame
-                    det_pending = detector.detect_async_start(det_input, frame_index=frame_idx)
-                    timing.add("pass1_ball_detect", det_t0)
-                pending = PendingDetection(det_pending, record)
-            else:
-                self.result.skipped_detect_frames += 1
-                self._commit(record, [])
+            pending = self._queue_detection(record, pre, detect_this_frame)
 
             frame_idx += 1
-            if cfg.progress_every and frame_idx % cfg.progress_every == 0:
-                elapsed = self.ctx.elapsed()
-                print(f"  [pass1 {frame_idx}/{self.video.frame_count_hint}] {frame_idx/elapsed:.1f} fps")
+            self._progress(frame_idx)
             slide_t0 = timing.start()
             window.slide(reader.read())
             timing.add("pass1_slide", slide_t0)
@@ -436,26 +469,36 @@ def erase_ghost_rois(result: Pass1Result) -> int:
     t0 = time.perf_counter()
     erased_frames = 0
     for fr_idx, ghosts in enumerate(result.ghost_rois):
-        if not ghosts:
-            continue
-        raw = result.raw_motions[fr_idx] if fr_idx < len(result.raw_motions) else None
-        boost = result.boost_masks[fr_idx] if fr_idx < len(result.boost_masks) else None
-        if raw is None and boost is None:
-            continue
-        raw_u8 = raw.unpack() if raw is not None else None
-        boost_u8 = boost.unpack() if boost is not None else None
-        changed = False
-        for rx1, ry1, rx2, ry2 in ghosts:
-            for mask in (raw_u8, boost_u8):
-                if mask is not None and np.any(mask[ry1:ry2, rx1:rx2]):
-                    mask[ry1:ry2, rx1:rx2] = 0
-                    changed = True
-        if not changed:
-            continue
-        erased_frames += 1
-        if raw_u8 is not None:
-            result.raw_motions[fr_idx] = PackedMask.pack(raw_u8, roi=raw.roi)
-        if boost_u8 is not None:
-            result.boost_masks[fr_idx] = PackedMask.pack(boost_u8, roi=boost.roi)
+        if ghosts and _erase_ghosts_in_frame(result, fr_idx, ghosts):
+            erased_frames += 1
     print(f"[pass 1] Batched ghost deletion cleaned {erased_frames} frames in {time.perf_counter() - t0:.2f}s")
     return erased_frames
+
+
+def _clear_boxes(mask: Optional[np.ndarray], boxes: List[Box]) -> bool:
+    """Zero ``boxes`` in ``mask``; whether any of them held a set pixel."""
+    changed = False
+    for rx1, ry1, rx2, ry2 in boxes:
+        if mask is not None and np.any(mask[ry1:ry2, rx1:rx2]):
+            mask[ry1:ry2, rx1:rx2] = 0
+            changed = True
+    return changed
+
+
+def _erase_ghosts_in_frame(result: Pass1Result, fr_idx: int, ghosts: List[Box]) -> bool:
+    """Clear the ghost ROIs in one frame's raw and boost masks and repack the ones that changed;
+    whether either mask changed."""
+    raw = result.raw_motions[fr_idx] if fr_idx < len(result.raw_motions) else None
+    boost = result.boost_masks[fr_idx] if fr_idx < len(result.boost_masks) else None
+    if raw is None and boost is None:
+        return False
+    raw_u8 = raw.unpack() if raw is not None else None
+    boost_u8 = boost.unpack() if boost is not None else None
+    changed = _clear_boxes(raw_u8, ghosts) | _clear_boxes(boost_u8, ghosts)
+    if not changed:
+        return False
+    if raw_u8 is not None:
+        result.raw_motions[fr_idx] = PackedMask.pack(raw_u8, roi=raw.roi)
+    if boost_u8 is not None:
+        result.boost_masks[fr_idx] = PackedMask.pack(boost_u8, roi=boost.roi)
+    return True

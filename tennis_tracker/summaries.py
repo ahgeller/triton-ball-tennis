@@ -36,25 +36,7 @@ def print_selector_track_summary(all_tracks: Sequence[Track], chosen_track: Opti
     print("[selector] Track table (sorted by score)")
     print("  sel  id    score   obs  span   t0%   t1%   in%  mot% nearP%")
     for trk in view:
-        sb = trk.score_breakdown if trk.score_breakdown else {}
-        start_frac, end_frac = _track_time_fracs(trk, total_frames)
-        inside_frac = float(sb.get("inside_strict_frac", sb.get("inside_frac", -1.0)))
-        motion_evidence = float(sb.get("motion_evidence", -1.0))
-        near_player_frac = float(sb.get("near_player_frac", -1.0))
-        inside_s = f"{inside_frac * 100:5.1f}" if inside_frac >= 0.0 else "   --"
-        motion_s = f"{motion_evidence * 100:5.1f}" if motion_evidence >= 0.0 else "   --"
-        near_s = f"{near_player_frac * 100:5.1f}" if near_player_frac >= 0.0 else "   --"
-
-        sel = "*" if int(trk.track_id) == chosen_id else " "
-        print(
-            f"  {sel:>3} {int(trk.track_id):>3} "
-            f"{float(trk.score):>8.1f} "
-            f"{int(trk.num_obs):>5} "
-            f"{int(trk.span):>5} "
-            f"{start_frac * 100:>5.1f} "
-            f"{end_frac * 100:>5.1f} "
-            f"{inside_s:>5} {motion_s:>5} {near_s:>6}"
-        )
+        print(_track_row(trk, int(trk.track_id) == chosen_id, total_frames))
 
     if limit and limit > 0 and len(ordered) > len(view):
         print(f"[selector] Showing top {len(view)} / {len(ordered)} tracks")
@@ -69,6 +51,30 @@ def print_selector_track_summary(all_tracks: Sequence[Track], chosen_track: Opti
             f"obs={int(chosen_track.num_obs)} span={int(chosen_track.span)} "
             f"t={t0 * 100:.1f}%->{t1 * 100:.1f}%"
         )
+
+
+def _percent_or_dash(fraction: float) -> str:
+    """A 0..1 fraction as a percentage column; a negative one (not scored) as ``--``."""
+    return f"{fraction * 100:5.1f}" if fraction >= 0.0 else "   --"
+
+
+def _track_row(trk: Track, chosen: bool, total_frames: int) -> str:
+    """One line of the track table."""
+    sb = trk.score_breakdown if trk.score_breakdown else {}
+    start_frac, end_frac = _track_time_fracs(trk, total_frames)
+    inside_s = _percent_or_dash(float(sb.get("inside_strict_frac", sb.get("inside_frac", -1.0))))
+    motion_s = _percent_or_dash(float(sb.get("motion_evidence", -1.0)))
+    near_s = _percent_or_dash(float(sb.get("near_player_frac", -1.0)))
+    sel = "*" if chosen else " "
+    return (
+        f"  {sel:>3} {int(trk.track_id):>3} "
+        f"{float(trk.score):>8.1f} "
+        f"{int(trk.num_obs):>5} "
+        f"{int(trk.span):>5} "
+        f"{start_frac * 100:>5.1f} "
+        f"{end_frac * 100:>5.1f} "
+        f"{inside_s:>5} {motion_s:>5} {near_s:>6}"
+    )
 
 
 def print_timing_summary(timing: Dict[str, float], total_elapsed: float,

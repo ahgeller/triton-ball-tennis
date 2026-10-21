@@ -9,8 +9,8 @@ from ball_in_play_selector import Detection, FrameResult
 from tennis_tracker.config import Config
 from tennis_tracker.rendering import Canvas
 from tennis_tracker.trails import (
-    CANDIDATE_TRAIL_LEN, TRAIL_MIN_LEN, TRAIL_SECONDS, BallTrail, CandidateTrackTrails, DisplayPathTrail,
-    _trail_jump_fracs, track_color,
+    CANDIDATE_TRAIL_LEN, TRAIL_MIN_LEN, TRAIL_SECONDS, _TRAIL_DIRECTION_BRIDGE_SCALE, BallTrail, CandidateTrackTrails,
+    DisplayPathTrail, _reversal_breaks, _SegmentLimits, _trail_jump_fracs, _transition_too_far, track_color,
 )
 
 WIDTH, HEIGHT, FPS = 640, 360, 30.0
@@ -143,3 +143,30 @@ def test_candidate_trails_are_bounded():
     for frame in range(CANDIDATE_TRAIL_LEN + 20):
         trails.advance_and_draw(debug, frame)
     assert len(trails.trails[1]) == CANDIDATE_TRAIL_LEN
+
+
+# --------------------------------------------------------------------------- the break rules
+
+LIMITS = _SegmentLimits(hard_x_px=40.0, hard_y_px=30.0, bridge_px=20.0, transition_px=10.0)
+
+
+def test_segment_limits_scale_with_the_court_and_never_drop_below_their_floors():
+    trail = BallTrail(Config(), FPS, WIDTH, HEIGHT)
+    without_court = trail._segment_limits("det", "det", None)
+    assert without_court.hard_x_px >= 34.0 and without_court.hard_y_px >= 26.0
+    assert without_court.bridge_px >= 18.0 and without_court.transition_px >= 14.0
+    assert without_court.bridge_px > without_court.transition_px
+
+
+def test_a_source_transition_bridges_a_short_distance_only():
+    assert not _transition_too_far(8.0, "det", "interp", LIMITS)        # within the interp->det distance
+    assert _transition_too_far(15.0, "det", "interp", LIMITS)           # interp->det is held tighter than the bridge
+    assert not _transition_too_far(15.0, "interp", "det", LIMITS)       # det->interp only minds the bridge
+    assert _transition_too_far(25.0, "interp", "det", LIMITS)
+
+
+def test_reversals_break_only_confident_segments():
+    assert _reversal_breaks("det", "det", 5.0, LIMITS)
+    assert not _reversal_breaks("interp", "det", 5.0, LIMITS) and not _reversal_breaks("det", "interp", 5.0, LIMITS)
+    assert not _reversal_breaks("det", "motion", LIMITS.bridge_px * _TRAIL_DIRECTION_BRIDGE_SCALE, LIMITS)
+    assert _reversal_breaks("det", "motion", LIMITS.bridge_px * _TRAIL_DIRECTION_BRIDGE_SCALE + 1.0, LIMITS)

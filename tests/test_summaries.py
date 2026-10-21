@@ -1,7 +1,7 @@
 """The console summaries in tennis_tracker/summaries.py, read back through capsys."""
 from types import SimpleNamespace
 
-from tennis_tracker.summaries import print_selector_track_summary, print_timing_summary
+from tennis_tracker.summaries import _percent_or_dash, _track_row, print_selector_track_summary, print_timing_summary
 
 
 def _track(track_id, score, breakdown):
@@ -54,3 +54,12 @@ def test_timing_summary_init_row_has_no_per_frame_cost(capsys):
     print_timing_summary({"init_total": 1.0}, 2.0, 10, 10)
     init = [line for line in capsys.readouterr().out.splitlines() if "init" in line]
     assert len(init) == 1 and "ms/frame" not in init[0]
+
+
+def test_track_row_marks_the_chosen_track_and_dashes_unscored_columns():
+    assert _percent_or_dash(0.25) == " 25.0" and _percent_or_dash(-1.0) == "   --"
+    full = _track_row(FULL, True, 10).split()
+    assert full[:4] == ["*", "1", "12.5", "5"] and full[-3:] == ["80.0", "40.0", "20.0"]
+    bare = _track_row(BARE, False, 10).split()
+    assert bare[:2] == ["2", "3.0"] and bare[-3:] == ["--", "--", "--"]
+    assert bare[4:6] == ["0.0", "88.9"]                          # first/last frame over 9 intervals

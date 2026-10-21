@@ -2,7 +2,7 @@
 import numpy as np
 from ball_in_play_selector import PackedMask
 
-from tennis_tracker.pass1 import Pass1Result, erase_ghost_rois
+from tennis_tracker.pass1 import Pass1Result, _clear_boxes, _erase_ghosts_in_frame, erase_ghost_rois
 
 
 def _mask(h=30, w=40, boxes=()):
@@ -63,3 +63,20 @@ def test_erase_ignores_frames_with_no_masks():
     result.rois.append(None)
     result.ghost_rois.append([(0, 0, 10, 10)])
     assert erase_ghost_rois(result) == 0
+
+
+def test_clear_boxes_reports_only_boxes_that_held_motion():
+    mask = _mask(boxes=[(5, 5, 9, 9)])
+    assert _clear_boxes(None, [(5, 5, 9, 9)]) is False
+    assert _clear_boxes(mask, [(20, 20, 26, 26)]) is False and mask.any()
+    assert _clear_boxes(mask, [(20, 20, 26, 26), (4, 4, 10, 10)]) is True and not mask.any()
+
+
+def test_erase_ghosts_in_frame_repacks_only_a_frame_that_changed():
+    result = _result([[(5, 5, 9, 9)], [(5, 5, 9, 9)]], [[(20, 20, 26, 26)], [(4, 4, 10, 10)]])
+    before = result.raw_motions[0]
+    assert _erase_ghosts_in_frame(result, 0, result.ghost_rois[0]) is False
+    assert result.raw_motions[0] is before
+    assert _erase_ghosts_in_frame(result, 1, result.ghost_rois[1]) is True
+    assert all(packed is None or not packed.unpack().any() for packed in (result.raw_motions[1], result.boost_masks[1]))
+    assert _erase_ghosts_in_frame(Pass1Result(), 0, [(0, 0, 1, 1)]) is False       # no masks at all

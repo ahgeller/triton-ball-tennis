@@ -97,9 +97,125 @@ class _ProtectMaskCache:
         return self.mask
 
 
+class _Writers:
+    """The video outputs this run asked for: the tracking video, the motion-debug video and the
+    track-debug video, each None when it is off."""
+
+    def __init__(self, ctx: RunContext) -> None:
+        cfg = ctx.cfg
+        self.main = self.motion_debug = self.track_debug = None
+        if cfg.save_tracking_video:
+            self.main = _open_writer(ctx, cfg.output_video)
+            print(f"[writer] Tracking encoder: {self.main.encoder}")
+        if cfg.save_motion_debug:
+            self.motion_debug = _open_writer(ctx, cfg.output_debug_path)
+        if cfg.save_track_debug_video:
+            self.track_debug = _open_writer(ctx, cfg.output_track_debug_path)
+
+    def close(self) -> None:
+        for w in (self.main, self.motion_debug, self.track_debug):
+            if w is not None:
+                w.close()
+
+
+class _FrameRenderer:
+    """Draws and writes one frame after another, carrying the trails, the court-model caches
+    and the marker sizes from frame to frame."""
+
+    def __init__(self, ctx: RunContext, pass1: Pass1Result, selection: Selection, events: CourtEvents,
+                 writers: _Writers) -> None:
+        cfg, video = ctx.cfg, ctx.video
+        self.cfg, self.video, self.timing = cfg, video, ctx.timing
+        self.pass1, self.selection, self.events, self.writers = pass1, selection, events, writers
+        self.ground_model = _GroundModelCache(selection.last_court_keypoints)
+        self.protect_masks = _ProtectMaskCache(video.height, video.width)
+        self.sizer = MarkerSizer(cfg)
+        self.search_smoother = SearchCentreSmoother()
+        self.ball_trail = BallTrail(cfg, video.fps, video.width, video.height)
+        self.path_trail = DisplayPathTrail(video.fps, video.width)
+        self.candidate_trails = CandidateTrackTrails(selection.all_tracks, selection.chosen_track)
+        self.raw_motion_trails = RawMotionTrails(video.width)
+
+    def _draw(self, fi: int, frame: np.ndarray, result, court_kps) -> Canvas:
+        """The tracking frame and, when the track-debug video is on, its debug twin."""
+        cfg, pass1, selection = self.cfg, self.pass1, self.selection
+        canvas = Canvas(frame.copy(), frame.copy() if self.writers.track_debug is not None else None)
+        model = self.ground_model.update(court_kps)
+
+        draw_court_layer(canvas.both, cfg, court_kps, model, selection.court_polygon)
+        if cfg.draw_players:
+            draw_player_boxes(canvas.both, pass1.player_boxes[fi])
+        # Rejected proposals, ROIs and candidate tracks belong only in the track-debug view;
+        # candidates go under the chosen result so the final choice sits on top.
+        draw_raw_detections(canvas.debug_only, pass1.detections[fi])
+        draw_motion_rois(canvas.debug_only, pass1.rois[fi])
+        if canvas.debug is not None:
+            self.candidate_trails.advance_and_draw(canvas.debug, fi)
+        if result is not None:
+            draw_selected_result(canvas, result, fi, self.sizer, self.search_smoother, cfg.draw_search_regions)
+        self.ball_trail.advance(result, self.ground_model.keypoints)
+        self.ball_trail.draw(canvas, cfg.draw_ball_trail)
+        if cfg.draw_court_minimap:
+            draw_court_minimap(canvas.main, model, pass1.player_boxes[fi], self.events.rally_legs, fi, self.video.fps,
+                               contact_events=self.events.contacts)
+
+        # The track-debug stream follows the chosen track's display path while
+        # the selector has nothing; the current result keeps it continuous.
+        path_point = selection.display_path.get(fi)
+        if path_point is None and result is not None:
+            path_point = (float(result.cx), float(result.cy), True)
+        self.path_trail.advance(path_point)
+        if canvas.debug is not None and result is None:
+            self.path_trail.draw(canvas.debug, path_point)
+        draw_hud(canvas, fi, result, selection.chosen_track)
+        return canvas
+
+    def _write_motion_debug(self, fi: int, frame: np.ndarray, result, court_kps) -> None:
+        cfg, pass1, timing = self.cfg, self.pass1, self.timing
+        write_t0 = timing.start()
+        raw_m = pass1.raw_motions[fi].unpack() if pass1.raw_motions[fi] is not None else None
+        boost_m = pass1.boost_masks[fi].unpack() if pass1.boost_masks[fi] is not None else None
+        rois = pass1.rois[fi]
+        vis = draw_motion_masks(frame, raw_m, boost_m, cfg, court_keypoints=court_kps,
+                                protect_mask=self.protect_masks.get(court_kps), rois=rois)
+        probe_style = cfg.debug_probe_motion_style
+        if not probe_style:
+            for rx1, ry1, rx2, ry2 in rois or ():
+                cv2.rectangle(vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)), COLOR_ROI_THIN, 1)
+        if result is not None:
+            draw_selected_ball(vis, result, self.sizer.radius)
+        self.raw_motion_trails.advance(fi, None if probe_style else rois, boost_m)
+        self.raw_motion_trails.draw(vis, fi)
+        self.writers.motion_debug.write(vis)
+        timing.add("pass2_write_debug", write_t0)
+
+    def render(self, fi: int, frame: np.ndarray) -> None:
+        """Draw frame ``fi`` and write it to every output that is on."""
+        timing, writers = self.timing, self.writers
+        render_t0 = timing.start()
+        debug_write_elapsed = 0.0
+        result = self.selection.per_frame[fi]
+        court_kps = self.pass1.court_keypoints[fi]
+        canvas = self._draw(fi, frame, result, court_kps)
+
+        if writers.track_debug is not None:
+            write_t0 = timing.start()
+            writers.track_debug.write(canvas.debug)
+            debug_write_elapsed += timing.add("pass2_write_track_debug", write_t0)
+        if timing.enabled:
+            timing.values["pass2_render"] = (timing.values.get("pass2_render", 0.0)
+                                             + max(0.0, time.perf_counter() - render_t0 - debug_write_elapsed))
+        if writers.main is not None:
+            write_t0 = timing.start()
+            writers.main.write(canvas.main)
+            timing.add("pass2_write_main", write_t0)
+        if writers.motion_debug is not None:
+            self._write_motion_debug(fi, frame, result, court_kps)
+
+
 def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, events: CourtEvents) -> int:
     """Write the selected video outputs; returns the number of frames rendered (0 when none is on)."""
-    cfg, video, timing = ctx.cfg, ctx.video, ctx.timing
+    cfg, timing = ctx.cfg, ctx.timing
     n = pass1.frame_count
     if ctx.needs_pass2_outputs:
         print("[pass 2] Rendering selected video output(s)...")
@@ -107,30 +223,14 @@ def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, even
         print("[pass 2] Skipped (no video outputs selected)")
     pass2_t0 = timing.start()
 
-    writer = motion_debug_writer = track_debug_writer = None
-    if cfg.save_tracking_video:
-        writer = _open_writer(ctx, cfg.output_video)
-        print(f"[writer] Tracking encoder: {writer.encoder}")
-    if cfg.save_motion_debug:
-        motion_debug_writer = _open_writer(ctx, cfg.output_debug_path)
-    if cfg.save_track_debug_video:
-        track_debug_writer = _open_writer(ctx, cfg.output_track_debug_path)
+    writers = _Writers(ctx)
     rendered = 0
     if not ctx.needs_pass2_outputs:
         timing.add("pass2_total", pass2_t0)
         return rendered
 
     source = _FrameSource(ctx, pass1.cached_frames, n)
-    ground_model = _GroundModelCache(selection.last_court_keypoints)
-    protect_masks = _ProtectMaskCache(video.height, video.width)
-    sizer = MarkerSizer(cfg)
-    search_smoother = SearchCentreSmoother()
-    ball_trail = BallTrail(cfg, video.fps, video.width, video.height)
-    path_trail = DisplayPathTrail(video.fps, video.width)
-    candidate_trails = CandidateTrackTrails(selection.all_tracks, selection.chosen_track)
-    raw_motion_trails = RawMotionTrails(video.width)
-    chosen_track = selection.chosen_track
-
+    renderer = _FrameRenderer(ctx, pass1, selection, events, writers)
     try:
         for fi in range(n):
             read_t0 = timing.start()
@@ -138,78 +238,12 @@ def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, even
             if frame is None:
                 break
             timing.add("pass2_read", read_t0)
-            render_t0 = timing.start()
-            debug_write_elapsed = 0.0
-
-            result = selection.per_frame[fi]
-            court_kps = pass1.court_keypoints[fi]
-            canvas = Canvas(frame.copy(), frame.copy() if track_debug_writer is not None else None)
-            model = ground_model.update(court_kps)
-
-            draw_court_layer(canvas.both, cfg, court_kps, model, selection.court_polygon)
-            if cfg.draw_players:
-                draw_player_boxes(canvas.both, pass1.player_boxes[fi])
-            # Rejected proposals, ROIs and candidate tracks belong only in the track-debug view;
-            # candidates go under the chosen result so the final choice sits on top.
-            draw_raw_detections(canvas.debug_only, pass1.detections[fi])
-            draw_motion_rois(canvas.debug_only, pass1.rois[fi])
-            if canvas.debug is not None:
-                candidate_trails.advance_and_draw(canvas.debug, fi)
-            if result is not None:
-                draw_selected_result(canvas, result, fi, sizer, search_smoother, cfg.draw_search_regions)
-            ball_trail.advance(result, ground_model.keypoints)
-            ball_trail.draw(canvas, cfg.draw_ball_trail)
-            if cfg.draw_court_minimap:
-                draw_court_minimap(canvas.main, model, pass1.player_boxes[fi], events.rally_legs, fi, video.fps,
-                                   contact_events=events.contacts)
-
-            # The track-debug stream follows the chosen track's display path while
-            # the selector has nothing; the current result keeps it continuous.
-            path_point = selection.display_path.get(fi)
-            if path_point is None and result is not None:
-                path_point = (float(result.cx), float(result.cy), True)
-            path_trail.advance(path_point)
-            if canvas.debug is not None and result is None:
-                path_trail.draw(canvas.debug, path_point)
-            draw_hud(canvas, fi, result, chosen_track)
-
-            if track_debug_writer is not None:
-                write_t0 = timing.start()
-                track_debug_writer.write(canvas.debug)
-                debug_write_elapsed += timing.add("pass2_write_track_debug", write_t0)
-            if timing.enabled:
-                timing.values["pass2_render"] = (timing.values.get("pass2_render", 0.0)
-                                                 + max(0.0, time.perf_counter() - render_t0 - debug_write_elapsed))
-            if writer is not None:
-                write_t0 = timing.start()
-                writer.write(canvas.main)
-                timing.add("pass2_write_main", write_t0)
-
-            if motion_debug_writer is not None:
-                write_t0 = timing.start()
-                raw_m = pass1.raw_motions[fi].unpack() if pass1.raw_motions[fi] is not None else None
-                boost_m = pass1.boost_masks[fi].unpack() if pass1.boost_masks[fi] is not None else None
-                rois = pass1.rois[fi]
-                vis = draw_motion_masks(frame, raw_m, boost_m, cfg, court_keypoints=court_kps,
-                                        protect_mask=protect_masks.get(court_kps), rois=rois)
-                probe_style = cfg.debug_probe_motion_style
-                if not probe_style:
-                    for rx1, ry1, rx2, ry2 in rois or ():
-                        cv2.rectangle(vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)), COLOR_ROI_THIN, 1)
-                if result is not None:
-                    draw_selected_ball(vis, result, sizer.radius)
-                raw_motion_trails.advance(fi, None if probe_style else rois, boost_m)
-                raw_motion_trails.draw(vis, fi)
-                motion_debug_writer.write(vis)
-                timing.add("pass2_write_debug", write_t0)
-
+            renderer.render(fi, frame)
             rendered += 1
             if cfg.progress_every and (fi + 1) % cfg.progress_every == 0:
                 print(f"  [pass2 {fi+1}/{n}] rendering...")
     finally:
         source.release()
-        for w in (writer, motion_debug_writer, track_debug_writer):
-            if w is not None:
-                w.close()
+        writers.close()
     timing.add("pass2_total", pass2_t0)
     return rendered

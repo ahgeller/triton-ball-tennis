@@ -6,7 +6,8 @@ import torch
 
 from tennis_tracker.config import Config
 from tennis_tracker.frame_window import FrameWindow
-from tennis_tracker.motion import BackgroundModel, filter_boost_mask, preprocess_frame_cuda, refine_raw_motion_temporal_cpu
+from tennis_tracker.motion import (_MaskReader, BackgroundModel, _fullframe_boost_masks, filter_boost_mask,
+                                   preprocess_frame_cuda, refine_raw_motion_temporal_cpu)
 
 
 def test_empty_motion_clears_reused_boost_buffer():
@@ -47,3 +48,31 @@ def test_court_side_protect_mask_covers_the_outside_of_each_sideline():
     assert not mask[170, 70] and not mask[170, 250]        # inside the guides' alley offset
     assert build_court_side_protect_mask(180, 320, None) is None
     assert build_court_side_protect_mask(180, 320, [0.0] * 28) is None
+
+
+def test_mask_reader_downloads_as_u8_and_charges_timed_steps_to_perf():
+    perf = {}
+    reader = _MaskReader(Config(boost_min_blob_area=1, boost_max_blob_area=600, motion_raw_close_size=0), perf)
+    mask = torch.zeros(12, 12, dtype=torch.bool)
+    mask[4:8, 4:8] = True
+    raw_u8 = reader.download(mask)
+    assert raw_u8.dtype == np.uint8 and int(raw_u8[5, 5]) == 255 and int(raw_u8[0, 0]) == 0
+    assert "pre_cuda_raw_d2h" in perf and "pre_cuda_cc_filter" not in perf
+    reader.components(raw_u8, timed=False)
+    assert "pre_cuda_cc_filter" not in perf
+    assert reader.components(raw_u8, timed=True).any() and "pre_cuda_cc_filter" in perf
+    assert _MaskReader(Config(), None).download(mask).shape == (12, 12)          # no timing: nothing recorded
+
+
+def test_fullframe_boost_masks_share_the_narrow_mask_unless_a_wide_source_differs():
+    cfg = Config(boost_min_blob_area=1, boost_max_blob_area=600, motion_raw_close_size=0)
+    narrow_src = torch.zeros(12, 12, dtype=torch.bool)
+    narrow_src[4:8, 4:8] = True
+    wide_src = narrow_src.clone()
+    wide_src[0:3, 0:3] = True
+    raw_u8, narrow, wide = _fullframe_boost_masks(narrow_src, None, cfg, _MaskReader(cfg, None))
+    assert raw_u8.shape == (12, 12) and narrow is not None and wide is narrow
+    _, narrow, wide = _fullframe_boost_masks(narrow_src, wide_src, cfg, _MaskReader(cfg, None))
+    assert wide is not narrow and wide.any() and int(wide[1, 1]) == 255 and int(narrow[1, 1]) == 0
+    _, narrow, wide = _fullframe_boost_masks(torch.zeros(12, 12, dtype=torch.bool), None, cfg, _MaskReader(cfg, None))
+    assert narrow is None and wide is None
