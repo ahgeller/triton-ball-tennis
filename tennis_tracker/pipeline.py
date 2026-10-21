@@ -16,7 +16,9 @@ from ball_in_play_selector import select_ball_in_play
 
 from .config import Config
 from .court_geometry import build_court_polygon, last_valid_court_keypoints
-from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
+from .court_events import (
+    CourtScene, assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events,
+)
 from .ball_detectors import BallDetectorBackend, GridTrackNetBallDetector, TensorRTRuntimeBallDetector
 from .court_detector import CourtDetector
 from .engine_files import find_ball_class_id_from_names, read_engine_class_names, resolve_engine_path
@@ -187,17 +189,15 @@ def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> 
     if not cfg.bounce_model_path:
         raise RuntimeError("--court requires Config.bounce_model_path")
     t0 = time.perf_counter()
-    per_frame, player_boxes = selection.per_frame, pass1.player_boxes
-    fps, w, h = video.fps, video.width, video.height
-    bounces = predict_bounce_events(per_frame, player_boxes, fps, w, h, cfg.bounce_model_path)
-    contacts = detect_player_contacts(per_frame, player_boxes, fps, w, h)
-    kinematic_bounces = infer_kinematic_bounces(per_frame, player_boxes, fps, w, h)
-    rally_legs = assemble_rally_legs(per_frame, player_boxes, fps, w, h, pass1.court_keypoints,
-                                     contacts, bounces, kinematic_bounces)
+    scene = CourtScene(selection.per_frame, pass1.player_boxes, video.fps, video.width, video.height)
+    bounces = predict_bounce_events(scene, cfg.bounce_model_path)
+    contacts = detect_player_contacts(scene)
+    kinematic_bounces = infer_kinematic_bounces(scene)
+    rally_legs = assemble_rally_legs(scene, pass1.court_keypoints, contacts, bounces, kinematic_bounces)
     inferred_legs = sum(leg["quality"] == "inferred" for leg in rally_legs)
     volleys = sum(leg["outcome"] == "volley" for leg in rally_legs)
     print(
-        f"[court minibar] {len(bounces.confirmed)} confirmed bounce(s), "
+        f"[court minimap] {len(bounces.confirmed)} confirmed bounce(s), "
         f"{len(contacts)} player contact(s), {len(rally_legs)} leg(s) "
         f"({inferred_legs} inferred, {volleys} volley) "
         f"in {time.perf_counter() - t0:.3f}s"

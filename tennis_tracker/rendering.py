@@ -14,7 +14,7 @@ import numpy as np
 from ball_in_play_selector import FrameResult, Track
 
 from .config import Config
-from .court_overlay import PlayerBoxes
+from .court_events import PlayerBoxes
 
 Color = Tuple[int, int, int]
 Point = Tuple[int, int]

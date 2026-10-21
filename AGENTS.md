@@ -36,7 +36,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `ball_in_play_selector/`: candidate association, Kalman state, track scoring,
   timeline selection, bounded recovery, trajectory refit.
 - `tennis_tracker/motion.py`, `tracking.py`: CUDA motion masks and ROI tracking.
-- `tennis_tracker/court_overlay.py`: CatBoost/kinematic bounce candidates,
+- `tennis_tracker/court_events.py`: CatBoost/kinematic bounce candidates,
   player contacts and schematic rally legs.
 - `finetune/refiner/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
@@ -126,7 +126,7 @@ locked installation manifest. TensorRT engines may be GPU/version specific.
 `python -m pytest -q` (pytest required) runs every test: all suites live in
 `tests/` (`pytest.ini` sets `testpaths` and puts the root on the import path),
 use synthetic inputs only and need no GPU. `clean_tracker.py --self-test` runs
-the selector, court-overlay, ROI and GridTrackNet modules from `tests/` through
+the selector, court-event, ROI and GridTrackNet modules from `tests/` through
 pytest; `train_gridtracknet.py --self-test` is also run by
 `tests/test_train_gridtracknet.py`. Put new tests in `tests/` as plain pytest
 functions (fixtures and `parametrize`, not `unittest.TestCase`), shared synthetic

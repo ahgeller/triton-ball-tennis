@@ -173,7 +173,7 @@ tennis_tracker/paths.py                  Model asset paths, spelled once
 tennis_tracker/headless.py               Running the tracker from another program, nothing drawn
 tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
 tennis_tracker/court_geometry.py         Court keypoints, side guides, polygon, homography
-tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs
+tennis_tracker/court_events.py           Bounces, player contacts, rally legs
 tennis_tracker/court_minimap.py          Court minimap drawing
 tennis_tracker/rendering.py              Frame drawing: canvas, markers, HUD
 tennis_tracker/court_drawing.py          Court keypoints, lines, net line and polygon

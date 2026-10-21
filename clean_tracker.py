@@ -25,7 +25,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--conf", type=float, default=0.50)
     parser.add_argument("--device", default="0")
     parser.add_argument("--no-video", action="store_true")
-    parser.add_argument("--court", action="store_true", help="Draw the top-right 2D court minibar")
+    parser.add_argument("--court", action="store_true", help="Draw the top-right 2D court minimap")
     parser.add_argument("--info", action="store_true")
     parser.add_argument("--motion-diagnostics", action="store_true",
                         help="Add per-frame motion diagnostics to the tracking JSON "
@@ -36,11 +36,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-# What ``--self-test`` runs: the selector, court-overlay, ROI-tracker and
+# What ``--self-test`` runs: the selector, court-event, ROI-tracker and
 # GridTrackNet suites. ``python -m pytest -q`` from the root runs every test.
 SELF_TEST_MODULES = (
     "tests/test_selector_scenarios.py",
-    "tests/test_court_overlay.py",
+    "tests/test_court_scenarios.py",
     "tests/test_roi_tracker.py",
     "tests/test_gridtracknet.py",
 )

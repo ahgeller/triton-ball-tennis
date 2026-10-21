@@ -20,7 +20,7 @@ from ball_in_play_selector import FrameResult, Track
 from .config import Config
 from .ball_detectors import BallDetectorBackend
 from .court_detector import CourtDetector
-from .court_overlay import BounceEvent, ContactEvent, PlayerBoxes, RallyLeg
+from .court_events import BounceEvent, ContactEvent, PlayerBoxes, RallyLeg
 from .player_detector import PlayerDetector
 from .utils import EncoderChoice
 

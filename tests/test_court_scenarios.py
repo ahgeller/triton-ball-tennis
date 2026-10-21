@@ -1,4 +1,4 @@
-"""Court overlay scenarios: bounce features, player contacts, rally legs and the minimap.
+"""Court scenarios: bounce features, player contacts, rally legs and the minimap.
 
 These were the court half of ``clean_tracker.py --self-test``; keep the fixtures
 and expected values as they are.
@@ -7,9 +7,10 @@ import numpy as np
 
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court_minimap import _visible_completed_legs, draw_court_minimap
-from tennis_tracker.court_overlay import (
+from tennis_tracker.court_events import (
     BouncePrediction,
     ContactEvent,
+    CourtScene,
     _build_bounce_features,
     _cluster_bounce_candidates,
     _inside_player,
@@ -26,7 +27,7 @@ HD_WIDTH, HD_HEIGHT = 1920, 1080
 SERVE_START, SERVE_END = (0.80, 1.02), (0.25, 0.35)
 
 
-def _minibar_leg():
+def _minimap_leg():
     return {
         "start_frame": 0,
         "end_frame": 30,
@@ -56,8 +57,9 @@ def test_bounce_features_use_five_samples_at_the_native_30fps_cadence():
     bounce_probe = [None] * 9
     for frame, (x, y) in zip(range(0, 9, 2), ((10, 20), (13, 24), (17, 29), (22, 20), (28, 12))):
         bounce_probe[frame] = _det(x, y)
-    features, feature_frames, stride = _build_bounce_features(bounce_probe, 60.0, 1280, 720)
-    assert stride == 2 and feature_frames == [4]
+    scene = CourtScene(bounce_probe, [{}] * 9, 60.0, 1280, 720)
+    features, feature_frames = _build_bounce_features(scene)
+    assert scene.stride == 2 and feature_frames == [4]
     np.testing.assert_allclose(
         features[0],
         [4, 7, 5, 11, 0.8, 7 / 11, -5, -9, -9, -17, 5 / 9, 9 / 17],
@@ -85,8 +87,8 @@ def test_service_leg_must_land_in_the_service_box():
 def test_kinematic_bounce_is_found_at_a_downward_turn_but_not_at_an_apex():
     bounce_motion = [_det(10 + frame, y) for frame, y in enumerate((0, 4, 10, 6, 4))]
     apex_motion = [_det(10 + frame, y) for frame, y in enumerate((10, 6, 0, 4, 10))]
-    assert len(infer_kinematic_bounces(bounce_motion, [{}] * 5, 30.0, HD_WIDTH, HD_HEIGHT)) == 1
-    assert not infer_kinematic_bounces(apex_motion, [{}] * 5, 30.0, HD_WIDTH, HD_HEIGHT)
+    assert len(infer_kinematic_bounces(CourtScene(bounce_motion, [{}] * 5, 30.0, HD_WIDTH, HD_HEIGHT))) == 1
+    assert not infer_kinematic_bounces(CourtScene(apex_motion, [{}] * 5, 30.0, HD_WIDTH, HD_HEIGHT))
 
 
 def test_kinematic_bounce_is_found_across_a_detection_gap():
@@ -97,15 +99,14 @@ def test_kinematic_bounce_is_found_across_a_detection_gap():
         _det(16, 4),
         _det(17, 2),
     ]
-    assert len(infer_kinematic_bounces(
-        gap_bounce, [{}] * len(gap_bounce), 30.0, HD_WIDTH, HD_HEIGHT
-    )) == 1
+    scene = CourtScene(gap_bounce, [{}] * len(gap_bounce), 30.0, HD_WIDTH, HD_HEIGHT)
+    assert len(infer_kinematic_bounces(scene)) == 1
 
 
 def test_two_kinks_without_contacts_or_bounces_make_no_inferred_leg():
     test_kps = [10, 10, 110, 10, 10, 210, 110, 210] + [0] * 20
     inferred_leg = assemble_rally_legs(
-        None, None, 30.0, 120, 220, [test_kps] * 80,
+        CourtScene([None] * 80, [{}] * 80, 30.0, 120, 220), [test_kps] * 80,
         [
             ContactEvent(0, 90, 210, 1, 10.0, "kink"),
             ContactEvent(50, 35, 10, 2, 10.0, "kink"),
@@ -117,25 +118,25 @@ def test_two_kinks_without_contacts_or_bounces_make_no_inferred_leg():
 
 
 def test_completed_leg_stays_visible_until_the_next_contact_or_timeout():
-    minibar_leg = _minibar_leg()
-    assert _visible_completed_legs([minibar_leg], [], 60, 60.0) == [minibar_leg]
+    minimap_leg = _minimap_leg()
+    assert _visible_completed_legs([minimap_leg], [], 60, 60.0) == [minimap_leg]
     assert not _visible_completed_legs(
-        [minibar_leg], [ContactEvent(61, 0, 0, 1, 1.0, "kink")], 61, 60.0
+        [minimap_leg], [ContactEvent(61, 0, 0, 1, 1.0, "kink")], 61, 60.0
     )
-    assert not _visible_completed_legs([minibar_leg], [], 91, 60.0)
+    assert not _visible_completed_legs([minimap_leg], [], 91, 60.0)
 
 
 def test_minimap_draws_only_in_the_top_right_corner():
-    minibar_probe = np.zeros((360, 640, 3), dtype=np.uint8)
+    minimap_probe = np.zeros((360, 640, 3), dtype=np.uint8)
     draw_court_minimap(
-        minibar_probe,
+        minimap_probe,
         {"H_i2c": np.eye(3)},
         {1: (0.4, 0.3, 0.6, 0.8)},
-        [_minibar_leg()],
+        [_minimap_leg()],
         30,
         60.0,
     )
-    assert np.any(minibar_probe[:, 400:]) and not np.any(minibar_probe[:, :300])
+    assert np.any(minimap_probe[:, 400:]) and not np.any(minimap_probe[:, :300])
 
 
 def test_draw_court_draws_what_the_court_detector_draws():

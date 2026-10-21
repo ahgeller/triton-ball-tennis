@@ -11,20 +11,22 @@ The stages run in this order (see ``pipeline.run``):
 5. ``court_minimap.draw_court_minimap`` draws the latest completed leg on
    every frame.
 
-Every event stage takes ``(per_frame, player_boxes_by_frame, fps, width,
-height, ...)`` in that order.  Events are the ``BounceEvent`` /
-``ContactEvent`` named tuples below.  Everything is image-space evidence
-projected through the court homography; nothing here is a measured 3D
-position.
+Every event stage takes the same ``CourtScene``: the selected ball track,
+the tracked player boxes and the clip's frame rate and size, which the
+pipeline builds once.  Events are the ``BounceEvent`` / ``ContactEvent``
+named tuples below.  Everything is image-space evidence projected through
+the court homography; nothing here is a measured 3D position.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
     Dict,
     Hashable,
+    Iterable,
     Iterator,
     List,
     Literal,
@@ -196,15 +198,41 @@ def _frames(seconds: float, fps: float) -> int:
     return int(round(seconds * fps))
 
 
-def _model_stride(fps: float) -> int:
-    """Source frames between the 30 FPS samples the models were tuned on."""
-    return max(1, int(round(float(fps) / _MODEL_FPS)))
+@dataclass(frozen=True)
+class CourtScene:
+    """What every event stage reads: the selected ball track and the tracked
+    player boxes, one entry per source frame, and the clip's frame rate and
+    size.  The pipeline builds one per run and hands it to each stage.
+    """
 
+    per_frame: BallTrack
+    player_boxes_by_frame: PlayerBoxesByFrame
+    fps: float
+    width: int
+    height: int
 
-def _resolution_scale(width: int, height: int) -> Tuple[float, float]:
-    """Return (frame diagonal, pixel scale relative to 1080p)."""
-    diagonal = float(np.hypot(width, height))
-    return diagonal, diagonal / REFERENCE_DIAG_PX
+    @property
+    def stride(self) -> int:
+        """Source frames between the 30 FPS samples the models were tuned on."""
+        return max(1, int(round(float(self.fps) / _MODEL_FPS)))
+
+    @property
+    def diagonal(self) -> float:
+        return float(np.hypot(self.width, self.height))
+
+    @property
+    def scale(self) -> float:
+        """Pixel scale relative to the 1080p frame the thresholds were tuned on."""
+        return self.diagonal / REFERENCE_DIAG_PX
+
+    def frames(self, seconds: float) -> int:
+        return _frames(seconds, self.fps)
+
+    def player_boxes(self, frame: int) -> Optional[PlayerBoxes]:
+        """The player boxes of ``frame``, None outside the clip."""
+        if 0 <= frame < len(self.player_boxes_by_frame):
+            return self.player_boxes_by_frame[frame]
+        return None
 
 
 def _usable_point(per_frame: BallTrack, frame: int) -> Optional[FrameResult]:
@@ -255,19 +283,17 @@ def _turn_metrics(incoming: np.ndarray, outgoing: np.ndarray) -> Tuple[float, fl
     return in_speed, out_speed, cosine
 
 
-def _build_bounce_features(
-    per_frame: BallTrack, fps: float, width: int, height: int
-) -> Tuple[np.ndarray, List[int], int]:
-    """Build the upstream CatBoost model's five-point, 30 FPS feature rows."""
-    stride = _model_stride(fps)
-    x_scale = _MODEL_WIDTH / max(float(width), 1.0)
-    y_scale = _MODEL_HEIGHT / max(float(height), 1.0)
+def _build_bounce_features(scene: CourtScene) -> Tuple[np.ndarray, List[int]]:
+    """Build the upstream CatBoost model's five-point, 30 FPS feature rows and
+    the source frame each row is centred on."""
+    x_scale = _MODEL_WIDTH / max(float(scene.width), 1.0)
+    y_scale = _MODEL_HEIGHT / max(float(scene.height), 1.0)
     rows = []
     center_frames = []
 
-    for frame, points in _det_windows(per_frame, stride):
-        xs = np.asarray([float(point.cx) * x_scale for point in points], dtype=np.float64)
-        ys = np.asarray([float(point.cy) * y_scale for point in points], dtype=np.float64)
+    for frame, points in _det_windows(scene.per_frame, scene.stride):
+        xs = np.asarray([point.cx * x_scale for point in points], dtype=np.float64)
+        ys = np.asarray([point.cy * y_scale for point in points], dtype=np.float64)
         if not np.isfinite(xs).all() or not np.isfinite(ys).all():
             continue
 
@@ -283,7 +309,7 @@ def _build_bounce_features(
         ])
         center_frames.append(frame)
 
-    return np.asarray(rows, dtype=np.float32).reshape(-1, 12), center_frames, stride
+    return np.asarray(rows, dtype=np.float32).reshape(-1, 12), center_frames
 
 
 def _cluster_bounce_candidates(
@@ -330,36 +356,20 @@ def _catboost_regressor() -> Any:
     return CatBoostRegressor
 
 
-def _off_player_events(
-    pairs: Iterable[Tuple[int, float]],
-    per_frame: BallTrack,
-    player_boxes_by_frame: Optional[PlayerBoxesByFrame],
-) -> List[BounceEvent]:
+def _off_player_events(pairs: Iterable[Tuple[int, float]], scene: CourtScene) -> List[BounceEvent]:
     """Attach ball positions to scored frames, dropping those on a player."""
     result = []
     for frame, score in pairs:
-        point = per_frame[frame]
+        point = scene.per_frame[frame]
         if point is None:
             continue
         x, y = float(point.cx), float(point.cy)
-        boxes = (
-            player_boxes_by_frame[frame]
-            if player_boxes_by_frame is not None and frame < len(player_boxes_by_frame)
-            else None
-        )
-        if not _inside_player(x, y, boxes):
+        if not _inside_player(x, y, scene.player_boxes(frame)):
             result.append(BounceEvent(frame, x, y, score))
     return result
 
 
-def predict_bounce_events(
-    per_frame: BallTrack,
-    player_boxes_by_frame: Optional[PlayerBoxesByFrame],
-    fps: float,
-    width: int,
-    height: int,
-    model_path: str,
-) -> BouncePrediction:
+def predict_bounce_events(scene: CourtScene, model_path: str) -> BouncePrediction:
     """Score landings with the CatBoost bounce model.
 
     Returns confirmed bounces (score above 0.45) and guarded candidates (above
@@ -370,9 +380,7 @@ def predict_bounce_events(
     if not path.is_file():
         raise FileNotFoundError(f"Bounce model not found: {path}")
     regressor = _catboost_regressor()
-    features, center_frames, stride = _build_bounce_features(
-        per_frame, fps, width, height
-    )
+    features, center_frames = _build_bounce_features(scene)
     if not center_frames:
         return BouncePrediction([], [])
 
@@ -383,14 +391,10 @@ def predict_bounce_events(
     # Scoring every frame makes candidates dense, so separate events by a
     # physical interval rather than the sample stride: two real landings are
     # never 0.1 s apart, but one landing can easily score over several frames.
-    gap = max(stride, _frames(_BOUNCE_MIN_SEPARATION_S, float(fps)))
-    confirmed = _off_player_events(
-        _cluster_bounce_candidates(center_frames, scores, gap),
-        per_frame, player_boxes_by_frame,
-    )
+    gap = max(scene.stride, scene.frames(_BOUNCE_MIN_SEPARATION_S))
+    confirmed = _off_player_events(_cluster_bounce_candidates(center_frames, scores, gap), scene)
     candidates = _off_player_events(
-        _cluster_bounce_candidates(center_frames, scores, gap, _INFERRED_BOUNCE_THRESHOLD),
-        per_frame, player_boxes_by_frame,
+        _cluster_bounce_candidates(center_frames, scores, gap, _INFERRED_BOUNCE_THRESHOLD), scene,
     )
     return BouncePrediction(confirmed, candidates)
 
@@ -415,43 +419,22 @@ def _nearest_player(
     return best
 
 
-def _fit_gap_turn(before: Sequence[_Sample], after: Sequence[_Sample]) -> Optional[tuple]:
-    """Intersect incoming/outgoing image-space fits inside a short gap.
-
-    Returns (incoming, outgoing, turn_frame, point, mismatch) or None.
-    """
-    before_a, before_b = before
-    after_a, after_b = after
-    incoming = np.array([
-        float(before_b[1].cx) - float(before_a[1].cx),
-        float(before_b[1].cy) - float(before_a[1].cy),
-    ]) / max(1, before_b[0] - before_a[0])
-    outgoing = np.array([
-        float(after_b[1].cx) - float(after_a[1].cx),
-        float(after_b[1].cy) - float(after_a[1].cy),
-    ]) / max(1, after_b[0] - after_a[0])
-    before_origin = np.array([
-        float(before_b[1].cx), float(before_b[1].cy)
-    ]) - incoming * before_b[0]
-    after_origin = np.array([
-        float(after_a[1].cx), float(after_a[1].cy)
-    ]) - outgoing * after_a[0]
-    offset = before_origin - after_origin
+def _fit_gap_turn(
+    before: Sequence[_Sample], after: Sequence[_Sample]
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Per-frame velocities into and out of a short gap, or None when the two
+    branches run parallel and so fit no turn."""
+    (frame_a, point_a), (frame_b, point_b) = before
+    (frame_c, point_c), (frame_d, point_d) = after
+    incoming = np.array([point_b.cx - point_a.cx, point_b.cy - point_a.cy]) / max(1, frame_b - frame_a)
+    outgoing = np.array([point_d.cx - point_c.cx, point_d.cy - point_c.cy]) / max(1, frame_d - frame_c)
     slope = incoming - outgoing
-    if incoming[1] > 0.0 > outgoing[1] and abs(slope[1]) >= 1e-8:
-        # For a bounce, impact time is where descending and ascending height
-        # branches meet; horizontal disagreement is detector noise.
-        turn_frame = float(-offset[1] / slope[1])
-    else:
-        denominator = float(np.dot(slope, slope))
-        if denominator < 1e-8:
-            return None
-        turn_frame = float(-np.dot(offset, slope) / denominator)
-    incoming_point = before_origin + incoming * turn_frame
-    outgoing_point = after_origin + outgoing * turn_frame
-    point = 0.5 * (incoming_point + outgoing_point)
-    mismatch = float(np.linalg.norm(incoming_point - outgoing_point))
-    return incoming, outgoing, turn_frame, point, mismatch
+    # A descending-then-ascending pair always meets on the height axis; any
+    # other pair must differ in velocity to meet at all.
+    reverses = incoming[1] > 0.0 > outgoing[1] and abs(slope[1]) >= 1e-8
+    if not reverses and float(np.dot(slope, slope)) < 1e-8:
+        return None
+    return incoming, outgoing
 
 
 def _extrapolate_incoming(samples: Sequence[_Sample], frame: int) -> Optional[np.ndarray]:
@@ -482,10 +465,11 @@ def _usable_samples(
     return samples
 
 
-def _gap_turns(per_frame: BallTrack, fps: float, stride: int) -> Iterator[_GapTurn]:
+def _gap_turns(scene: CourtScene) -> Iterator[_GapTurn]:
     """Yield short selector gaps whose flanking samples fit a turn."""
-    min_gap = max(2, _frames(_SHORT_GAP_MIN_S, fps))
-    max_gap = max(min_gap, _frames(_SHORT_GAP_MAX_S, fps))
+    per_frame, stride = scene.per_frame, scene.stride
+    min_gap = max(2, scene.frames(_SHORT_GAP_MIN_S))
+    max_gap = max(min_gap, scene.frames(_SHORT_GAP_MAX_S))
     count = len(per_frame)
     frame = 0
     while frame < count:
@@ -514,7 +498,7 @@ def _gap_turns(per_frame: BallTrack, fps: float, stride: int) -> Iterator[_GapTu
             per_frame, range(start - 1, max(-1, start - 6 * stride - 1), -1)
         )
         history.reverse()
-        yield _GapTurn(start, end, before, after, history, fit[0], fit[1])
+        yield _GapTurn(start, end, before, after, history, *fit)
 
 
 def _striking_player(
@@ -545,22 +529,16 @@ def _kink_contact_score(points: Sequence[FrameResult], scale: float) -> Optional
     return (1.0 - cosine) * min(in_speed, out_speed) / max(scale, 1e-6)
 
 
-def _kink_contacts(
-    per_frame: BallTrack,
-    player_boxes_by_frame: PlayerBoxesByFrame,
-    stride: int,
-    diagonal: float,
-    scale: float,
-) -> List[ContactEvent]:
+def _kink_contacts(scene: CourtScene) -> List[ContactEvent]:
     """Visible direction changes next to a player."""
     contacts = []
-    for frame, points in _det_windows(per_frame, stride):
+    for frame, points in _det_windows(scene.per_frame, scene.stride):
         if not any(point.source == "det" for point in points[3:]):
             continue
-        striker = _striking_player(points[2], player_boxes_by_frame[frame], diagonal)
+        striker = _striking_player(points[2], scene.player_boxes_by_frame[frame], scene.diagonal)
         if striker is None:
             continue
-        score = _kink_contact_score(points, scale)
+        score = _kink_contact_score(points, scene.scale)
         if score is None:
             continue
         player_id, box = striker
@@ -583,18 +561,11 @@ def _nearest_player_to_either(
     return nearest
 
 
-def _gap_contacts(
-    per_frame: BallTrack,
-    player_boxes_by_frame: PlayerBoxesByFrame,
-    fps: float,
-    stride: int,
-    diagonal: float,
-    scale: float,
-) -> List[ContactEvent]:
+def _gap_contacts(scene: CourtScene) -> List[ContactEvent]:
     """Occluded racket contacts, which often appear as a short reversing gap."""
     contacts = []
-    speed_scale = (_GAP_SPEED_REFERENCE_FPS / max(float(fps), 1.0)) * scale
-    for gap in _gap_turns(per_frame, fps, stride):
+    speed_scale = (_GAP_SPEED_REFERENCE_FPS / max(float(scene.fps), 1.0)) * scene.scale
+    for gap in _gap_turns(scene):
         in_speed, out_speed, cosine = _turn_metrics(gap.incoming, gap.outgoing)
         if in_speed < 4.0 * speed_scale or out_speed < 2.0 * speed_scale:
             continue
@@ -602,9 +573,9 @@ def _gap_contacts(
             continue
         midpoint = gap.midpoint
         nearest = _nearest_player_to_either(
-            gap.before[-1][1], gap.after[0][1], player_boxes_by_frame[midpoint]
+            gap.before[-1][1], gap.after[0][1], scene.player_boxes_by_frame[midpoint]
         )
-        if nearest is None or nearest[0] > 0.025 * diagonal:
+        if nearest is None or nearest[0] > 0.025 * scene.diagonal:
             continue
         _, player_id, box = nearest
         x1, y1, x2, y2 = map(float, box[:4])
@@ -637,30 +608,17 @@ def _merge_contacts(candidates: Sequence[ContactEvent], fps: float) -> List[Cont
     return sorted(contacts, key=lambda item: item.frame)
 
 
-def detect_player_contacts(
-    per_frame: BallTrack,
-    player_boxes_by_frame: PlayerBoxesByFrame,
-    fps: float,
-    width: int,
-    height: int,
-) -> List[ContactEvent]:
+def detect_player_contacts(scene: CourtScene) -> List[ContactEvent]:
     """Find racket contacts in image space and anchor them at player feet."""
-    stride = _model_stride(fps)
-    diagonal, scale = _resolution_scale(width, height)
-    candidates = _kink_contacts(per_frame, player_boxes_by_frame, stride, diagonal, scale)
-    candidates += _gap_contacts(per_frame, player_boxes_by_frame, fps, stride, diagonal, scale)
-    return _merge_contacts(candidates, fps)
+    candidates = _kink_contacts(scene) + _gap_contacts(scene)
+    return _merge_contacts(candidates, scene.fps)
 
 
-def _kink_bounces(
-    per_frame: BallTrack,
-    player_boxes_by_frame: PlayerBoxesByFrame,
-    stride: int,
-    scale: float,
-) -> List[BounceEvent]:
+def _kink_bounces(scene: CourtScene) -> List[BounceEvent]:
     """Visible strict down-to-up kinks away from the players."""
     bounces = []
-    for frame, points in _det_windows(per_frame, stride):
+    stride, scale = scene.stride, scene.scale
+    for frame, points in _det_windows(scene.per_frame, stride):
         incoming, outgoing = _window_velocities(points)
         in_speed, out_speed, cosine = _turn_metrics(incoming, outgoing)
         prominence = min(
@@ -679,7 +637,7 @@ def _kink_bounces(
         if any(
             _inside_player(
                 float(points[index].cx), float(points[index].cy),
-                player_boxes_by_frame[frame + (index - 2) * stride],
+                scene.player_boxes_by_frame[frame + (index - 2) * stride],
             )
             for index in (1, 2, 3)
         ):
@@ -689,19 +647,14 @@ def _kink_bounces(
     return bounces
 
 
-def _gap_bounces(
-    per_frame: BallTrack,
-    player_boxes_by_frame: PlayerBoxesByFrame,
-    fps: float,
-    stride: int,
-    scale: float,
-) -> List[BounceEvent]:
+def _gap_bounces(scene: CourtScene) -> List[BounceEvent]:
     """Landings fully hidden by a short selector gap.
 
     Fit the incoming and outgoing branches and keep only a strong down-to-up turn.
     """
     bounces = []
-    for gap in _gap_turns(per_frame, fps, stride):
+    scale = scene.scale
+    for gap in _gap_turns(scene):
         incoming, outgoing = gap.incoming, gap.outgoing
         in_speed, out_speed, cosine = _turn_metrics(incoming, outgoing)
         event_frame = gap.midpoint
@@ -720,8 +673,8 @@ def _gap_bounces(
             and prominence >= 6.0 * scale
         ):
             continue
-        boxes = player_boxes_by_frame[
-            int(np.clip(event_frame, 0, len(player_boxes_by_frame) - 1))
+        boxes = scene.player_boxes_by_frame[
+            int(np.clip(event_frame, 0, len(scene.player_boxes_by_frame) - 1))
         ]
         impact_x, impact_y = float(impact_point[0]), float(impact_point[1])
         if _inside_player(impact_x, impact_y, boxes):
@@ -737,22 +690,12 @@ def _gap_bounces(
     return bounces
 
 
-def infer_kinematic_bounces(
-    per_frame: BallTrack,
-    player_boxes_by_frame: PlayerBoxesByFrame,
-    fps: float,
-    width: int,
-    height: int,
-) -> List[BounceEvent]:
+def infer_kinematic_bounces(scene: CourtScene) -> List[BounceEvent]:
     """Find strict down-to-up ground kinks missed by the bounce model."""
-    stride = _model_stride(fps)
-    _, scale = _resolution_scale(width, height)
-    candidates = _kink_bounces(per_frame, player_boxes_by_frame, stride, scale)
-    candidates += _gap_bounces(per_frame, player_boxes_by_frame, fps, stride, scale)
-
     # Candidates stay in detection order (kinks, then gaps), as tuned.
+    candidates = _kink_bounces(scene) + _gap_bounces(scene)
     clustered: List[List[BounceEvent]] = []
-    radius = max(1, _frames(_EVENT_MERGE_S, fps))
+    radius = max(1, scene.frames(_EVENT_MERGE_S))
     for candidate in candidates:
         if not clustered or candidate.frame - clustered[-1][-1].frame > radius:
             clustered.append([candidate])
@@ -919,12 +862,8 @@ def _landing_lacks_contact(
 def _rescue_missing_contacts(
     bounces: Sequence[_PlacedBounce],
     contacts: List[_PlacedContact],
-    per_frame: BallTrack,
-    player_boxes_by_frame: PlayerBoxesByFrame,
+    scene: CourtScene,
     project: _CourtProjector,
-    fps: float,
-    width: int,
-    height: int,
 ) -> None:
     """Infer a contact for each confirmed landing that has none.
 
@@ -934,18 +873,16 @@ def _rescue_missing_contacts(
     Rescued contacts are appended to ``contacts`` in place and count as
     existing contacts for later landings.
     """
-    stride = _model_stride(fps)
-    diagonal, _ = _resolution_scale(width, height)
-    reach = _RESCUE_RADIUS_DIAGONAL * diagonal
-    max_flight = _frames(_MAX_FLIGHT_S, fps)
-    collision = max(1, _frames(_CONTACT_BOUNCE_COLLISION_S, fps))
+    reach = _RESCUE_RADIUS_DIAGONAL * scene.diagonal
+    max_flight = scene.frames(_MAX_FLIGHT_S)
+    collision = max(1, scene.frames(_CONTACT_BOUNCE_COLLISION_S))
     for bounce_index, bounce in enumerate(bounces):
         previous = bounces[bounce_index - 1] if bounce_index else None
-        if not _landing_lacks_contact(bounce, previous, contacts, fps, max_flight, collision):
+        if not _landing_lacks_contact(bounce, previous, contacts, scene.fps, max_flight, collision):
             continue
         best = _closest_opposite_player(
-            bounce, per_frame, player_boxes_by_frame, project,
-            max(0, bounce.frame - max_flight), max(0, bounce.frame - collision), stride,
+            bounce, scene.per_frame, scene.player_boxes_by_frame, project,
+            max(0, bounce.frame - max_flight), max(0, bounce.frame - collision), scene.stride,
         )
         if best is not None and best[0] <= reach:
             contacts.append(_PlacedContact(
@@ -1047,11 +984,7 @@ def _link_legs(
 
 
 def assemble_rally_legs(
-    per_frame: Optional[BallTrack],
-    player_boxes_by_frame: Optional[PlayerBoxesByFrame],
-    fps: float,
-    width: int,
-    height: int,
+    scene: CourtScene,
     court_keypoints_by_frame: Sequence[Optional[CourtKeypoints]],
     contacts: Sequence[ContactEvent],
     bounces: BouncePrediction,
@@ -1059,19 +992,15 @@ def assemble_rally_legs(
 ) -> List[RallyLeg]:
     """Build completed, plane-valid player-contact-to-landing rally legs.
 
-    ``per_frame`` and ``player_boxes_by_frame`` may be None; contacts are then
-    not rescued for confirmed landings that have none.
+    A confirmed landing with no contact before it gets one rescued from the
+    ball track and player boxes in ``scene`` (none when the track is empty).
     """
     project = _CourtProjector(court_keypoints_by_frame)
-    collision = max(1, _frames(_CONTACT_BOUNCE_COLLISION_S, fps))
+    collision = max(1, scene.frames(_CONTACT_BOUNCE_COLLISION_S))
     placed_bounces = _place_bounces(
-        bounces.confirmed, bounces.candidates, kinematic_bounces, project, fps,
+        bounces.confirmed, bounces.candidates, kinematic_bounces, project, scene.fps,
     )
     placed_contacts = _place_contacts(contacts, placed_bounces, project, collision)
-    if per_frame is not None and player_boxes_by_frame is not None:
-        _rescue_missing_contacts(
-            placed_bounces, placed_contacts, per_frame, player_boxes_by_frame,
-            project, fps, width, height,
-        )
-        placed_contacts.sort(key=lambda event: event.frame)
-    return _link_legs(placed_contacts, placed_bounces, len(court_keypoints_by_frame), fps)
+    _rescue_missing_contacts(placed_bounces, placed_contacts, scene, project)
+    placed_contacts.sort(key=lambda event: event.frame)
+    return _link_legs(placed_contacts, placed_bounces, len(court_keypoints_by_frame), scene.fps)

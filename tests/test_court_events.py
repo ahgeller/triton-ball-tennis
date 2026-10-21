@@ -1,15 +1,20 @@
-"""Court-event API contracts: named events, aligned stage signatures, cache key."""
+"""Court-event API contracts: named events, the shared ``CourtScene``, the cache key, and the
+``--court`` flow run end to end against a fake CatBoost model."""
 import math
+from typing import List
 
 import numpy as np
 import pytest
 
 from ball_in_play_selector import FrameResult
 from tennis_tracker.court_geometry import court_keypoints_key
-from tennis_tracker.court_overlay import (
+from tests.test_pipeline_run import FULL_OVERRIDES, clip, load_golden, render_env, run_pipeline  # noqa: F401
+from tennis_tracker import court_events
+from tennis_tracker.court_events import (
     BounceEvent,
     BouncePrediction,
     ContactEvent,
+    CourtScene,
     assemble_rally_legs,
     detect_player_contacts,
     infer_kinematic_bounces,
@@ -34,7 +39,7 @@ def test_kinematic_bounce_is_a_bounce_event():
         FrameResult(cx=10 + frame, cy=y, conf=0.9, source="det")
         for frame, y in enumerate((0, 4, 10, 6, 4))
     ]
-    (event,) = infer_kinematic_bounces(track, [{}] * len(track), 30.0, 1920, 1080)
+    (event,) = infer_kinematic_bounces(CourtScene(track, [{}] * len(track), 30.0, 1920, 1080))
     assert isinstance(event, BounceEvent) and event.frame == 2
 
 
@@ -49,11 +54,11 @@ def test_contacts_need_a_nearby_player():
     ]
     near = [{1: (170.0, 250.0, 210.0, 360.0)}] * len(track)
     far = [{1: (900.0, 250.0, 940.0, 360.0)}] * len(track)
-    contacts = detect_player_contacts(track, near, 30.0, 1920, 1080)
+    contacts = detect_player_contacts(CourtScene(track, near, 30.0, 1920, 1080))
     assert contacts and all(isinstance(event, ContactEvent) for event in contacts)
     assert {event.player_id for event in contacts} == {1}
     assert contacts[0].y == 360.0  # anchored at the player's feet
-    assert detect_player_contacts(track, far, 30.0, 1920, 1080) == []
+    assert detect_player_contacts(CourtScene(track, far, 30.0, 1920, 1080)) == []
 
 
 def test_assemble_links_a_contact_to_its_confirmed_landing():
@@ -61,7 +66,7 @@ def test_assemble_links_a_contact_to_its_confirmed_landing():
     confirmed = [BounceEvent(30, 40.0, 60.0, 0.9)]
     keypoints = [KEYPOINTS] * 80
     legs = assemble_rally_legs(
-        None, None, 30.0, 120, 220, keypoints, contacts,
+        CourtScene([None] * 80, [{}] * 80, 30.0, 120, 220), keypoints, contacts,
         BouncePrediction(confirmed, []), [],
     )
     assert len(legs) == 1
@@ -85,4 +90,100 @@ def test_court_keypoints_key_rejects_short_and_non_finite_sets():
 
 def test_missing_bounce_model_fails_before_scoring(tmp_path):
     with pytest.raises(FileNotFoundError):
-        predict_bounce_events([], [], 30.0, 1280, 720, str(tmp_path / "missing.cbm"))
+        predict_bounce_events(CourtScene([], [], 30.0, 1280, 720), str(tmp_path / "missing.cbm"))
+
+
+class FakeBounceModel:
+    """A CatBoost-like regressor: ``load_model`` records the path, ``predict`` scores every
+    five-point window by how sharply the ball turns from descending to ascending."""
+
+    loaded: List[str] = []
+
+    def load_model(self, path: str) -> None:
+        type(self).loaded.append(path)
+
+    def predict(self, features: np.ndarray, thread_count: int = 1) -> np.ndarray:
+        # Feature columns 6..9 are the y offsets of the two previous and two next samples
+        # from the centre: a landing has both previous samples above (negative) and both
+        # next samples above as well, so the centre is the lowest point.
+        rows = np.asarray(features, dtype=np.float64)
+        lowest = (rows[:, 6] < 0) & (rows[:, 7] < 0) & (rows[:, 8] < 0) & (rows[:, 9] < 0)
+        return np.where(lowest, 0.95, 0.05)
+
+
+@pytest.fixture
+def bounce_model(monkeypatch, tmp_path):
+    """The bounce-model file and the loader patched to the fake regressor."""
+    FakeBounceModel.loaded = []
+    monkeypatch.setattr(court_events, "_catboost_regressor", lambda: FakeBounceModel)
+    path = tmp_path / "bounce.cbm"
+    path.write_bytes(b"")
+    return path
+
+
+def _landing_track(frames: int = 30) -> List[FrameResult]:
+    """A ball falling to y=200 at frame 15, then rising: one landing, no apex before it."""
+    return [FrameResult(cx=20.0 + 3.0 * f, cy=200.0 - 6.0 * abs(f - 15), conf=0.9, source="det")
+            for f in range(frames)]
+
+
+def test_bounce_model_scores_windows_and_clusters_one_landing(bounce_model):
+    track = _landing_track()
+    scene = CourtScene(track, [{}] * len(track), 30.0, 120, 220)
+    prediction = predict_bounce_events(scene, str(bounce_model))
+    assert FakeBounceModel.loaded == [str(bounce_model.resolve())]
+    assert [event.frame for event in prediction.confirmed] == [15]
+    assert prediction.confirmed[0].x == track[15].cx and prediction.confirmed[0].y == 200.0
+    assert prediction.candidates == prediction.confirmed            # nothing scored in between
+    on_player = [{1: (track[15].cx - 10, 150.0, track[15].cx + 10, 205.0)}] * len(track)
+    assert predict_bounce_events(CourtScene(track, on_player, 30.0, 120, 220), str(bounce_model)).confirmed == []
+
+
+def test_court_event_stage_runs_the_model_contacts_and_legs(bounce_model, capsys):
+    from types import SimpleNamespace
+
+    from tennis_tracker import pipeline
+    from tennis_tracker.config import Config
+    from tennis_tracker.run_context import CourtEvents, VideoInfo
+
+    track = _landing_track()
+    # A far-side player (feet at court v=0.45) the ball leaves at frame 0 before landing on
+    # the near side at frame 15: no visible stroke, so the leg's contact is rescued.
+    player = {7: (10.0, 0.0, 40.0, 100.0)}
+    ctx = SimpleNamespace(
+        cfg=Config(draw_court_minimap=True, bounce_model_path=str(bounce_model)),
+        video=VideoInfo(path=bounce_model, fps=30.0, width=120, height=220, frame_count_hint=len(track)),
+    )
+    pass1 = SimpleNamespace(player_boxes=[player] * len(track), court_keypoints=[KEYPOINTS] * len(track))
+    selection = SimpleNamespace(per_frame=track)
+    events = pipeline._court_events(ctx, pass1, selection)
+    out = capsys.readouterr().out
+    assert isinstance(events, CourtEvents)
+    assert [bounce.frame for bounce in events.bounces] == [15] and events.contacts == []
+    (leg,) = events.rally_legs
+    assert (leg["start_frame"], leg["end_frame"], leg["phase"], leg["outcome"]) == (0, 15, "rally", "bounce")
+    assert (leg["quality"], leg["start_quality"]) == ("confirmed", "inferred")
+    assert out.startswith("[court minimap] 1 confirmed bounce(s), 0 player contact(s), 1 leg(s) (0 inferred, 0 volley)")
+    # Off, the stage neither loads the model nor prints.
+    FakeBounceModel.loaded = []
+    ctx.cfg.draw_court_minimap = False
+    assert pipeline._court_events(ctx, pass1, selection) == CourtEvents()
+    assert FakeBounceModel.loaded == [] and capsys.readouterr().out == ""
+    ctx.cfg.draw_court_minimap, ctx.cfg.bounce_model_path = True, None
+    with pytest.raises(RuntimeError, match="bounce_model_path"):
+        pipeline._court_events(ctx, pass1, selection)
+
+
+def test_court_flag_draws_the_minimap_on_the_golden_clip(tmp_path, monkeypatch, fake_cuda, capsys, clip, bounce_model):
+    """``--court`` on the golden run: the bounce model is loaded, the minimap is drawn on
+    the tracking video and the tracking JSON is unchanged (events are not exported)."""
+    plain = load_golden()
+    result = run_pipeline(tmp_path, monkeypatch, clip, **FULL_OVERRIDES,
+                          draw_court_minimap=True, bounce_model_path=str(bounce_model))
+    out = capsys.readouterr().out
+    assert FakeBounceModel.loaded == [str(bounce_model.resolve())]
+    assert "[court minimap]" in out
+    assert result["json"] == plain["json"]
+    if plain.get("render_env") == render_env():
+        assert result["streams"]["detector_input"] == plain["streams"]["detector_input"]
+        assert result["streams"]["tracking"] != plain["streams"]["tracking"]
