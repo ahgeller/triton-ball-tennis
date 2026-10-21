@@ -6,15 +6,15 @@ import numpy as np
 import pytest
 import torch
 
-from tennis_tracker import detectors
+from tennis_tracker import engine_session
 from tennis_tracker.config import Config
 from tennis_tracker.detectors import (
     TensorRTBallPending,
     TensorRTRuntimeBallDetector,
-    _TensorRTRuntimeSession,
     ball_engine_output_mode,
     decode_ball_predictions,
 )
+from tennis_tracker.engine_session import _TensorRTRuntimeSession
 from tennis_tracker.utils import (
     EngineIO,
     engine_class_names,
@@ -239,7 +239,7 @@ def cuda_available(monkeypatch):
 def _session_for(monkeypatch, engine, tmp_path, **kwargs):
     engine_file = tmp_path / "fake.engine"
     engine_file.write_bytes(_with_header({"names": ["ball"]}))
-    monkeypatch.setattr(detectors, "_import_tensorrt", lambda: _fake_trt(engine))
+    monkeypatch.setattr(engine_session, "_import_tensorrt", lambda: _fake_trt(engine))
     return _TensorRTRuntimeSession(str(engine_file), device=torch.device("cpu"), async_execute=False, **kwargs)
 
 
@@ -329,7 +329,7 @@ def test_ball_engine_backend_runs_through_the_shared_session(monkeypatch, tmp_pa
     ])
     engine_file = tmp_path / "ball.engine"
     engine_file.write_bytes(_with_header({"names": ["ball"]}))
-    monkeypatch.setattr(detectors, "_import_tensorrt", lambda: _fake_trt(engine))
+    monkeypatch.setattr(engine_session, "_import_tensorrt", lambda: _fake_trt(engine))
     cfg = Config(conf=0.5, trt_async_execute=False)
     detector = TensorRTRuntimeBallDetector(str(engine_file), cfg, ball_cls_id=0, device=torch.device("cpu"))
     assert detector.output_mode == "postprocessed"
