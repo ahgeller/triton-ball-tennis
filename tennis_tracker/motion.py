@@ -2,9 +2,10 @@
 masks on CUDA, the court-side protect mask and the detector-input enhancement."""
 from __future__ import annotations
 
+import functools
 import math
 import time
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import torch
@@ -15,17 +16,27 @@ from .court_geometry import build_court_side_guides
 from .frame_window import FrameWindow
 
 
-_KERNEL_CACHE = {}
-_KERNEL_3x3 = np.ones((3, 3), np.uint8)
+# Boost mask component filter.
+_BALL_BYPASS_AREA_DIAG_FRAC = 0.035        # ball-sized components, px per unit of frame diagonal
+_BALL_BYPASS_AREA_MIN_PX, _BALL_BYPASS_AREA_MAX_PX = 15, 150
+_TINY_BLOB_AREA_PX = 50                    # below this the aspect test is loosest
+_TINY_BLOB_MAX_ASPECT, _SMALL_BLOB_MAX_ASPECT = 4.5, 3.5
+_BOOST_DISC_MAX_RADIUS_PX = 12            # the disc drawn for a blob never balloons past the ball
+# Probe-style frame delta: saturation differences count this much more than value.
+_PROBE_S_DIFF_SCALE = 1.25
+_BGR_TO_GRAY = (0.114, 0.587, 0.299)      # OpenCV's luma weights, BGR order
 
+
+@functools.lru_cache(maxsize=None)
 def _get_kernel(size: int) -> np.ndarray:
-    k = _KERNEL_CACHE.get(size)
-    if k is None:
-        k = np.ones((size, size), np.uint8)
-        _KERNEL_CACHE[size] = k
-    return k
+    return np.ones((size, size), np.uint8)
 
-def _xywh_to_xyxy_np(boxes_xywh: np.ndarray) -> np.ndarray:
+
+_KERNEL_3x3 = _get_kernel(3)
+
+
+def xywh_to_xyxy(boxes_xywh: np.ndarray) -> np.ndarray:
+    """Centre/size boxes as corner boxes (rows of ``[x1, y1, x2, y2, ...]``)."""
     out = boxes_xywh.copy()
     out[:, 0] = boxes_xywh[:, 0] - boxes_xywh[:, 2] * 0.5
     out[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] * 0.5
@@ -33,7 +44,8 @@ def _xywh_to_xyxy_np(boxes_xywh: np.ndarray) -> np.ndarray:
     out[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] * 0.5
     return out
 
-def _nms_xyxy_np(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -> np.ndarray:
+def nms_xyxy(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -> np.ndarray:
+    """Indices of the boxes greedy non-maximum suppression keeps, best score first."""
     if boxes_xyxy.size == 0 or scores.size == 0:
         return np.empty((0,), dtype=np.int32)
     x1 = boxes_xyxy[:, 0]
@@ -68,7 +80,7 @@ def _motion_probe_delta_from_frames(prev_bgr: np.ndarray, curr_bgr: np.ndarray) 
     v_diff = cv2.absdiff(curr_hsv[:, :, 2], prev_hsv[:, :, 2])
     s_diff = cv2.absdiff(curr_hsv[:, :, 1], prev_hsv[:, :, 1])
     gray_diff = cv2.absdiff(curr_gray, prev_gray)
-    s_scaled = np.minimum(s_diff.astype(np.float32) * 1.25, 255.0).astype(np.uint8)
+    s_scaled = np.minimum(s_diff.astype(np.float32) * _PROBE_S_DIFF_SCALE, 255.0).astype(np.uint8)
     combined = np.maximum(gray_diff, np.maximum(v_diff, s_scaled))
     return cv2.GaussianBlur(combined, (3, 3), 0)
 
@@ -122,65 +134,65 @@ def refine_raw_motion_temporal_cpu(
         refined = cv2.bitwise_and(refined, temporal.astype(np.uint8) * 255)
     return _clean_raw_motion_mask(refined, cfg)
 
-def filter_boost_mask(raw_motion, min_area, max_area, cfg, buffers=None):
-    """Filter motion mask - OPTIMIZED with pre-allocated buffers and single CC pass.
-    
-    Performance improvements:
-    1. Single connectedComponents call (not 2-3)
-    2. Uses pre-allocated buffers when available
-    3. Early exit if no motion pixels
-    4. Avoids intermediate array copies
+def filter_boost_mask(raw_motion: np.ndarray, min_area: int, max_area: int, cfg: Config,
+                      buffers: Optional[Any] = None) -> np.ndarray:
+    """The boost mask: a filled disc for every ball-sized component of ``raw_motion``.
+
+    Components outside ``[min_area, max_area]`` px are dropped; ball-sized ones
+    bypass the aspect test (small balls blur into short streaks), larger ones
+    must pass ``cfg.blob_max_aspect``.  One connected-components pass; with
+    ``buffers`` the result is written into ``buffers.boost_mask_u8``.
     """
     img_h, img_w = raw_motion.shape[:2]
-    
-    # OPTIMIZATION: Early exit if no motion
+
     if not np.any(raw_motion):
         if buffers is not None:
             buffers.boost_mask_u8.fill(0)
             return buffers.boost_mask_u8  # Return pre-allocated empty buffer
         return np.zeros((img_h, img_w), dtype=np.uint8)
-    
+
     preserve_tiny = cfg.blob_preserve_tiny
     tiny_max_area = cfg.blob_tiny_max_area
-    
+
     img_diag = math.hypot(float(img_w), float(img_h))
-    ball_bypass_max_area = max(15, min(150, int(round(0.035 * img_diag))))
+    ball_bypass_max_area = max(_BALL_BYPASS_AREA_MIN_PX,
+                               min(_BALL_BYPASS_AREA_MAX_PX, int(round(_BALL_BYPASS_AREA_DIAG_FRAC * img_diag))))
     if preserve_tiny:
         ball_bypass_max_area = max(ball_bypass_max_area, tiny_max_area)
-    
+
     # Single CC call - the major bottleneck
     num, labels, stats, centroids = cv2.connectedComponentsWithStats(raw_motion, connectivity=8)
-    
+
     if num <= 1:
         if buffers is not None:
             buffers.boost_mask_u8.fill(0)
             return buffers.boost_mask_u8
         return np.zeros((img_h, img_w), dtype=np.uint8)
-    
+
     if buffers is not None:
         result = buffers.boost_mask_u8
         result.fill(0)
     else:
         result = np.zeros((img_h, img_w), dtype=np.uint8)
-        
+
     drawn_any = False
-    
+
     for i in range(1, num):
         area = int(stats[i, cv2.CC_STAT_AREA])
         if area <= 0:
             continue
-            
+
         # Area check
         if area < min_area or area > max_area:
             continue
-        
+
         # Small ball blobs bypass aspect check
         survived = False
         if area <= ball_bypass_max_area:
             bw = stats[i, cv2.CC_STAT_WIDTH]
             bh = stats[i, cv2.CC_STAT_HEIGHT]
             aspect = max(bw, bh) / max(min(bw, bh), 1)
-            aspect_thresh = 4.5 if area < 50 else 3.5
+            aspect_thresh = _TINY_BLOB_MAX_ASPECT if area < _TINY_BLOB_AREA_PX else _SMALL_BLOB_MAX_ASPECT
             if aspect <= aspect_thresh:
                 survived = True
         else:
@@ -192,21 +204,19 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, buffers=None):
                 aspect = max(bw, bh) / max(min(bw, bh), 1)
                 if aspect > cfg.blob_max_aspect:
                     survived = False
-                    
+
         if survived:
-            # Draw a solid circle representing this blob's position.
-            # Cap radius to ~12px so the boost mask doesn't balloon far beyond the
-            # actual ball - large blobs (motion blur, shadows) would otherwise create
-            # huge yellow regions in the debug view and over-expand the detector input.
+            # A disc at the centroid; its radius is capped so motion blur and
+            # shadows cannot balloon the boost far beyond the ball.
             cx = int(centroids[i][0] + 0.5)
             cy = int(centroids[i][1] + 0.5)
-            radius = min(int(math.sqrt(area / math.pi) + 0.5), 12)
+            radius = min(int(math.sqrt(area / math.pi) + 0.5), _BOOST_DISC_MAX_RADIUS_PX)
             cv2.circle(result, (cx, cy), max(radius, 1), 255, -1)
             drawn_any = True
-            
+
     if not drawn_any:
         return np.zeros((img_h, img_w), dtype=np.uint8) if buffers is None else result
-    
+
     return result
 
 
@@ -214,7 +224,8 @@ def _line_side_value(a: np.ndarray, v: np.ndarray, p: np.ndarray) -> float:
     d = p - a
     return float(v[0] * d[1] - v[1] * d[0])
 
-def _clip_polygon_to_halfplane(poly, a, v, keep_sign):
+def _clip_polygon_to_halfplane(poly: Sequence[np.ndarray], a: np.ndarray, v: np.ndarray,
+                               keep_sign: float) -> List[np.ndarray]:
     if not poly:
         return []
 
@@ -245,7 +256,7 @@ def _clip_polygon_to_halfplane(poly, a, v, keep_sign):
         prev, prev_in = curr, curr_in
     return output
 
-def _halfplane_mask_from_line(h, w, a, v, keep_sign):
+def _halfplane_mask_from_line(h: int, w: int, a: np.ndarray, v: np.ndarray, keep_sign: float) -> Optional[np.ndarray]:
     if float(np.hypot(v[0], v[1])) < 1e-6 or abs(float(keep_sign)) < 1e-6:
         return None
     rect = [
@@ -262,7 +273,8 @@ def _halfplane_mask_from_line(h, w, a, v, keep_sign):
     cv2.fillPoly(mask, [pts.reshape(-1, 1, 2)], 255)
     return mask > 0
 
-def _x_relation_mask_from_line(h, w, anchor, direction, relation):
+def _x_relation_mask_from_line(h: int, w: int, anchor: np.ndarray, direction: np.ndarray,
+                               relation: str) -> Optional[np.ndarray]:
     """Build mask using explicit left/right rule against line x(y).
 
     relation:
@@ -284,7 +296,7 @@ def _x_relation_mask_from_line(h, w, anchor, direction, relation):
         return xs > x_line[:, None]
     return None
 
-def build_court_side_protect_mask(h, w, court_keypoints):
+def build_court_side_protect_mask(h: int, w: int, court_keypoints: Optional[Sequence[float]]) -> Optional[np.ndarray]:
     """Protect outside side regions using court-guided side lines.
 
     Left side:
@@ -349,7 +361,7 @@ def build_court_side_protect_mask(h, w, court_keypoints):
 
     return protect if protect is not None and np.any(protect) else None
 
-def _hsv_to_bgr_cuda(h_t, s_t, v_t):
+def _hsv_to_bgr_cuda(h_t: torch.Tensor, s_t: torch.Tensor, v_t: torch.Tensor) -> torch.Tensor:
     """Convert HSV tensors (all 0-1 range) to BGR tensor (0-255 uint8)."""
     h6 = h_t * 6.0
     c = v_t * s_t
@@ -369,7 +381,7 @@ def _hsv_to_bgr_cuda(h_t, s_t, v_t):
     bgr = torch.stack([bo + m, go + m, ro + m], dim=0)
     return torch.clamp(bgr * 255, 0, 255).byte().permute(1, 2, 0).contiguous()
 
-def _dilate_motion_cuda(raw_motion, dilate_k):
+def _dilate_motion_cuda(raw_motion: torch.Tensor, dilate_k: int) -> torch.Tensor:
     """Dilate boolean motion mask on GPU via max_pool2d."""
     if dilate_k > 1:
         mm = raw_motion.float().unsqueeze(0).unsqueeze(0)
@@ -377,13 +389,16 @@ def _dilate_motion_cuda(raw_motion, dilate_k):
         return mm.squeeze() > 0.5
     return raw_motion
 
-def _motion_probe_delta_cuda(prev_frame_t, curr_frame_t, prev_v_t, prev_s_t, curr_v_t, curr_s_t):
-    """C++ probe-style frame delta in 0-255 units on CUDA."""
-    prev_gray = prev_frame_t[0] * 0.114 + prev_frame_t[1] * 0.587 + prev_frame_t[2] * 0.299
-    curr_gray = curr_frame_t[0] * 0.114 + curr_frame_t[1] * 0.587 + curr_frame_t[2] * 0.299
+def _motion_probe_delta_cuda(prev_frame_t: torch.Tensor, curr_frame_t: torch.Tensor,
+                             prev_v_t: torch.Tensor, prev_s_t: torch.Tensor,
+                             curr_v_t: torch.Tensor, curr_s_t: torch.Tensor) -> torch.Tensor:
+    """Probe-style frame delta (max of gray, V and scaled S differences, 3x3 blurred) in 0-255 units."""
+    wb, wg, wr = _BGR_TO_GRAY
+    prev_gray = prev_frame_t[0] * wb + prev_frame_t[1] * wg + prev_frame_t[2] * wr
+    curr_gray = curr_frame_t[0] * wb + curr_frame_t[1] * wg + curr_frame_t[2] * wr
     gray_diff = torch.abs(curr_gray - prev_gray) * 255.0
     v_diff = torch.abs(curr_v_t - prev_v_t) * 255.0
-    s_diff = torch.abs(curr_s_t - prev_s_t) * (255.0 * 1.25)
+    s_diff = torch.abs(curr_s_t - prev_s_t) * (255.0 * _PROBE_S_DIFF_SCALE)
     delta = torch.maximum(gray_diff, torch.maximum(v_diff, s_diff))
     return F.avg_pool2d(delta.unsqueeze(0).unsqueeze(0), 3, stride=1, padding=1).squeeze(0).squeeze(0)
 

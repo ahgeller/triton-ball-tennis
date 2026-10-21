@@ -40,6 +40,7 @@ from typing import (
 import numpy as np
 
 from ball_in_play_selector import FrameResult
+from ball_in_play_selector.config import REFERENCE_DIAG_PX
 
 from .court_geometry import (
     NET_V,
@@ -72,8 +73,7 @@ _MODEL_HEIGHT = 720.0
 _BOUNCE_MIN_SEPARATION_S = 0.10
 
 # --- Image-space event detection ---------------------------------------------
-# Pixel thresholds were tuned on 1920x1080 video; this is its diagonal.
-_REFERENCE_DIAGONAL_PX = 2203.0
+# Pixel thresholds were tuned on 1920x1080 video; REFERENCE_DIAG_PX is its diagonal.
 # Gap-fit velocities are per source frame; their thresholds were tuned at 60 FPS.
 _GAP_SPEED_REFERENCE_FPS = 60.0
 _MIN_DET_IN_WINDOW = 3  # detections required in a five-sample window
@@ -210,7 +210,7 @@ def _model_stride(fps: float) -> int:
 def _resolution_scale(width: int, height: int) -> Tuple[float, float]:
     """Return (frame diagonal, pixel scale relative to 1080p)."""
     diagonal = float(np.hypot(width, height))
-    return diagonal, diagonal / _REFERENCE_DIAGONAL_PX
+    return diagonal, diagonal / REFERENCE_DIAG_PX
 
 
 def _usable_point(per_frame: BallTrack, frame: int) -> Optional[FrameResult]:

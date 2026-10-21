@@ -42,8 +42,8 @@ class FrameWindow:
         if self.upload:
             try:
                 self.uploader = PinnedFrameUploader(first.shape[0], first.shape[1], device)
-            except Exception:
-                self.uploader = None      # no CUDA driver / pinned memory: plain uploads
+            except RuntimeError as error:    # no CUDA driver or no pinned memory
+                print(f"[pass 1] Pinned frame uploads unavailable ({str(error).splitlines()[0]}); using plain uploads")
         self.curr: np.ndarray = first
         self.next: Optional[np.ndarray] = second
         self.prev_gpu: Optional[GpuFrame] = None

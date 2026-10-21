@@ -33,7 +33,7 @@ import torch.nn.functional as F
 from .config import Config
 from .frame_rate import require_phase_stride
 from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
-from .motion import _nms_xyxy_np, _xywh_to_xyxy_np
+from .motion import nms_xyxy, xywh_to_xyxy
 from .utils import resolve_engine_path, engine_is_trt10, iter_engine_io, read_engine_header
 
 # One ball detection: an xyxy box in source pixels and its confidence.
@@ -647,7 +647,7 @@ def decode_ball_predictions(
     p = p.detach().float().cpu().numpy()
     if p.size == 0 or p.shape[1] <= 4:
         return dets
-    boxes = _xywh_to_xyxy_np(p[:, :4].astype(np.float32))
+    boxes = xywh_to_xyxy(p[:, :4].astype(np.float32))
     cls_scores = p[:, 4:].astype(np.float32)
     if cls_scores.shape[1] > 1:
         cls_ids = np.argmax(cls_scores, axis=1)
@@ -659,7 +659,7 @@ def decode_ball_predictions(
     boxes, scores, cls_ids = boxes[keep], scores[keep], cls_ids[keep]
     if boxes.shape[0] == 0:
         return dets
-    keep_idx = _nms_xyxy_np(boxes, scores, _BALL_NMS_IOU)
+    keep_idx = nms_xyxy(boxes, scores, _BALL_NMS_IOU)
     boxes, scores, cls_ids = boxes[keep_idx], scores[keep_idx], cls_ids[keep_idx]
     for i in range(boxes.shape[0]):
         cls_id = int(cls_ids[i])
@@ -848,7 +848,7 @@ class PlayerDetector:
         if p.shape[1] < 5:
             return np.empty((0, 6))
 
-        boxes_xyxy = _xywh_to_xyxy_np(p[:, :4].astype(np.float32))
+        boxes_xyxy = xywh_to_xyxy(p[:, :4].astype(np.float32))
         scores = p[:, 4].astype(np.float32)
         keep = scores >= float(self.cfg.player_conf)
         boxes_xyxy = boxes_xyxy[keep]
@@ -857,7 +857,7 @@ class PlayerDetector:
         if boxes_xyxy.shape[0] == 0:
             return np.empty((0, 6))
 
-        keep_idx = _nms_xyxy_np(boxes_xyxy, scores, float(self.cfg.player_iou))
+        keep_idx = nms_xyxy(boxes_xyxy, scores, float(self.cfg.player_iou))
         boxes_xyxy = boxes_xyxy[keep_idx]
         scores = scores[keep_idx]
 
