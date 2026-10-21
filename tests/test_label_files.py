@@ -3,13 +3,12 @@ synthetic files in temporary folders. No workspace label or video is ever read."
 import json
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pytest
 
 from finetune import data_policy, fileio, labels, workspace
 from finetune.import_data import ReviewedLabelsError, convert_rows, protect_existing, read_tracknet_csv
 from finetune.workspace import VideoMeta, video_meta
+from tests._helpers import write_clip
 
 
 # --------------------------------------------------------------------------- cells and the sentinel
@@ -167,16 +166,6 @@ def test_copy_atomic_lands_the_whole_file_or_nothing(tmp_path):
 
 
 # --------------------------------------------------------------------------- video facts
-
-def write_clip(path: Path, count: int, size=(64, 36), fps=30.0) -> Path:
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"FFV1"), fps, size)
-    if not writer.isOpened():
-        pytest.skip("this OpenCV build cannot write FFV1")
-    for index in range(count):
-        writer.write(np.full((size[1], size[0], 3), index, np.uint8))
-    writer.release()
-    return path
-
 
 def test_video_meta_reads_a_clip_and_raises_on_anything_else(tmp_path):
     clip = write_clip(tmp_path / "clip.avi", 7)

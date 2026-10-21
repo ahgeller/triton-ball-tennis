@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -62,6 +63,44 @@ V5_CUSTOM_CANVAS = (1280, 720)    # the TrackNetV5 conversion put every custom l
 
 Point = LabelPoint
 TrackNetRow = Tuple[int, float, float]       # visibility, x, y as the source CSV has them
+Canvas = Tuple[int, int]                     # the frame size a source's label coordinates are in
+
+
+@dataclass(frozen=True)
+class ImportOptions:
+    """The flags one import run applies to every clip."""
+    keep_occluded: bool = False      # TrackNet visibility 3 (occluded, estimated) counts as a visible ball
+    force: bool = False              # re-convert clips already in the workspace
+    link: bool = False               # hard-link videos instead of copying them
+    dry_run: bool = False            # list what would be imported and stop
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where a clip's labels came from, as clips.csv records it."""
+    source: str                      # the dataset tag training and evaluation select by
+    section: str = ""                # the dataset's own subdivision (a game, a split folder)
+    group: str = ""                  # clips of one recording, held out together
+    note: str = ""
+
+
+# --------------------------------------------------------------------------- frame and pixel mapping
+
+def grid_frame(index: int, stride: int) -> int:
+    """GridTrackNet's own set: its FrameGenerator.py skipped a frame first at 60 FPS, so label k
+    is video frame 2k + 1 there and frame k on a 30 FPS match (verified by matching the shipped
+    PNGs against the videos)."""
+    return 2 * index + 1 if stride == 2 else index
+
+
+def cadence_frame(index: int, stride: int) -> int:
+    """A label set written at model cadence from frame 0: label k is video frame k * stride."""
+    return index * stride
+
+
+def canvas_scale(canvas: Optional[Canvas], width: int, height: int) -> Tuple[float, float]:
+    """The multipliers that take a source's label coordinates onto the video's pixels."""
+    return (width / canvas[0], height / canvas[1]) if canvas else (1.0, 1.0)
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -197,13 +236,13 @@ class Manifest:
         write_manifest(self.rows, self.path)
 
 
-def record(manifest: Manifest, clip: str, video: Path, source: str, section: str, group: str,
-           origin: str, note: str = "") -> Dict[str, str]:
+def record(manifest: Manifest, clip: str, video: Path, provenance: Provenance, origin: str) -> Dict[str, str]:
     fps, width, height, _ = video_meta(video)
     labels = read_labels(label_csv(clip), width, height)
-    manifest.put(clip, source=source, section=section, group=group, width=width, height=height,
-                 fps=f"{fps:.3f}", stride=require_phase_stride(fps), label_frames=len(labels),
-                 visible=sum(point is not None for point in labels.values()), origin=origin, note=note)
+    manifest.put(clip, source=provenance.source, section=provenance.section, group=provenance.group,
+                 width=width, height=height, fps=f"{fps:.3f}", stride=require_phase_stride(fps),
+                 label_frames=len(labels), visible=sum(point is not None for point in labels.values()),
+                 origin=origin, note=provenance.note)
     return manifest.rows[clip]
 
 
@@ -212,50 +251,59 @@ def report(clip: str, action: str, row: Dict[str, str]) -> None:
           f"labels={row['label_frames']} visible={row['visible']}", flush=True)
 
 
+def source_video(folder: Path, stem: str) -> Optional[Path]:
+    """The video called `stem` in a source folder, whatever its container (macOS resource forks skipped)."""
+    return next((p for p in sorted(folder.glob(f"{stem}.*"))
+                 if p.suffix.lower() in VIDEO_SUFFIXES and not p.name.startswith("._")), None)
+
+
 # --------------------------------------------------------------------------- importers
 
-def import_archive(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool) -> int:
+def import_archive(src: Path, manifest: Manifest, options: ImportOptions) -> int:
+    """<root>/<clip>_ball.csv + <root>/<clip>.<ext>: the own-camera clips, labels copied as they are."""
     count = 0
     for csv_path in sorted(src.glob("*_ball.csv"), key=lambda p: natural_key(p.stem)):
-        clip = csv_path.stem[: -len("_ball")]
-        videos = [p for p in src.glob(f"{clip}.*") if p.suffix.lower() in VIDEO_SUFFIXES]
-        if not videos:
+        clip = clip_of(csv_path)
+        video = source_video(src, clip)
+        if video is None:
             print(f"[skip] {csv_path.name}: no video next to it")
             continue
-        video = videos[0]
         dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
         dst_csv = label_csv(clip)
-        if dry_run:
+        if options.dry_run:
             print(f"[plan] {clip}: copy {video.name} + {csv_path.name}")
             count += 1
             continue
-        if dst_csv.is_file() and dst_video.is_file() and not force:
+        if dst_csv.is_file() and dst_video.is_file() and not options.force:
             action = "kept"
         else:
             read_label_rows(csv_path)          # a malformed file is a LabelFormatError before anything is written
             protect_existing(dst_csv)
-            copy_media(video, dst_video, link)
+            copy_media(video, dst_video, options.link)
             copy_atomic(csv_path, dst_csv)
             action = "copied"
-        report(clip, action, record(manifest, clip, dst_video, "custom", "archive", "own-camera", str(video)))
+        report(clip, action, record(manifest, clip, dst_video, Provenance("custom", "archive", "own-camera"), str(video)))
         count += 1
     return count
 
 
-def import_tracknet_frames(folder: Path, clip: str, manifest: Manifest, source: str, section: str, group: str,
-                           canvas: Optional[Tuple[int, int]], fps: float, keep_occluded: bool, force: bool,
-                           dry_run: bool, note: str = "", label_csv: Optional[Path] = None) -> bool:
-    """A folder with Label.csv (TrackNet columns) + one image per labelled frame -> mp4 + workspace CSV."""
-    if label_csv is None:
-        label_csv = next((p for p in folder.iterdir() if p.name.lower() in ("label.csv", "labels.csv")), None)
-    if label_csv is None:
+def labels_file_in(folder: Path) -> Optional[Path]:
+    return next((p for p in folder.iterdir() if p.name.lower() in ("label.csv", "labels.csv")), None)
+
+
+def import_tracknet_frames(folder: Path, clip: str, manifest: Manifest, provenance: Provenance, options: ImportOptions,
+                           canvas: Optional[Canvas] = None, fps: float = 30.0, labels_file: Optional[Path] = None) -> bool:
+    """A folder with Label.csv (TrackNet columns) + one image per labelled frame -> mp4 + workspace
+    CSV. Label k is the k-th image in index order, so it is video frame k."""
+    labels_file = labels_file_in(folder) if labels_file is None else labels_file
+    if labels_file is None:
         return False
     images = sorted((p for p in folder.iterdir() if p.suffix.lower() in (".png", ".jpg", ".jpeg")),
                     key=lambda p: natural_key(p.stem))
     if not images:
-        print(f"[skip] {clip}: {label_csv.name} but no frames")
+        print(f"[skip] {clip}: {labels_file.name} but no frames")
         return False
-    raw = read_tracknet_csv(label_csv, keep_occluded)
+    raw = read_tracknet_csv(labels_file, options.keep_occluded)
     by_index = {int(re.search(r"(\d+)", p.stem).group(1)): p for p in images if re.search(r"(\d+)", p.stem)}
     missing = sorted(set(raw) - set(by_index))
     if missing:
@@ -264,134 +312,137 @@ def import_tracknet_frames(folder: Path, clip: str, manifest: Manifest, source: 
     ordered = sorted(raw)
     dst_video = ws.VIDEOS / f"{clip}.mp4"
     dst_csv = label_csv(clip)
-    if dry_run:
+    if options.dry_run:
         print(f"[plan] {clip}: encode {len(ordered)} frames from {folder}")
         return True
-    if not (dst_video.is_file() and dst_csv.is_file()) or force:
+    if not (dst_video.is_file() and dst_csv.is_file()) or options.force:
         protect_existing(dst_csv)
         encoder = frames_to_video([by_index[i] for i in ordered], dst_video, fps)
         _, width, height, _ = video_meta(dst_video)
-        sx = width / canvas[0] if canvas else 1.0
-        sy = height / canvas[1] if canvas else 1.0
         position_of = {index: position for position, index in enumerate(ordered)}   # one video frame per image
-        labels, _ = convert_rows(raw, position_of.__getitem__, (sx, sy), len(ordered))
+        labels, _ = convert_rows(raw, position_of.__getitem__, canvas_scale(canvas, width, height), len(ordered))
         write_labels(dst_csv, labels, width, height)
         action = "encoded"
-        note = (note + "; " if note else "") + f"frames->{encoder}"
+        provenance = replace(provenance, note=(provenance.note + "; " if provenance.note else "") + f"frames->{encoder}")
     else:
         action = "kept"
-    report(clip, action, record(manifest, clip, dst_video, source, section, group, str(folder), note))
+    report(clip, action, record(manifest, clip, dst_video, provenance, str(folder)))
     return True
 
 
-def import_video11(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool) -> int:
-    ok = import_tracknet_frames(src, "video11", manifest, "custom-uncorrected", "held-back", "own-camera",
-                                V5_CUSTOM_CANVAS, 30.0, keep_occluded=False, force=force, dry_run=dry_run,
-                                note="768x432 PNGs from the TrackNetV5 prep; labels never click-corrected; eval only")
-    return int(ok)
+def import_video11(src: Path, manifest: Manifest, options: ImportOptions) -> int:
+    provenance = Provenance("custom-uncorrected", "held-back", "own-camera",
+                            "768x432 PNGs from the TrackNetV5 prep; labels never click-corrected; eval only")
+    return int(import_tracknet_frames(src, "video11", manifest, provenance, replace(options, keep_occluded=False),
+                                      canvas=V5_CUSTOM_CANVAS, fps=30.0))
 
 
-def import_tracknetv2(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool,
-                      keep_occluded: bool, prefix: str = "tnv2", source: str = "tracknetv2-badminton") -> int:
-    """<root>/<section>/<match>/csv/<rally>_ball.csv + <root>/<section>/<match>/video/<rally>.mp4."""
+def import_tracknetv2(src: Path, manifest: Manifest, options: ImportOptions, prefix: str = "tnv2",
+                      source: str = "tracknetv2-badminton") -> int:
+    """<root>/<section>/<match>/csv/<rally>_ball.csv + <root>/<section>/<match>/video/<rally>.mp4,
+    labels at model cadence from frame 0 (``cadence_frame``) in the video's own pixels."""
     count = 0
     visibility_seen: Dict[int, int] = {}
     for csv_path in sorted(src.rglob("*_ball.csv"), key=lambda p: natural_key(str(p))):
         if csv_path.parent.name.lower() != "csv":
             continue
         match_dir = csv_path.parent.parent
-        rally = csv_path.stem[: -len("_ball")]
-        videos = [p for p in (match_dir / "video").glob(f"{rally}.*") if p.suffix.lower() in VIDEO_SUFFIXES]
-        if not videos:
+        rally = clip_of(csv_path)
+        video = source_video(match_dir / "video", rally)
+        if video is None:
             print(f"[skip] {csv_path}: no video/{rally}.mp4")
             continue
-        video = videos[0]
         relative = match_dir.relative_to(src).parts
         section = relative[0] if len(relative) > 1 else ""
         match = relative[-1]
         clip = "_".join(part for part in (prefix, section, match, rally) if part)
         dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
         dst_csv = label_csv(clip)
-        if dry_run:
+        if options.dry_run:
             print(f"[plan] {clip}: copy {video.name} + convert {csv_path.name}")
             count += 1
             continue
-        if dst_csv.is_file() and dst_video.is_file() and not force:
+        if dst_csv.is_file() and dst_video.is_file() and not options.force:
             action = "kept"
         else:
             fps, width, height, total = video_meta(video)
             stride = require_phase_stride(fps)
-            raw = read_tracknet_csv(csv_path, keep_occluded)
+            raw = read_tracknet_csv(csv_path, options.keep_occluded)
             for visibility, _, _ in raw.values():
                 visibility_seen[visibility] = visibility_seen.get(visibility, 0) + 1
-            labels, dropped = convert_rows(raw, lambda index: index * stride, (1.0, 1.0), total)
+            labels, dropped = convert_rows(raw, lambda index: cadence_frame(index, stride), (1.0, 1.0), total)
             if dropped:
                 print(f"[warn] {clip}: {dropped} label rows beyond the video's {total} frames were dropped")
             protect_existing(dst_csv)
-            copy_media(video, dst_video, link)
+            copy_media(video, dst_video, options.link)
             write_labels(dst_csv, labels, width, height)
             action = "copied"
         group = "_".join(part for part in (prefix, section, match) if part)
         note = "shuttlecock, not a tennis ball; cross-sport pre-training only" if source == "tracknetv2-badminton" else ""
-        report(clip, action, record(manifest, clip, dst_video, source, section, group, str(video), note))
+        report(clip, action, record(manifest, clip, dst_video, Provenance(source, section, group, note), str(video)))
         count += 1
     if visibility_seen:
         print(f"[info] {source} visibility values converted: {dict(sorted(visibility_seen.items()))}")
     return count
 
 
-def import_grid(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool, keep_occluded: bool) -> int:
+def _import_grid_video(clip: str, video: Path, raw: Dict[int, TrackNetRow], manifest: Manifest,
+                       options: ImportOptions) -> bool:
+    """A GridTrackNet match that ships its video: copy it and map Labels.csv onto it (``grid_frame``,
+    scaled from GRID_LABEL_CANVAS). False when no label lands on the video."""
+    dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
+    dst_csv = label_csv(clip)
+    if options.dry_run:
+        print(f"[plan] {clip}: copy '{video.name}' + convert {len(raw)} labels")
+        return True
+    if dst_csv.is_file() and dst_video.is_file() and not options.force:
+        action = "kept"
+    else:
+        fps, width, height, total = video_meta(video)
+        stride = require_phase_stride(fps)
+        labels, dropped = convert_rows(raw, lambda index: grid_frame(index, stride),
+                                       canvas_scale(GRID_LABEL_CANVAS, width, height), total)
+        if dropped:
+            print(f"[warn] {clip}: {dropped} label rows beyond the video's {total} frames were dropped")
+        if not labels:
+            print(f"[skip] {clip}: no labels map onto the video")
+            return False
+        protect_existing(dst_csv)
+        copy_media(video, dst_video, options.link)
+        write_labels(dst_csv, labels, width, height)
+        action = "copied"
+    provenance = Provenance("grid", "", clip, f"labels scaled from {GRID_LABEL_CANVAS[0]}x{GRID_LABEL_CANVAS[1]}")
+    report(clip, action, record(manifest, clip, dst_video, provenance, str(video)))
+    return True
+
+
+def import_grid(src: Path, manifest: Manifest, options: ImportOptions) -> int:
+    """<root>/match*/Labels.csv + the match's video, or its frames/ folder when the video is missing."""
     count = 0
     for match_dir in sorted((p for p in src.iterdir() if p.is_dir() and p.name.lower().startswith("match")),
                             key=lambda p: natural_key(p.name)):
-        label_csv = next((p for p in match_dir.iterdir() if p.name.lower() == "labels.csv"), None)
-        if label_csv is None:
+        labels_file = next((p for p in match_dir.iterdir() if p.name.lower() == "labels.csv"), None)
+        if labels_file is None:
             print(f"[skip] {match_dir.name}: no Labels.csv")
             continue
         clip = f"grid_{match_dir.name}"
-        videos = [p for p in match_dir.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES and not p.name.startswith("._")]
-        raw = read_tracknet_csv(label_csv, keep_occluded)
-        dst_csv = label_csv(clip)
-        if videos:
-            video = videos[0]
-            dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
-            if dry_run:
-                print(f"[plan] {clip}: copy '{video.name}' + convert {len(raw)} labels")
-                count += 1
-                continue
-            if dst_csv.is_file() and dst_video.is_file() and not force:
-                action = "kept"
-            else:
-                fps, width, height, total = video_meta(video)
-                stride = require_phase_stride(fps)
-                # FrameGenerator.py skips a frame first at 60 FPS: label k is video frame 2k + 1
-                labels, dropped = convert_rows(raw, lambda index: 2 * index + 1 if stride == 2 else index,
-                                               (width / GRID_LABEL_CANVAS[0], height / GRID_LABEL_CANVAS[1]), total)
-                if dropped:
-                    print(f"[warn] {clip}: {dropped} label rows beyond the video's {total} frames were dropped")
-                if not labels:
-                    print(f"[skip] {clip}: no labels map onto the video")
-                    continue
-                protect_existing(dst_csv)
-                copy_media(video, dst_video, link)
-                write_labels(dst_csv, labels, width, height)
-                action = "copied"
-            report(clip, action, record(manifest, clip, dst_video, "grid", "", clip, str(video),
-                                        note=f"labels scaled from {GRID_LABEL_CANVAS[0]}x{GRID_LABEL_CANVAS[1]}"))
+        video = next((p for p in sorted(match_dir.iterdir())
+                      if p.suffix.lower() in VIDEO_SUFFIXES and not p.name.startswith("._")), None)
+        raw = read_tracknet_csv(labels_file, options.keep_occluded)
+        if video is not None:
+            count += _import_grid_video(clip, video, raw, manifest, options)
+            continue
+        frames_dir = match_dir / "frames"
+        if frames_dir.is_dir() and import_tracknet_frames(
+                frames_dir, clip, manifest, Provenance("grid", "", clip, "rebuilt from the shipped 1280x720 PNGs"),
+                options, fps=30.0, labels_file=labels_file):
             count += 1
         else:
-            frames_dir = match_dir / "frames"
-            if frames_dir.is_dir() and import_tracknet_frames(
-                    frames_dir, clip, manifest, "grid", "", clip, None, 30.0, keep_occluded, force, dry_run,
-                    note="rebuilt from the shipped 1280x720 PNGs", label_csv=label_csv):
-                count += 1
-            else:
-                print(f"[skip] {clip}: no video and no complete frame set for its {len(raw)} labels")
+            print(f"[skip] {clip}: no video and no complete frame set for its {len(raw)} labels")
     return count
 
 
-def import_prof(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool,
-                keep_occluded: bool, start: int = PROF_FIRST) -> int:
+def import_prof(src: Path, manifest: Manifest, options: ImportOptions, start: int = PROF_FIRST) -> int:
     """<root>/game*/Clip*/Label.csv + one 1280x720 JPEG per frame -> videoNN.mp4 + workspace CSV.
 
     Named videoNN rather than prof_gameN_ClipN on purpose: the clips then sit directly under
@@ -402,33 +453,32 @@ def import_prof(src: Path, manifest: Manifest, force: bool, link: bool, dry_run:
     folders = []
     for game in sorted((p for p in src.iterdir() if p.is_dir()), key=lambda p: natural_key(p.name)):
         for clip_dir in sorted((p for p in game.iterdir() if p.is_dir()), key=lambda p: natural_key(p.name)):
-            if any(p.name.lower() in ("label.csv", "labels.csv") for p in clip_dir.iterdir()):
+            if labels_file_in(clip_dir) is not None:
                 folders.append((game.name, clip_dir))
     count = 0
     for offset, (game, clip_dir) in enumerate(folders):
         clip = f"video{start + offset}"
-        if import_tracknet_frames(clip_dir, clip, manifest, "prof", game, f"prof_{game}", None, PROF_FPS,
-                                  keep_occluded, force, dry_run,
-                                  note=f"public TrackNet tennis set, {game}/{clip_dir.name}"):
+        provenance = Provenance("prof", game, f"prof_{game}", f"public TrackNet tennis set, {game}/{clip_dir.name}")
+        if import_tracknet_frames(clip_dir, clip, manifest, provenance, options, fps=PROF_FPS):
             count += 1
     return count
 
 
-def import_tracknet(src: Path, manifest: Manifest, force: bool, link: bool, dry_run: bool, keep_occluded: bool,
-                    prefix: str, fps: float, canvas: Optional[Tuple[int, int]]) -> int:
+def import_tracknet(src: Path, manifest: Manifest, options: ImportOptions, prefix: str, fps: float,
+                    canvas: Optional[Canvas]) -> int:
     """Generic public layouts: <root>/**/Label.csv next to frames (TrackNet tennis: game1/Clip1/), or
     <root>/**/csv/*_ball.csv + video/*.mp4 (TrackNetV2 / WASB layout)."""
-    count = import_tracknetv2(src, manifest, force, link, dry_run, keep_occluded, prefix=prefix, source=prefix)
-    for label_csv in sorted(src.rglob("*"), key=lambda p: natural_key(str(p))):
-        if label_csv.name.lower() not in ("label.csv", "labels.csv"):
+    count = import_tracknetv2(src, manifest, options, prefix=prefix, source=prefix)
+    for labels_file in sorted(src.rglob("*"), key=lambda p: natural_key(str(p))):
+        if labels_file.name.lower() not in ("label.csv", "labels.csv"):
             continue
-        folder = label_csv.parent
+        folder = labels_file.parent
         relative = folder.relative_to(src).parts
         clip = "_".join((prefix, *relative)) if relative else f"{prefix}_{folder.name}"
         clip = re.sub(r"[^A-Za-z0-9_.-]+", "_", clip)
         group = "_".join((prefix, *relative[:-1])) if len(relative) > 1 else clip
-        if import_tracknet_frames(folder, clip, manifest, prefix, relative[0] if relative else "", group,
-                                  canvas, fps, keep_occluded, force, dry_run):
+        provenance = Provenance(prefix, relative[0] if relative else "", group)
+        if import_tracknet_frames(folder, clip, manifest, provenance, options, canvas=canvas, fps=fps):
             count += 1
     return count
 
@@ -458,14 +508,15 @@ def main() -> int:
     ws.VIDEOS.mkdir(exist_ok=True)
     ws.LABELS.mkdir(exist_ok=True)
     manifest = Manifest()
+    options = ImportOptions(keep_occluded=args.keep_occluded, force=args.force, link=args.link, dry_run=args.dry_run)
     importers = {
-        "archive": lambda src: import_archive(src, manifest, args.force, args.link, args.dry_run),
-        "video11": lambda src: import_video11(src, manifest, args.force, args.link, args.dry_run),
-        "tracknetv2": lambda src: import_tracknetv2(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded),
-        "grid": lambda src: import_grid(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded),
-        "prof": lambda src: import_prof(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded),
-        "tracknet": lambda src: import_tracknet(src, manifest, args.force, args.link, args.dry_run, args.keep_occluded,
-                                                args.prefix, args.fps, tuple(args.canvas) if args.canvas else None),
+        "archive": lambda src: import_archive(src, manifest, options),
+        "video11": lambda src: import_video11(src, manifest, options),
+        "tracknetv2": lambda src: import_tracknetv2(src, manifest, options),
+        "grid": lambda src: import_grid(src, manifest, options),
+        "prof": lambda src: import_prof(src, manifest, options),
+        "tracknet": lambda src: import_tracknet(src, manifest, options, args.prefix, args.fps,
+                                                tuple(args.canvas) if args.canvas else None),
     }
     total = 0
     for name in wanted:
