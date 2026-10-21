@@ -72,8 +72,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `label_sheet.py` (the grid and trajectory-sheet views, each owning its state,
   picture and keys), `label_draw.py` (the filters, marks and text every view
   draws with) and `label_hints.py` (the suggestions). `finetune/refiner/`: the
-  suggestion model above (`refine.py`, `cnn_refiner.py`, `refiner_training.py`,
-  `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
+  suggestion model above (`refine.py`, `cnn_refiner.py` with its torch network class in
+  `refiner_network.py`, `refiner_training.py`, `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
   file format; `label_check.py`, checks a label file against its video's facts;
   `label_audit.py`, checks labels against the raw detector; `label_flags.py`, the frames an
   audit flagged for a person (the flag sidecar the label tool and the menu read); `detect.py`,

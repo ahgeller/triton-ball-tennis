@@ -3,13 +3,18 @@
 Both shapes the trainer has ever written are rebuilt in tmp_path with the exact
 writer keys; the workspace models under finetune/models/refiner/ are never read.
 """
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from tennis_tracker.paths import ROOT
+
 torch = pytest.importorskip("torch")
 
 from finetune.refiner import cnn_refiner  # noqa: E402
+from finetune.refiner.refiner_network import RefinerNet  # noqa: E402
 
 
 def _write_checkpoints(tmp_path: Path):
@@ -43,3 +48,27 @@ def test_describe_reads_both_checkpoint_shapes(tmp_path, monkeypatch):
     assert lines[1].startswith(" ")
     assert "unreadable" not in lines[0]
     assert "unreadable" not in lines[1]
+
+
+TORCH_BLOCKED = """
+import importlib.abc, sys
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] == "torch":
+            raise ImportError("torch is imported only when a network is built")
+sys.meta_path.insert(0, Blocker())
+from finetune.refiner import cnn_refiner
+assert "finetune.refiner.refiner_network" not in sys.modules
+print("light")
+"""
+
+
+def test_cnn_refiner_loads_without_torch_and_builds_the_module_level_network():
+    """The network class is module level in refiner_network, which imports torch; cnn_refiner
+    reaches it only in build_network, so the label tool and hints.py list load without torch."""
+    done = subprocess.run([sys.executable, "-c", TORCH_BLOCKED], cwd=ROOT, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "light"
+    with_check, first_design = cnn_refiner.build_network(True), cnn_refiner.build_network(False)
+    assert type(with_check) is RefinerNet and type(first_design) is RefinerNet
+    assert with_check.sure is not None and first_design.sure is None and first_design.heat is None
