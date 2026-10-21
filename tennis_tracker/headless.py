@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from .config import Config
 from .paths import COURT_ENGINE, PLAYER_ENGINE
-from .run_context import RunResult
+from .export import RunResult
 
 
 def headless_config(video: Path, *, model_path: Path, conf: float, device: str, tracking_json: Path,

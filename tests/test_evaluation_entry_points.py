@@ -1,5 +1,5 @@
-"""The evaluation package and the root scripts that front it: the documented commands and the
-imports other scripts make keep working, and the package's two scorers are the ones they name."""
+"""The evaluation package and the root scripts that front it: the documented commands keep
+working, and the package's two scorers are the ones they name."""
 import subprocess
 import sys
 from pathlib import Path
@@ -16,8 +16,8 @@ def test_root_scripts_front_the_package_modules():
     import validate_tracking
     from evaluation import archive, parity, validate
 
-    assert validate_tracking.validate is validate.validate and validate_tracking.main is validate.main
-    assert check_parity.check is parity.check and check_parity.BASELINE is parity.BASELINE
+    assert validate_tracking.main is validate.main
+    assert check_parity.main is parity.main
     assert evaluate_archive.main is archive.main
     assert parity.validate is validate.validate              # check_parity gates on the tracking scorer
 

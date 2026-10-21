@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, NamedTuple
 
 import cv2
 import torch
@@ -22,12 +22,12 @@ from .court_events import (
 from .ball_detectors import BallDetectorBackend, GridTrackNetBallDetector, TensorRTRuntimeBallDetector
 from .court_detector import CourtDetector
 from .engine_files import find_ball_class_id_from_names, read_engine_class_names, resolve_engine_path
-from .export import write_tracking_json
+from .export import RunResult, write_tracking_json
 from .pass1 import Pass1Result, collect_pass1, erase_ghost_rois
 from .pass2 import render_pass2
 from .player_detector import PlayerDetector
 from .display_path import build_display_path
-from .run_context import CourtEvents, RunContext, RunResult, Selection, Timing, VideoInfo
+from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
 from .summaries import print_selector_track_summary, print_timing_summary
 from .utils import detect_device, print_platform_report, resolve_runtime
 
@@ -37,27 +37,46 @@ _DISPLAY_PATH_GAP_SECONDS = 0.60
 _DISPLAY_PATH_GAP_MIN_FRAMES, _DISPLAY_PATH_GAP_MAX_FRAMES = 10, 24
 
 
+class _Output(NamedTuple):
+    """One file a run can write: its role in ``RunResult.outputs``, the Config
+    field that turns it on, the Config field that names its path, and how the
+    run reports it."""
+
+    role: str
+    flag: str
+    path: str
+    label: str
+
+
+_OUTPUTS = (
+    _Output("tracking_json", "tracking_json", "tracking_json", "Tracking JSON"),
+    _Output("tracking_video", "save_tracking_video", "output_video", "Tracking video"),
+    _Output("motion_debug", "save_motion_debug", "output_debug_path", "Motion debug video"),
+    _Output("detector_input", "save_detector_input_debug", "output_detector_input_debug_path",
+            "Detector-input video"),
+    _Output("track_debug", "save_track_debug_video", "output_track_debug_path", "Track-debug video"),
+)
+
+
+def _written_outputs(cfg: Config) -> Dict[str, Path]:
+    """The files this run writes, by role, in the order they are reported."""
+    return {output.role: Path(getattr(cfg, output.path)) for output in _OUTPUTS if getattr(cfg, output.flag)}
+
+
+def _output_label(role: str) -> str:
+    return next(output.label for output in _OUTPUTS if output.role == role)
+
+
 def validate_io_paths(cfg: Config) -> Path:
     """The resolved input path; raises when an output would overwrite it or another output."""
     input_path = Path(cfg.input_video).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"Input video not found: {input_path}")
 
-    outputs = []
-    if cfg.save_tracking_video:
-        outputs.append(("tracking video", cfg.output_video))
-    if cfg.save_motion_debug:
-        outputs.append(("motion debug video", cfg.output_debug_path))
-    if cfg.save_detector_input_debug:
-        outputs.append(("detector-input video", cfg.output_detector_input_debug_path))
-    if cfg.save_track_debug_video:
-        outputs.append(("track-debug video", cfg.output_track_debug_path))
-    if cfg.tracking_json:
-        outputs.append(("tracking JSON", cfg.tracking_json))
-
-    seen = {}
-    for label, value in outputs:
-        path = Path(value).expanduser().resolve()
+    seen: Dict[Path, str] = {}
+    for role, value in _written_outputs(cfg).items():
+        label = _output_label(role)
+        path = value.expanduser().resolve()
         if path == input_path:
             raise ValueError(f"{label} must not overwrite the input video: {path}")
         if path in seen:
@@ -205,22 +224,6 @@ def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> 
     return CourtEvents(list(bounces.confirmed), list(contacts), list(rally_legs))
 
 
-def _written_outputs(cfg: Config) -> Dict[str, Path]:
-    """The files this run wrote, by role, in the order they are reported."""
-    outputs = {}
-    if cfg.tracking_json:
-        outputs["tracking_json"] = Path(cfg.tracking_json)
-    if cfg.save_tracking_video:
-        outputs["tracking_video"] = Path(cfg.output_video)
-    if cfg.save_motion_debug:
-        outputs["motion_debug"] = Path(cfg.output_debug_path)
-    if cfg.save_detector_input_debug:
-        outputs["detector_input"] = Path(cfg.output_detector_input_debug_path)
-    if cfg.save_track_debug_video:
-        outputs["track_debug"] = Path(cfg.output_track_debug_path)
-    return outputs
-
-
 def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered: int) -> RunResult:
     """Assemble the result, write it as the tracking JSON and report what was produced."""
     cfg = ctx.cfg
@@ -241,18 +244,11 @@ def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, rendered:
     )
     if cfg.tracking_json:
         write_tracking_json(ctx, pass1, result)
-        print(f"[done] Tracking JSON: {cfg.tracking_json}")
     filled = result.filled_frames
     print(f"\n[done] {filled}/{n} frames filled ({100*filled/max(1,n):.1f}%)")
     print(f"[done] {elapsed:.1f}s total")
-    if cfg.save_tracking_video:
-        print(f"[done] Tracking video: {cfg.output_video}")
-    if cfg.save_motion_debug:
-        print(f"[done] Motion debug:  {cfg.output_debug_path}")
-    if cfg.save_detector_input_debug:
-        print(f"[done] Detector input debug:  {cfg.output_detector_input_debug_path}")
-    if cfg.save_track_debug_video:
-        print(f"[done] Track debug:  {cfg.output_track_debug_path}")
+    for role, path in result.outputs.items():
+        print(f"[done] {_output_label(role)}: {path}")
     if ctx.timing.enabled:
         print_timing_summary(ctx.timing.values, elapsed, n, rendered)
     return result

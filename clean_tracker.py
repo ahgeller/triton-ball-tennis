@@ -10,7 +10,7 @@ from typing import Iterable, Optional
 from tennis_tracker.config import Config
 from tennis_tracker.paths import BOUNCE_MODEL, COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE
 from tennis_tracker.pipeline import run
-from validate_tracking import main as validate_tracking
+from evaluation.validate import main as validate_tracking
 
 
 ROOT = Path(__file__).resolve().parent

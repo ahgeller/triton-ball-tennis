@@ -6,7 +6,7 @@ from unittest.mock import patch
 from tennis_tracker import headless
 from tennis_tracker.config import Config
 from tennis_tracker.paths import COURT_ENGINE, PLAYER_ENGINE
-from tennis_tracker.run_context import RunResult
+from tennis_tracker.export import RunResult
 
 
 def test_headless_config_writes_json_and_no_video_with_the_bundled_engines():
