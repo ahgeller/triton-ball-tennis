@@ -20,7 +20,7 @@ import csv
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict
 
 from finetune.fileio import atomic_csv
 
@@ -32,6 +32,14 @@ COORDINATE_DECIMALS = 2      # how the writers format a visible point
 
 LabelPoint = Optional[Tuple[float, float]]
 Labels = Dict[int, LabelPoint]
+
+
+class Suspects(TypedDict):
+    """The flag sidecar as ``read_suspects`` returns it."""
+    unplaceable: List[int]
+    check: List[int]
+    answered: Dict[str, Optional[List[float]]]
+    notes: Dict[str, str]
 
 
 class LabelFormatError(ValueError):
@@ -167,7 +175,7 @@ def reviewed_frames(path: Path) -> Set[int]:
     return settled_frames(read_review(path))
 
 
-def read_suspects(path: Path) -> dict:
+def read_suspects(path: Path) -> Suspects:
     """The flag sidecar, normalised: ``unplaceable`` and ``check`` frame lists (an older audit's
     ``frames`` list counts as ``check``), the ``answered`` map (frame as text -> [x, y] or None)
     and the ``notes`` map. All empty when there is no file."""

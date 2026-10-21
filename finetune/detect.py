@@ -3,14 +3,18 @@ realign or score labels against it."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from finetune.workspace import VideoMeta
+
+if TYPE_CHECKING:
+    from tennis_tracker.detectors import GridTrackNetBallDetector
 
 BallPoint = Tuple[float, float, float]     # x, y (native pixels) and confidence
 
 
-def ball_detector(weights: Path, conf: float = 0.0, device: str = "0", source_stride: Optional[int] = None):
+def ball_detector(weights: Path, conf: float = 0.0, device: str = "0",
+                  source_stride: Optional[int] = None) -> "GridTrackNetBallDetector":
     """A GridTrackNet detector on `weights`, keeping every candidate at or above `conf`, with the
     background channel off: these scripts read the detector's own view of a frame, not the
     tracker's. `source_stride` forces the frame spacing fed to the model (None: the training

@@ -7,11 +7,14 @@ import math
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Tuple
 
 from finetune import cnn_refiner, refine
 from finetune.label_store import Row
 from finetune.scoring import REFERENCE_HEIGHT
+
+if TYPE_CHECKING:
+    from finetune.label_source import Source
 
 SUGGEST_SETTLE = 0.3      # seconds a clip's labels stay put before its suggestions are re-measured
 SUGGEST_MEASURE = 16      # after an edit, label frames either side re-measured ...
@@ -47,11 +50,11 @@ class Suggestions:
             return
         threading.Thread(target=self.worker, args=(current,), daemon=True, name="suggestions").start()
 
-    def order(self, first) -> List:
+    def order(self, first: "Source") -> List["Source"]:
         return sorted(self.sources, key=lambda source: source is not first)
 
     @staticmethod
-    def label_state(source) -> Tuple:
+    def label_state(source: "Source") -> Tuple[Tuple[float, float, bool, bool], ...]:
         """Everything a clip's suggestions depend on: each label and whether you have checked it."""
         return tuple((row.x, row.y, row.visible, row.settled) for row in source.rows)
 

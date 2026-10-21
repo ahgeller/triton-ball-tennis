@@ -42,7 +42,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 # ensure_interpreter can hand over to an interpreter that has them.
 from finetune.data_policy import OWN_SOURCES, evaluation_clips, read_exclusions as read_exclusions_in, read_review_status
 from finetune.fileio import atomic_csv, backup_copy, write_atomic
-from finetune.labels import (LabelFormatError, Labels, read_label_rows, read_labels, read_review,
+from finetune.labels import (LabelFormatError, Labels, Suspects, read_label_rows, read_labels, read_review,
                              read_suspects as read_suspect_file, settled_frames, write_labels)
 from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH, scale_for_width
 from finetune.workspace import (BEST_WEIGHTS, EXCLUDE_FILE, LABELS, MANIFEST, REPO_WEIGHTS, ROOT, RUNS, VIDEOS, WORKSPACE,
@@ -525,7 +525,7 @@ def read_suspects(clip: str) -> Dict[str, List[int]]:
 def write_suspects(clip: str, kind: str, frames: List[int], note: str) -> None:
     """Record (or clear) one kind of flag, leaving the other kind alone."""
     path = suspect_json(clip, LABELS)
-    flags = read_suspect_file(path)
+    flags: Suspects = read_suspect_file(path)
     flags[kind] = sorted(set(int(f) for f in frames))
     flags["notes"][kind] = note
     answered = flags["answered"]

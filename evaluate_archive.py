@@ -26,7 +26,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 
 from finetune.data_policy import is_verified, read_review_status
 from finetune.detect import ball_detector, detect_points
@@ -51,6 +51,15 @@ PER_CLIP_CONF = 0.5         # the per-clip table and the offset report use this 
 BAD_FRAMES_LISTED = 40      # how many of a clip's bad frames the pipeline report names
 
 ClipPair = Tuple[Path, Path]    # (video, label csv)
+
+
+class ClipScore(NamedTuple):
+    """One clip's pipeline output scored against its labels."""
+    stats: Dict[str, float]
+    by_source: Dict[str, Dict[str, int]]
+    pairs: List[Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]]    # 1080p (label, pred)
+    landed: Dict[str, int]
+    bad_frames: List[Tuple[int, str, Optional[str], str]]    # (frame, kind, source, where)
 
 
 def default_archive() -> Path:
@@ -198,7 +207,7 @@ def tracker_config(video_path: Path, name: str, conf: float, device: str, out_di
     )
 
 
-def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: dict, width: int) -> tuple:
+def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payload: dict, width: int) -> ClipScore:
     """One clip's pipeline output against its labels: (stats, by_source, 1080p pairs, landed, bad frames)."""
     frames = {row["frame"]: row for row in payload["frames"]}
     fallback_keypoints = payload.get("last_valid_court_keypoints")
@@ -233,7 +242,7 @@ def score_pipeline_clip(labels: Dict[int, Optional[Tuple[float, float]]], payloa
     normalized_pairs = [(None if label is None else (label[0] * scale, label[1] * scale),
                          None if pred is None else (pred[0] * scale, pred[1] * scale))
                         for label, pred in pairs]
-    return score(pairs, scale), by_source, normalized_pairs, landed, bad_frames
+    return ClipScore(score(pairs, scale), by_source, normalized_pairs, landed, bad_frames)
 
 
 def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float], device: str,

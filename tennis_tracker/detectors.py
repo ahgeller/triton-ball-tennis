@@ -231,7 +231,8 @@ class _TensorRTRuntimeSession:
         t = t[:, [2, 1, 0], :, :] / 255.0
         return self._finish_preprocess(t, h0, w0)
 
-    def preprocess_cuda_chw_frame(self, frame_bgr_chw: Optional[torch.Tensor]):
+    def preprocess_cuda_chw_frame(self, frame_bgr_chw: Optional[torch.Tensor]
+                                  ) -> Tuple[Optional[torch.Tensor], Optional[Tuple[float, float]]]:
         """Preprocess an already-uploaded CHW BGR float tensor in [0, 1]."""
         if frame_bgr_chw is None:
             return None, None
@@ -245,7 +246,8 @@ class _TensorRTRuntimeSession:
         t = t[:, [2, 1, 0], :, :].contiguous()
         return self._finish_preprocess(t, h0, w0)
 
-    def preprocess_cuda_hwc_frame(self, frame_bgr: torch.Tensor):
+    def preprocess_cuda_hwc_frame(self, frame_bgr: torch.Tensor
+                                  ) -> Tuple[Optional[torch.Tensor], Optional[Tuple[float, float]]]:
         """Preprocess a CUDA HWC BGR frame (uint8 or float); ``(None, None)`` when
         it is not on this session's device or not HWC with three channels."""
         if frame_bgr.device != self.device or frame_bgr.dim() != 3 or frame_bgr.shape[-1] != 3:

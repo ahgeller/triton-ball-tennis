@@ -33,7 +33,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TypedDict
 
 import cv2
 import numpy as np
@@ -137,7 +137,20 @@ def build_units(labels: Dict[int, Optional[List[float]]], stride: int) -> List[L
 
 # --------------------------------------------------------------------------- data cache (per clip)
 
-def clip_signature(video: Path, csv_path: Path) -> list:
+class ClipRecord(TypedDict):
+    """One clip's cache entry: ``prepare_clip``'s record, also stored as ``clips/<clip>.json``."""
+    version: int
+    signature: List[List[object]]
+    clip: str
+    source: str
+    fps: float
+    stride: int
+    size: List[int]
+    samples: List[dict]
+    visible: int
+
+
+def clip_signature(video: Path, csv_path: Path) -> List[List[object]]:
     signature = []
     for path in (csv_path, video):
         stat = path.stat()
@@ -145,7 +158,7 @@ def clip_signature(video: Path, csv_path: Path) -> list:
     return signature
 
 
-def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> dict:
+def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> ClipRecord:
     """Extract the 768x432 frames one clip needs and describe its training units. Cached per clip."""
     clip, video, csv_path, source = entry
     meta_path = data_dir / "clips" / f"{clip}.json"
@@ -197,11 +210,12 @@ def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> dict:
     return record
 
 
-def prepare_data(clips: List[Clip], data_dir: Path, val_clips: List[str], rebuild: bool, workers: int) -> dict:
+def prepare_data(clips: List[Clip], data_dir: Path, val_clips: List[str], rebuild: bool,
+                 workers: int) -> Dict[str, list]:
     data_dir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        records = list(pool.map(lambda entry: prepare_clip(entry, data_dir, rebuild), clips))
+        records: List[ClipRecord] = list(pool.map(lambda entry: prepare_clip(entry, data_dir, rebuild), clips))
     manifest = {"train": [], "val": [], "validation_clips": val_clips}
     per_source: Dict[str, Dict[str, int]] = {}
     for record in records:

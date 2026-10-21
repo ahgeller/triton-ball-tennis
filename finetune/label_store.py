@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from finetune.fileio import write_atomic
-from finetune.labels import format_point, is_visible, read_label_rows, read_review, read_suspects, write_label_cells
+from finetune.labels import (Suspects, format_point, is_visible, read_label_rows, read_review, read_suspects,
+                             write_label_cells)
 
 CONFIDENT_CONF = 0.70       # a draft at or above this confidence is not "uncertain"
 SETTINGS_NAME = "label_tool.settings.json"             # in the labels folder: filter, inset, trail
@@ -120,7 +121,7 @@ def save_review(path: Path, rows: List[Row], cursor: int, zoom: float) -> None:
 def load_suspects(path: Path, rows: List[Row]) -> int:
     """Mark the frames a previous audit flagged. They are the ones worth your time first. A flag
     file that cannot be read is an error naming it (LabelFormatError), not an empty answer."""
-    flags = read_suspects(path)
+    flags: Suspects = read_suspects(path)
     frames = set(flags["unplaceable"]) | set(flags["check"])
     for row in rows:
         row.suspect = row.frame in frames

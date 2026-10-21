@@ -133,7 +133,7 @@ def blobs(change: np.ndarray, origin, centre, reach: int) -> List[Tuple[float, f
 
 
 def describe(change: np.ndarray, origin: Tuple[int, int], point: Tuple[float, float], reach: int,
-             others: List[Tuple[float, float, float]]) -> dict:
+             others: List[Tuple[float, float, float]]) -> Dict[str, float]:
     """How ball-like the change at `point` is: its own peak against the window's, against the
     window's background, and how many other blobs compete with it."""
     height, width = change.shape
@@ -149,7 +149,7 @@ def describe(change: np.ndarray, origin: Tuple[int, int], point: Tuple[float, fl
 
 
 def predict(points: Dict[int, Tuple[float, float]], frame: int, order: List[int], span: int = 3,
-            reach: int = 8):
+            reach: int = 8) -> Optional[Tuple[float, float]]:
     """Where the path through the nearest `span` known points either side - within `reach` label
     frames - puts the ball at `frame` (a robust parabola, or a line through three), or None. Only
     ever a starting point or a chooser between measured blobs - never offered as a measurement."""
