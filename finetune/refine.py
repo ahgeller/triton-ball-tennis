@@ -30,12 +30,14 @@ Frame coordinates follow the label files: pixel k's centre is at k + 0.5.
 from __future__ import annotations
 
 import math
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, TypedDict
 
 import cv2
 import numpy as np
 
 from finetune.scoring import REFERENCE_HEIGHT
+
+Point = Tuple[float, float]
 
 ITERATIONS = 3             # centroid -> recentre the window -> centroid ...
 RADIUS_720P = 7            # centroid half-width at 720p; scaled with the clip height. 9 drifted onto
@@ -58,11 +60,33 @@ TRUST_PLACE_PX_1080 = 2.0  # without a self-check, a placed suggestion further t
 AGREE_PX_1080 = 3.0        # a label this close to a trusted suggestion agrees with it
 
 
-def radius_for(height: int) -> int:
+# One label frame's suggestion, as ``suggest`` returns it (the functional form, because "from" is a
+# keyword). Positions are in label coordinates (pixel k's centre at k + 0.5); distances in 1080p px.
+Suggestion = TypedDict("Suggestion", {
+    "x": float,
+    "y": float,
+    "seed": Optional[Point],      # the label it was measured from; None for a no-ball label
+    "from": str,                  # "label", or "path" when found where the neighbours put the ball
+    "move": Optional[float],      # distance from the label; None without one
+    "path": Optional[float],      # distance from the path through the neighbours' suggestions;
+                                  # None with too few neighbours
+    "blobs": int,                 # distinct moving blobs around it, itself included
+    "ratio": float,               # its own peak as a share of the brightest change in the window
+    "contrast": float,            # its peak over the window's background
+    "trusted": bool,              # close to the path, the only blob and the window's peak - or the
+                                  # placer's self-check says so
+    "ball_here": bool,            # False where nothing ball-like moved (an invisible ball)
+    "centroid": Point,            # where the measurement itself put it, before a placer moved it
+})
+
+
+def centroid_radius_px(height: int) -> int:
+    """Half-width of the centroid window, in frame pixels, for a clip this high."""
     return max(4, int(round(RADIUS_720P * height / 720.0)))
 
 
-def search_for(height: int) -> int:
+def search_radius_px(height: int) -> int:
+    """How far around a starting point candidate blobs are looked for, in frame pixels."""
     return max(6, int(round(SEARCH_720P * height / 720.0)))
 
 
@@ -132,8 +156,8 @@ def blobs(change: np.ndarray, origin, centre, reach: int) -> List[Tuple[float, f
     return found
 
 
-def describe(change: np.ndarray, origin: Tuple[int, int], point: Tuple[float, float], reach: int,
-             others: List[Tuple[float, float, float]]) -> Dict[str, float]:
+def blob_features(change: np.ndarray, origin: Tuple[int, int], point: Tuple[float, float], reach: int,
+                  others: List[Tuple[float, float, float]]) -> Dict[str, float]:
     """How ball-like the change at `point` is: its own peak against the window's, against the
     window's background, and how many other blobs compete with it."""
     height, width = change.shape
@@ -185,18 +209,11 @@ def label_spacing(frames: Iterable[int]) -> int:
 
 def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Optional[int] = None,
             stop=lambda: False, confirmed: Optional[Iterable[int]] = None,
-            only: Optional[Iterable[int]] = None, placer=None) -> Dict[int, dict]:
+            only: Optional[Iterable[int]] = None, placer=None) -> Dict[int, Suggestion]:
     """A suggestion for every label frame, reading the video once from the start.
 
     `seeds` maps every label frame to its current label, or None where the label says there is no
-    ball. Returns frame -> {"x", "y", "seed", "from", "move", "path", "blobs", "ratio", "contrast",
-    "trusted", "ball_here"}:
-      seed      the label the suggestion was measured from (None for a no-ball label)
-      from      "label", or "path" when it was found where the neighbours put the ball
-      move      distance from the label, 1080p px (None without one)
-      path      distance from the path through the neighbours' suggestions, 1080p px (None if too
-                few neighbours)
-    `confirmed` names the frames whose labels a person has checked; where enough of them are near,
+    ball. Returns frame -> Suggestion (its fields are documented there). `confirmed` names the frames whose labels a person has checked; where enough of them are near,
     only those decide where the path puts the ball, so a run of wrong drafts cannot vouch for
     itself (elsewhere every label does). `only` limits the measuring to those label frames - after
     an edit, a stretch around it - while every label still informs the path. Frames where
@@ -213,7 +230,7 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if width <= 0 or height <= 0:
             return {}
-        radius, reach = radius_for(height), search_for(height)
+        radius, reach = centroid_radius_px(height), search_radius_px(height)
         to_1080 = REFERENCE_HEIGHT / height
         labels = {f: p for f, p in seeds.items() if p is not None}
         checked = labels if confirmed is None else {f: labels[f] for f in confirmed if f in labels}
@@ -256,7 +273,7 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
                 point = centroid(change, box[:2], centre, radius)
                 points = ([(point[0], point[1])] if point is not None else []) + [(b[0], b[1]) for b in near]
                 for i, p in enumerate(points):
-                    entry = {"x": p[0], "y": p[1], "from": kind, **describe(change, box[:2], p, reach, near)}
+                    entry = {"x": p[0], "y": p[1], "from": kind, **blob_features(change, box[:2], p, reach, near)}
                     found.append(entry)
                     if i == 0 and point is not None and frame not in base:
                         base[frame] = p          # the label's own centroid first, else the path's
@@ -318,7 +335,7 @@ def suggest(video, seeds: Dict[int, Optional[Tuple[float, float]]], spacing: Opt
                 items.append((crop, centre, point))
                 frames.append(frame)
         placed = dict(zip(frames, placer.place(items, height)))
-    out = {}
+    out: Dict[int, Suggestion] = {}
     for frame, point in chosen.items():
         centroid_point = point
         x, y, sure = placed.get(frame, (point[0], point[1], None))

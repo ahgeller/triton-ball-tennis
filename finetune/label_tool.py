@@ -145,6 +145,7 @@ from finetune.label_store import (SETTINGS_NAME, Row, load_review, load_rows, lo
                                   load_suspects, save_review, save_rows, save_settings, save_suspects)
 from finetune.label_window import KEYS_NEXT, KEYS_PREV, WINDOW
 from finetune.labels import LabelFormatError, is_visible
+from finetune.refine import Suggestion
 from finetune.scoring import REFERENCE_HEIGHT
 from finetune.workspace import LABELS, VIDEOS
 
@@ -1051,7 +1052,7 @@ class Tool:
         self.render_key, self.render_cache = key, canvas
         return canvas
 
-    def draw_hud(self, canvas: np.ndarray, row: Row, hint: Optional[dict], offer: Optional[dict]) -> None:
+    def draw_hud(self, canvas: np.ndarray, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> None:
         """The two text lines and the clickable chips along the bottom of the single-frame view."""
         ui = self.ui
         thin = max(1, int(round(ui)))
@@ -1311,12 +1312,12 @@ class Tool:
         self.pending_cursor_move = True
 
     # ---------------------------------------------------------------- suggestions
-    def suggestion_for(self, index: int) -> Optional[dict]:
+    def suggestion_for(self, index: int) -> Optional[Suggestion]:
         """The suggestion worth showing for a row, or None (see Suggestions.for_row)."""
         row = self.rows[index]
         return self.hints.for_row(row, self.by_clip[row.clip].height)
 
-    def offer_for(self, index: int) -> Optional[dict]:
+    def offer_for(self, index: int) -> Optional[Suggestion]:
         """The suggestion drawn as the mark SPACE takes on an unreviewed row (see Suggestions.offer_for)."""
         row = self.rows[index]
         return self.hints.offer_for(row, self.by_clip[row.clip].height)

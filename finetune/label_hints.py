@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Tupl
 
 from finetune import cnn_refiner, refine
 from finetune.label_store import Row
+from finetune.refine import Suggestion
 from finetune.scoring import REFERENCE_HEIGHT
 
 if TYPE_CHECKING:
@@ -26,14 +27,14 @@ OFFER_MIN_PX = 0.25       # a suggestion this close to the draft is not offered:
 
 
 class Suggestions:
-    """Per clip, frame -> refine.suggest() entry, with the labels they were measured from."""
+    """Per clip, frame -> refine.Suggestion, with the labels they were measured from."""
 
     def __init__(self, sources: Iterable) -> None:
         self.sources = list(sources)
-        self.found: Dict[str, Dict[int, dict]] = {}       # clip -> frame -> refine.suggest() entry
-        self.measured_state: Dict[str, tuple] = {}        # ... and the labels they were measured from
+        self.found: Dict[str, Dict[int, Suggestion]] = {}   # clip -> frame -> suggestion
+        self.measured_state: Dict[str, tuple] = {}          # ... and the labels they were measured from
         self.version = 0              # bumped as suggestions arrive, so the view redraws with them
-        self.placer = None            # the trained network placing suggestions (cnn_refiner), if any
+        self.placer: Optional[cnn_refiner.Placer] = None   # the trained network placing suggestions, if any
         self.placer_model: Optional[Path] = None   # ... and the version it was loaded from
         self.closing = False          # tells the background thread to stop
 
@@ -125,24 +126,24 @@ class Suggestions:
         return self.placer
 
     # ---------------------------------------------------------------- what a row is shown
-    def for_row(self, row: Row, height: int) -> Optional[dict]:
+    def for_row(self, row: Row, height: int) -> Optional[Suggestion]:
         """The suggestion for a row, or None when there is none worth showing: nothing ball-like moved
         there, the label has moved since it was measured (a fresh one follows within a second or
         so), or the frame is labelled "no ball" and the suggestion is not trusted - a ball where the
         label says none is only offered when the video clearly shows one on the ball's path."""
         hint = self.found.get(row.clip, {}).get(row.frame)
-        if hint is None or not hint.get("ball_here"):
+        if hint is None or not hint["ball_here"]:
             return None
-        seed = hint.get("seed")
+        seed = hint["seed"]
         if not row.visible:
-            return hint if seed is None and hint.get("trusted") else None
+            return hint if seed is None and hint["trusted"] else None
         if seed is None:
             return None
-        if math.hypot(row.x - seed[0], row.y - seed[1]) > refine.radius_for(height) / 2.0:
+        if math.hypot(row.x - seed[0], row.y - seed[1]) > refine.centroid_radius_px(height) / 2.0:
             return None
         return hint
 
-    def offer_for(self, row: Row, height: int) -> Optional[dict]:
+    def offer_for(self, row: Row, height: int) -> Optional[Suggestion]:
         """The suggestion that stands in for a frame's label until you have checked the frame: it is
         drawn as the mark, the mouse parks on it, and SPACE takes it - so an unreviewed frame asks
         one question, "is the mark on the ball?", instead of which of two marks is closer.
@@ -161,16 +162,13 @@ class Suggestions:
         the draft (nothing to choose: SPACE confirms the draft)."""
         if row.settled:
             return None
-        hint = self.for_row(row, height)
-        if hint is None:
+        hint = self.for_row(row, height)      # on a no-ball row, only ever a trusted one
+        if hint is None or not row.visible:
+            return hint
+        gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y)
+        if gap < OFFER_MIN_PX:
             return None
-        if row.visible:
-            gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y)
-            if gap < OFFER_MIN_PX:
-                return None
-            if not hint["trusted"] and not (OFFER_UNSURE and gap * REFERENCE_HEIGHT / height <= refine.AGREE_PX_1080):
-                return None
-        elif not hint["trusted"]:
+        if not hint["trusted"] and not (OFFER_UNSURE and gap * REFERENCE_HEIGHT / height <= refine.AGREE_PX_1080):
             return None
         return hint
 
@@ -180,7 +178,7 @@ class Suggestions:
         clips, trusted suggestions are more than 3 px off 2% of the time; "differs" is a frame worth
         a second look, not a verdict on it."""
         hint = self.for_row(row, height)
-        if hint is None or not hint.get("trusted") or not row.visible:
+        if hint is None or not hint["trusted"] or not row.visible:
             return None
         gap = math.hypot(hint["x"] - row.x, hint["y"] - row.y) * REFERENCE_HEIGHT / height
         return "agrees" if gap <= refine.AGREE_PX_1080 else "differs"
