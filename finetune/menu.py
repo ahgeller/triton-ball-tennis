@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from finetune import ft
 from finetune.commands import drafted_clips, sha8
 from finetune.data.data_policy import OWN_SOURCES, clip_source, is_trainable, read_review_status
-from finetune.data.label_audit import outstanding_flags
+from finetune.data.label_flags import outstanding_flags
 from finetune.data import workspace as ws
 from finetune.data.workspace import clip_of, label_files, natural_key, read_exclusions, read_manifest, videos_in
 

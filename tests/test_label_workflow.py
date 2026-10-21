@@ -443,7 +443,7 @@ def test_new_audit_flag_reopens_a_reviewed_frame_until_answered():
 
 
 def test_a_later_audit_does_not_reask_an_answered_frame(tmp_path):
-    from finetune.data import label_audit
+    from finetune.data import label_flags as label_audit
     labels = tmp_path / "labels"
     labels.mkdir()
     (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")

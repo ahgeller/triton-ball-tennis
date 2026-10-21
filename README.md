@@ -170,6 +170,7 @@ tennis_tracker/engine_boxes.py           Decoding detection-engine outputs into 
 tennis_tracker/player_detector.py        TensorRT player detection with ByteTrack association
 tennis_tracker/court_detector.py         Court keypoint engine, run every N frames
 tennis_tracker/paths.py                  Model asset paths, spelled once
+tennis_tracker/headless.py               Running the tracker from another program, nothing drawn
 tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
 tennis_tracker/court_geometry.py         Court keypoints, side guides, polygon, homography
 tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs
@@ -199,7 +200,8 @@ finetune/refiner/refiner_sheet.py        A zoomed sheet of where two versions of
 finetune/refiner/refiner_training.py     Training that CNN on the frames you have reviewed
 finetune/refiner/hints.py                Their command line (ft.py hints: train, list, use, sheet)
 finetune/data/labels.py                  Label file format; label_check.py checks a file, label_audit.py
-                                         audits labels against the detector
+                                         audits labels against the detector, label_flags.py keeps the
+                                         frames an audit flagged for a person
 finetune/data/workspace.py, fileio.py    Workspace layout, clip facts, atomic writes
 finetune/data/data_policy.py             Which clips may be trained, validated or scored on
 finetune/data/import_data.py, realign.py Source conversion and temporal realignment (realign_solve.py

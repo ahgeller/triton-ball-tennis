@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from finetune.data import label_audit
-from finetune.data.label_audit import (AUDIT_MIN_COVERAGE, ClipAudit, audit_labels, outstanding_flags, open_flags, shift_labels,
-                                       flag_frames)
+from finetune.data.label_audit import AUDIT_MIN_COVERAGE, ClipAudit, audit_labels, shift_labels
+from finetune.data.label_flags import flag_frames, open_flags, outstanding_flags
 from finetune.data.labels import read_labels
 from finetune.data.detector_metrics import MIN_FAST
 from finetune.data.workspace import VideoMeta

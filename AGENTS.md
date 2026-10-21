@@ -21,6 +21,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   TensorRT players with ByteTrack association. `court_detector.py`: court
   keypoints every N frames, last good result cached. `paths.py`: the model asset
   paths every consumer (Config defaults, scripts, the workspace) spells once.
+  `headless.py`: the one Config and run for a caller that wants the tracker's
+  answer and no video (`evaluation/archive.py`, `pretrack.py`).
 - `tennis_tracker/pipeline.py`: orders the stages, calls the selector and court
   events, reports. `run_context.py`: data the stages pass each other. `pass1.py`
   (with `frame_window.py`): decoding, background/motion state, ROI collection,
@@ -70,7 +72,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   suggestion model above (`refine.py`, `cnn_refiner.py`, `refiner_training.py`,
   `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
   file format; `label_check.py`, checks a label file against its video's facts;
-  `label_audit.py`, checks labels against the raw detector and flags frames; `detect.py`,
+  `label_audit.py`, checks labels against the raw detector; `label_flags.py`, the frames an
+  audit flagged for a person (the flag sidecar the label tool and the menu read); `detect.py`,
   the raw GridTrackNet prepass over one clip (torch only when a detector is built), which
   the audit, `realign.py`, `pretrack.py`, `evaluation/archive.py` and the trainer's winner
   metric all run; `workspace.py`, where the workspace keeps things and a clip's video

@@ -41,7 +41,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 # ensure_interpreter can hand over to an interpreter that has them.
 from finetune.commands import cmd_camera, cmd_check, cmd_paths, cmd_promote, cmd_status
 from finetune.data.data_policy import evaluation_clips, read_review_status
-from finetune.data.label_audit import open_flags, outstanding_flags
+from finetune.data.label_flags import open_flags, outstanding_flags
 from finetune.data.labels import reviewed_frames
 from finetune.data import workspace as ws
 from finetune.data.workspace import ROOT, draft_csv, label_csv, labelled_clips, read_exclusions, read_manifest, video_meta
