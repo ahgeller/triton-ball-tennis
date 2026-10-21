@@ -87,11 +87,11 @@ def test_the_default_paths_follow_the_patched_workspace(workspace_dir):
 def test_tennis_workspace_relocates_the_workspace_without_touching_the_code_paths(tmp_path):
     env = dict(os.environ, TENNIS_WORKSPACE=str(tmp_path))
     code = ("from finetune.data import workspace as w; "
-            "print(w.WORKSPACE); print(w.LABELS); print(w.MANIFEST); print(w.ROOT); print(w.REPO_WEIGHTS)")
+            "print(w.WORKSPACE); print(w.LABELS); print(w.MANIFEST); print(w.REPO_WEIGHTS)")
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
     lines = out.stdout.splitlines()
     assert lines[:3] == [str(tmp_path.resolve()), str(tmp_path.resolve() / "labels"), str(tmp_path.resolve() / "clips.csv")]
-    assert lines[3] == str(ROOT) and lines[4] == str(ROOT / "models" / "gridtracknet_weights_torch.npz")
+    assert lines[3] == str(ROOT / "models" / "gridtracknet_weights_torch.npz")
     env.pop("TENNIS_WORKSPACE")
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
     assert out.stdout.splitlines()[0] == str(ROOT / "finetune")

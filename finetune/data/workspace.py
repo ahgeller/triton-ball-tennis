@@ -19,9 +19,9 @@ The contract for every module that needs a path:
 - a test points the whole workspace somewhere else by replacing ``current`` alone
   (``tests/conftest.py: workspace_dir``); there is no second thing to patch.
 
-``ROOT`` (the repository) is not a workspace path and stays a constant. ``REPO_WEIGHTS`` (the weights
-the tracker runs, in the repository's ``models/``) is not under the workspace either, but promotion
-writes it, so ``Workspace.repo_weights`` carries it and a test redirects it with the rest.
+The repository itself is not a workspace path: ``tennis_tracker.paths.ROOT`` names it. ``REPO_WEIGHTS``
+(the weights the tracker runs, in the repository's ``models/``) is not under the workspace either, but
+promotion writes it, so ``Workspace.repo_weights`` carries it and a test redirects it with the rest.
 """
 from __future__ import annotations
 
@@ -39,7 +39,6 @@ from tennis_tracker.paths import GRIDTRACKNET_WEIGHTS
 
 WORKSPACE_VARIABLE = "TENNIS_WORKSPACE"       # names another workspace folder, for tests and spare copies
 DEFAULT_WORKSPACE = Path(__file__).resolve().parents[1]     # the finetune/ folder itself
-ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_NAME = "clips.csv"
 EXCLUDE_NAME = "exclude.txt"
 REVIEW_STATUS_NAME = "review_status.json"

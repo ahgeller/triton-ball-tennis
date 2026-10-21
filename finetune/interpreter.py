@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from finetune.data.fileio import write_atomic
-from finetune.data.workspace import ROOT
+from tennis_tracker.paths import ROOT
 
 # cheapest first: cv2 rules out most interpreters fast. Exit 3 means usable for training but with an
 # OpenCV whose windows are not Qt's, which the label tool refuses (see label_tool.highgui_backend).

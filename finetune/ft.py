@@ -44,9 +44,10 @@ from finetune.data.data_policy import evaluation_clips, read_review_status
 from finetune.data.label_flags import open_flags, outstanding_flags
 from finetune.data.labels import reviewed_frames
 from finetune.data import workspace as ws
-from finetune.data.workspace import ROOT, draft_csv, label_csv, labelled_clips, read_exclusions, read_manifest, video_meta
+from finetune.data.workspace import draft_csv, label_csv, labelled_clips, read_exclusions, read_manifest, video_meta
 from finetune.interpreter import ensure_interpreter, wait_child
 from tennis_tracker.frame_rate import phase_stride
+from tennis_tracker.paths import ROOT
 
 SCRIPTS = Path(__file__).resolve().parent           # the package folder the scripts live under (not the data workspace)
 

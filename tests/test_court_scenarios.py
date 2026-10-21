@@ -19,6 +19,7 @@ from tennis_tracker.court.court_events import (
     infer_kinematic_bounces,
 )
 from tennis_tracker.config import Config
+from tennis_tracker.court.court_geometry import LINE_PAIRS_14
 from tennis_tracker.engines.court_detector import CourtDetector
 from tennis_tracker.court.court_drawing import draw_court
 
@@ -44,7 +45,7 @@ def _det(x, y):
 
 
 def test_court_line_pairs_join_the_fourteen_keypoints():
-    assert CourtDetector._LINE_PAIRS_14 == (
+    assert LINE_PAIRS_14 == (
         (0, 4), (4, 6), (6, 1), (0, 2), (1, 3),
         (2, 5), (5, 7), (7, 3), (4, 8), (8, 10), (10, 5),
         (6, 9), (9, 11), (11, 7), (8, 12), (12, 9),

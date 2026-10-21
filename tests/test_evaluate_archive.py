@@ -130,7 +130,8 @@ def test_score_pipeline_clip_takes_the_court_as_last_seen_when_the_payload_does_
 
 
 def test_report_raw_pools_pairs_at_1080p_and_measures_the_hit_offset(capsys):
-    from evaluation.archive import HIT_PX, PER_CLIP_CONF, LabelledDetection, RawClip, _hit_offset, _pooled_pairs, report_raw
+    from evaluation.archive import PER_CLIP_CONF, LabelledDetection, RawClip, _hit_offset, _pooled_pairs, report_raw
+    from finetune.data.detector_metrics import HIT_PX
     rows = [LabelledDetection((100.0, 100.0), (101.0, 102.0), 0.9),          # a hit, 1 right and 2 down
             LabelledDetection((100.0, 100.0), (100.0, 100.0), 0.3),          # too faint at the per-clip threshold
             LabelledDetection(None, (50.0, 50.0), 0.8),                      # a false alarm

@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from tennis_tracker.config import Config
-from tennis_tracker.paths import BOUNCE_MODEL, COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE
+from tennis_tracker.paths import BOUNCE_MODEL, COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
 from tennis_tracker.pipeline import run
 from evaluation.validate import main as validate_tracking
 
 
-ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "output"
 
 

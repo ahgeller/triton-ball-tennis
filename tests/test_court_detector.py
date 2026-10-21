@@ -6,9 +6,8 @@ from tennis_tracker.config import Config
 from tennis_tracker.engines.court_detector import CourtDetector
 
 
-def test_line_pairs_are_the_shared_court_geometry_constant():
-    assert CourtDetector._LINE_PAIRS_14 is court_geometry.LINE_PAIRS_14
-    pairs = CourtDetector._LINE_PAIRS_14
+def test_line_pairs_join_the_fourteen_semantic_keypoints():
+    pairs = court_geometry.LINE_PAIRS_14
     assert len(pairs) == 19 and len(set(pairs)) == 19
     assert {index for pair in pairs for index in pair} == set(range(14))
 

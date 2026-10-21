@@ -26,7 +26,6 @@ from tennis_tracker.frame_rate import require_phase_stride
 
 ENCODE_TIMEOUT_S = 3600          # an ffmpeg encode of one clip that takes longer than this is stuck
 
-Point = LabelPoint
 TrackNetRow = Tuple[int, float, float]       # visibility, x, y as the source CSV has them
 Canvas = Tuple[int, int]                     # the frame size a source's label coordinates are in
 
@@ -90,11 +89,11 @@ def protect_existing(dst_csv: Path) -> None:
 
 
 def convert_rows(raw: Dict[int, TrackNetRow], frame_of: Callable[[int], int], scale: Tuple[float, float],
-                 total: int) -> Tuple[Dict[int, Point], int]:
+                 total: int) -> Tuple[Dict[int, LabelPoint], int]:
     """TrackNet rows -> workspace labels: `frame_of` maps a source row index to a video frame, `scale`
     takes the source canvas to the video's pixels. Returns the labels and how many rows fell beyond
     the video's `total` frames."""
-    labels: Dict[int, Point] = {}
+    labels: Dict[int, LabelPoint] = {}
     dropped = 0
     for index in sorted(raw):
         frame = frame_of(index)

@@ -47,6 +47,7 @@ import pytest
 
 from tennis_tracker import pass1, pass2, pipeline
 from tennis_tracker.config import Config
+from tennis_tracker.court.court_geometry import LINE_PAIRS_14
 from tennis_tracker.engines.court_detector import CourtDetector
 from tennis_tracker.export import RunResult
 
@@ -56,7 +57,7 @@ UPDATE_ENV = "UPDATE_PIPELINE_GOLDEN"
 WIDTH, HEIGHT, FPS, FRAMES = 640, 360, 30.0, 40
 SEED = 20261021
 
-# 14 court keypoints in the detector's semantic order (see CourtDetector._LINE_PAIRS_14):
+# 14 court keypoints in the detector's semantic order (see court_geometry.LINE_PAIRS_14):
 # 0/1 far baseline corners, 2/3 near baseline corners, 4/6 far singles, 5/7 near
 # singles, 8/9 far service-line ends, 10/11 near service-line ends, 12/13 centre marks.
 COURT_KEYPOINTS: List[float] = [
@@ -121,7 +122,7 @@ def _court_background(rng: np.random.RandomState) -> np.ndarray:
     bg = bg.astype(np.int16) + rng.randint(-6, 7, size=bg.shape, dtype=np.int16)
     bg = np.clip(bg, 0, 255).astype(np.uint8)
     k = COURT_KEYPOINTS
-    for a, b in CourtDetector._LINE_PAIRS_14:
+    for a, b in LINE_PAIRS_14:
         pa = (int(round(k[2 * a])), int(round(k[2 * a + 1])))
         pb = (int(round(k[2 * b])), int(round(k[2 * b + 1])))
         cv2.line(bg, pa, pb, (225, 225, 225), 2, cv2.LINE_AA)

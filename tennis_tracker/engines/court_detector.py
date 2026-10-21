@@ -10,7 +10,6 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from ..config import Config
-from ..court.court_geometry import LINE_PAIRS_14
 from .engine_session import open_engine_session
 from ..court.court_drawing import draw_court
 
@@ -24,7 +23,6 @@ class CourtDetector:
     returns None and ``draw`` leaves the frame alone.
     """
     _MODEL_TO_SEMANTIC_14 = (0, 4, 6, 1, 2, 5, 7, 3, 8, 12, 9, 11, 13, 10)
-    _LINE_PAIRS_14 = LINE_PAIRS_14
     # Rows are [x1, y1, x2, y2, conf, cls, kx, ky, kconf, ...].
     _KEYPOINT_COLUMN = 6
     _MIN_KEYPOINTS = 4

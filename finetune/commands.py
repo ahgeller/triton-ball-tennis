@@ -21,8 +21,9 @@ from finetune.data.label_check import check_label_file, matches_any
 from finetune.data.labels import LabelFormatError, read_labels, reviewed_frames
 from finetune.data.detector_metrics import REFERENCE_HEIGHT, REFERENCE_WIDTH
 from finetune.data import workspace as ws
-from finetune.data.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_files, label_files, natural_key, read_exclusions,
+from finetune.data.workspace import (DEFAULT_SOURCES, clip_of, draft_files, label_files, natural_key, read_exclusions,
                                      read_manifest, review_json, video_meta, videos_in, write_manifest)
+from tennis_tracker.paths import ROOT
 
 LISTED_CLIPS = 12                  # how many clip names status prints before "..."
 

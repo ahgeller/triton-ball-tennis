@@ -9,7 +9,7 @@ from finetune.commands import (clip_counts, cmd_paths, label_frame_size, label_s
                                print_own_camera_clips, print_unfinished_clips, review_progress, sha8, shown)
 from finetune.data import workspace
 from finetune.data.labels import write_labels
-from finetune.data.workspace import ROOT
+from tennis_tracker.paths import ROOT
 from tests._helpers import write_clip
 
 SIZE = (64, 36)
