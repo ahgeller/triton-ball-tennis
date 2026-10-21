@@ -1,11 +1,11 @@
 import math
 import cv2
 import numpy as np
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from .config import SelectorConfig
 from .models import Detection, Track
-from .utils import cfg_diag
+from .utils import PlayerBoxesByFrame, cfg_diag
 from .physics import kinematic_motion_frac, xy_dist
 
 # Timeline handover: below ~1.5% of the diagonal per frame a track's velocity
@@ -110,7 +110,7 @@ def _track_extent(trk: Track) -> float:
 def is_near_player(
     x: float,
     y: float,
-    player_boxes_by_frame: Optional[Sequence[Any]],
+    player_boxes_by_frame: Optional[PlayerBoxesByFrame],
     frame_idx: int,
     margin: float = 80,
 ) -> bool:
@@ -494,7 +494,7 @@ def score_tracks(
     tracks: List[Track],
     cfg: SelectorConfig,
     court_poly: Optional[np.ndarray] = None,
-    player_boxes_by_frame: Optional[Sequence[Any]] = None,
+    player_boxes_by_frame: Optional[PlayerBoxesByFrame] = None,
     total_frames: int = 0
 ) -> List[Track]:
     """Score each track, sort by score descending.

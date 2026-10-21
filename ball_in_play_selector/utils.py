@@ -1,5 +1,5 @@
 import math
-from typing import NamedTuple, Optional, Tuple, Union
+from typing import Dict, Hashable, NamedTuple, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -82,6 +82,9 @@ class PackedMask(NamedTuple):
 
 # A per-frame motion mask as the selector accepts it.
 MaskLike = Union[PackedMask, np.ndarray]
+# One frame's player boxes (xyxy): tracked player id -> box, or a plain list.
+FramePlayerBoxes = Union[Dict[Hashable, Optional[Sequence[float]]], Sequence[Optional[Sequence[float]]]]
+PlayerBoxesByFrame = Sequence[Optional[FramePlayerBoxes]]
 
 
 def ensure_mask_u8(mask_obj: Optional[MaskLike]) -> Optional[np.ndarray]:

@@ -24,11 +24,10 @@ def build_detections(
     in that frame's ``motion_masks`` entry.
     """
     all_dets = []
-    has_motion = bool(motion_masks)
     for t, frame_dets in enumerate(detections_by_frame):
         frame_list = []
         mask = None
-        if frame_dets and has_motion and t < len(motion_masks):
+        if frame_dets and motion_masks is not None and t < len(motion_masks):
             bm = motion_masks[t]
             if bm is not None:
                 mask = ensure_mask_u8(bm)

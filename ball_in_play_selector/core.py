@@ -18,7 +18,7 @@ from .models import Detection, FrameResult, Source, Track
 from .physics import predict_projectile
 from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
 from .tracking import build_detections, build_tracks
-from .utils import MaskLike, ensure_mask_u8
+from .utils import MaskLike, PlayerBoxesByFrame, ensure_mask_u8
 
 # -- Tuned constants (30 FPS, 1080p reference unless stated) ----------------
 # Longest internal gap, and longest tail, the selector will fill: 0.30 s.
@@ -525,7 +525,7 @@ class _Scene:
     height: int
     boost_masks: Optional[Sequence[Optional[MaskLike]]]
     raw_motions: Optional[Sequence[Optional[MaskLike]]]
-    player_boxes_by_frame: Optional[Sequence[Any]]
+    player_boxes_by_frame: Optional[PlayerBoxesByFrame]
     fill_frames: int        # longest gap or tail the selector fills
     min_fill_speed: float   # px/frame at this fps
 
@@ -826,7 +826,7 @@ def select_ball_in_play(
     court_polygon: Optional[np.ndarray] = None,
     boost_masks: Optional[Sequence[Optional[MaskLike]]] = None,
     raw_motions: Optional[Sequence[Optional[MaskLike]]] = None,
-    player_boxes_by_frame: Optional[Sequence[Any]] = None,
+    player_boxes_by_frame: Optional[PlayerBoxesByFrame] = None,
     debug: bool = False,
 ) -> Tuple[List[Optional[FrameResult]], Optional[Track], List[Track]]:
     """Select one ball trajectory from per-frame detector candidates.
