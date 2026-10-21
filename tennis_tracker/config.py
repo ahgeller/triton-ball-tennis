@@ -85,10 +85,10 @@ class Config:
 
     # Skip-frame ball detection: run the detector every Nth frame and let the
     # selector interpolate the gaps.
-    skip_frame_yolo: int = 1          # 1 = every frame
+    skip_frame_detect: int = 1          # 1 = every frame
     skip_frame_require_roi: bool = True
     skip_preprocess_dim: bool = True
-    aux_detect_on_yolo_frames: bool = True
+    aux_detect_on_detect_frames: bool = True
     aux_force_interval: int = 6
     frame_reader_prefetch: int = 8
 
@@ -110,9 +110,9 @@ class Config:
     # outputs / debug
     save_tracking_video: bool = True
     save_motion_debug: bool = False
-    save_yolo_input_debug: bool = False
+    save_detector_input_debug: bool = False
     output_debug_path: str = "output_videos/prof_test_motion_debug.mp4"
-    output_yolo_input_debug_path: str = "output_videos/prof_test_yolo_input_debug.mp4"
+    output_detector_input_debug_path: str = "output_videos/prof_test_detector_input_debug.mp4"
     debug_show_raw_motion: bool = False
     # Per-frame motion diagnostics in the tracking JSON.  Nothing in the
     # normal path reads them and they cost ~1.7 ms/frame (mask unpack plus

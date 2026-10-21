@@ -252,7 +252,7 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
             # Draw a solid circle representing this blob's position.
             # Cap radius to ~12px so the boost mask doesn't balloon far beyond the
             # actual ball - large blobs (motion blur, shadows) would otherwise create
-            # huge yellow regions in the debug view and over-expand the YOLO input.
+            # huge yellow regions in the debug view and over-expand the detector input.
             cx = int(centroids[i][0] + 0.5)
             cy = int(centroids[i][1] + 0.5)
             radius = min(int(math.sqrt(area / math.pi) + 0.5), 12)
@@ -826,7 +826,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                     )
             else:
                 temporal_motion = _temporal_roi(0, int(curr_v.shape[0]), 0, int(curr_v.shape[1]))
-            # Ungated motion drives the boost mask (recall: helps YOLO recover misses).
+            # Ungated motion drives the boost mask (recall: helps the detector recover misses).
             # Gated motion drives downstream selector + dim_static (precision: rejects FPs).
             raw_motion_ungated = raw_motion
             raw_motion = raw_motion & temporal_motion
@@ -835,11 +835,11 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     # Two boost masks with different roles:
     #   boost_mask_u8 (returned) - narrow, gated source -> selector's motion-blob picker.
     #     Keeps selector precision (frame-870 player-edge blob class of FP stays suppressed).
-    #   boost_yolo_u8 (internal)  - wide, ungated source -> drives the HSV brightening that
-    #     YOLO sees. Recall-positive: when the temporal gate would suppress a real ball
-    #     blob, the wider mask still highlights it so YOLO has a chance to detect it.
+    #   boost_detector_u8 (internal)  - wide, ungated source -> drives the HSV brightening that
+    #     the detector sees. Recall-positive: when the temporal gate would suppress a real
+    #     ball blob, the wider mask still highlights it so the detector can find it.
     raw_motion_u8 = boost_mask_u8 = None
-    boost_yolo_u8 = None
+    boost_detector_u8 = None
     boost_has_blobs = False
     if raw_motion is not None:
         boost_source = (
@@ -854,7 +854,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
             raw_motion_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
             boost_mask_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
             if wide_distinct:
-                boost_yolo_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
+                boost_detector_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
 
             for roi in rois:
                 rx1, ry1, rx2, ry2 = roi
@@ -882,20 +882,20 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
                         perf_cc += (time.perf_counter() - t_cc)
                     np.maximum(boost_mask_u8[ry1:ry2, rx1:rx2], narrow_roi, out=boost_mask_u8[ry1:ry2, rx1:rx2])
 
-                # Wide YOLO-grade boost from ungated raw motion
+                # Wide detector-grade boost from ungated raw motion
                 if wide_distinct and wide_roi_u8 is not None and wide_roi_u8.max() > 0:
                     wide_roi = filter_boost_mask(
                         wide_roi_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
                         player_bboxes=player_bboxes)
-                    np.maximum(boost_yolo_u8[ry1:ry2, rx1:rx2], wide_roi, out=boost_yolo_u8[ry1:ry2, rx1:rx2])
+                    np.maximum(boost_detector_u8[ry1:ry2, rx1:rx2], wide_roi, out=boost_detector_u8[ry1:ry2, rx1:rx2])
 
             if boost_mask_u8.max() == 0:
                 boost_mask_u8 = None
             if not wide_distinct:
-                boost_yolo_u8 = boost_mask_u8
-            elif boost_yolo_u8 is not None and boost_yolo_u8.max() == 0:
-                boost_yolo_u8 = None
-            boost_has_blobs = bool(boost_yolo_u8 is not None) or bool(boost_mask_u8 is not None)
+                boost_detector_u8 = boost_mask_u8
+            elif boost_detector_u8 is not None and boost_detector_u8.max() == 0:
+                boost_detector_u8 = None
+            boost_has_blobs = bool(boost_detector_u8 is not None) or bool(boost_mask_u8 is not None)
         else:
             t_d2h = time.perf_counter() if perf is not None else 0.0
             raw_motion_u8 = (raw_motion.byte().cpu().numpy() * 255)
@@ -912,16 +912,16 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
             if perf is not None:
                 perf_cc += (time.perf_counter() - t_cc)
             if wide_distinct and wide_u8 is not None:
-                boost_yolo_u8 = filter_boost_mask(
+                boost_detector_u8 = filter_boost_mask(
                     wide_u8, cfg.boost_min_blob_area, cfg.boost_max_blob_area, cfg,
                     player_bboxes=player_bboxes)
-                if boost_yolo_u8 is not None and boost_yolo_u8.max() == 0:
-                    boost_yolo_u8 = None
+                if boost_detector_u8 is not None and boost_detector_u8.max() == 0:
+                    boost_detector_u8 = None
             else:
-                boost_yolo_u8 = boost_mask_u8
+                boost_detector_u8 = boost_mask_u8
             boost_has_blobs = bool(
                 (boost_mask_u8 is not None and boost_mask_u8.max() > 0) or
-                (boost_yolo_u8 is not None and boost_yolo_u8.max() > 0)
+                (boost_detector_u8 is not None and boost_detector_u8.max() > 0)
             )
 
     if skip_dim and not need_cpu_frame and not return_cuda_frame:
@@ -970,10 +970,10 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     s_t = curr_s.clone()
     v_t = curr_v.clone()
 
-    # YOLO input boost uses the WIDE mask so it can rescue YOLO misses on frames
+    # The detector-input boost uses the WIDE mask so it can rescue detector misses on frames
     # where the temporal/color gate would have suppressed a real ball blob.
     bm = None
-    bm_source = boost_yolo_u8 if boost_yolo_u8 is not None else boost_mask_u8
+    bm_source = boost_detector_u8 if boost_detector_u8 is not None else boost_mask_u8
     if bm_source is not None:
         bm = torch.from_numpy(bm_source > 0).to(device)
         if protect_t is not None:

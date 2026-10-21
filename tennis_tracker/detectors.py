@@ -388,7 +388,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
     ``detect`` / ``detect_async_start`` without ``frame_index`` hand out the
     cached results in call order, one call per source frame: they never read
     the frame they are given.  That contract breaks as soon as a caller skips
-    a frame, which is why the constructor refuses ``cfg.skip_frame_yolo > 1``
+    a frame, which is why the constructor refuses ``cfg.skip_frame_detect > 1``
     (every later frame would receive an earlier frame's detections with no
     error).  Pass ``frame_index`` to be independent of call order.
     """
@@ -400,11 +400,11 @@ class GridTrackNetBallDetector(BallDetectorBackend):
     def __init__(self, weights_path: str, cfg: Config):
         if not torch.cuda.is_available():
             raise RuntimeError("GridTrackNet requires CUDA-enabled torch.")
-        if int(cfg.skip_frame_yolo) > 1:
+        if int(cfg.skip_frame_detect) > 1:
             raise ValueError(
                 "GridTrackNet returns one cached result per source frame in call order; "
-                f"skip_frame_yolo={cfg.skip_frame_yolo} would skip calls and shift every later "
-                "frame's detections. Use skip_frame_yolo=1 with this backend."
+                f"skip_frame_detect={cfg.skip_frame_detect} would skip calls and shift every later "
+                "frame's detections. Use skip_frame_detect=1 with this backend."
             )
         self.cfg = cfg
         self.device = torch.device(f"cuda:{int(cfg.device)}")

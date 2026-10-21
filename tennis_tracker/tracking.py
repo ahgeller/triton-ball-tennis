@@ -88,7 +88,7 @@ class ROIMotionTracker:
         self.ball_visible = False
 
     def update_from_dets(self, dets, frame_idx):
-        """Call after YOLO detection. Updates state based on whether ball was found."""
+        """Call after ball detection. Updates state based on whether ball was found."""
         if not dets:
             for t in self.tracks:
                 t.frames_since_det += 1
@@ -142,7 +142,7 @@ class ROIMotionTracker:
                 self.tracks.append(ROITrack(d["pos"], frame_idx, conf=d["conf"], diag_box=diag_box))
 
         # Drop tracks that are hopelessly lost (timeout after 8 frames of no detections).
-        # 5 caused motion gaps at YOLO skip frames; 15 let coasting ROIs sweep incidental motion onto static balls.
+        # 5 caused motion gaps at detector skip frames; 15 let coasting ROIs sweep incidental motion onto static balls.
         max_lost = 8
         dropped_rois = []
         for t in self.tracks:

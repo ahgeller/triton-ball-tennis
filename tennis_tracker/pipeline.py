@@ -243,7 +243,7 @@ def _result_search(
 
 def _motion_diagnostic_reason(
     selected_source: Optional[str],
-    has_yolo: bool,
+    has_detections: bool,
     mask_source: str,
     candidates: List[Dict[str, Any]],
     search_x: Optional[float],
@@ -252,8 +252,8 @@ def _motion_diagnostic_reason(
 ) -> str:
     if selected_source == "motion":
         return "accepted_motion"
-    if has_yolo:
-        return "yolo_detection_available"
+    if has_detections:
+        return "detection_available"
     if mask_source == "none":
         return "no_motion_mask"
     if not candidates:
@@ -310,7 +310,7 @@ def _build_motion_diagnostics(
     selected_source_counts: Dict[str, int] = {}
     diagnostic_frames: List[Dict[str, Any]] = []
     prev_pos: Optional[Tuple[float, float]] = None
-    yolo_gap_frames = 0
+    detector_gap_frames = 0
     candidate_gap_frames = 0
 
     for frame_idx in range(total_frames):
@@ -323,9 +323,9 @@ def _build_motion_diagnostics(
                 selected_source_counts[selected_source] = int(selected_source_counts.get(selected_source, 0)) + 1
 
         dets = detections_by_frame[frame_idx] if frame_idx < len(detections_by_frame) else []
-        has_yolo = bool(dets)
-        if not has_yolo:
-            yolo_gap_frames += 1
+        has_detections = bool(dets)
+        if not has_detections:
+            detector_gap_frames += 1
 
         boost = boost_masks[frame_idx] if frame_idx < len(boost_masks) else None
         raw = raw_motions[frame_idx] if frame_idx < len(raw_motions) else None
@@ -343,12 +343,12 @@ def _build_motion_diagnostics(
             selected_y,
             max_candidates=max_candidates_per_frame,
         )
-        if candidates and not has_yolo and selected_source != "motion":
+        if candidates and not has_detections and selected_source != "motion":
             candidate_gap_frames += 1
 
         reason = _motion_diagnostic_reason(
             selected_source,
-            has_yolo,
+            has_detections,
             mask_source,
             candidates,
             search_x,
@@ -359,15 +359,15 @@ def _build_motion_diagnostics(
 
         should_export_frame = (
             selected_source == "motion" or
-            (not has_yolo and selected_source != "motion") or
-            bool(candidates and not has_yolo)
+            (not has_detections and selected_source != "motion") or
+            bool(candidates and not has_detections)
         )
         if should_export_frame:
             diagnostic_frames.append({
                 "frame": int(frame_idx),
                 "selected_source": selected_source,
                 "reason": reason,
-                "has_yolo_detections": bool(has_yolo),
+                "has_detections": bool(has_detections),
                 "mask_source": mask_source,
                 "has_boost_mask": bool(has_boost),
                 "has_raw_motion": bool(has_raw),
@@ -393,8 +393,8 @@ def _build_motion_diagnostics(
         "schema_version": 1,
         "summary": {
             "frames_analyzed": int(total_frames),
-            "yolo_gap_frames": int(yolo_gap_frames),
-            "yolo_gap_frames_with_motion_candidate": int(candidate_gap_frames),
+            "detector_gap_frames": int(detector_gap_frames),
+            "detector_gap_frames_with_motion_candidate": int(candidate_gap_frames),
             "reason_counts": dict(sorted(reason_counts.items())),
             "mask_source_counts": dict(sorted(mask_counts.items())),
             "selected_source_counts": dict(sorted(selected_source_counts.items())),
@@ -489,8 +489,8 @@ def _validate_io_paths(cfg) -> Path:
         outputs.append(("tracking video", cfg.output_video))
     if cfg.save_motion_debug:
         outputs.append(("motion debug video", cfg.output_debug_path))
-    if cfg.save_yolo_input_debug:
-        outputs.append(("pre-YOLO video", cfg.output_yolo_input_debug_path))
+    if cfg.save_detector_input_debug:
+        outputs.append(("detector-input video", cfg.output_detector_input_debug_path))
     if cfg.save_guide_video:
         outputs.append(("guide video", cfg.output_guide_path))
     if cfg.tracking_json:
@@ -571,7 +571,7 @@ def run(cfg):
 
     # Writers (main output writer is created at pass 2 start to avoid long idle FFmpeg/NVENC process)
     writer = None
-    dbg_writer = yolo_dbg_writer = guide_writer = None
+    dbg_writer = detector_input_writer = guide_writer = None
     needs_pass2_outputs = bool(
         cfg.save_tracking_video
         or cfg.save_motion_debug
@@ -580,9 +580,9 @@ def run(cfg):
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
         dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg, encoder=encoder)
-    if cfg.save_yolo_input_debug:
-        os.makedirs(os.path.dirname(cfg.output_yolo_input_debug_path) or ".", exist_ok=True)
-        yolo_dbg_writer = VideoWriter(cfg.output_yolo_input_debug_path, fps, w, h, cfg, encoder=encoder)
+    if cfg.save_detector_input_debug:
+        os.makedirs(os.path.dirname(cfg.output_detector_input_debug_path) or ".", exist_ok=True)
+        detector_input_writer = VideoWriter(cfg.output_detector_input_debug_path, fps, w, h, cfg, encoder=encoder)
     if cfg.save_guide_video:
         os.makedirs(os.path.dirname(cfg.output_guide_path) or ".", exist_ok=True)
         guide_writer = VideoWriter(cfg.output_guide_path, fps, w, h, cfg, encoder=encoder)
@@ -663,17 +663,17 @@ def run(cfg):
     motion_frames_boost = 0
     pre_cuda_perf: Optional[Dict[str, float]] = {"pre_cuda_total": 0.0, "pre_cuda_raw_d2h": 0.0, "pre_cuda_cc_filter": 0.0} if info_timing else None
 
-    # Skip-frame YOLO state
-    skip_n = max(1, int(cfg.skip_frame_yolo))
+    # Skip-frame detection state
+    skip_n = max(1, int(cfg.skip_frame_detect))
     skip_require_roi = bool(cfg.skip_frame_require_roi)
-    skip_yolo_saved = 0       # count of skipped YOLO frames
+    skip_detect_saved = 0       # count of frames the detector did not run on
     skip_preprocess_dim = bool(cfg.skip_preprocess_dim)
     last_aux_detect_frame = -10**9
     aux_force_interval = max(1, int(cfg.aux_force_interval))
     use_cuda_pre_frame = bool(use_cuda and detector.supports_cuda_frame())
     can_overlap_ball_inference = _detector_can_overlap(detector)
     if use_cuda_pre_frame:
-        print("[pass 1] CUDA zero-copy preprocess->YOLO path enabled")
+        print("[pass 1] CUDA zero-copy preprocess->detector path enabled")
     cache_pass2_frames = None
     if needs_pass2_outputs and cfg.cache_input_frames_pass2 and total > 0:
         est_mb = (float(total) * float(w) * float(h) * 3.0) / (1024.0 * 1024.0)
@@ -729,12 +729,12 @@ def run(cfg):
         all_player_boxes.append(record["player_dict"])
         all_player_boxes_preproc.append(record["player_boxes"])
         all_court_kps.append(record["court_kps"])
-        if yolo_dbg_writer is not None:
+        if detector_input_writer is not None:
             # Stream debug-preprocessed frames immediately to avoid huge RAM growth.
             if record["pre_frame"] is not None:
-                yolo_dbg_writer.write(record["pre_frame"])
+                detector_input_writer.write(record["pre_frame"])
             elif record["pre_frame_cuda"] is not None:
-                yolo_dbg_writer.write(record["pre_frame_cuda"].detach().cpu().numpy())
+                detector_input_writer.write(record["pre_frame_cuda"].detach().cpu().numpy())
         if info_timing:
             timing["pass1_store"] = timing.get("pass1_store", 0.0) + (time.perf_counter() - store_t0)
 
@@ -806,24 +806,24 @@ def run(cfg):
                 else:
                     cv2.accumulateWeighted(hsv_curr, master_hsv, cfg.background_alpha)
 
-        # Detect ball - skip-frame YOLO for speed
-        # When skip_n > 1: run YOLO every Nth frame, selector interpolates short gaps.
-        _do_yolo = True
+        # Skip-frame detection: when skip_n > 1 run the detector every Nth frame
+        # and let the selector interpolate the short gaps.
+        _do_detect = True
         if skip_n > 1 and frame_idx % skip_n != 0:
             # Only skip when ROI tracker says ball is visible (smooth motion)
             if skip_require_roi and any(
                 getattr(track, "frames_since_det", 10**9) <= 3
                 for track in getattr(roi_tracker, "tracks", [])
             ):
-                _do_yolo = False
+                _do_detect = False
             elif not skip_require_roi:
-                _do_yolo = False
+                _do_detect = False
 
-        # Player + court detection: decouple from critical path by syncing with YOLO frames.
+        # Player + court detection: decouple from critical path by syncing with detector frames.
         if info_timing:
             aux_t0 = time.perf_counter()
         do_aux_detect = True
-        if cfg.aux_detect_on_yolo_frames and not _do_yolo:
+        if cfg.aux_detect_on_detect_frames and not _do_detect:
             do_aux_detect = (frame_idx - last_aux_detect_frame) >= aux_force_interval
         if do_aux_detect:
             court_kps = court_det.detect(frame_curr, frame_idx=frame_idx)
@@ -896,7 +896,7 @@ def run(cfg):
                     )
                 )
                 need_cpu_pre_frame = bool(
-                    yolo_dbg_writer is not None
+                    detector_input_writer is not None
                     or (not use_cuda_pre_frame and not detector.uses_raw_frames)
                 )
                 pre_frame, raw_motion_u8, boost_mask_u8, _, _, pre_frame_cuda = \
@@ -907,7 +907,7 @@ def run(cfg):
                                           protect_mask_cached=protect_mask,
                                           rois=rois,
                                           skip_dim=_skip_dim,
-                                          return_cuda_frame=bool(use_cuda_pre_frame and _do_yolo),
+                                          return_cuda_frame=bool(use_cuda_pre_frame and _do_detect),
                                           need_cpu_frame=need_cpu_pre_frame,
                                           frame_gpu_t=curr_frame_gpu_t,
                                           curr_v_cached=curr_v_t,
@@ -966,8 +966,8 @@ def run(cfg):
                 # Two boost masks:
                 #   boost_mask_u8 - narrow, gated source -> returned to selector
                 #     (preserves selector precision; frame-870-class FPs stay suppressed).
-                #   boost_yolo_u8 - wide, ungated source -> drives the HSV brightening
-                #     the YOLO input sees (recall-positive: rescues YOLO misses on frames
+                #   boost_detector_u8 - wide, ungated source -> drives the HSV brightening
+                #     the detector input sees (recall-positive: rescues detector misses on frames
                 #     where the temporal/color gate would have suppressed a real ball blob).
                 raw_motion_u8 = rm
                 def _build_boost(src):
@@ -993,12 +993,12 @@ def run(cfg):
 
                 boost_mask_u8 = _build_boost(rm)
                 if rm_ungated is not None and rm_ungated is not rm:
-                    boost_yolo_u8 = _build_boost(rm_ungated)
+                    boost_detector_u8 = _build_boost(rm_ungated)
                 else:
-                    boost_yolo_u8 = boost_mask_u8
+                    boost_detector_u8 = boost_mask_u8
 
                 if not detector.uses_raw_frames:
-                    pre_frame = preprocess_frame(frame_curr, raw_motion_u8, boost_yolo_u8, cfg,
+                    pre_frame = preprocess_frame(frame_curr, raw_motion_u8, boost_detector_u8, cfg,
                                                   player_bboxes=player_boxes,
                                                   court_keypoints=court_kps,
                                                   hsv_cached=hsv_curr,
@@ -1007,7 +1007,7 @@ def run(cfg):
             # Start current frame inference as soon as detector input is ready.
             # With per-pending CUDA events + output slots, this is safe and allows
             # overlap with post-mask CPU work below.
-            if _do_yolo:
+            if _do_detect:
                 if prev_pending is not None and not can_overlap_ball_inference:
                     _finish_pending(prev_pending)
                     prev_pending = None
@@ -1060,9 +1060,9 @@ def run(cfg):
         if prev_pending is not None:
             _finish_pending(prev_pending)
 
-        # Detect ball - skip-frame YOLO for speed.
+        # Detect ball on this frame.
         # Cross-frame overlap: launch current frame now, finish it next iteration.
-        if _do_yolo:
+        if _do_detect:
             if det_pending is None:
                 det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
                 if info_timing:
@@ -1086,7 +1086,7 @@ def run(cfg):
                 },
             }
         else:
-            skip_yolo_saved += 1
+            skip_detect_saved += 1
             _commit_frame(
                 {
                     "frame_idx": frame_idx,
@@ -1133,7 +1133,7 @@ def run(cfg):
         if info_timing:
             timing["pass1_slide"] = timing.get("pass1_slide", 0.0) + (time.perf_counter() - slide_t0)
 
-    # Drain last pending YOLO inference.
+    # Drain the last pending ball inference.
     if pending_det is not None:
         _finish_pending(pending_det)
         pending_det = None
@@ -1156,8 +1156,8 @@ def run(cfg):
     print(f"[pass 1] Done: {N} frames in {t_pass1:.1f}s "
           f"({N/t_pass1:.1f} fps), detections in {det_frames} frames")
     if skip_n > 1:
-        print(f"[pass 1] Skip-frame YOLO: {skip_yolo_saved}/{N} frames skipped "
-              f"(every {skip_n}th frame, {100.0*skip_yolo_saved/max(N,1):.1f}% saved)")
+        print(f"[pass 1] Skip-frame detection: {skip_detect_saved}/{N} frames skipped "
+              f"(every {skip_n}th frame, {100.0*skip_detect_saved/max(N,1):.1f}% saved)")
     if cfg.roi_motion_enabled:
         print(f"[pass 1] ROI motion: {roi_used_count} ROI frames, "
               f"{fullframe_count} full-frame frames")
@@ -1533,7 +1533,7 @@ def run(cfg):
             trail_cx, trail_cy = rcx, rcy
 
             if display_result.source == 'det':
-                # GREEN - YOLO detection
+                # GREEN - detector observation
                 marker_radius = 6
                 if display_result.bbox:
                     bx1f, by1f, bx2f, by2f = map(float, display_result.bbox)
@@ -1952,7 +1952,7 @@ def run(cfg):
                     cy_i = int(round(vis_fy))
 
                     if vis_bbox is not None and len(vis_bbox) == 4:
-                        # -- YOLO detection bounding box --
+                        # -- detector bounding box --
                         bx1, by1, bx2, by2 = (int(round(v)) for v in vis_bbox)
                         cv2.rectangle(vis, (bx1, by1), (bx2, by2), ball_col, 2)
                         cv2.putText(vis, vis_src[:3].upper(),
@@ -2007,7 +2007,7 @@ def run(cfg):
                                     continue
                                 bx_r, by_r, bw_r, bh_r = cv2.boundingRect(cnt)
                                 # Anchor to bottom-center of blob bounding rect,
-                                # matching green trail which anchors at bottom of YOLO bbox.
+                                # matching green trail which anchors at bottom of the detector bbox.
                                 cx = irx1 + bx_r + bw_r / 2.0
                                 cy = iry1 + by_r + bh_r
                                 blob_r = min(10.0, max(4.0, math.sqrt(area / math.pi)))
@@ -2146,8 +2146,8 @@ def run(cfg):
         writer.close()
     if dbg_writer:
         dbg_writer.close()
-    if yolo_dbg_writer:
-        yolo_dbg_writer.close()
+    if detector_input_writer:
+        detector_input_writer.close()
     if guide_writer:
         guide_writer.close()
     if info_timing:
@@ -2183,8 +2183,8 @@ def run(cfg):
         print(f"[done] Tracking video: {cfg.output_video}")
     if cfg.save_motion_debug:
         print(f"[done] Motion debug:  {cfg.output_debug_path}")
-    if cfg.save_yolo_input_debug:
-        print(f"[done] Pre-YOLO debug:  {cfg.output_yolo_input_debug_path}")
+    if cfg.save_detector_input_debug:
+        print(f"[done] Detector input debug:  {cfg.output_detector_input_debug_path}")
     if cfg.save_guide_video:
         print(f"[done] Guide Debug:  {cfg.output_guide_path}")
     if info_timing:

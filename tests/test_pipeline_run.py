@@ -180,8 +180,8 @@ class FakeGridTrackNet:
     instances: List["FakeGridTrackNet"] = []
 
     def __init__(self, weights_path: str, cfg: Config):
-        if int(cfg.skip_frame_yolo) > 1:
-            raise ValueError("call-order contract needs skip_frame_yolo=1")
+        if int(cfg.skip_frame_detect) > 1:
+            raise ValueError("call-order contract needs skip_frame_detect=1")
         self.weights_path = str(weights_path)
         self.cfg = cfg
         self.prepared: Optional[Dict[str, Any]] = None
@@ -318,7 +318,7 @@ class CapturingVideoWriter:
 STREAM_ROLES = {
     "tracking": "output_video",
     "motion_debug": "output_debug_path",
-    "yolo_input": "output_yolo_input_debug_path",
+    "detector_input": "output_detector_input_debug_path",
     "guide": "output_guide_path",
 }
 
@@ -326,7 +326,7 @@ FULL_OVERRIDES = dict(
     conf=0.5,
     save_tracking_video=True,
     save_motion_debug=True,
-    save_yolo_input_debug=True,
+    save_detector_input_debug=True,
     save_guide_video=True,
     print_selector_tracks=False,
     use_nvenc=False,
@@ -340,7 +340,7 @@ JSON_ONLY_OVERRIDES = dict(
     FULL_OVERRIDES,
     save_tracking_video=False,
     save_motion_debug=False,
-    save_yolo_input_debug=False,
+    save_detector_input_debug=False,
     save_guide_video=False,
 )
 
@@ -357,7 +357,7 @@ def make_config(tmp_path: Path, clip: Path, **overrides) -> Config:
         input_video=str(clip),
         output_video=str(out / "tracking.mp4"),
         output_debug_path=str(out / "motion_debug.mp4"),
-        output_yolo_input_debug_path=str(out / "yolo_input.mp4"),
+        output_detector_input_debug_path=str(out / "detector_input.mp4"),
         output_guide_path=str(out / "guide.mp4"),
         tracking_json=str(out / "tracking.json"),
         model_path=str(weights),
@@ -470,7 +470,7 @@ def test_run_matches_golden(tmp_path, monkeypatch, fake_cuda, capsys, clip):
     assert result["json"]["last_valid_court_keypoints"] == COURT_KEYPOINTS
     assert result["json"]["summary"]["pass2_frames_rendered"] == FRAMES
     assert result["json"]["motion_diagnostics"]["summary"]["frames_analyzed"] == FRAMES
-    assert set(result["streams"]) == {"tracking", "motion_debug", "yolo_input", "guide"}
+    assert set(result["streams"]) == {"tracking", "motion_debug", "detector_input", "guide"}
     assert all(len(hashes) == FRAMES for hashes in result["streams"].values())
     assert "[pass 1] RAM frame cache enabled" in out
     assert "[pass 2] Using RAM frame cache" in out
@@ -530,7 +530,7 @@ def test_zero_frame_video_prints_and_returns_none(tmp_path, monkeypatch, fake_cu
     # The debug writers were already opened before the early return; nothing
     # was written to them and (current behaviour) they are never closed.
     debug_writers = CapturingVideoWriter.streams
-    assert set(debug_writers) == {cfg.output_debug_path, cfg.output_yolo_input_debug_path, cfg.output_guide_path}
+    assert set(debug_writers) == {cfg.output_debug_path, cfg.output_detector_input_debug_path, cfg.output_guide_path}
     assert all(writer.hashes == [] and not writer.closed for writer in debug_writers.values())
 
 
