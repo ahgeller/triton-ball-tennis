@@ -1,6 +1,7 @@
 """finetune/data/import_sources.py: the TrackNet CSV reader's column and row rules, the frame and
 pixel mapping, media copies, frame encodes and the manifest, on synthetic files under tmp_path."""
-from unittest.mock import patch
+import re
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -73,6 +74,31 @@ def test_frames_to_video_falls_back_to_opencv_without_ffmpeg(tmp_path):
     capture = cv2.VideoCapture(str(out))
     assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 3
     capture.release()
+
+
+def test_the_opencv_encode_refuses_a_frame_it_cannot_read_or_that_is_the_wrong_size(tmp_path):
+    """OpenCV writes nothing for an unreadable or odd-sized frame and says nothing; the labels
+    are then mapped onto a video one frame short, so each such frame is an error naming it."""
+    good = tmp_path / "000.png"
+    cv2.imwrite(str(good), np.full((36, 64, 3), 10, np.uint8))
+    broken = tmp_path / "001.png"
+    broken.write_bytes(b"not an image")
+    odd = tmp_path / "002.png"
+    cv2.imwrite(str(odd), np.zeros((18, 64, 3), np.uint8))
+    out = tmp_path / "clip.mp4"
+    with patch.object(import_sources.shutil, "which", return_value=None):
+        with pytest.raises(RuntimeError, match=re.escape(f"could not read {broken}")):
+            frames_to_video([good, broken], out, 30.0)
+        with pytest.raises(RuntimeError, match=re.escape(f"{odd} is 64x18, not 64x36 like 000.png")):
+            frames_to_video([good, odd], out, 30.0)
+        with pytest.raises(RuntimeError, match=re.escape(f"could not read {broken}")):
+            frames_to_video([broken, good], out, 30.0)                          # the first frame sizes the video
+        unopenable = Mock()
+        unopenable.isOpened.return_value = False
+        with patch.object(import_sources.cv2, "VideoWriter", return_value=unopenable), \
+                pytest.raises(RuntimeError, match="could not open .*clip.mp4 for writing"):
+            frames_to_video([good], out, 30.0)
+        unopenable.write.assert_not_called()
 
 
 def test_manifest_fills_every_column_and_round_trips(tmp_path):

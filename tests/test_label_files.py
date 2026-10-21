@@ -123,6 +123,39 @@ def test_flag_sidecar_reads_the_legacy_frames_list_as_check(tmp_path):
     assert path.name in str(caught.value)
 
 
+@pytest.mark.parametrize("field, value", [("answered", [1, 2]), ("answered", "7"), ("notes", ["check"]), ("notes", 3)])
+def test_a_malformed_answered_or_notes_map_is_an_error_not_an_empty_one(tmp_path, field, value):
+    """The answered map is the record of somebody's answers: a reader that silently read it as
+    {} would let the next audit write {} over it."""
+    path = tmp_path / "clip_ball.suspect.json"
+    path.write_text(json.dumps({"check": [1], field: value}), encoding="utf-8")
+    with pytest.raises(labels.LabelFormatError) as caught:
+        labels.read_flags(path)
+    assert path.name in str(caught.value) and repr(field) in str(caught.value)
+    path.write_text(json.dumps({"check": [1], field: None}), encoding="utf-8")       # null is "nothing", like a missing key
+    assert labels.read_flags(path)[field] == {}
+
+
+def test_flag_kinds_are_the_literal_values():
+    assert labels.FLAG_KINDS == ("unplaceable", "check")
+    assert set(labels.FLAG_KINDS) <= set(labels.Flags.__annotations__)
+
+
+def test_write_draft_writes_the_label_format_plus_source_and_conf(tmp_path):
+    """Byte for byte what pretrack.py used to write itself: the point cells as a label file's,
+    the sentinel for no ball, conf to two decimals, rows in frame order."""
+    path = tmp_path / "clip_ball.csv.draft"
+    rows = {4: labels.DraftRow(None, "none", 0.0), 0: labels.DraftRow((10.123, 20.5), "det", 0.9),
+            2: labels.DraftRow((-3.0, 2000.0), "det", 0.25), 6: labels.DraftRow((639.0, 1.0), "det", 0.5)}
+    assert labels.write_draft(path, rows, 640, 360) == (3, 1)                 # three guesses, one in the no-ball corner
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        "frame,ball_x,ball_y,source,conf", "frame_000,10.12,20.50,det,0.90", "frame_002,0.00,359.00,det,0.25",
+        "frame_004,639,0,none,0.00", "frame_006,639.00,1.00,det,0.50"]
+    read = labels.read_label_rows(path)
+    assert [row.frame for row in read] == [0, 2, 4, 6] and read[1].conf == 0.25 and read[2].source == "none"
+    assert labels.read_labels(path, 640, 360) == {0: (10.12, 20.5), 2: (0.0, 359.0), 4: None, 6: None}
+
+
 def test_flag_sidecar_has_one_writer_and_one_shape(tmp_path):
     """write_flags owns the on-disk shape: provenance only when there is some, frames sorted and
     unique, and what it wrote reads back as it was given."""

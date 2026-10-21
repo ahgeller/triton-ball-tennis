@@ -52,6 +52,13 @@ class ClipRecord(TypedDict):
     visible: int
 
 
+class DataManifest(TypedDict):
+    """What ``prepare_data`` hands the trainer: the units of each split and the held-out clips."""
+    train: List[TrainingUnit]
+    val: List[TrainingUnit]
+    validation_clips: List[str]
+
+
 # --------------------------------------------------------------------------- labels to units
 
 def training_targets(path: Path, width: int, height: int) -> Dict[int, Target]:
@@ -106,7 +113,8 @@ def cached_record(meta_path: Path, signature: List[List[object]]) -> Optional[Cl
 
 def extract_frames(video: Path, frame_dir: Path, needed: Set[int]) -> None:
     """Write the frames ``needed`` of ``video`` to ``frame_dir`` as 768x432 JPEGs, replacing what
-    was there; raises ValueError when the video ends before the last of them."""
+    was there; raises ValueError when the video ends before the last of them and OSError when a
+    JPEG cannot be written (so no cache record ever points at a frame that is not there)."""
     if frame_dir.exists():
         shutil.rmtree(frame_dir)
     frame_dir.mkdir(parents=True)
@@ -119,7 +127,10 @@ def extract_frames(video: Path, frame_dir: Path, needed: Set[int]) -> None:
             break
         if frame_index in remaining:
             resized = cv2.resize(frame, (WIDTH, HEIGHT), interpolation=cv2.INTER_AREA)
-            cv2.imwrite(str(frame_dir / f"{frame_index:06d}.jpg"), resized, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+            target = frame_dir / f"{frame_index:06d}.jpg"
+            if not cv2.imwrite(str(target), resized, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
+                capture.release()
+                raise OSError(f"could not write frame {frame_index} of {video.name} to {target}")
             remaining.remove(frame_index)
         frame_index += 1
     capture.release()
@@ -147,24 +158,26 @@ def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> ClipRecord:
                                     points=[labels[index] for index in window], size=[width, height]))
         needed.update(window)
     extract_frames(video, data_dir / "frames" / clip, needed)
-    record = {"version": DATA_VERSION, "signature": signature, "clip": clip, "source": source,
-              "fps": fps, "stride": stride, "size": [width, height], "samples": samples,
-              "visible": sum(point is not None for sample in samples for point in sample["points"])}
+    record = ClipRecord(version=DATA_VERSION, signature=signature, clip=clip, source=source, fps=fps, stride=stride,
+                        size=[width, height], samples=samples,
+                        visible=sum(point is not None for sample in samples for point in sample["points"]))
     write_atomic(meta_path, json.dumps(record))
     return record
 
 
 def prepare_data(clips: List[Clip], data_dir: Path, val_clips: List[str], rebuild: bool,
-                 workers: int) -> Dict[str, list]:
+                 workers: int) -> DataManifest:
+    """Every clip's cache entry, built or refreshed, with its units split into the training and
+    validation sets."""
     data_dir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         records: List[ClipRecord] = list(pool.map(lambda entry: prepare_clip(entry, data_dir, rebuild), clips))
-    manifest = {"train": [], "val": [], "validation_clips": val_clips}
+    manifest = DataManifest(train=[], val=[], validation_clips=val_clips)
     per_source: Dict[str, Dict[str, int]] = {}
     for record in records:
         split = "val" if record["clip"] in val_clips else "train"
-        manifest[split].extend(record["samples"])
+        (manifest["val"] if split == "val" else manifest["train"]).extend(record["samples"])
         bucket = per_source.setdefault(record["source"], {"train": 0, "val": 0, "clips": 0})
         bucket[split] += len(record["samples"])
         bucket["clips"] += 1

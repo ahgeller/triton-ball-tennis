@@ -171,6 +171,33 @@ def copy_media(src: Path, dst: Path, link: bool) -> str:
     return "copied"
 
 
+def _read_image(path: Path):
+    """The image at `path`; an unreadable one is a RuntimeError naming it, never None."""
+    image = cv2.imread(str(path))
+    if image is None:
+        raise RuntimeError(f"could not read {path}")
+    return image
+
+
+def _encode_with_opencv(frames: List[Path], dst: Path, fps: float) -> None:
+    """The no-ffmpeg encode. Every frame is checked before it is written: OpenCV drops a frame it
+    cannot read or that is the wrong size without a word, and a dropped frame moves every label
+    after it onto the wrong frame, so each one is an error naming the file instead."""
+    first = _read_image(frames[0])
+    height, width = first.shape[:2]
+    writer = cv2.VideoWriter(str(dst), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    if not writer.isOpened():
+        raise RuntimeError(f"could not open {dst} for writing")
+    try:
+        for frame in frames:
+            image = first if frame == frames[0] else _read_image(frame)
+            if image.shape[:2] != (height, width):
+                raise RuntimeError(f"{frame} is {image.shape[1]}x{image.shape[0]}, not {width}x{height} like {frames[0].name}")
+            writer.write(image)
+    finally:
+        writer.release()
+
+
 def frames_to_video(frames: List[Path], dst: Path, fps: float) -> str:
     """Encode an ordered list of same-size images into dst. ffmpeg (near-lossless x264) if present."""
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -190,12 +217,7 @@ def frames_to_video(frames: List[Path], dst: Path, fps: float) -> str:
                        "-movflags", "+faststart", str(dst)]
             subprocess.run(command, check=True, timeout=ENCODE_TIMEOUT_S)
         return "ffmpeg"
-    first = cv2.imread(str(frames[0]))
-    height, width = first.shape[:2]
-    writer = cv2.VideoWriter(str(dst), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-    for frame in frames:
-        writer.write(cv2.imread(str(frame)))
-    writer.release()
+    _encode_with_opencv(frames, dst, fps)
     return "cv2 (install ffmpeg for a near-lossless encode)"
 
 

@@ -32,8 +32,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from finetune.data import workspace as ws
-from finetune.data.fileio import atomic_csv
-from finetune.data.labels import COLUMNS, frame_name, sentinel
+from finetune.data.labels import DraftRow, write_draft as write_draft_rows
 from finetune.data.workspace import VideoMeta, draft_csv, label_csv, video_meta, videos_in
 from finetune.data.detect import ball_detector, detect_points
 from tennis_tracker.frame_rate import require_phase_stride
@@ -41,35 +40,34 @@ from tennis_tracker.paths import COURT_ENGINE, PLAYER_ENGINE
 
 RAW_DRAFT_CONF = 0.25          # raw drafts keep guesses down to this confidence, so nearly every frame has one
 PIPELINE_CONF = 0.50           # the tracker's own default threshold
-DRAFT_COLUMNS = (*COLUMNS, "source", "conf")
 
-DraftRow = Tuple[float, float, str, float]     # x, y, where it came from, confidence
+Guess = Tuple[float, float, str, float]     # x, y, where it came from, confidence
+NO_GUESS = DraftRow(None, "none", 0.0)      # the draft row of a frame the detector had nothing for
 
 
-def write_draft(rows_by_frame: Dict[int, Optional[DraftRow]], draft_path: Path, stride: int,
+def write_draft(rows_by_frame: Dict[int, Optional[Guess]], draft_path: Path, stride: int,
                 width: int, height: int, total: int) -> int:
-    """rows_by_frame: frame -> (x, y, source, conf) or None. Returns how many frames got a guess."""
-    visible = 0
-    with atomic_csv(draft_path) as writer:
-        writer.writerow(list(DRAFT_COLUMNS))
-        for frame in range(0, total, stride):
-            row = rows_by_frame.get(frame)
-            if row:
-                x, y, source, conf = row
-                writer.writerow([frame_name(frame), f"{x:.2f}", f"{y:.2f}", source, f"{conf:.2f}"])
-                visible += 1
-            else:
-                writer.writerow([frame_name(frame), *sentinel(width), "none", "0.00"])
-    return visible
+    """Write one row per label frame (every `stride` frames from 0) through the label format's own
+    draft writer: the guess where there is one, "no ball" otherwise. Returns how many frames got
+    a guess, and says when a guess sits in the corner the files reserve for "no ball"."""
+    rows = {}
+    for frame in range(0, total, stride):
+        guess = rows_by_frame.get(frame)
+        rows[frame] = DraftRow((guess[0], guess[1]), guess[2], guess[3]) if guess else NO_GUESS
+    guessed, parked = write_draft_rows(draft_path, rows, width, height)
+    if parked:
+        print(f"[warn] {draft_path.name}: {parked} guess(es) sit in the top-right corner the label files "
+              f"reserve for 'no ball' and will read back as no ball")
+    return guessed
 
 
-def raw_rows(video: Path, weights: Path, conf: float, device: str, meta: VideoMeta) -> Dict[int, DraftRow]:
+def raw_rows(video: Path, weights: Path, conf: float, device: str, meta: VideoMeta) -> Dict[int, Guess]:
     """The detector's own best guess per frame, unshifted (no y offset): the draft is what it saw."""
     detector = ball_detector(weights, conf=conf, device=device)
     return {frame: (x, y, "det", score) for frame, (x, y, score) in detect_points(detector, video, meta).items()}
 
 
-def pipeline_rows(video: Path, weights: Path, conf: Optional[float], device: str, json_path: Path) -> Dict[int, DraftRow]:
+def pipeline_rows(video: Path, weights: Path, conf: Optional[float], device: str, json_path: Path) -> Dict[int, Guess]:
     from tennis_tracker.config import Config
     from tennis_tracker.pipeline import run
 

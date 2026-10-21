@@ -22,7 +22,7 @@ import csv
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict
+from typing import Dict, Iterable, List, Literal, Mapping, NamedTuple, Optional, Set, Tuple, TypedDict, get_args
 
 from finetune.data.fileio import atomic_csv, write_atomic
 from finetune.data.workspace import review_json
@@ -37,6 +37,8 @@ FLAG_ANSWER_DECIMALS = 2     # how an answered flag's label is recorded; same_po
 LabelPoint = Optional[Tuple[float, float]]
 Labels = Dict[int, LabelPoint]
 FlagKind = Literal["unplaceable", "check"]
+FLAG_KINDS: Tuple[FlagKind, ...] = get_args(FlagKind)     # the two kinds of frame flag an audit raises, as values
+DRAFT_COLUMNS = (*COLUMNS, "source", "conf")               # a pretrack draft: a label file plus where each guess came from
 
 
 class Flags(TypedDict):
@@ -59,6 +61,14 @@ class LabelRow(NamedTuple):
     y: float
     source: Optional[str] = None   # pretrack drafts carry where a guess came from ...
     conf: Optional[float] = None   # ... and how confident the detector was
+
+
+class DraftRow(NamedTuple):
+    """One row of a pretrack draft as ``write_draft`` takes it: the guess (None for no ball),
+    where it came from and how confident the detector was."""
+    point: LabelPoint
+    source: str
+    conf: float
 
 
 # --------------------------------------------------------------------------- cells
@@ -144,6 +154,23 @@ def write_labels(path: Path, labels: Mapping[int, LabelPoint], width: int, heigh
     return write_label_cells(path, cells), sum(point is not None for point in labels.values())
 
 
+def write_draft(path: Path, rows: Mapping[int, DraftRow], width: int, height: int) -> Tuple[int, int]:
+    """Write frame -> DraftRow as a pretrack draft (``DRAFT_COLUMNS``), sorted by frame,
+    atomically; the point cells are a label file's (``format_point``), the ``conf`` cell two
+    decimals. Returns (rows with a guess, rows whose guess sat in the corner reserved for "no
+    ball" and so reads back as no ball: the caller says so, nothing here moves a guess)."""
+    guessed = parked = 0
+    with atomic_csv(path) as writer:
+        writer.writerow(list(DRAFT_COLUMNS))
+        for frame in sorted(rows):
+            point, source, conf = rows[frame]
+            writer.writerow([frame_name(frame), *format_point(point, width, height), source, f"{conf:.2f}"])
+            if point is not None:
+                guessed += 1
+                parked += not is_visible(point[0], point[1], width, height)
+    return guessed, parked
+
+
 # --------------------------------------------------------------------------- sidecars
 
 def read_json_object(path: Path, what: str) -> Optional[dict]:
@@ -190,20 +217,30 @@ def reviewed_frames(clip: str, labels: Optional[Path] = None) -> Set[int]:
     return set(frame_list(state, "reviewed", path)) | set(frame_list(state, "edited", path))
 
 
+def json_map(state: Mapping, key: str, path: Path) -> dict:
+    """The object under `key` in a sidecar's object (missing or null: empty). Anything else is a
+    LabelFormatError naming `path`, as ``frame_list`` does for the frame lists: the ``answered``
+    map is the record of somebody's answers, never guessed at or written over."""
+    value = state.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise LabelFormatError(f"{path}: {key!r} is not an object (got {type(value).__name__})")
+    return dict(value)
+
+
 def read_flags(path: Path) -> Flags:
     """The flag sidecar, normalised: the ``unplaceable`` and ``check`` frame lists (an older
     audit's ``frames`` list counts as ``check``), the ``answered`` map, the ``notes`` map and the
-    audit date. All empty when there is no file."""
+    audit date. All empty when there is no file; a field of the wrong shape is a LabelFormatError."""
     blob = read_json_object(path, "flag file")
     if blob is None:
         return {"generated": "", "notes": {}, "unplaceable": [], "check": [], "answered": {}}
-    answered = blob.get("answered")
-    notes = blob.get("notes")
     return {"generated": str(blob.get("generated") or ""),
-            "notes": dict(notes) if isinstance(notes, dict) else {},
+            "notes": json_map(blob, "notes", path),
             "unplaceable": frame_list(blob, "unplaceable", path),
             "check": frame_list(blob, "check" if "check" in blob else "frames", path),
-            "answered": dict(answered) if isinstance(answered, dict) else {}}
+            "answered": json_map(blob, "answered", path)}
 
 
 def write_flags(path: Path, flags: Flags) -> None:

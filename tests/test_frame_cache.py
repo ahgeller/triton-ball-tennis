@@ -2,11 +2,14 @@
 record check and the frame extraction, on synthetic clips. prepare_clip end to end is in
 test_train_gridtracknet.py."""
 import json
+from unittest.mock import patch
 
 import cv2
 import pytest
 
-from finetune.training.frame_cache import DATA_VERSION, build_units, cached_record, extract_frames
+from finetune.data.labels import write_labels
+from finetune.training import frame_cache
+from finetune.training.frame_cache import DATA_VERSION, build_units, cached_record, extract_frames, prepare_clip
 from tennis_tracker.gridtracknet import HEIGHT, WIDTH
 from tests._helpers import write_clip
 
@@ -50,3 +53,17 @@ def test_extract_frames_writes_the_needed_frames_at_model_size_and_replaces_old_
     assert cv2.imread(str(frame_dir / "000006.jpg")).shape == (HEIGHT, WIDTH, 3)
     with pytest.raises(ValueError, match="ended before frames"):
         extract_frames(video, frame_dir, {2, 40})
+
+
+def test_a_frame_that_cannot_be_written_fails_the_clip_before_any_record_is_cached(tmp_path):
+    """cv2.imwrite answers False instead of raising; left unchecked, prepare_clip cached a record
+    pointing at JPEGs that were never written, which only surfaced as a FileNotFoundError during
+    training and again on every rerun."""
+    video = write_clip(tmp_path / "c.avi", 8, SIZE)
+    csv_path = tmp_path / "c_ball.csv"
+    write_labels(csv_path, {f: (1.0, 1.0) for f in range(6)}, *SIZE)
+    data = tmp_path / "data"
+    with patch.object(frame_cache.cv2, "imwrite", return_value=False):
+        with pytest.raises(OSError, match=r"could not write frame 0 of c.avi to .*000000.jpg"):
+            prepare_clip(("c", video, csv_path, "custom"), data, rebuild=True)
+    assert not (data / "clips").exists()

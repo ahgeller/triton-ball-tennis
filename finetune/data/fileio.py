@@ -16,7 +16,10 @@ import shutil
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
+
+if TYPE_CHECKING:
+    from _csv import _writer as CsvWriter     # what csv.writer() returns; csv.writer itself is a function
 
 REPLACE_ATTEMPTS = 5       # tries before a locked target is given up on ...
 REPLACE_PAUSE = 0.1        # ... and the seconds waited between them
@@ -57,7 +60,7 @@ def write_atomic(path: Path, text: str) -> None:
 
 
 @contextmanager
-def atomic_csv(path: Path) -> Iterator[csv.writer]:
+def atomic_csv(path: Path) -> Iterator["CsvWriter"]:
     """A csv.writer whose rows land at `path` only once every row is written and on disk."""
     with atomic_text(path, newline="") as handle:
         yield csv.writer(handle)
