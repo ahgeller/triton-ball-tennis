@@ -38,10 +38,14 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch
+    from torch import nn
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -88,7 +92,7 @@ def window(crop: np.ndarray, centre: Tuple[float, float]) -> np.ndarray:
 
 
 # -------------------------------------------------------------------------------------- network
-def network(self_check: bool = True):
+def network(self_check: bool = True) -> "nn.Module":
     """self_check=False is the first design (versions before the self-check), kept so they still load."""
     import torch.nn as nn
     import torch
@@ -131,7 +135,7 @@ def network(self_check: bool = True):
     return Net()
 
 
-def to_tensor(windows: np.ndarray, device: str):
+def to_tensor(windows: np.ndarray, device: str) -> "torch.Tensor":
     import torch
     return torch.from_numpy(np.ascontiguousarray(windows)).to(device).permute(0, 3, 1, 2).float().div_(255.0).sub_(0.5)
 
@@ -147,14 +151,14 @@ class Placer:
     def __init__(self, path: Path):
         import torch
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        saved = torch.load(path, map_location=self.device)
+        saved = torch.load(path, map_location=self.device, weights_only=True)
         self.net = network(bool(saved.get("self_check"))).to(self.device)
         self.net.load_state_dict(saved["state"])
         self.net.eval()
         self.threshold = saved.get("threshold") if saved.get("self_check") else None
         self.name = path.stem
 
-    def looks(self, x):
+    def looks(self, x: "torch.Tensor") -> Tuple["torch.Tensor", Optional["torch.Tensor"]]:
         """The network's answer averaged over the window, its mirror image, its frames reversed and
         both (each mapped back): 3% closer to the click than one look (0.600 -> 0.582 px median on
         the folds). The self-check reads the plain look only, so its calibration stands."""
@@ -170,7 +174,8 @@ class Placer:
             xy = xy + vxy
         return xy / 4.0, logit
 
-    def place(self, items: List[Tuple[np.ndarray, Tuple[float, float], Tuple[float, float]]], height: int):
+    def place(self, items: List[Tuple[np.ndarray, Tuple[float, float], Tuple[float, float]]],
+              height: int) -> List[Tuple[float, float, Optional[bool]]]:
         import torch
         if not items:
             return []
@@ -332,7 +337,7 @@ def folds(clips: Sequence[str], sizes: Dict[str, int]) -> Dict[str, int]:
     return {clip: fold_of_group[group] for clip, group in group_of.items()}
 
 
-def to_device(parts: Sequence[np.ndarray], device: str):
+def to_device(parts: Sequence[np.ndarray], device: str) -> "torch.Tensor":
     import torch
     out = torch.empty((sum(len(p) for p in parts), CROP, CROP, 9), dtype=torch.uint8, device=device)
     i = 0
@@ -342,7 +347,8 @@ def to_device(parts: Sequence[np.ndarray], device: str):
     return out
 
 
-def batches(data, device: str, rng: np.random.Generator, size: int, flip: bool = True, every: bool = False):
+def batches(data, device: str, rng: np.random.Generator, size: int, flip: bool = True,
+            every: bool = False) -> Tuple["torch.Tensor", "torch.Tensor"]:
     """Random windows of random crops on the GPU: (inputs, targets in window pixels). `every`
     takes the first `size` crops in order instead of drawing them at random (scoring)."""
     import torch
@@ -367,7 +373,8 @@ def batches(data, device: str, rng: np.random.Generator, size: int, flip: bool =
     return x.contiguous(memory_format=torch.channels_last), torch.stack([tx, ty], 1)
 
 
-def fit(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[..., None], label: str):
+def fit(data, epochs: int, device: str, rng: np.random.Generator, log: Callable[..., None],
+        label: str) -> "nn.Module":
     """One network trained on `data` (crops already on the device)."""
     import torch
     net = network().to(device).to(memory_format=torch.channels_last)
@@ -577,7 +584,7 @@ def describe() -> List[str]:
     lines, active = [], current()
     for path in versions():
         try:
-            meta = torch.load(path, map_location="cpu")
+            meta = torch.load(path, map_location="cpu", weights_only=True)
             check = meta.get("check", {})
             info = (f"trained {meta.get('trained', '?')}, {meta.get('frames', '?')} frames from "
                     f"{meta.get('clips', '?')} clips, median {check.get('median_px', float('nan')):.2f} px")
