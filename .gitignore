@@ -32,3 +32,4 @@ finetune/.training-python
 .desloppify/
 scorecard.png
 .claude/worktrees/
+.claude/skills/desloppify/
