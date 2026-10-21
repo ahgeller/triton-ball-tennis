@@ -436,16 +436,16 @@ def clip(tmp_path_factory) -> Path:
 # ---------------------------------------------------------------------------
 
 def test_pinned_uploader_falls_back_without_a_driver(fake_cuda):
-    """``run`` wraps ``_PinnedFrameUploader`` in try/except; on a box without a
+    """``FrameWindow`` wraps ``PinnedFrameUploader`` in try/except; on a box without a
     CUDA driver the pinned allocation must raise so that fallback is what the
     golden captured.  On a real CUDA machine it may succeed; the values are the
     same either way, only the upload route differs."""
     import torch
 
-    from tennis_tracker.video_io import _PinnedFrameUploader
+    from tennis_tracker.video_io import PinnedFrameUploader
 
     try:
-        uploader = _PinnedFrameUploader(HEIGHT, WIDTH, torch.device("cuda:0"))
+        uploader = PinnedFrameUploader(HEIGHT, WIDTH, torch.device("cuda:0"))
     except RuntimeError:
         return
     frame = synthetic_frames()[0]

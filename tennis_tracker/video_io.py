@@ -29,7 +29,7 @@ _FFMPEG_KILL_TIMEOUT_S = 5.0
 _QUEUE_POLL_S = 0.1
 
 
-class _PinnedFrameUploader:
+class PinnedFrameUploader:
     """Pinned host staging for faster/non-blocking H2D frame uploads."""
 
     def __init__(self, h: int, w: int, device: torch.device):
@@ -63,8 +63,8 @@ class _PinnedFrameUploader:
 
 
 @torch.no_grad()
-def _cuda_frame_to_chw_f32(frame_bgr: np.ndarray, device: torch.device,
-                           uploader: Optional[_PinnedFrameUploader] = None) -> torch.Tensor:
+def cuda_frame_to_chw_f32(frame_bgr: np.ndarray, device: torch.device,
+                           uploader: Optional[PinnedFrameUploader] = None) -> torch.Tensor:
     """Upload one BGR frame once as CHW float32 in [0,1] on CUDA."""
     if uploader is not None:
         return uploader.upload_chw_f32(frame_bgr)
@@ -74,7 +74,7 @@ def _cuda_frame_to_chw_f32(frame_bgr: np.ndarray, device: torch.device,
 
 
 @torch.no_grad()
-def _cuda_vs_tensors(frame_bgr: Optional[np.ndarray], device: torch.device,
+def cuda_vs_tensors(frame_bgr: Optional[np.ndarray], device: torch.device,
                      gpu_tensor: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """Extract V and S channels as CUDA tensors (no grad tracking).
     If gpu_tensor is provided, reuse it instead of uploading frame again."""
@@ -83,7 +83,7 @@ def _cuda_vs_tensors(frame_bgr: Optional[np.ndarray], device: torch.device,
     else:
         if frame_bgr is None:
             raise ValueError("frame_bgr is required when gpu_tensor is None")
-        t = _cuda_frame_to_chw_f32(frame_bgr, device)
+        t = cuda_frame_to_chw_f32(frame_bgr, device)
     maxc = torch.max(t, dim=0).values
     minc = torch.min(t, dim=0).values
     s = torch.where(maxc > 1e-6, (maxc - minc) / (maxc + 1e-6), torch.zeros_like(maxc))

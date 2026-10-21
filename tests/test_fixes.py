@@ -17,7 +17,8 @@ from tennis_tracker.config import Config
 from tennis_tracker.detectors import GridTrackNetBallDetector
 from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
 from tennis_tracker.video_io import VideoWriter
-from tennis_tracker.motion import preprocess_frame_cuda, refine_raw_motion_temporal_cpu, filter_boost_mask
+from tennis_tracker.frame_window import FrameWindow
+from tennis_tracker.motion import BackgroundModel, preprocess_frame_cuda, refine_raw_motion_temporal_cpu, filter_boost_mask
 from ball_in_play_selector.config import SelectorConfig
 from ball_in_play_selector.physics import BallKalmanFilter, predict_projectile, predict_projectile_velocity
 from ball_in_play_selector.core import motion_near
@@ -171,14 +172,15 @@ class FixTests(unittest.TestCase):
     def test_motion_retains_non_yellow_evidence(self):
         frame = np.zeros((32, 32, 3), np.uint8)
         frame[10:20, 10:20, 2] = 255
-        t = torch.from_numpy(frame).permute(2, 0, 1).float() / 255
         zeros = torch.zeros(32, 32)
         cfg = Config(motion_raw_temporal_gate=False, motion_raw_close_size=0,
                      motion_thresh=1., motion_v_min=0.)
-        _, raw, _, _, _, _ = preprocess_frame_cuda(
-            frame, zeros, zeros, zeros, zeros, cfg, frame_gpu_t=t,
-            protect_mask_cuda_cached=zeros.bool(), skip_dim=True,
-            need_cpu_frame=False, need_detector_boost=False)
+        window = FrameWindow(torch.device("cpu"), True, frame, None)
+        background = BackgroundModel(cfg, torch.device("cpu"))
+        background.mean_v = background.mean_s = background.var_v = background.var_s = zeros
+        raw = preprocess_frame_cuda(
+            window, background, cfg, protect_mask=zeros.bool(), skip_dim=True,
+            need_cpu_frame=False, need_detector_boost=False).raw_motion
         self.assertEqual(np.count_nonzero(raw), 100)
         expected = refine_raw_motion_temporal_cpu(raw, None, frame, None, cfg)
         np.testing.assert_array_equal(expected, raw)

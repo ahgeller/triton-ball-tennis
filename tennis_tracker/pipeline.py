@@ -12,13 +12,14 @@ from ball_in_play_selector import PackedMask, select_ball_in_play, FrameResult
 from .config import Config
 from .utils import _detect_device, check_capabilities, _resolve_engine_path, find_ball_class_id_from_names, read_engine_class_names
 from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
-from .motion import preprocess_frame_cuda, build_court_side_protect_mask, draw_motion_debug_frame
+from .frame_window import FrameWindow
+from .motion import BackgroundModel, preprocess_frame_cuda, build_court_side_protect_mask, draw_motion_debug_frame
 from .tracking import ROIMotionTracker
 from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
 from .rendering import MOTION_DEBUG_SOURCE_COLOR, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, build_display_path, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_DISPLAY_PATH, COLOR_DISPLAY_PATH_INTERP
 from .court_minimap import draw_court_minimap
 from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
-from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
+from .video_io import ThreadedFrameReader, VideoWriter
 
 
 def _json_safe(value):
@@ -582,22 +583,8 @@ def run(cfg):
         cap.release()
         return
 
-    prev_v = prev_s = curr_v_t = curr_s_t = next_v_t = next_s_t = None
-    prev_frame_v_t = prev_frame_s_t = None
-    curr_frame_gpu_t = next_frame_gpu_t = prev_frame_gpu_t = None
-    frame_uploader = None
-    if cfg.enable_preprocess:
-        try:
-            frame_uploader = _PinnedFrameUploader(frame_curr.shape[0], frame_curr.shape[1], cuda_device)
-        except Exception:
-            frame_uploader = None
-        curr_frame_gpu_t = _cuda_frame_to_chw_f32(frame_curr, cuda_device, uploader=frame_uploader)
-        curr_v_t, curr_s_t = _cuda_vs_tensors(None, cuda_device, gpu_tensor=curr_frame_gpu_t)
-        if frame_next is not None:
-            next_frame_gpu_t = _cuda_frame_to_chw_f32(frame_next, cuda_device, uploader=frame_uploader)
-            next_v_t, next_s_t = _cuda_vs_tensors(None, cuda_device, gpu_tensor=next_frame_gpu_t)
-
-    master_bg_v = master_bg_s = master_var_v = master_var_s = None
+    window = FrameWindow(cuda_device, cfg.enable_preprocess, frame_curr, frame_next)
+    background = BackgroundModel(cfg, cuda_device)
     if info_timing:
         timing["init_total"] = time.perf_counter() - init_perf_t0
     pass1_perf_t0 = time.perf_counter() if info_timing else 0.0
@@ -623,7 +610,6 @@ def run(cfg):
     side_mask_cache_key = None
     protect_mask_cuda_cache = None
     protect_mask_cuda_cache_key = None
-    prev_raw_motion_cuda = None  # CUDA boolean mask from previous frame - avoids CPU -> GPU re-upload in WTA
     pre_cuda_perf: Optional[Dict[str, float]] = {"pre_cuda_total": 0.0, "pre_cuda_raw_d2h": 0.0, "pre_cuda_cc_filter": 0.0} if info_timing else None
 
     # Skip-frame detection state
@@ -702,7 +688,8 @@ def run(cfg):
             timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
         _commit_frame(pending["record"], dets)
 
-    while frame_curr is not None:
+    while not window.exhausted:
+        frame_curr = window.curr
         # Keep previous pending handle; finish it after current preprocess/start
         # so frame N preprocess overlaps frame N-1 inference.
         prev_pending = pending_det
@@ -723,31 +710,9 @@ def run(cfg):
                 cache_pass2_frames = None
                 print("[pass 1] RAM frame cache disabled (MemoryError)")
 
-        # Update Weighted Temporal Average Backgrounds
+        # Fold this frame into the background model before measuring motion against it.
         if cfg.enable_preprocess:
-            if master_bg_v is None:
-                # Initialize CUDA background at raw S+V values.
-                master_bg_v = curr_v_t.clone()
-                master_bg_s = curr_s_t.clone()
-
-                thr = float(cfg.motion_thresh) / 255.0
-                master_var_v = torch.full_like(master_bg_v, thr**2)
-                master_var_s = torch.full_like(master_bg_s, thr**2)
-            else:
-                v_diff_sq = (curr_v_t - master_bg_v) ** 2
-                s_diff_sq = (curr_s_t - master_bg_s) ** 2
-
-                # Slow background updates where raw motion was detected last frame.
-                motion_freeze_alpha = float(cfg.motion_freeze_alpha)
-                if prev_raw_motion_cuda is not None:
-                    alpha_mask = torch.where(prev_raw_motion_cuda, motion_freeze_alpha, float(cfg.background_alpha))
-                else:
-                    alpha_mask = float(cfg.background_alpha)
-
-                master_var_v.mul_(1.0 - alpha_mask).add_(alpha_mask * v_diff_sq)
-                master_var_s.mul_(1.0 - alpha_mask).add_(alpha_mask * s_diff_sq)
-                master_bg_v.mul_(1.0 - alpha_mask).add_(curr_v_t * alpha_mask)
-                master_bg_s.mul_(1.0 - alpha_mask).add_(curr_s_t * alpha_mask)
+            background.update(window.curr_gpu.v, window.curr_gpu.s)
         # Skip-frame detection: when skip_n > 1 run the detector every Nth frame
         # and let the selector interpolate the short gaps.
         _do_detect = True
@@ -773,7 +738,7 @@ def run(cfg):
             player_pending = player_det.detect_async_start(
                 frame_curr,
                 frame_idx,
-                frame_gpu_t=curr_frame_gpu_t,
+                frame_gpu_t=window.curr_gpu.chw if window.curr_gpu is not None else None,
             )
             player_boxes = [list(pb) for pb in player_det.cached_boxes] if player_det.cached_boxes else []
             last_aux_detect_frame = frame_idx
@@ -831,27 +796,16 @@ def run(cfg):
                 detector_input_writer is not None
                 or (not use_cuda_pre_frame and not detector.uses_raw_frames)
             )
-            pre_frame, raw_motion_u8, boost_mask_u8, _, _, pre_frame_cuda = \
-                preprocess_frame_cuda(frame_curr, master_bg_v, master_bg_s,
-                                      master_var_v, master_var_s, cfg,
-                                      court_keypoints=court_kps,
-                                      protect_mask_cached=protect_mask,
-                                      rois=rois,
-                                      skip_dim=_skip_dim,
-                                      return_cuda_frame=bool(use_cuda_pre_frame and _do_detect),
-                                      need_cpu_frame=need_cpu_pre_frame,
-                                      frame_gpu_t=curr_frame_gpu_t,
-                                      curr_v_cached=curr_v_t,
-                                      curr_s_cached=curr_s_t,
-                                      prev_frame_gpu_t=prev_frame_gpu_t,
-                                      prev_frame_v_cached=prev_frame_v_t,
-                                      prev_frame_s_cached=prev_frame_s_t,
-                                      next_frame_gpu_t=next_frame_gpu_t,
-                                      next_v_cached=next_v_t,
-                                      next_s_cached=next_s_t,
-                                      protect_mask_cuda_cached=protect_mask_cuda,
-                                      need_detector_boost=not detector.uses_raw_frames,
-                                      perf=pre_cuda_perf)
+            pre = preprocess_frame_cuda(window, background, cfg,
+                                        rois=rois,
+                                        protect_mask=protect_mask_cuda,
+                                        skip_dim=_skip_dim,
+                                        return_cuda_frame=bool(use_cuda_pre_frame and _do_detect),
+                                        need_cpu_frame=need_cpu_pre_frame,
+                                        need_detector_boost=not detector.uses_raw_frames,
+                                        perf=pre_cuda_perf)
+            pre_frame, pre_frame_cuda = pre.detector_frame, pre.detector_frame_cuda
+            raw_motion_u8, boost_mask_u8 = pre.raw_motion, pre.boost_mask
             if detector.uses_raw_frames:
                 pre_frame = frame_curr
             # Start current frame inference as soon as detector input is ready.
@@ -869,12 +823,7 @@ def run(cfg):
             # detector-input dimming above.
             if info_timing:
                 postmask_t0 = time.perf_counter()
-            # Keep a CUDA copy of the current motion mask for next frame's WTA freeze.
-            # This avoids re-uploading raw_motion_u8 (CPU -> CUDA) in the next iteration.
-            if raw_motion_u8 is not None:
-                prev_raw_motion_cuda = torch.from_numpy(raw_motion_u8).to(cuda_device, non_blocking=True) > 0
-            else:
-                prev_raw_motion_cuda = None
+            background.remember_motion(raw_motion_u8)
             if info_timing:
                 timing["pass1_pre_postmask"] = timing.get("pass1_pre_postmask", 0.0) + (time.perf_counter() - postmask_t0)
 
@@ -941,19 +890,7 @@ def run(cfg):
         # Slide window
         if info_timing:
             slide_t0 = time.perf_counter()
-        frame_curr = frame_next
-        frame_next = reader.read()
-        if cfg.enable_preprocess:
-            prev_frame_gpu_t = curr_frame_gpu_t
-            prev_frame_v_t, prev_frame_s_t = curr_v_t, curr_s_t
-            curr_v_t, curr_s_t = next_v_t, next_s_t
-            curr_frame_gpu_t = next_frame_gpu_t
-            if frame_next is not None:
-                next_frame_gpu_t = _cuda_frame_to_chw_f32(frame_next, cuda_device, uploader=frame_uploader)
-                next_v_t, next_s_t = _cuda_vs_tensors(None, cuda_device, gpu_tensor=next_frame_gpu_t)
-            else:
-                next_v_t = next_s_t = None
-                next_frame_gpu_t = None
+        window.slide(reader.read())
         if info_timing:
             timing["pass1_slide"] = timing.get("pass1_slide", 0.0) + (time.perf_counter() - slide_t0)
 
