@@ -1,5 +1,4 @@
 import math
-import numpy as np
 from typing import List, Optional, Sequence, Tuple
 
 from .config import SelectorConfig
@@ -269,7 +268,7 @@ def build_tracks(
         assignments.sort(key=lambda x: x[0])
         used_tracks = set()
         used_dets = set()
-        for dist, ti, di in assignments:
+        for _score, ti, di in assignments:
             if ti in used_tracks or di in used_dets:
                 continue
             active[ti].update(frame_dets[di])

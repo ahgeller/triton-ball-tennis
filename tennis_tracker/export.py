@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from ball_in_play_selector import FrameResult, PackedMask
+from ball_in_play_selector import FrameResult, PackedMask, Track
 
 from .pass1 import Pass1Result
 from .run_context import RunContext, Selection
@@ -70,7 +70,7 @@ def frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict[
     return row
 
 
-def track_to_json(track: Any) -> Optional[Dict[str, Any]]:
+def track_to_json(track: Optional[Track]) -> Optional[Dict[str, Any]]:
     if track is None:
         return None
     observations = [{

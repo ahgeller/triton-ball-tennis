@@ -221,7 +221,7 @@ def _draw_player_dots(
     player_boxes: Optional[PlayerBoxes],
     rect: _PanelRect,
 ) -> None:
-    for index, (player_id, box) in enumerate(
+    for index, (_player_id, box) in enumerate(
         sorted((player_boxes or {}).items(), key=lambda item: str(item[0]))
     ):
         if box is None or len(box) < 4:

@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-from ball_in_play_selector import FrameResult
+from ball_in_play_selector import Detection, FrameResult, Track
 
 from .config import Config
 from .court_geometry import (
@@ -359,7 +359,8 @@ def draw_selected_result(canvas: Canvas, result: FrameResult, frame_idx: int, si
         circle(targets, (scx, scy), sr, scol, 1, cv2.LINE_AA)
 
 
-def draw_hud(canvas: Canvas, frame_idx: int, result: Optional[FrameResult], chosen_track: Any) -> None:
+def draw_hud(canvas: Canvas, frame_idx: int, result: Optional[FrameResult],
+             chosen_track: Optional[Track]) -> None:
     """Frame number on both frames; source/confidence on both when there is a result;
     the chosen track id on the debug frame."""
     frame_label = f"F{frame_idx}"
@@ -589,7 +590,7 @@ def track_color(track_id: int) -> Color:
 class CandidateTrackTrails:
     """Every selector track in the track-debug video: coloured dots, ids, scores and short trails."""
 
-    def __init__(self, tracks: Sequence[Any], chosen_track: Any) -> None:
+    def __init__(self, tracks: Sequence[Track], chosen_track: Optional[Track]) -> None:
         self.tracks = sorted(tracks, key=lambda t: float(t.score), reverse=True)
         self.chosen_id = int(chosen_track.track_id) if chosen_track is not None else None
         # track id -> {frame: (cx, cy)}
@@ -640,7 +641,7 @@ class CandidateTrackTrails:
 # The chosen track's display path
 # ---------------------------------------------------------------------------
 
-def build_display_path(track: Any, total_frames: int, max_interp_gap: int,
+def build_display_path(track: Optional[Track], total_frames: int, max_interp_gap: int,
                        frame_w: int, frame_h: int) -> Dict[int, Tuple[float, float, bool]]:
     """The chosen track's display path for the track-debug video.
 
@@ -658,7 +659,7 @@ def build_display_path(track: Any, total_frames: int, max_interp_gap: int,
     max_resid = max(_PATH_MAX_RESID_MIN_PX, _PATH_MAX_RESID_FRAC * diag)
 
     # De-duplicate by frame (keep highest-confidence observation).
-    best_by_frame: Dict[int, Any] = {}
+    best_by_frame: Dict[int, Detection] = {}
     for o in track.observations:
         if o is None:
             continue
@@ -752,7 +753,7 @@ def build_display_path(track: Any, total_frames: int, max_interp_gap: int,
 # Console summaries
 # ---------------------------------------------------------------------------
 
-def _track_time_fracs(trk: Any, total_frames: int) -> Tuple[float, float]:
+def _track_time_fracs(trk: Track, total_frames: int) -> Tuple[float, float]:
     sb = trk.score_breakdown if trk.score_breakdown else {}
     start_frac = float(sb.get("start_frac", 0.0))
     end_frac = float(sb.get("end_frac", 0.0))
@@ -764,7 +765,7 @@ def _track_time_fracs(trk: Any, total_frames: int) -> Tuple[float, float]:
     return start_frac, end_frac
 
 
-def print_selector_track_summary(all_tracks: Sequence[Any], chosen_track: Any, total_frames: int,
+def print_selector_track_summary(all_tracks: Sequence[Track], chosen_track: Optional[Track], total_frames: int,
                                  limit: int = 0) -> None:
     """Print all selector tracks and clearly indicate which one was chosen."""
     if not all_tracks:
