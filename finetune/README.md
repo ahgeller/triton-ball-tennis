@@ -156,7 +156,8 @@ separately). `ft.py check` flags files that break this rule.
    tracker instead of the raw detector).
 
 2. **Correct** — `.\finetune.ps1 label night1`. Each label frame comes up
-   zoomed on the guess with the mouse cursor already on it.
+   zoomed on the guess with the mouse cursor already on it (every key and
+   what the marks mean: `LABEL_TOOL.md`).
    - guess is right → **SPACE** (next frame)
    - guess is wrong → **click** on the ball (saves and goes to next frame)
    - ball hidden or out of frame → **v** (next frame) — do label these, the
