@@ -118,28 +118,36 @@ def test_prepare_clip_caches_the_needed_frames_and_describes_the_units(tmp_path)
     assert record["version"] == DATA_VERSION and record["clip"] == "c" and record["source"] == "custom"
     assert (record["stride"], record["size"]) == (1, list(SIZE))
     units = record["samples"]
-    assert [unit["frames"] for unit in units] == [[f"frames/c/{i:06d}.jpg" for i in range(start, start + 5)]
+    assert [unit["frames"] for unit in units] == [[f"frames/c/{i:06d}.png" for i in range(start, start + 5)]
                                                   for start in (0, 2, 4, 6)]
     assert units[0]["points"] == [[10.0, 20.0], [11.0, 20.0], [12.0, 20.0], None, [14.0, 20.0]]
-    assert units[0] == TrainingUnit(clip="c", source="custom", frames=units[0]["frames"], points=units[0]["points"], size=list(SIZE))
+    assert units[0] == TrainingUnit(clip="c", source="custom", indices=[0, 1, 2, 3, 4], frames=units[0]["frames"],
+                                    points=units[0]["points"], size=list(SIZE))
     assert record["visible"] == sum(point is not None for unit in units for point in unit["points"])
     cached = sorted(p.name for p in (data / "frames" / "c").iterdir())
-    assert cached == [f"{i:06d}.jpg" for i in range(11)]            # the last unit is 6..10; frame 11 is in none
-    image = cv2.imread(str(data / "frames" / "c" / "000007.jpg"))
-    assert image.shape == (training.HEIGHT, training.WIDTH, 3) and abs(int(image.mean()) - 7) <= 1
-    assert json.loads((data / "clips" / "c.json").read_text(encoding="utf-8"))["signature"] == record["signature"]
+    assert cached == [f"{i:06d}.png" for i in range(11)]            # the last unit is 6..10; frame 11 is in none
+    assert record["frames"] == list(range(11))
+    image = cv2.imread(str(data / "frames" / "c" / "000007.png"))
+    assert image.shape == (training.HEIGHT, training.WIDTH, 3) and int(image.mean()) == 7      # lossless
+    assert json.loads((data / "clips" / "c.json").read_text(encoding="utf-8")) == record
 
     # a second call is served from the cache: the frames are not re-extracted ...
-    stamp = (data / "frames" / "c" / "000000.jpg").stat().st_mtime_ns
+    stamp = (data / "frames" / "c" / "000000.png").stat().st_mtime_ns
     again = prepare_clip(("c", video, csv_path, "elsewhere"), data, rebuild=False)
-    assert again["samples"] == units and again["source"] == "elsewhere"     # the source follows the manifest
-    assert (data / "frames" / "c" / "000000.jpg").stat().st_mtime_ns == stamp
-    # ... until the label file changes, which changes the signature
+    assert [unit["frames"] for unit in again["samples"]] == [unit["frames"] for unit in units]
+    assert again["source"] == "elsewhere" and {unit["source"] for unit in again["samples"]} == {"elsewhere"}   # the source follows the manifest
+    assert (data / "frames" / "c" / "000000.png").stat().st_mtime_ns == stamp
+    # ... and a label edit only changes the units: the signature is the video's, the frames stay
     write_labels(csv_path, {f: (10.0 + f, 20.0) for f in range(7)}, *SIZE)
     os.utime(csv_path, ns=(stamp + 10 ** 9, stamp + 10 ** 9))
-    rebuilt = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=False)
-    assert len(rebuilt["samples"]) == 2 and rebuilt["signature"] != record["signature"]
-    assert sorted(p.name for p in (data / "frames" / "c").iterdir()) == [f"{i:06d}.jpg" for i in range(7)]
+    edited = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=False)
+    assert len(edited["samples"]) == 2 and edited["signature"] == record["signature"]
+    assert (data / "frames" / "c" / "000000.png").stat().st_mtime_ns == stamp
+    assert sorted(p.name for p in (data / "frames" / "c").iterdir()) == cached
+    # --rebuild-data extracts everything the units need afresh and drops the rest
+    rebuilt = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=True)
+    assert rebuilt["frames"] == list(range(7)) and (data / "frames" / "c" / "000000.png").stat().st_mtime_ns > stamp
+    assert sorted(p.name for p in (data / "frames" / "c").iterdir()) == [f"{i:06d}.png" for i in range(7)]
 
 
 def test_prepare_clip_refuses_a_video_that_ends_before_its_labels(tmp_path):
@@ -158,8 +166,8 @@ def unit_on_disk(data: Path) -> TrainingUnit:
     for index in range(5):
         image = np.zeros((training.HEIGHT, training.WIDTH, 3), np.uint8)
         image[:, :10] = (0, 0, 255)                               # red (BGR) stripe at the left
-        cv2.imwrite(str(data / "frames" / "u" / f"{index:06d}.jpg"), image, [cv2.IMWRITE_JPEG_QUALITY, 100])
-    return TrainingUnit(clip="u", source="custom", frames=[f"frames/u/{i:06d}.jpg" for i in range(5)],
+        cv2.imwrite(str(data / "frames" / "u" / f"{index:06d}.png"), image)
+    return TrainingUnit(clip="u", source="custom", indices=list(range(5)), frames=[f"frames/u/{i:06d}.png" for i in range(5)],
                         points=[[100.0, 200.0], None, [1919.0, 0.0], [0.0, 1079.0], [500.5, 500.5]], size=[1920, 1080])
 
 
@@ -175,7 +183,7 @@ def test_flip_mirrors_the_frames_and_the_labels_about_the_image_width(tmp_path):
     plain = UnitDataset(tmp_path, [unit], augment=False)
     images, target = plain[0]
     assert images.shape == (15, training.HEIGHT, training.WIDTH) and images.dtype == torch.float32
-    assert float(images[0, 0, 0]) > 0.9 and float(images[0, 0, -1]) < 0.1            # red channel first (RGB); JPEG-close
+    assert float(images[0, 0, 0]) == 1.0 and float(images[0, 0, -1]) == 0.0           # red channel first (RGB); lossless
     assert torch.equal(target, make_target(unit["points"], 1920, 1080))
 
     flipped = UnitDataset(tmp_path, [unit], augment=True)

@@ -61,7 +61,8 @@ def photometric_augment(images: np.ndarray, rng: Augmenter) -> np.ndarray:
     out = out.reshape(FRAMES_PER_UNIT, 3, *out.shape[1:]) * cast[None, :, None, None]
     out = out.reshape(-1, *out.shape[2:])
     if draws.random() < 0.5:
-        out = out + rng.noise.normal(0.0, draws.uniform(0.005, 0.03), size=out.shape).astype(np.float32)
+        # Drawn as float32 outright: a float64 draw over 15 x 432 x 768 values cost 141 ms per unit.
+        out = out + rng.noise.standard_normal(out.shape, dtype=np.float32) * np.float32(draws.uniform(0.005, 0.03))
     if draws.random() < 0.2:
         sigma = draws.uniform(0.4, 1.0)
         out = np.stack([cv2.GaussianBlur(plane, (0, 0), sigma) for plane in out])

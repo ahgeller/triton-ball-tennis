@@ -46,7 +46,7 @@ finetune/
   clips.csv   one row per clip: source, group, size, fps, stride, label counts (written by import_data.py)
   models/     gridtracknet_best.npz   the winner of the last training run
   runs/       <tag>/results.csv, config.json, winner.json, best.npz, last.npz
-  cache/      768x432 JPEG frames, one folder per clip; rebuilt per clip when its video/labels change (safe to delete)
+  cache/      768x432 lossless PNG frames (the tracker's own resize), one folder per clip; keyed on the video, a label edit only adds frames (safe to delete; about 12 GB for the whole workspace)
 ```
 
 Own labels (`video1`–`video12`) are tracked in git; imported public labels

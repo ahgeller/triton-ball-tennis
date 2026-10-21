@@ -1,9 +1,12 @@
-"""The trainer's per-clip frame cache: the 768x432 JPEGs of every frame a clip's training units
-need, and the record (``clips/<clip>.json``) that lists those units with their targets.
+"""The trainer's per-clip frame cache: the 768x432 frames a clip's training units need, stored
+losslessly as PNGs through the tracker's own resize (``resize_to_model``), and the record
+(``clips/<clip>.json``) that says which frames are on disk and lists the units with their targets.
 
-A clip's cache entry is rebuilt when its video or label file changes (``clip_signature``) or the
-record format does (``DATA_VERSION``); ``prepare_data`` builds every clip's entry and splits the
-units into the training and validation sets.
+A clip's cached frames are keyed on its video alone (``clip_signature``) and the record format
+(``DATA_VERSION``): the units are derived from the labels on every run, and ``prepare_clip``
+extracts only the frames the units need that are not on disk yet, so a label edit costs the
+new frames and never a second decode of the clip. ``prepare_data`` builds every clip's entry and
+splits the units into the training and validation sets.
 """
 
 from __future__ import annotations
@@ -17,15 +20,16 @@ from typing import Dict, List, Optional, Set, TypedDict
 
 import cv2
 
-from tennis_tracker.gridtracknet import FRAMES_PER_UNIT, HEIGHT, WIDTH
+from tennis_tracker.gridtracknet import FRAMES_PER_UNIT, resize_to_model
 from tennis_tracker.frame_rate import require_phase_stride
 from finetune.data.fileio import write_atomic
 from finetune.data.labels import LabelPoint, read_labels
 from finetune.data.workspace import video_meta
 from finetune.training.clips import Clip
 
-DATA_VERSION = 4
-JPEG_QUALITY = 92          # the frame cache's encoding
+DATA_VERSION = 5
+PNG_COMPRESSION = 1        # the frame cache's encoding: lossless, and the fastest zlib level to write and read
+FRAME_SUFFIX = ".png"
 
 Target = Optional[List[float]]       # a training target: [x, y] on the image, or None for no ball
 
@@ -34,7 +38,8 @@ class TrainingUnit(TypedDict):
     """One training sample: five cached frames at model cadence and their targets."""
     clip: str
     source: str
-    frames: List[str]       # cache-relative paths, frames/<clip>/<index>.jpg
+    indices: List[int]      # the five source frame indices, at model cadence
+    frames: List[str]       # cache-relative paths, frames/<clip>/<index>.png
     points: List[Target]    # one per frame, in the clip's native pixels
     size: List[int]         # [width, height] of the clip
 
@@ -42,12 +47,13 @@ class TrainingUnit(TypedDict):
 class ClipRecord(TypedDict):
     """One clip's cache entry: ``prepare_clip``'s record, also stored as ``clips/<clip>.json``."""
     version: int
-    signature: List[List[object]]
+    signature: List[object]
     clip: str
     source: str
     fps: float
     stride: int
     size: List[int]
+    frames: List[int]       # the source frame indices on disk under frames/<clip>/
     samples: List[TrainingUnit]
     visible: int
 
@@ -87,16 +93,20 @@ def build_units(labels: Dict[int, Optional[List[float]]], stride: int) -> List[L
 
 # --------------------------------------------------------------------------- the cache (per clip)
 
-def clip_signature(video: Path, csv_path: Path) -> List[List[object]]:
-    signature = []
-    for path in (csv_path, video):
-        stat = path.stat()
-        signature.append([path.name, stat.st_size, stat.st_mtime_ns])
-    return signature
+def frame_name(index: int) -> str:
+    """The file a cached source frame is stored as, under frames/<clip>/."""
+    return f"{index:06d}{FRAME_SUFFIX}"
 
 
-def cached_record(meta_path: Path, signature: List[List[object]]) -> Optional[ClipRecord]:
-    """The record at ``meta_path`` when it was built from these very files by this format version."""
+def clip_signature(video: Path) -> List[object]:
+    """What the cached frames of a clip were made from: the video file, by name, size and
+    modification time. The labels are not part of it; they only say which frames are needed."""
+    stat = video.stat()
+    return [video.name, stat.st_size, stat.st_mtime_ns]
+
+
+def cached_record(meta_path: Path, signature: List[object]) -> Optional[ClipRecord]:
+    """The record at ``meta_path`` when it was built from this very video by this format version."""
     if not meta_path.is_file():
         return None
     try:
@@ -112,12 +122,11 @@ def cached_record(meta_path: Path, signature: List[List[object]]) -> Optional[Cl
 
 
 def extract_frames(video: Path, frame_dir: Path, needed: Set[int]) -> None:
-    """Write the frames ``needed`` of ``video`` to ``frame_dir`` as 768x432 JPEGs, replacing what
-    was there; raises ValueError when the video ends before the last of them and OSError when a
-    JPEG cannot be written (so no cache record ever points at a frame that is not there)."""
-    if frame_dir.exists():
-        shutil.rmtree(frame_dir)
-    frame_dir.mkdir(parents=True)
+    """Write the frames ``needed`` of ``video`` to ``frame_dir`` as lossless 768x432 PNGs through
+    the tracker's resize, beside whatever is there; raises ValueError when the video ends before
+    the last of them and OSError when a PNG cannot be written (so no cache record ever points at
+    a frame that is not there)."""
+    frame_dir.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(video))
     remaining = set(needed)
     frame_index = 0
@@ -126,9 +135,8 @@ def extract_frames(video: Path, frame_dir: Path, needed: Set[int]) -> None:
         if not ok:
             break
         if frame_index in remaining:
-            resized = cv2.resize(frame, (WIDTH, HEIGHT), interpolation=cv2.INTER_AREA)
-            target = frame_dir / f"{frame_index:06d}.jpg"
-            if not cv2.imwrite(str(target), resized, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
+            target = frame_dir / frame_name(frame_index)
+            if not cv2.imwrite(str(target), resize_to_model(frame), [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION]):
                 capture.release()
                 raise OSError(f"could not write frame {frame_index} of {video.name} to {target}")
             remaining.remove(frame_index)
@@ -139,29 +147,34 @@ def extract_frames(video: Path, frame_dir: Path, needed: Set[int]) -> None:
 
 
 def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> ClipRecord:
-    """Extract the 768x432 frames one clip needs and describe its training units. Cached per clip."""
+    """Describe one clip's training units from its labels as they are now, and extract the
+    768x432 frames they need that the cache does not hold yet (every frame with ``rebuild``)."""
     clip, video, csv_path, source = entry
     meta_path = data_dir / "clips" / f"{clip}.json"
-    signature = clip_signature(video, csv_path)
-    if not rebuild:
-        cached = cached_record(meta_path, signature)
-        if cached is not None:
-            cached["source"] = source
-            return cached
+    frame_dir = data_dir / "frames" / clip
+    signature = clip_signature(video)
+    cached = None if rebuild else cached_record(meta_path, signature)
+    if rebuild and frame_dir.exists():
+        shutil.rmtree(frame_dir)
+    on_disk = {index for index in (cached or {"frames": []})["frames"] if (frame_dir / frame_name(index)).is_file()}
     fps, width, height, _ = video_meta(video)
     stride = require_phase_stride(fps)
     labels = training_targets(csv_path, width, height)
     samples: List[TrainingUnit] = []
-    needed = set()
+    needed: Set[int] = set()
     for window in build_units(labels, stride):
-        samples.append(TrainingUnit(clip=clip, source=source, frames=[f"frames/{clip}/{index:06d}.jpg" for index in window],
+        samples.append(TrainingUnit(clip=clip, source=source, indices=list(window),
+                                    frames=[f"frames/{clip}/{frame_name(index)}" for index in window],
                                     points=[labels[index] for index in window], size=[width, height]))
         needed.update(window)
-    extract_frames(video, data_dir / "frames" / clip, needed)
+    missing = needed - on_disk
+    if missing:
+        extract_frames(video, frame_dir, missing)
     record = ClipRecord(version=DATA_VERSION, signature=signature, clip=clip, source=source, fps=fps, stride=stride,
-                        size=[width, height], samples=samples,
+                        size=[width, height], frames=sorted(on_disk | needed), samples=samples,
                         visible=sum(point is not None for sample in samples for point in sample["points"]))
-    write_atomic(meta_path, json.dumps(record))
+    if cached != record:
+        write_atomic(meta_path, json.dumps(record))
     return record
 
 

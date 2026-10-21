@@ -3,18 +3,22 @@ import numpy as np
 import pytest
 import torch
 
+import cv2
+
 from tennis_tracker import gridtracknet
 from tennis_tracker.gridtracknet import (
     BN_EPSILON,
     GRID_COLS,
     GRID_ROWS,
     HEIGHT,
+    RESIZE_INTERPOLATION,
     WIDTH,
     GridTrackNet,
     WidthBatchNorm,
     decode_predictions,
     frame_tensor,
     load_model,
+    resize_to_model,
 )
 
 CPU = torch.device("cpu")
@@ -37,6 +41,21 @@ def test_frame_tensor_resizes_any_frame_to_model_size():
     assert tensor.shape == (3, HEIGHT, WIDTH)
     assert tensor.float().min().item() == pytest.approx(128 / 255, abs=1e-3)
     assert tensor.float().max().item() == pytest.approx(128 / 255, abs=1e-3)
+
+
+def test_frame_tensor_is_resize_to_model_in_rgb_over_255():
+    """The tracker's input is the one resize rule (``resize_to_model``, INTER_LINEAR) and nothing
+    else: the training cache stores that very picture, so what the network trains on is what it
+    is run on."""
+    assert RESIZE_INTERPOLATION == cv2.INTER_LINEAR
+    frame = np.random.default_rng(0).integers(0, 256, (1080, 1920, 3), dtype=np.uint8)
+    resized = resize_to_model(frame)
+    assert resized.shape == (HEIGHT, WIDTH, 3) and resized.dtype == np.uint8
+    np.testing.assert_array_equal(resized, cv2.resize(frame, (WIDTH, HEIGHT), interpolation=cv2.INTER_LINEAR))
+    expected = np.moveaxis(resized[..., ::-1], -1, 0).astype(np.float32) / 255.0
+    np.testing.assert_allclose(frame_tensor(frame, CPU).float().numpy(), expected, atol=1 / 2048)   # fp16 rounding
+    model_sized = np.random.default_rng(1).integers(0, 256, (HEIGHT, WIDTH, 3), dtype=np.uint8)
+    np.testing.assert_array_equal(resize_to_model(model_sized), model_sized)
 
 
 def _synthetic_npz(path):
