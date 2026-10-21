@@ -65,7 +65,12 @@ class _FrameSource:
 
 
 class _GroundModelCache:
-    """The court-plane homography for the latest valid keypoints, rebuilt only when they move."""
+    """The court-plane homography for the latest valid keypoints, rebuilt only when they move.
+
+    It starts empty: before the first court detection there is no court plane, so nothing is
+    drawn with one. Seeding it with the clip's last keypoints put the end-of-clip homography on
+    the opening frames, wrong whenever the camera moved.
+    """
 
     def __init__(self, initial_kps: Optional[List[float]]) -> None:
         self.keypoints = initial_kps
@@ -130,7 +135,7 @@ class _FrameRenderer:
         cfg, video = ctx.cfg, ctx.video
         self.cfg, self.video, self.timing = cfg, video, ctx.timing
         self.pass1, self.selection, self.events, self.writers = pass1, selection, events, writers
-        self.ground_model = _GroundModelCache(selection.last_court_keypoints)
+        self.ground_model = _GroundModelCache(None)
         self.protect_masks = _ProtectMaskCache(video.height, video.width)
         self.sizer = MarkerSizer(cfg)
         self.search_smoother = SearchCentreSmoother()
@@ -156,7 +161,9 @@ class _FrameRenderer:
             self.candidate_trails.advance_and_draw(canvas.debug, fi)
         if result is not None:
             draw_selected_result(canvas, result, fi, self.sizer, self.search_smoother, cfg.draw_search_regions)
-        self.ball_trail.advance(result, self.ground_model.keypoints)
+        # The trail's break limits follow the court's extent on screen; until the first detection
+        # they use the clip's last keypoints, which is the one place the static court still serves.
+        self.ball_trail.advance(result, self.ground_model.keypoints or selection.last_court_keypoints)
         self.ball_trail.draw(canvas, cfg.draw_ball_trail)
         if cfg.draw_court_minimap:
             draw_court_minimap(canvas.main, model, pass1.player_boxes[fi], self.events.rally_legs, fi, self.video.fps,

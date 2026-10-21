@@ -227,7 +227,10 @@ class FakeGridTrackNet:
 
 
 class FakeCourtDetector(CourtDetector):
-    """A court detector that always sees the same 14 keypoints.  ``draw`` is the real one."""
+    """A court detector that sees the same 14 keypoints on every frame from ``first_detection``
+    on (a test sets it to start blind, as a real clip does).  ``draw`` is the real one."""
+
+    first_detection = 0
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -238,7 +241,8 @@ class FakeCourtDetector(CourtDetector):
 
     def detect(self, frame: np.ndarray, frame_index: int) -> Optional[List[float]]:
         self.detect_calls.append(int(frame_index))
-        self.keypoints = list(COURT_KEYPOINTS)
+        if frame_index >= self.first_detection:
+            self.keypoints = list(COURT_KEYPOINTS)
         return self.keypoints
 
 
