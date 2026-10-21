@@ -23,7 +23,7 @@ def main() -> None:
     # Run as a script from audit/, so the project packages are not importable until ROOT is on the path.
     sys.path.insert(0, str(ROOT))
     import torch
-    from finetune.training.train_gridtracknet import find_clips, resolve_val_clips
+    from finetune.training.data import find_clips, resolve_val_clips
     from tennis_tracker.gridtracknet import GridTrackNet
     from tennis_tracker.paths import COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE
 

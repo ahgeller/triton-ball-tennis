@@ -1,6 +1,6 @@
-"""finetune/training/train_gridtracknet.py: the script's own self-test, and the data path - which clips
-train, the per-clip frame cache, and the flip augmentation's label transform - on synthetic clips
-under tmp_path. No GPU, no real label or video."""
+"""finetune/training/train_gridtracknet.py and its data module: the script's own self-test, and the data
+path - which clips train, the per-clip frame cache, and the flip augmentation's label transform - on
+synthetic clips under tmp_path. No GPU, no real label or video."""
 import json
 import os
 import random
@@ -13,8 +13,9 @@ import torch
 
 from finetune.training import train_gridtracknet as training
 from finetune.data.labels import write_labels
-from finetune.training.train_gridtracknet import (DATA_VERSION, Augmenter, TrainingUnit, UnitDataset, better, find_clips,
-                                                  make_target, prepare_clip, training_targets)
+from finetune.training.data import (DATA_VERSION, Augmenter, ClipSelection, TrainingUnit, UnitDataset, find_clips,
+                                    make_target, prepare_clip, training_targets)
+from finetune.training.train_gridtracknet import better
 from tests._helpers import metric_probe, write_clip
 
 SIZE = (64, 36)
@@ -57,14 +58,14 @@ def test_find_clips_applies_exclusions_review_policy_sources_and_cameras(tmp_pat
     assert names(find_clips(videos, labels)) == ["video13"]        # video1 unverified, video14 untrusted, grid excluded, tnv2 unknown
     assert "skipping 1 clip(s) listed in exclude.txt" in capsys.readouterr().out
     everything = ["grid_match4", "tnv2_a", "video1", "video13", "video14"]      # natural clip order
-    assert names(find_clips(videos, labels, include_excluded=True)) == everything
-    assert names(find_clips(videos, labels, include_excluded=True, sources=["custom", "grid"])) == ["grid_match4", "video1"]
-    assert names(find_clips(videos, labels, include_excluded=True, cameras=["fixed"])) == ["grid_match4", "video1"]
-    assert names(find_clips(videos, labels, include_excluded=True, cameras=["untagged"])) == ["tnv2_a", "video14"]
-    assert names(find_clips(videos, labels, include_excluded=True, exclude_clips=["video1*", "tnv2_a"])) == ["grid_match4"]
-    for clip, video, csv_path, source in find_clips(videos, labels, include_excluded=True):
+    assert names(find_clips(videos, labels, ClipSelection(include_excluded=True))) == everything
+    assert names(find_clips(videos, labels, ClipSelection(include_excluded=True, sources=["custom", "grid"]))) == ["grid_match4", "video1"]
+    assert names(find_clips(videos, labels, ClipSelection(include_excluded=True, cameras=["fixed"]))) == ["grid_match4", "video1"]
+    assert names(find_clips(videos, labels, ClipSelection(include_excluded=True, cameras=["untagged"]))) == ["tnv2_a", "video14"]
+    assert names(find_clips(videos, labels, ClipSelection(include_excluded=True, exclude_clips=["video1*", "tnv2_a"]))) == ["grid_match4"]
+    for clip, video, csv_path, source in find_clips(videos, labels, ClipSelection(include_excluded=True)):
         assert video == videos / f"{clip}.mp4" and csv_path == labels / f"{clip}_ball.csv"
-    assert [s for _, _, _, s in find_clips(videos, labels, include_excluded=True)] == [
+    assert [s for _, _, _, s in find_clips(videos, labels, ClipSelection(include_excluded=True))] == [
         "grid", "unknown", "custom", "prof", "custom-uncorrected"]
 
 
@@ -72,7 +73,7 @@ def test_find_clips_without_records_trusts_every_clip_as_custom(tmp_path):
     videos, labels = workspace(tmp_path, ["a", "b"])
     assert [(clip, source) for clip, _, _, source in find_clips(videos, labels)] == [("a", "custom"), ("b", "custom")]
     with pytest.raises(ValueError, match="--cameras needs camera tags"):
-        find_clips(videos, labels, cameras=["fixed"])
+        find_clips(videos, labels, ClipSelection(cameras=["fixed"]))
     (videos / "b.mp4").unlink()
     with pytest.raises(FileNotFoundError, match="No video for b_ball.csv"):
         find_clips(videos, labels)
