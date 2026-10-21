@@ -121,7 +121,14 @@ class Track:
             self.kf = BallKalmanFilter(det.cx, det.cy, self.cfg)
             self.last_vel = (0.0, 0.0)
         else:
-            assert self.kf is not None  # created with the first observation
+            if self.kf is None:
+                # update() creates the filter with the first observation; a track whose
+                # observations were assigned directly (a stitched timeline chain, a test
+                # fixture) has none to step, and is not meant to grow.
+                raise ValueError(
+                    f"track {self.track_id} has {len(self.observations)} observations but no Kalman "
+                    "filter: only a track built through update() can be updated"
+                )
             dt = det.frame - self.last_obs_frame
             if dt > 0:
                 # Bootstrap velocity from the first two observations so the filter
