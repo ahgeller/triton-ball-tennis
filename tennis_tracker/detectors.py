@@ -1,121 +1,159 @@
+"""Ball, player and court detector backends.
+
+Ball detection has two backends behind ``BallDetectorBackend``: GridTrackNet
+(the default, a five-frame temporal model run as a whole-clip prepass) and the
+single-frame Ultralytics TensorRT engine (``Config.model_path`` ending in
+``.engine``).  Player and court detection are TensorRT engines driven through
+``_TensorRTRuntimeSession``, which the ball engine backend shares.
+
+Engine policy (player and court): an unset model path skips that detector
+with one message; a configured path whose file is missing or whose runtime
+fails to initialise raises, so a broken install does not silently produce a
+run without players or court.
+
+The runtime requires CUDA torch, so ``torch`` is imported unconditionally and a
+broken install fails here, at import.
+"""
 from __future__ import annotations
 
 import contextlib
 import json
 import threading
 import time
-from collections import OrderedDict, deque, namedtuple
+from collections import OrderedDict, deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+
 import cv2
 import numpy as np
-try:
-    import torch
-    import torch.nn.functional as F
-    HAS_TORCH = True
-except Exception:
-    torch = None
-    F = None
-    HAS_TORCH = False
-
-try:
-    from boxmot import ByteTrack
-except ImportError:
-    try:
-        from boxmot.trackers.bbox.bytetrack import ByteTrack
-    except ImportError:
-        print("[warning] boxmot not found. Player tracking will be disabled. Run 'pip install boxmot'")
-        ByteTrack = None
+import torch
+import torch.nn.functional as F
 
 from .config import Config
 from .frame_rate import require_phase_stride
-from .utils import _resolve_engine_path
-from .motion import _xywh_to_xyxy_np, _nms_xyxy_np
+from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
+from .motion import _nms_xyxy_np, _xywh_to_xyxy_np
+from .utils import _resolve_engine_path, engine_is_trt10, iter_engine_io, read_engine_header
+
+# One ball detection: an xyxy box in source pixels and its confidence.
+Detection = Tuple[List[float], float]
+# A BGR HWC uint8 frame, either a host array or a CUDA tensor of the same layout.
+FrameInput = Union[np.ndarray, torch.Tensor]
+
+_BALL_NMS_IOU = 0.45
+_POSTPROCESSED_COLUMNS = 6  # x1, y1, x2, y2, conf, cls rows from an NMS-exporting engine
+_OUTPUT_MODE_POSTPROCESSED = "postprocessed"
+_OUTPUT_MODE_RAW = "raw_nms"
+# GridTrackNet gives a point; the box handed to the selector is this fraction
+# of the frame diagonal around it, and its vertical offset is set at 1080p.
+_BOX_RADIUS_FRAC = 0.003
+_MIN_BOX_RADIUS_PX = 2.0
+_REFERENCE_HEIGHT_PX = 1080.0
+_UNITS_PER_INFERENCE = 4
+_NEVER = -10**9
+_DEFAULT_NAMES: Dict[int, str] = {0: "ball"}
+
+
+def _load_bytetrack() -> Tuple[Optional[type], Optional[str]]:
+    """boxmot is optional; player tracking is disabled without it.  Returns
+    ``(ByteTrack, None)`` or ``(None, reason)``."""
+    try:
+        from boxmot import ByteTrack
+    except ImportError:
+        try:
+            from boxmot.trackers.bbox.bytetrack import ByteTrack
+        except ImportError as error:
+            return None, str(error)
+    return ByteTrack, None
+
+
+def _import_tensorrt() -> Any:
+    """tensorrt is only needed by the engine backends, so it is imported here."""
+    try:
+        import tensorrt as trt  # type: ignore
+    except ImportError as error:
+        raise RuntimeError(f"TensorRT package not available: {error}") from error
+    return trt
+
+
+def _torch_dtype(np_dtype: Any) -> torch.dtype:
+    return torch.from_numpy(np.empty((0,), dtype=np_dtype)).dtype
+
+
+def _deserialize_engine(trt: Any, engine_path: str) -> Tuple[Any, Any]:
+    """Load ``engine_path`` (with or without the Ultralytics metadata header)
+    and create its execution context."""
+    _, raw = read_engine_header(Path(engine_path))
+    logger = trt.Logger(trt.Logger.INFO)
+    with trt.Runtime(logger) as runtime:
+        engine = runtime.deserialize_cuda_engine(raw)
+    if engine is None:
+        raise RuntimeError(f"Failed to load TensorRT engine: {engine_path}")
+    context = engine.create_execution_context()
+    if context is None:
+        raise RuntimeError(f"Failed to create a TensorRT execution context for {engine_path}")
+    return engine, context
+
+
+class _Binding(NamedTuple):
+    name: str
+    index: int
+    dtype: Any  # numpy dtype
+    shape: Tuple[int, ...]
+    data: torch.Tensor
+    ptr: int
 
 
 class _TensorRTRuntimeSession:
-    """Minimal TensorRT runtime session with GPU resize/normalize preprocessing."""
+    """A deserialized TensorRT engine with device buffers and GPU preprocessing.
+
+    Works with the TensorRT 10 tensor API and the TensorRT 8 binding API.
+    Inference runs on its own CUDA stream when ``async_execute`` is set and the
+    context supports it; ``output_slots`` > 1 keeps that many output buffer
+    sets so a caller can launch frame N+1 before reading frame N.
+    """
 
     def __init__(
         self,
         engine_path: str,
         device: Optional[torch.device] = None,
         async_execute: bool = True,
+        output_slots: int = 1,
     ):
-        if not HAS_TORCH or not torch.cuda.is_available():
+        if not torch.cuda.is_available():
             raise RuntimeError("TensorRT session requires CUDA-enabled torch.")
-        try:
-            import tensorrt as trt  # type: ignore
-        except Exception as e:
-            raise RuntimeError(f"TensorRT package not available: {e}")
-
+        trt = _import_tensorrt()
         self.device = device if device is not None else torch.device("cuda:0")
-        Binding = namedtuple("Binding", ("name", "dtype", "shape", "data", "ptr"))
+        self.engine, self.context = _deserialize_engine(trt, engine_path)
+        self.is_trt10 = engine_is_trt10(self.engine)
 
-        raw = Path(engine_path).read_bytes()
-        try:
-            meta_len = int.from_bytes(raw[:4], byteorder="little")
-            json.loads(raw[4 : 4 + meta_len].decode("utf-8"))
-            raw = raw[4 + meta_len :]
-        except Exception:
-            pass
+        self._has_async_v3 = hasattr(self.context, "execute_async_v3")
+        self._has_async_v2 = hasattr(self.context, "execute_async_v2")
+        self.use_async = bool(async_execute) and (self._has_async_v3 or self._has_async_v2)
+        self.stream = torch.cuda.Stream(device=self.device) if self.use_async else None
 
-        logger = trt.Logger(trt.Logger.INFO)
-        with trt.Runtime(logger) as runtime:
-            self.engine = runtime.deserialize_cuda_engine(raw)
-        if self.engine is None:
-            raise RuntimeError(f"Failed to load TensorRT engine: {engine_path}")
-        self.context = self.engine.create_execution_context()
-        if self.context is None:
-            raise RuntimeError("Failed to create TensorRT execution context.")
-
-        self.is_trt10 = not hasattr(self.engine, "num_bindings")
-        self.bindings: OrderedDict[str, Any] = OrderedDict()
-        self.binding_addrs: OrderedDict[str, int] = OrderedDict()
+        self.bindings: "OrderedDict[str, _Binding]" = OrderedDict()
+        self.binding_order: List[str] = []
         self.output_names: List[str] = []
         self.input_name: Optional[str] = None
         self.dynamic = False
         self.fp16 = False
-        self.use_async = bool(async_execute)
-        self.stream = torch.cuda.Stream(device=self.device) if self.use_async else None
-        self._has_async_v3 = hasattr(self.context, "execute_async_v3")
-        self._has_async_v2 = hasattr(self.context, "execute_async_v2")
-        if self.use_async and not (self._has_async_v3 or self._has_async_v2):
-            self.use_async = False
-            self.stream = None
-
-        num = range(self.engine.num_io_tensors) if self.is_trt10 else range(self.engine.num_bindings)
-        for i in num:
-            if self.is_trt10:
-                name = self.engine.get_tensor_name(i)
-                dtype = trt.nptype(self.engine.get_tensor_dtype(name))
-                is_input = self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
-                shape = tuple(self.engine.get_tensor_shape(name))
-                profile_shape = tuple(self.engine.get_tensor_profile_shape(name, 0)[2]) if is_input else None
-            else:
-                name = self.engine.get_binding_name(i)
-                dtype = trt.nptype(self.engine.get_binding_dtype(i))
-                is_input = self.engine.binding_is_input(i)
-                shape = tuple(self.engine.get_binding_shape(i))
-                profile_shape = tuple(self.engine.get_profile_shape(0, i)[1]) if is_input else None
-
-            if is_input:
-                self.input_name = name
-                if -1 in shape:
+        for io in iter_engine_io(self.engine, trt):
+            np_dtype = trt.nptype(io.dtype)
+            self.binding_order.append(io.name)
+            if io.is_input:
+                self.input_name = io.name
+                if io.dynamic:
                     self.dynamic = True
-                    if self.is_trt10:
-                        self.context.set_input_shape(name, profile_shape)
-                    else:
-                        self.context.set_binding_shape(i, profile_shape)
-                if dtype == np.float16:
+                    self._set_input_shape(io.name, io.index, io.profile_shape)
+                if np_dtype == np.float16:
                     self.fp16 = True
             else:
-                self.output_names.append(name)
-
-            shape_now = tuple(self.context.get_tensor_shape(name)) if self.is_trt10 else tuple(self.context.get_binding_shape(i))
-            tensor = torch.from_numpy(np.empty(shape_now, dtype=dtype)).to(self.device)
-            self.bindings[name] = Binding(name, dtype, shape_now, tensor, int(tensor.data_ptr()))
-            self.binding_addrs[name] = int(tensor.data_ptr())
+                self.output_names.append(io.name)
+            shape_now = self._current_shape(io.name, io.index)
+            tensor = torch.empty(shape_now, dtype=_torch_dtype(np_dtype), device=self.device)
+            self.bindings[io.name] = _Binding(io.name, io.index, np_dtype, shape_now, tensor, int(tensor.data_ptr()))
 
         if self.input_name is None:
             raise RuntimeError("TensorRT engine has no input tensor.")
@@ -127,11 +165,57 @@ class _TensorRTRuntimeSession:
         self.input_h = int(inp_shape[2])
         self.input_w = int(inp_shape[3])
 
-    def preprocess_frame(self, frame_bgr: np.ndarray):
-        h0, w0 = frame_bgr.shape[:2]
-        t = torch.from_numpy(frame_bgr).to(device=self.device, dtype=torch.float32)
-        t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
-        t = t[:, [2, 1, 0], :, :] / 255.0
+        # Slot 0 is the binding buffers themselves; extra slots are private copies.
+        slots = max(1, int(output_slots)) if self.use_async else 1
+        self.output_slots: List[Dict[str, torch.Tensor]] = [
+            {name: self.bindings[name].data for name in self.output_names}
+        ]
+        for _ in range(1, slots):
+            self.output_slots.append({name: torch.empty_like(self.bindings[name].data) for name in self.output_names})
+        self._slot_cursor = 0
+
+    @property
+    def output_slot_count(self) -> int:
+        return len(self.output_slots)
+
+    def next_output_slot(self) -> int:
+        """Round-robin over the output buffer sets."""
+        slot = self._slot_cursor
+        self._slot_cursor = (slot + 1) % len(self.output_slots)
+        return slot
+
+    # --- shapes -----------------------------------------------------------
+
+    def _current_shape(self, name: str, index: int) -> Tuple[int, ...]:
+        if self.is_trt10:
+            return tuple(self.context.get_tensor_shape(name))
+        return tuple(self.context.get_binding_shape(index))
+
+    def _set_input_shape(self, name: str, index: int, shape: Tuple[int, ...]) -> None:
+        if self.is_trt10:
+            self.context.set_input_shape(name, shape)
+        else:
+            self.context.set_binding_shape(index, shape)
+
+    def _reshape_for(self, t: torch.Tensor) -> None:
+        """Dynamic engines: adopt ``t``'s shape and reallocate outputs that grew."""
+        if not self.dynamic or tuple(t.shape) == tuple(self.bindings[self.input_name].shape):
+            return
+        inp = self.bindings[self.input_name]
+        self._set_input_shape(inp.name, inp.index, tuple(t.shape))
+        self.bindings[self.input_name] = inp._replace(shape=tuple(t.shape))
+        for name in self.output_names:
+            binding = self.bindings[name]
+            shape_new = self._current_shape(name, binding.index)
+            for slot in self.output_slots:
+                if tuple(slot[name].shape) != shape_new:
+                    slot[name] = torch.empty(shape_new, dtype=slot[name].dtype, device=self.device)
+            data = self.output_slots[0][name]
+            self.bindings[name] = binding._replace(shape=shape_new, data=data, ptr=int(data.data_ptr()))
+
+    # --- preprocessing ----------------------------------------------------
+
+    def _finish_preprocess(self, t: torch.Tensor, h0: int, w0: int) -> Tuple[torch.Tensor, Tuple[float, float]]:
         if h0 != self.input_h or w0 != self.input_w:
             t = F.interpolate(t, size=(self.input_h, self.input_w), mode="bilinear", align_corners=False)
         if self.fp16:
@@ -139,7 +223,15 @@ class _TensorRTRuntimeSession:
         scale = (w0 / float(self.input_w), h0 / float(self.input_h))
         return t, scale
 
-    def preprocess_cuda_chw_frame(self, frame_bgr_chw):
+    def preprocess_frame(self, frame_bgr: np.ndarray) -> Tuple[torch.Tensor, Tuple[float, float]]:
+        """Host HWC BGR uint8 frame -> NCHW RGB [0, 1] engine input plus (sx, sy) back to source pixels."""
+        h0, w0 = frame_bgr.shape[:2]
+        t = torch.from_numpy(frame_bgr).to(device=self.device, dtype=torch.float32)
+        t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
+        t = t[:, [2, 1, 0], :, :] / 255.0
+        return self._finish_preprocess(t, h0, w0)
+
+    def preprocess_cuda_chw_frame(self, frame_bgr_chw: Optional[torch.Tensor]):
         """Preprocess an already-uploaded CHW BGR float tensor in [0, 1]."""
         if frame_bgr_chw is None:
             return None, None
@@ -151,109 +243,176 @@ class _TensorRTRuntimeSession:
             return None, None
         h0, w0 = int(t.shape[-2]), int(t.shape[-1])
         t = t[:, [2, 1, 0], :, :].contiguous()
-        if h0 != self.input_h or w0 != self.input_w:
-            t = F.interpolate(t, size=(self.input_h, self.input_w), mode="bilinear", align_corners=False)
-        if self.fp16:
-            t = t.half()
-        scale = (w0 / float(self.input_w), h0 / float(self.input_h))
-        return t, scale
+        return self._finish_preprocess(t, h0, w0)
 
-    def forward_tensor(self, t):
-        if self.dynamic and tuple(t.shape) != tuple(self.bindings[self.input_name].shape):
-            if self.is_trt10:
-                self.context.set_input_shape(self.input_name, tuple(t.shape))
-                self.bindings[self.input_name] = self.bindings[self.input_name]._replace(shape=tuple(t.shape))
-                for name in self.output_names:
-                    shape_new = tuple(self.context.get_tensor_shape(name))
-                    self.bindings[name].data.resize_(shape_new)
-                    self.bindings[name] = self.bindings[name]._replace(
-                        shape=shape_new,
-                        ptr=int(self.bindings[name].data.data_ptr()),
-                    )
-                    self.binding_addrs[name] = int(self.bindings[name].data.data_ptr())
-            else:
-                i = self.engine.get_binding_index(self.input_name)
-                self.context.set_binding_shape(i, tuple(t.shape))
-                self.bindings[self.input_name] = self.bindings[self.input_name]._replace(shape=tuple(t.shape))
-                for name in self.output_names:
-                    j = self.engine.get_binding_index(name)
-                    shape_new = tuple(self.context.get_binding_shape(j))
-                    self.bindings[name].data.resize_(shape_new)
-                    self.bindings[name] = self.bindings[name]._replace(
-                        shape=shape_new,
-                        ptr=int(self.bindings[name].data.data_ptr()),
-                    )
-                    self.binding_addrs[name] = int(self.bindings[name].data.data_ptr())
-        self.binding_addrs[self.input_name] = int(t.data_ptr())
-        if self.use_async and self.stream is not None:
+    def preprocess_cuda_hwc_frame(self, frame_bgr: torch.Tensor):
+        """Preprocess a CUDA HWC BGR frame (uint8 or float); ``(None, None)`` when
+        it is not on this session's device or not HWC with three channels."""
+        if frame_bgr.device != self.device or frame_bgr.dim() != 3 or frame_bgr.shape[-1] != 3:
+            return None, None
+        h0, w0 = int(frame_bgr.shape[0]), int(frame_bgr.shape[1])
+        if h0 <= 0 or w0 <= 0:
+            return None, None
+        t = frame_bgr
+        if t.dtype == torch.uint8:
+            t = t.to(dtype=torch.float32).mul_(1.0 / 255.0)
+        else:
+            if t.dtype != torch.float32:
+                t = t.float()
+            if t.max() > 1.5:
+                t = t / 255.0
+        t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
+        t = t[:, [2, 1, 0], :, :]
+        return self._finish_preprocess(t, h0, w0)
+
+    # --- execution --------------------------------------------------------
+
+    def forward_tensor(self, t: torch.Tensor, out_slot: int = 0) -> List[torch.Tensor]:
+        """Run the engine on ``t``; returns the output tensors (sorted by name) of
+        ``out_slot``.  Asynchronous sessions return before the GPU is done: call
+        ``wait`` (or ``wait(completion_event())``) before reading them."""
+        self._reshape_for(t)
+        expected = tuple(self.bindings[self.input_name].shape)
+        if tuple(t.shape) != expected:
+            raise RuntimeError(f"TensorRT input shape mismatch: got {tuple(t.shape)}, expected {expected}")
+
+        slot = self.output_slots[int(out_slot) % len(self.output_slots)]
+        addrs = {name: binding.ptr for name, binding in self.bindings.items()}
+        addrs[self.input_name] = int(t.data_ptr())
+        for name in self.output_names:
+            addrs[name] = int(slot[name].data_ptr())
+        ptrs = [addrs[name] for name in self.binding_order]
+
+        if self.is_trt10 and hasattr(self.context, "set_tensor_address"):
+            for name in [self.input_name, *self.output_names]:
+                self.context.set_tensor_address(name, addrs[name])
+        if self.use_async:
             self.stream.wait_stream(torch.cuda.current_stream(device=self.device))
-            ok = True
             if self.is_trt10 and self._has_async_v3:
-                self.context.set_tensor_address(self.input_name, self.binding_addrs[self.input_name])
-                for name in self.output_names:
-                    self.context.set_tensor_address(name, self.binding_addrs[name])
                 ok = self.context.execute_async_v3(stream_handle=int(self.stream.cuda_stream))
-            elif self._has_async_v2:
-                ok = self.context.execute_async_v2(
-                    list(self.binding_addrs.values()),
-                    int(self.stream.cuda_stream),
-                )
             else:
-                ok = self.context.execute_v2(list(self.binding_addrs.values()))
+                ok = self.context.execute_async_v2(ptrs, int(self.stream.cuda_stream))
             if ok is False:
                 raise RuntimeError("TensorRT async execution failed.")
         else:
-            ok = self.context.execute_v2(list(self.binding_addrs.values()))
+            ok = self.context.execute_v2(ptrs)
             if ok is False:
                 raise RuntimeError("TensorRT execution failed.")
-        return [self.bindings[x].data for x in sorted(self.output_names)]
+        return [slot[name] for name in sorted(self.output_names)]
 
-    def wait(self):
-        if self.use_async and self.stream is not None:
+    def completion_event(self) -> Optional[torch.cuda.Event]:
+        """An event marking the end of the work launched so far on the inference
+        stream, or None for synchronous sessions."""
+        if not self.use_async:
+            return None
+        event = torch.cuda.Event(blocking=False)
+        event.record(self.stream)
+        return event
+
+    def wait(self, event: Optional[torch.cuda.Event] = None) -> None:
+        """Make the current stream wait for ``event`` or, without one, for every
+        inference launched so far."""
+        if event is not None:
+            torch.cuda.current_stream(device=self.device).wait_event(event)
+        elif self.use_async:
             torch.cuda.current_stream(device=self.device).wait_stream(self.stream)
 
 
-def _null_context():
-    return contextlib.nullcontext()
+def _open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> Optional[_TensorRTRuntimeSession]:
+    """Apply the engine policy for the player and court detectors.
+
+    No configured path: print one message and return None.  A configured
+    path whose ``.engine`` file is missing raises ``FileNotFoundError``; a
+    runtime failure raises ``RuntimeError`` from the session.
+    """
+    if not model_path:
+        print(f"[{label}] No engine configured, {label} detection disabled")
+        return None
+    engine_path = _resolve_engine_path(model_path)
+    if engine_path is None:
+        raise FileNotFoundError(f"[{label}] TensorRT engine not found for '{model_path}'")
+    session = _TensorRTRuntimeSession(
+        str(engine_path),
+        device=torch.device(f"cuda:{int(cfg.device)}"),
+        async_execute=bool(cfg.trt_async_execute),
+    )
+    print(f"[{label}] TensorRT runtime initialized: {engine_path}")
+    return session
 
 
 class BallDetectorBackend:
-    """Swappable detector interface for ball detection backends."""
+    """Swappable ball detector interface.
+
+    ``detect`` returns the frame's detections as ``(xyxy_box, confidence)``
+    pairs in source pixels.  ``detect_async_start`` / ``detect_async_finish``
+    split that into launch and collect so the pipeline can overlap the next
+    frame's preprocessing with this frame's inference; the pending token is a
+    backend-specific dataclass (``CachedDetections`` or ``TensorRTBallPending``)
+    that only the same backend's ``detect_async_finish`` understands.
+    ``frame_index`` is the zero-based source frame; backends that cache a
+    whole clip use it to look the frame up.
+    """
 
     uses_raw_frames = False
+    use_async = False
+    async_slots = 1
 
-    def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
+    def detect(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> List[Detection]:
         raise NotImplementedError
 
-    def detect_async_start(self, frame_bgr: np.ndarray):
-        return frame_bgr
+    def detect_async_start(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> Any:
+        raise NotImplementedError
 
-    def detect_async_finish(self, pending) -> List[Tuple[list, float]]:
-        return self.detect(pending)
+    def detect_async_finish(self, pending: Any) -> List[Detection]:
+        raise NotImplementedError
 
     def supports_cuda_frame(self) -> bool:
         return False
 
 
+@dataclass
+class CachedDetections:
+    """GridTrackNet's pending token: the detections are final when it is issued."""
+
+    frame_index: int
+    detections: List[Detection]
+
+
 class GridTrackNetBallDetector(BallDetectorBackend):
-    """Run the pretrained model at its native five-frame, 30-FPS cadence."""
+    """Run the pretrained model at its native five-frame, 30-FPS cadence.
+
+    ``prepare_video`` decodes the whole clip once (by default on a worker
+    thread) and caches one detection per source frame; ``detections_at(i)``
+    returns frame ``i``'s result, waiting for the prepass if it is behind.
+
+    ``detect`` / ``detect_async_start`` without ``frame_index`` hand out the
+    cached results in call order, one call per source frame: they never read
+    the frame they are given.  That contract breaks as soon as a caller skips
+    a frame, which is why the constructor refuses ``cfg.skip_frame_yolo > 1``
+    (every later frame would receive an earlier frame's detections with no
+    error).  Pass ``frame_index`` to be independent of call order.
+    """
 
     uses_raw_frames = True
     use_async = False
     async_slots = 1
 
     def __init__(self, weights_path: str, cfg: Config):
-        if not HAS_TORCH or not torch.cuda.is_available():
+        if not torch.cuda.is_available():
             raise RuntimeError("GridTrackNet requires CUDA-enabled torch.")
-        from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
-
+        if int(cfg.skip_frame_yolo) > 1:
+            raise ValueError(
+                "GridTrackNet returns one cached result per source frame in call order; "
+                f"skip_frame_yolo={cfg.skip_frame_yolo} would skip calls and shift every later "
+                "frame's detections. Use skip_frame_yolo=1 with this backend."
+            )
         self.cfg = cfg
         self.device = torch.device(f"cuda:{int(cfg.device)}")
         self._decode = decode_predictions
         self._frame_tensor = frame_tensor
         torch.backends.cudnn.benchmark = True
         self.model = load_model(Path(weights_path), self.device)
-        self.precomputed: Optional[List[List[Tuple[list, float]]]] = None
+        self.precomputed: Optional[List[List[Detection]]] = None
         self.precomputed_index = 0
         # Progressive prepass state: frames < ready_upto are final.
         self._ready_upto = 0
@@ -291,7 +450,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self._ready_upto = 0
         self._worker_error = None
         if background is None:
-            background = bool(getattr(self.cfg, "gridtracknet_prepass_background", True))
+            background = bool(self.cfg.gridtracknet_prepass_background)
         if background:
             self._worker = threading.Thread(
                 target=self._prepass, args=(capture, source_stride, width, height), daemon=True, name="gridtracknet-prepass"
@@ -306,7 +465,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             self._ready_upto = max(self._ready_upto, upto)
             self._ready.notify_all()
 
-    def _prepass(self, capture, source_stride: int, width: int, height: int) -> None:
+    def _prepass(self, capture: cv2.VideoCapture, source_stride: int, width: int, height: int) -> None:
         cached = self.precomputed
         finalized = set()
         # One independent five-frame unit per phase. The model wants 30 FPS
@@ -317,8 +476,8 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         batches = []
         frame_index = inference_calls = detected = 0
         started = time.perf_counter()
-        y_offset = float(self.cfg.gridtracknet_y_offset_px) * height / 1080.0
-        radius = max(2.0, 0.003 * np.hypot(width, height))
+        y_offset = float(self.cfg.gridtracknet_y_offset_px) * height / _REFERENCE_HEIGHT_PX
+        radius = max(_MIN_BOX_RADIUS_PX, _BOX_RADIUS_FRAC * np.hypot(width, height))
         stream = torch.cuda.Stream(device=self.device) if self._worker is not None else None
 
         def flush() -> None:
@@ -347,7 +506,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
 
         # All of the worker's CUDA work lives on its own stream so it overlaps
         # pass 1 on the default stream instead of serialising behind it.
-        stream_scope = torch.cuda.stream(stream) if stream is not None else _null_context()
+        stream_scope = torch.cuda.stream(stream) if stream is not None else contextlib.nullcontext()
         try:
             with stream_scope:
                 while True:
@@ -363,7 +522,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
                         if len(unit) == 5:
                             batches.append((torch.cat([value for value, _ in unit]), [index for _, index in unit]))
                             unit.clear()
-                            if len(batches) == 4:
+                            if len(batches) == _UNITS_PER_INFERENCE:
                                 flush()
                     frame_index += 1
                 # Cover each phase's trailing frames with one overlapping window.
@@ -402,7 +561,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             raise RuntimeError("GridTrackNet prepass failed") from self._worker_error
 
     def detect_clip(self, video_path: Path, fps: float, width: int, height: int,
-                    total: int) -> List[List[Tuple[list, float]]]:
+                    total: int) -> List[List[Detection]]:
         """Run the prepass in the foreground and return each source frame's detections.
 
         Index ``i`` of the result holds frame ``i``'s detections: an empty list
@@ -411,7 +570,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self.prepare_video(video_path, fps, width, height, total, background=False)
         return list(self.precomputed)
 
-    def detections_at(self, index: int) -> List[Tuple[list, float]]:
+    def detections_at(self, index: int) -> List[Detection]:
         """Detections for source frame ``index``, waiting for the prepass if it is behind."""
         if self.precomputed is None:
             raise RuntimeError("GridTrackNet.prepare_video() must run before detection.")
@@ -420,25 +579,124 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self.wait_until_ready(index)
         return self.precomputed[index]
 
-    def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
-        """Detections for the next source frame in decode order; ``frame_bgr`` is not read.
+    def next_detections(self) -> Tuple[int, List[Detection]]:
+        """The next source frame in decode order and its detections.
 
-        The prepass already decoded the video, so this only advances a frame
-        counter.  Callers that may skip frames should use ``detections_at``.
+        This is the call-order contract: the n-th call answers frame n.
         """
         index = self.precomputed_index
         self.precomputed_index += 1
-        return self.detections_at(index)
+        return index, self.detections_at(index)
 
-    def detect_async_start(self, frame_bgr: np.ndarray):
-        return self.detect(frame_bgr)
+    def detect(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> List[Detection]:
+        """Detections for ``frame_index``, or for the next frame in call order
+        when it is None.  ``frame_bgr`` is never read: the prepass already
+        decoded the clip."""
+        return self.detect_async_start(frame_bgr, frame_index).detections
 
-    def detect_async_finish(self, pending) -> List[Tuple[list, float]]:
-        return pending
+    def detect_async_start(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> CachedDetections:
+        if frame_index is None:
+            index, detections = self.next_detections()
+        else:
+            index = int(frame_index)
+            detections = self.detections_at(index)
+            self.precomputed_index = index + 1  # keep a later call-order caller in step
+        return CachedDetections(index, detections)
+
+    def detect_async_finish(self, pending: CachedDetections) -> List[Detection]:
+        return pending.detections
+
+
+def _rescale_box(det: Any, scale: Tuple[float, float]) -> List[float]:
+    sx, sy = scale
+    return [float(det[0]) * sx, float(det[1]) * sy, float(det[2]) * sx, float(det[3]) * sy]
+
+
+def ball_engine_output_mode(pred: torch.Tensor) -> str:
+    """``postprocessed`` for engines that export NMS'd ``[x1, y1, x2, y2, conf, cls]``
+    rows, ``raw_nms`` for raw ``[xywh, class scores...]`` heads."""
+    if pred.dim() == 3 and pred.shape[-1] == _POSTPROCESSED_COLUMNS:
+        return _OUTPUT_MODE_POSTPROCESSED
+    return _OUTPUT_MODE_RAW
+
+
+def decode_ball_predictions(
+    preds: torch.Tensor,
+    scale: Tuple[float, float],
+    conf_threshold: float,
+    cls_filter: Optional[List[int]],
+    output_mode: str,
+) -> List[Detection]:
+    """Turn one engine output tensor into ``(xyxy_box, confidence)`` pairs in source pixels."""
+    dets: List[Detection] = []
+    if output_mode == _OUTPUT_MODE_POSTPROCESSED:
+        if preds.dim() == 3:
+            preds = preds[0]
+        rows = preds.detach().float().cpu().numpy()
+        if rows.size == 0 or rows.shape[1] < _POSTPROCESSED_COLUMNS:
+            return dets
+        for det in rows:
+            conf = float(det[4])
+            if conf < conf_threshold:
+                continue
+            cls_id = int(det[5])
+            if cls_filter is not None and cls_id not in cls_filter:
+                continue
+            dets.append((_rescale_box(det, scale), conf))
+        return dets
+
+    if preds.dim() != 3:
+        return dets
+    p = preds[0]
+    if p.shape[0] <= p.shape[1]:
+        p = p.transpose(0, 1)
+    p = p.detach().float().cpu().numpy()
+    if p.size == 0 or p.shape[1] <= 4:
+        return dets
+    boxes = _xywh_to_xyxy_np(p[:, :4].astype(np.float32))
+    cls_scores = p[:, 4:].astype(np.float32)
+    if cls_scores.shape[1] > 1:
+        cls_ids = np.argmax(cls_scores, axis=1)
+        scores = cls_scores[np.arange(cls_scores.shape[0]), cls_ids]
+    else:
+        cls_ids = np.zeros((cls_scores.shape[0],), dtype=np.int32)
+        scores = cls_scores[:, 0]
+    keep = scores >= float(conf_threshold)
+    boxes, scores, cls_ids = boxes[keep], scores[keep], cls_ids[keep]
+    if boxes.shape[0] == 0:
+        return dets
+    keep_idx = _nms_xyxy_np(boxes, scores, _BALL_NMS_IOU)
+    boxes, scores, cls_ids = boxes[keep_idx], scores[keep_idx], cls_ids[keep_idx]
+    for i in range(boxes.shape[0]):
+        cls_id = int(cls_ids[i])
+        if cls_filter is not None and cls_id not in cls_filter:
+            continue
+        dets.append((_rescale_box(boxes[i], scale), float(scores[i])))
+    return dets
+
+
+@dataclass
+class TensorRTBallPending:
+    """An inference in flight on the ball engine's stream."""
+
+    outputs: List[torch.Tensor]
+    scale: Tuple[float, float]
+    event: Optional[torch.cuda.Event]
+    # Keeps the engine input buffer alive until the inference reading it is done.
+    input_tensor: torch.Tensor
 
 
 class TensorRTRuntimeBallDetector(BallDetectorBackend):
-    """Direct TensorRT runtime backend for ball detection."""
+    """Single-frame ball detector for an Ultralytics-exported TensorRT engine.
+
+    Selected when ``Config.model_path`` ends in ``.engine`` (``build_trt_engines.py``
+    builds one from ``models/ball.pt``); GridTrackNet is the default backend.
+    Each frame is one inference, launched on the session's stream with
+    ``cfg.trt_async_slots`` output buffers when ``cfg.trt_async_execute`` is
+    set, so the next frame's preprocessing overlaps this frame's inference.
+    The caller resolved the engine path, so a missing or broken engine raises.
+    ``device`` defaults to ``cfg.device`` (CUDA 0 when that is not an index).
+    """
 
     def __init__(
         self,
@@ -446,418 +704,137 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         cfg: Config,
         ball_cls_id: Optional[int],
         names: Optional[Dict[int, str]] = None,
+        device: Optional[torch.device] = None,
     ):
-        if not HAS_TORCH:
-            raise RuntimeError("TensorRT runtime backend requires torch.")
         if not torch.cuda.is_available():
             raise RuntimeError("TensorRT runtime backend requires CUDA.")
-        try:
-            import tensorrt as trt  # type: ignore
-        except Exception as e:
-            raise RuntimeError(f"TensorRT package not available: {e}")
-
         self.cfg = cfg
-        self.names = names or {0: "ball"}
+        self.names = names or dict(_DEFAULT_NAMES)
         self.ball_cls_id = ball_cls_id
         self.cls_filter = [ball_cls_id] if ball_cls_id is not None else None
-        self.device = torch.device(f"cuda:{cfg.device}") if cfg.device not in ("auto", "cpu", "mps") else torch.device("cuda:0")
-
-        self._trt = trt
-        Binding = namedtuple("Binding", ("name", "dtype", "shape", "data", "ptr"))
-        self._Binding = Binding
-
-        logger = trt.Logger(trt.Logger.INFO)
-        with open(engine_path, "rb") as f:
-            raw = f.read()
-        # Ultralytics .engine files may prepend a metadata JSON blob.
-        try:
-            meta_len = int.from_bytes(raw[:4], byteorder="little")
-            json.loads(raw[4:4 + meta_len].decode("utf-8"))
-            raw = raw[4 + meta_len:]
-        except Exception:
-            pass
-        with trt.Runtime(logger) as runtime:
-            self.engine = runtime.deserialize_cuda_engine(raw)
-        if self.engine is None:
-            raise RuntimeError(f"Failed to deserialize TensorRT engine: {engine_path}")
-        self.context = self.engine.create_execution_context()
-        if self.context is None:
-            raise RuntimeError("Failed creating TensorRT execution context.")
-
-        self.is_trt10 = not hasattr(self.engine, "num_bindings")
-        self.bindings: OrderedDict[str, Any] = OrderedDict()
-        self.binding_addrs: OrderedDict[str, int] = OrderedDict()
-        self.binding_order: List[str] = []
-        self.output_names: List[str] = []
-        self.input_name: Optional[str] = None
-        self.dynamic = False
-        self.half = False
-        self.input_h = 0
-        self.input_w = 0
-        self.use_async = bool(getattr(cfg, "trt_async_execute", True))
-        self.async_slots = max(1, int(getattr(cfg, "trt_async_slots", 2))) if self.use_async else 1
-        self._slot_cursor = 0
-        self.stream = torch.cuda.Stream(device=self.device) if self.use_async else None
-        self._has_async_v3 = hasattr(self.context, "execute_async_v3")
-        self._has_async_v2 = hasattr(self.context, "execute_async_v2")
-        if self.use_async and not (self._has_async_v3 or self._has_async_v2):
-            self.use_async = False
-            self.stream = None
-            self.async_slots = 1
-
-        num = range(self.engine.num_io_tensors) if self.is_trt10 else range(self.engine.num_bindings)
-        for i in num:
-            if self.is_trt10:
-                name = self.engine.get_tensor_name(i)
-                dtype = trt.nptype(self.engine.get_tensor_dtype(name))
-                is_input = self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
-                shape = tuple(self.engine.get_tensor_shape(name))
-                profile_shape = tuple(self.engine.get_tensor_profile_shape(name, 0)[2]) if is_input else None
-            else:
-                name = self.engine.get_binding_name(i)
-                dtype = trt.nptype(self.engine.get_binding_dtype(i))
-                is_input = self.engine.binding_is_input(i)
-                shape = tuple(self.engine.get_binding_shape(i))
-                profile_shape = tuple(self.engine.get_profile_shape(0, i)[1]) if is_input else None
-
-            self.binding_order.append(name)
-            if is_input:
-                self.input_name = name
-                if -1 in shape:
-                    self.dynamic = True
-                    if self.is_trt10:
-                        self.context.set_input_shape(name, profile_shape)
-                    else:
-                        self.context.set_binding_shape(i, profile_shape)
-                if dtype == np.float16:
-                    self.half = True
-            else:
-                self.output_names.append(name)
-
-            shape_now = tuple(self.context.get_tensor_shape(name)) if self.is_trt10 else tuple(self.context.get_binding_shape(i))
-            tensor = torch.from_numpy(np.empty(shape_now, dtype=dtype)).to(self.device)
-            self.bindings[name] = Binding(name, dtype, shape_now, tensor, int(tensor.data_ptr()))
-            self.binding_addrs[name] = int(tensor.data_ptr())
-
-        self.output_slot_tensors: List[Dict[str, torch.Tensor]] = []
-        for s in range(self.async_slots):
-            slot = {}
-            for name in self.output_names:
-                if s == 0:
-                    slot[name] = self.bindings[name].data
-                else:
-                    slot[name] = torch.empty_like(self.bindings[name].data, device=self.device)
-            self.output_slot_tensors.append(slot)
-
-        if self.input_name is None:
-            raise RuntimeError("TensorRT engine has no input binding.")
-        if not self.output_names:
-            raise RuntimeError("TensorRT engine has no output bindings.")
-        in_shape = tuple(self.bindings[self.input_name].shape)
-        if len(in_shape) != 4:
-            raise RuntimeError(f"Unsupported TensorRT input shape: {in_shape}")
-        self.input_h = int(in_shape[2])
-        self.input_w = int(in_shape[3])
-
-        dummy = torch.zeros(
-            1,
-            3,
-            self.input_h,
-            self.input_w,
-            device=self.device,
-            dtype=torch.float16 if self.half else torch.float32,
+        if device is None:
+            device = torch.device(f"cuda:{cfg.device}") if str(cfg.device).isdigit() else torch.device("cuda:0")
+        self.session = _TensorRTRuntimeSession(
+            engine_path,
+            device=device,
+            async_execute=bool(cfg.trt_async_execute),
+            output_slots=max(1, int(cfg.trt_async_slots)),
         )
-        test_out, _ = self._forward_tensor(dummy, out_slot=0)
-        test_pred = test_out[0] if isinstance(test_out, (list, tuple)) else test_out
-        if hasattr(test_pred, "dim") and test_pred.dim() == 3 and test_pred.shape[-1] == 6:
-            self.output_mode = "postprocessed"
-        else:
-            self.output_mode = "raw_nms"
+        self.device = self.session.device
+        self.use_async = self.session.use_async
+        self.async_slots = self.session.output_slot_count
+
+        probe = torch.zeros(
+            (1, 3, self.session.input_h, self.session.input_w),
+            device=self.device,
+            dtype=torch.float16 if self.session.fp16 else torch.float32,
+        )
+        outputs = self.session.forward_tensor(probe, out_slot=0)
+        self.session.wait()
+        self.output_mode = ball_engine_output_mode(outputs[0])
         print(
-            f"[detector] TensorRT runtime backend, {self.output_mode} "
-            f"(half={self.half}, async={self.use_async}, slots={self.async_slots}, "
+            f"[detector] TensorRT ball engine, {self.output_mode} "
+            f"(fp16={self.session.fp16}, async={self.use_async}, slots={self.async_slots}, "
             f"device={self.device}, preprocess=gpu_resize_norm)"
         )
 
-    @staticmethod
-    def _rescale_box(det, scale):
-        sx, sy = scale
-        return [
-            float(det[0]) * sx,
-            float(det[1]) * sy,
-            float(det[2]) * sx,
-            float(det[3]) * sy,
-        ]
-
-    def _preprocess_frame(self, frame_bgr: np.ndarray):
-        h0, w0 = frame_bgr.shape[:2]
-        t = torch.from_numpy(frame_bgr).to(device=self.device, dtype=torch.float32)
-        t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
-        t = t[:, [2, 1, 0], :, :] / 255.0
-        if h0 != self.input_h or w0 != self.input_w:
-            t = F.interpolate(t, size=(self.input_h, self.input_w), mode="bilinear", align_corners=False)
-        if self.half:
-            t = t.half()
-        scale = (w0 / float(max(self.input_w, 1)), h0 / float(max(self.input_h, 1)))
-        return t, scale
-
-    def _preprocess_cuda_frame(self, frame_bgr_cuda):
-        if not HAS_TORCH or not isinstance(frame_bgr_cuda, torch.Tensor):
-            return None, None
-        if frame_bgr_cuda.device != self.device:
-            return None, None
-        if frame_bgr_cuda.dim() != 3 or frame_bgr_cuda.shape[-1] != 3:
-            return None, None
-
-        h0, w0 = int(frame_bgr_cuda.shape[0]), int(frame_bgr_cuda.shape[1])
-        if h0 <= 0 or w0 <= 0:
-            return None, None
-
-        t = frame_bgr_cuda
-        if t.dtype == torch.uint8:
-            t = t.to(dtype=torch.float32).mul_(1.0 / 255.0)
-        else:
-            if t.dtype != torch.float32:
-                t = t.float()
-            if t.max() > 1.5:
-                t = t / 255.0
-        t = t.permute(2, 0, 1).unsqueeze(0).contiguous()
-        t = t[:, [2, 1, 0], :, :]
-        if h0 != self.input_h or w0 != self.input_w:
-            t = F.interpolate(t, size=(self.input_h, self.input_w), mode="bilinear", align_corners=False)
-
-        if self.half:
-            t = t.half()
-        scale = (w0 / float(max(self.input_w, 1)), h0 / float(max(self.input_h, 1)))
-        return t, scale
-
-    def _forward_tensor(self, t, out_slot: int = 0):
-        if self.dynamic and tuple(t.shape) != tuple(self.bindings[self.input_name].shape):
-            if self.is_trt10:
-                self.context.set_input_shape(self.input_name, tuple(t.shape))
-                self.bindings[self.input_name] = self.bindings[self.input_name]._replace(shape=tuple(t.shape))
-                for name in self.output_names:
-                    shape_new = tuple(self.context.get_tensor_shape(name))
-                    self.bindings[name] = self.bindings[name]._replace(shape=shape_new)
-                    for s in range(self.async_slots):
-                        cur = self.output_slot_tensors[s][name]
-                        if tuple(cur.shape) != shape_new:
-                            cur = torch.empty(shape_new, device=self.device, dtype=cur.dtype)
-                        self.output_slot_tensors[s][name] = cur
-                    self.bindings[name] = self.bindings[name]._replace(
-                        data=self.output_slot_tensors[0][name],
-                        ptr=int(self.output_slot_tensors[0][name].data_ptr()),
-                    )
-                    self.binding_addrs[name] = int(self.output_slot_tensors[0][name].data_ptr())
-            else:
-                i = self.engine.get_binding_index(self.input_name)
-                self.context.set_binding_shape(i, tuple(t.shape))
-                self.bindings[self.input_name] = self.bindings[self.input_name]._replace(shape=tuple(t.shape))
-                for name in self.output_names:
-                    j = self.engine.get_binding_index(name)
-                    shape_new = tuple(self.context.get_binding_shape(j))
-                    self.bindings[name] = self.bindings[name]._replace(shape=shape_new)
-                    for s in range(self.async_slots):
-                        cur = self.output_slot_tensors[s][name]
-                        if tuple(cur.shape) != shape_new:
-                            cur = torch.empty(shape_new, device=self.device, dtype=cur.dtype)
-                        self.output_slot_tensors[s][name] = cur
-                    self.bindings[name] = self.bindings[name]._replace(
-                        data=self.output_slot_tensors[0][name],
-                        ptr=int(self.output_slot_tensors[0][name].data_ptr()),
-                    )
-                    self.binding_addrs[name] = int(self.output_slot_tensors[0][name].data_ptr())
-
-        s = tuple(self.bindings[self.input_name].shape)
-        if tuple(t.shape) != s:
-            raise RuntimeError(f"TensorRT input shape mismatch: got {tuple(t.shape)}, expected {s}")
-
-        out_slot = int(out_slot) % max(self.async_slots, 1)
-        slot_tensors = self.output_slot_tensors[out_slot]
-        addr_map = dict(self.binding_addrs)
-        addr_map[self.input_name] = int(t.data_ptr())
-        for name in self.output_names:
-            addr_map[name] = int(slot_tensors[name].data_ptr())
-
-        pending_event = None
-        if self.use_async and self.stream is not None:
-            self.stream.wait_stream(torch.cuda.current_stream(device=self.device))
-            ok = True
-            if self.is_trt10 and self._has_async_v3:
-                self.context.set_tensor_address(self.input_name, addr_map[self.input_name])
-                for name in self.output_names:
-                    self.context.set_tensor_address(name, addr_map[name])
-                ok = self.context.execute_async_v3(stream_handle=int(self.stream.cuda_stream))
-            elif self._has_async_v2:
-                ptrs = [int(addr_map[name]) for name in self.binding_order]
-                ok = self.context.execute_async_v2(
-                    ptrs,
-                    int(self.stream.cuda_stream),
-                )
-            else:
-                ptrs = [int(addr_map[name]) for name in self.binding_order]
-                ok = self.context.execute_v2(ptrs)
-            if ok is False:
-                raise RuntimeError("TensorRT async execution failed.")
-            pending_event = torch.cuda.Event(blocking=False)
-            pending_event.record(self.stream)
-        else:
-            if self.is_trt10 and hasattr(self.context, "set_tensor_address"):
-                self.context.set_tensor_address(self.input_name, addr_map[self.input_name])
-                for name in self.output_names:
-                    self.context.set_tensor_address(name, addr_map[name])
-                ok = self.context.execute_v2([int(addr_map[name]) for name in self.binding_order])
-            else:
-                ptrs = [int(addr_map[name]) for name in self.binding_order]
-                ok = self.context.execute_v2(ptrs)
-            if ok is False:
-                raise RuntimeError("TensorRT execution failed.")
-        return [slot_tensors[x] for x in sorted(self.output_names)], pending_event
-
-    def _decode_preds(self, preds, scale, pending_event=None):
-        if pending_event is not None:
-            torch.cuda.current_stream(device=self.device).wait_event(pending_event)
-        elif self.use_async and self.stream is not None:
-            torch.cuda.current_stream(device=self.device).wait_stream(self.stream)
-        if isinstance(preds, (list, tuple)):
-            preds = preds[0]
-
-        dets = []
-        if self.output_mode == "postprocessed":
-            if preds.dim() == 3:
-                preds = preds[0]
-            rows = preds.detach().float().cpu().numpy()
-            if rows.size == 0 or rows.shape[1] < 6:
-                return dets
-            for det in rows:
-                conf = float(det[4])
-                if conf < self.cfg.conf:
-                    continue
-                cls_id = int(det[5])
-                if self.cls_filter is not None and cls_id not in self.cls_filter:
-                    continue
-                dets.append((self._rescale_box(det, scale), conf))
-            return dets
-
-        p = preds
-        if p.dim() == 3:
-            p = p[0]
-            if p.shape[0] <= p.shape[1]:
-                p = p.transpose(0, 1)
-        else:
-            return dets
-        p = p.detach().float().cpu().numpy()
-        if p.size == 0 or p.shape[1] <= 4:
-            return dets
-        boxes = _xywh_to_xyxy_np(p[:, :4].astype(np.float32))
-        cls_scores = p[:, 4:].astype(np.float32)
-        cls_ids = np.argmax(cls_scores, axis=1) if cls_scores.shape[1] > 1 else np.zeros((cls_scores.shape[0],), dtype=np.int32)
-        scores = cls_scores[np.arange(cls_scores.shape[0]), cls_ids] if cls_scores.shape[1] > 1 else cls_scores[:, 0]
-        keep = scores >= float(self.cfg.conf)
-        boxes = boxes[keep]
-        scores = scores[keep]
-        cls_ids = cls_ids[keep]
-        if boxes.shape[0] == 0:
-            return dets
-        keep_idx = _nms_xyxy_np(boxes, scores, 0.45)
-        boxes = boxes[keep_idx]
-        scores = scores[keep_idx]
-        cls_ids = cls_ids[keep_idx]
-        for i in range(boxes.shape[0]):
-            cls_id = int(cls_ids[i])
-            if self.cls_filter is not None and cls_id not in self.cls_filter:
-                continue
-            dets.append((self._rescale_box(boxes[i], scale), float(scores[i])))
-        return dets
-
     def supports_cuda_frame(self) -> bool:
-        return bool(HAS_TORCH and self.device.type == "cuda")
+        return self.device.type == "cuda"
 
-    def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
-        pending = self.detect_async_start(frame_bgr)
-        return self.detect_async_finish(pending)
+    def detect(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> List[Detection]:
+        return self.detect_async_finish(self.detect_async_start(frame_bgr, frame_index))
 
-    def detect_async_start(self, frame_bgr: np.ndarray):
-        out_slot = 0
-        if self.use_async:
-            out_slot = self._slot_cursor
-            self._slot_cursor = (self._slot_cursor + 1) % max(self.async_slots, 1)
-        if HAS_TORCH and isinstance(frame_bgr, torch.Tensor):
-            if self.supports_cuda_frame():
-                t, scale = self._preprocess_cuda_frame(frame_bgr)
-                if t is not None:
-                    preds, ev = self._forward_tensor(t, out_slot=out_slot)
-                    return {"preds": preds, "scale": scale, "event": ev, "input_tensor": t}
-            frame_bgr = frame_bgr.detach().cpu().numpy()
+    def detect_async_start(self, frame_bgr: FrameInput, frame_index: Optional[int] = None) -> TensorRTBallPending:
+        """Launch inference on ``frame_bgr``; ``frame_index`` is accepted for
+        interface parity and not needed (every call runs its own frame)."""
+        out_slot = self.session.next_output_slot()
+        t = None
+        if isinstance(frame_bgr, torch.Tensor):
+            t, scale = self.session.preprocess_cuda_hwc_frame(frame_bgr)
+            if t is None:
+                frame_bgr = frame_bgr.detach().cpu().numpy()
+        if t is None:
+            t, scale = self.session.preprocess_frame(frame_bgr)
+        outputs = self.session.forward_tensor(t, out_slot=out_slot)
+        return TensorRTBallPending(outputs, scale, self.session.completion_event(), t)
 
-        t, scale = self._preprocess_frame(frame_bgr)
-        preds, ev = self._forward_tensor(t, out_slot=out_slot)
-        return {"preds": preds, "scale": scale, "event": ev, "input_tensor": t}
+    def detect_async_finish(self, pending: TensorRTBallPending) -> List[Detection]:
+        self.session.wait(pending.event)
+        return decode_ball_predictions(
+            pending.outputs[0], pending.scale, float(self.cfg.conf), self.cls_filter, self.output_mode
+        )
 
-    def detect_async_finish(self, pending) -> List[Tuple[list, float]]:
-        if isinstance(pending, dict):
-            return self._decode_preds(
-                pending.get("preds"),
-                pending.get("scale"),
-                pending_event=pending.get("event"),
-            )
-        preds, scale = pending
-        return self._decode_preds(preds, scale)
+
+@dataclass
+class PlayerPending:
+    """A player detection launched for one frame.
+
+    ``outputs`` is None on frames between detector runs (``cfg.player_detect_interval``):
+    the tracker is then updated with no detections and coasts its boxes.
+    """
+
+    frame: np.ndarray
+    frame_idx: int
+    width: int
+    height: int
+    court_kps: Optional[List[float]]
+    outputs: Optional[List[torch.Tensor]] = None
+    input_tensor: Optional[torch.Tensor] = None  # keeps the engine input alive until wait()
+
 
 class PlayerDetector:
-    """Runs BoTSORT (StrongSORT successor) player tracking with ReID."""
+    """TensorRT player detection with ByteTrack association (no ReID).
 
-    def __init__(self, cfg: Config, court_keypoints=None):
+    Engine policy: see ``_open_engine_session``.  Without boxmot the detector
+    is disabled with one message, since the boxes are only useful tracked.
+    ``detect_async_start`` returns None while disabled and
+    ``detect_async_finish`` then returns no boxes.
+    """
+
+    def __init__(self, cfg: Config, court_keypoints: Optional[List[float]] = None):
         self.cfg = cfg
         self.court_kps = court_keypoints
-        self.cached_boxes = []
+        self.cached_boxes: List[List[float]] = []
         self._frame_diag = 1.0
         self.session: Optional[_TensorRTRuntimeSession] = None
-        
+        self.tracker: Optional[Any] = None
         # Detection cadence is controlled by the CLI/config, while ByteTrack
         # still receives an update every frame and coasts on empty detections.
-        self._current_interval = max(1, int(getattr(cfg, "player_detect_interval", 1)))
-        
-        # BoTSORT maintains its own robust internal dictionary of {ID: BoundingBox}
-        self.slots = {} 
+        self._current_interval = max(1, int(cfg.player_detect_interval))
+        # ByteTrack's live boxes keyed by track id.
+        self.slots: Dict[int, List[float]] = {}
 
-        ep = _resolve_engine_path(cfg.player_model_path)
-        if ep is None:
-            print(f"[player] Engine not found at {cfg.player_model_path}, skipping")
+        if not cfg.player_model_path:
+            print("[player] No engine configured, player tracking disabled")
             return
-            
-        try:
-            self.session = _TensorRTRuntimeSession(
-                str(ep),
-                device=torch.device(f"cuda:{int(cfg.device)}"),
-                async_execute=bool(getattr(cfg, "trt_async_execute", True)),
-            )
-            print(f"[player] TensorRT runtime initialized: {ep}")
-        except Exception as e:
-            self.session = None
-            print(f"[player] TensorRT runtime init failed ({e}), skipping")
-            
-        if ByteTrack is None:
-            self.tracker = None
-        else:
-            self.tracker = ByteTrack(
-                min_conf=0.1,
-                track_thresh=0.3,
-                track_buffer=60,
-                match_thresh=0.8,
-            )
-            print("[player] ByteTrack tracking initialized")
+        bytetrack, reason = _load_bytetrack()
+        if bytetrack is None:
+            print(f"[player] boxmot not found ({reason}); player tracking disabled. Run 'pip install boxmot'")
+            return
+        self.session = _open_engine_session("player", cfg.player_model_path, cfg)
+        self.tracker = bytetrack(
+            min_conf=0.1,
+            track_thresh=0.3,
+            track_buffer=60,
+            match_thresh=0.8,
+        )
+        print("[player] ByteTrack tracking initialized")
+
+    @property
+    def enabled(self) -> bool:
+        return self.session is not None and self.tracker is not None
 
     @staticmethod
-    def _center(b):
+    def _center(b: List[float]) -> Tuple[float, float]:
         return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
 
-    def set_court_keypoints(self, court_keypoints):
+    def set_court_keypoints(self, court_keypoints: Optional[List[float]]) -> None:
         self.court_kps = court_keypoints
 
-    def _decode_player_boxes(self, pred_t, frame_w: int, frame_h: int) -> np.ndarray:
+    def _decode_player_boxes(self, pred_t: torch.Tensor, frame_w: int, frame_h: int) -> np.ndarray:
+        """Engine output -> ``[x1, y1, x2, y2, conf, cls]`` rows in frame pixels."""
         pred = pred_t.detach().float()
-        if pred.dim() == 3 and pred.shape[-1] == 6:
+        if pred.dim() == 3 and pred.shape[-1] == _POSTPROCESSED_COLUMNS:
             rows = pred[0].cpu().numpy()
             if rows.size == 0:
                 return np.empty((0, 6))
@@ -876,20 +853,20 @@ class PlayerDetector:
 
         if p.shape[1] < 5:
             return np.empty((0, 6))
-            
+
         boxes_xyxy = _xywh_to_xyxy_np(p[:, :4].astype(np.float32))
         scores = p[:, 4].astype(np.float32)
         keep = scores >= float(self.cfg.player_conf)
         boxes_xyxy = boxes_xyxy[keep]
         scores = scores[keep]
-        
+
         if boxes_xyxy.shape[0] == 0:
             return np.empty((0, 6))
-            
+
         keep_idx = _nms_xyxy_np(boxes_xyxy, scores, float(self.cfg.player_iou))
         boxes_xyxy = boxes_xyxy[keep_idx]
         scores = scores[keep_idx]
-        
+
         sx = frame_w / float(max(self.session.input_w, 1))
         sy = frame_h / float(max(self.session.input_h, 1))
         boxes_xyxy[:, [0, 2]] *= sx
@@ -898,102 +875,89 @@ class PlayerDetector:
         boxes_xyxy[:, 2] = np.clip(boxes_xyxy[:, 2], 0, frame_w - 1)
         boxes_xyxy[:, 1] = np.clip(boxes_xyxy[:, 1], 0, frame_h - 1)
         boxes_xyxy[:, 3] = np.clip(boxes_xyxy[:, 3], 0, frame_h - 1)
-        
+
         # Format for boxmot: [x1, y1, x2, y2, conf, class_id]
-        class_ids = np.zeros_like(scores) # Usually 0 for 'person'
-        dets = np.column_stack((boxes_xyxy, scores, class_ids))
-        return dets
+        class_ids = np.zeros_like(scores)  # Usually 0 for 'person'
+        return np.column_stack((boxes_xyxy, scores, class_ids))
 
-    def detect_async_start(self, frame, frame_idx, frame_gpu_t=None):
-        if self.session is None or self.tracker is None:
-            return {"disabled": True}
-            
+    def detect_async_start(self, frame: np.ndarray, frame_idx: int,
+                           frame_gpu_t: Optional[torch.Tensor] = None) -> Optional[PlayerPending]:
+        if not self.enabled:
+            return None
+
         h, w = frame.shape[:2]
-        self._frame_diag = (w**2 + h**2)**0.5
-        
-        pending = {
-            "disabled": False,
-            "frame": frame,
-            "frame_idx": int(frame_idx),
-            "h": int(h),
-            "w": int(w),
-            "court_kps": self.court_kps,
-            "outputs": None,
-        }
+        self._frame_diag = (w ** 2 + h ** 2) ** 0.5
+        pending = PlayerPending(frame, int(frame_idx), int(w), int(h), self.court_kps)
 
-        # We only run the heavy YOLO TensorRT model every N frames.
-        # The tracker itself is still finished every frame with empty detections.
+        # The engine runs every N frames; the tracker is still finished every
+        # frame, with empty detections in between.
         if frame_idx % self._current_interval != 0:
             return pending
 
         t = None
-        if frame_gpu_t is not None and HAS_TORCH and isinstance(frame_gpu_t, torch.Tensor):
+        if frame_gpu_t is not None:
             t, _ = self.session.preprocess_cuda_chw_frame(frame_gpu_t)
         if t is None:
             t, _ = self.session.preprocess_frame(frame)
-        pending["outputs"] = self.session.forward_tensor(t)
-        pending["input_tensor"] = t
+        pending.outputs = self.session.forward_tensor(t)
+        pending.input_tensor = t
         return pending
 
-    def detect_async_finish(self, pending):
-        if not pending or pending.get("disabled", False):
+    def _keep_nearest_to_court(self, dets: np.ndarray, court_kps: List[float]) -> np.ndarray:
+        """When the engine finds more people than players, keep the ones closest to a court keypoint."""
+        scored = []
+        for row in dets:
+            bx1, by1, bx2, by2 = row[:4]
+            bcx, bcy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
+            dist = min(((bcx - court_kps[ki]) ** 2 + (bcy - court_kps[ki + 1]) ** 2) ** 0.5
+                       for ki in range(0, len(court_kps), 2))
+            scored.append((dist, row))
+        scored.sort(key=lambda x: x[0])
+        return np.array([r for _, r in scored[:self.cfg.num_players]])
+
+    def detect_async_finish(self, pending: Optional[PlayerPending]) -> List[List[float]]:
+        if pending is None:
             return []
 
-        frame = pending["frame"]
-        w = int(pending["w"])
-        h = int(pending["h"])
-        court_kps = pending.get("court_kps")
-
-        if pending.get("outputs") is None:
+        if pending.outputs is None:
             # Pass empty detections to tell the tracker to coast the boxes forward.
             dets = np.empty((0, 6))
         else:
             self.session.wait()
-
-            # Raw YOLO detections [x1, y1, x2, y2, conf, cls]
-            dets = self._decode_player_boxes(pending["outputs"][0], w, h)
-
-            # Filter raw YOLO detections by court keypoint distance if necessary
-            # before passing to the tracker so it doesn't learn noise.
-            if court_kps and len(dets) > self.cfg.num_players:
-                scored_dets = []
-                for row in dets:
-                    bx1, by1, bx2, by2 = row[:4]
-                    bcx, bcy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
-                    dist = min(((bcx - court_kps[ki])**2 + (bcy - court_kps[ki+1])**2)**0.5
-                               for ki in range(0, len(court_kps), 2))
-                    scored_dets.append((dist, row))
-                scored_dets.sort(key=lambda x: x[0])
-                dets = np.array([r for _, r in scored_dets[:self.cfg.num_players]])
-
+            dets = self._decode_player_boxes(pending.outputs[0], pending.width, pending.height)
+            # Drop spectators before the tracker learns them.
+            if pending.court_kps and len(dets) > self.cfg.num_players:
+                dets = self._keep_nearest_to_court(dets, pending.court_kps)
             if len(dets) == 0:
                 dets = np.empty((0, 6))
-            
-        # Update tracker with actual image pixels
-        # tracked_objects format: [x1, y1, x2, y2, track_id, conf, cls, ind]
-        tracked_objects = self.tracker.update(dets, frame)
-        
-        boxes = []
+
+        # tracked_objects rows: [x1, y1, x2, y2, track_id, conf, cls, ind]
+        tracked_objects = self.tracker.update(dets, pending.frame)
+
+        boxes: List[List[float]] = []
         self.slots.clear()
-        
-        if len(tracked_objects) > 0:
-            for track in tracked_objects:
-                x1, y1, x2, y2, track_id, conf, cls, _ = track
-                box = [float(x1), float(y1), float(x2), float(y2)]
-                boxes.append(box)
-                self.slots[int(track_id)] = box
-                
+        for track in tracked_objects:
+            x1, y1, x2, y2, track_id, _conf, _cls, _ = track
+            box = [float(x1), float(y1), float(x2), float(y2)]
+            boxes.append(box)
+            self.slots[int(track_id)] = box
+
         self.cached_boxes = boxes
         return boxes
 
-    def detect(self, frame, frame_idx):
+    def detect(self, frame: np.ndarray, frame_idx: int) -> List[List[float]]:
         return self.detect_async_finish(self.detect_async_start(frame, frame_idx))
 
-    def get_player_dict(self):
+    def get_player_dict(self) -> Dict[int, List[float]]:
         return dict(self.slots)
 
+
 class CourtDetector:
-    """Runs court keypoint TensorRT model every N frames and caches the last good result."""
+    """Runs the court keypoint TensorRT engine every N frames and caches the last good result.
+
+    Engine policy: see ``_open_engine_session``; while disabled ``detect``
+    returns None and ``draw`` leaves the frame alone.
+    """
     _MODEL_TO_SEMANTIC_14 = (0, 4, 6, 1, 2, 5, 7, 3, 8, 12, 9, 11, 13, 10)
     _LINE_PAIRS_14 = (
         (0, 4), (4, 6), (6, 1),
@@ -1005,31 +969,21 @@ class CourtDetector:
         (10, 13), (13, 11),
         (12, 13),
     )
+    # Rows are [x1, y1, x2, y2, conf, cls, kx, ky, kconf, ...].
+    _KEYPOINT_COLUMN = 6
+    _MIN_KEYPOINTS = 4
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.keypoints = None
-        self.last_run_frame = -10**9
-        self.session: Optional[_TensorRTRuntimeSession] = None
-        ep = _resolve_engine_path(cfg.court_model_path)
-        if ep is None:
-            print(f"[court] Engine not found at {cfg.court_model_path}, skipping")
-            return
-        try:
-            self.session = _TensorRTRuntimeSession(
-                str(ep),
-                device=torch.device(f"cuda:{int(cfg.device)}"),
-                async_execute=bool(getattr(cfg, "trt_async_execute", True)),
-            )
-            print(f"[court] TensorRT runtime initialized: {ep}")
-            remap = "enabled" if cfg.court_remap_semantic_14 else "disabled (raw YOLO order)"
+        self.keypoints: Optional[List[float]] = None
+        self.last_run_frame = _NEVER
+        self.session = _open_engine_session("court", cfg.court_model_path, cfg)
+        if self.session is not None:
+            remap = "enabled" if cfg.court_remap_semantic_14 else "disabled (raw model order)"
             print(f"[court] 14-point semantic remap: {remap}")
-        except Exception as e:
-            self.session = None
-            print(f"[court] TensorRT runtime init failed ({e}), skipping")
 
     @classmethod
-    def _remap_kpt_indices(cls, xy):
+    def _remap_kpt_indices(cls, xy: np.ndarray) -> np.ndarray:
         pts = np.asarray(xy, dtype=np.float32)
         if pts.shape[0] != len(cls._MODEL_TO_SEMANTIC_14):
             return pts
@@ -1038,7 +992,7 @@ class CourtDetector:
             out[semantic_i] = pts[model_i]
         return out
 
-    def _print_raw_result(self, rows: np.ndarray, frame_idx: int):
+    def _print_raw_result(self, rows: np.ndarray, frame_idx: int) -> None:
         best_idx = int(np.argmax(rows[:, 4])) if rows.size else -1
         print(f"[court][raw] frame={frame_idx} rows={rows.shape[0]} best={best_idx}")
         if best_idx >= 0:
@@ -1048,7 +1002,13 @@ class CourtDetector:
                 "conf": float(r[4]), "cls": float(r[5]),
             }))
 
-    def detect(self, frame, frame_idx=None):
+    def _report_miss(self, frame_idx: int) -> Optional[List[float]]:
+        if self.cfg.print_court_raw:
+            msg = "miss, using cached court" if self.keypoints else "no court detected"
+            print(f"[court] frame={frame_idx}: {msg}")
+        return self.keypoints
+
+    def detect(self, frame: np.ndarray, frame_idx: Optional[int] = None) -> Optional[List[float]]:
         if self.session is None:
             return self.keypoints
         interval = max(1, int(self.cfg.court_detect_interval))
@@ -1072,15 +1032,10 @@ class CourtDetector:
         conf = rows[:, 4] if rows.shape[1] > 4 else np.zeros((rows.shape[0],), dtype=np.float32)
         best_i = int(np.argmax(conf))
         if float(conf[best_i]) < float(self.cfg.court_conf):
-            if self.cfg.print_court_raw:
-                msg = "miss, using cached court" if self.keypoints else "no court detected"
-                print(f"[court] frame={frame_idx}: {msg}")
-            return self.keypoints
+            return self._report_miss(frame_idx)
 
         row = rows[best_i]
-        if row.shape[0] < 9:
-            return self.keypoints
-        kpt_raw = row[6:]
+        kpt_raw = row[self._KEYPOINT_COLUMN:]
         nk = int(kpt_raw.shape[0] // 3)
         if nk <= 0:
             return self.keypoints
@@ -1093,16 +1048,12 @@ class CourtDetector:
             xy = self._remap_kpt_indices(xy)
 
         flat = np.asarray(xy, dtype=np.float32).reshape(-1).astype(float).tolist()
-        if len(flat) >= 8:
+        if len(flat) >= 2 * self._MIN_KEYPOINTS:
             self.keypoints = flat
             return self.keypoints
+        return self._report_miss(frame_idx)
 
-        if self.cfg.print_court_raw:
-            msg = "miss, using cached court" if self.keypoints else "no court detected"
-            print(f"[court] frame={frame_idx}: {msg}")
-        return self.keypoints
-
-    def draw(self, frame):
+    def draw(self, frame: np.ndarray) -> np.ndarray:
         if self.keypoints is None:
             return frame
         kps = self.keypoints
@@ -1119,16 +1070,16 @@ class CourtDetector:
         if self.cfg.court_points_only:
             return frame
 
-        line_pairs = []
+        line_pairs: Any = []
         if n == 14:
             line_pairs = self._LINE_PAIRS_14
-        elif n >= 4:
-            line_pairs = [(j, j+1) for j in range(n-1)]
+        elif n >= self._MIN_KEYPOINTS:
+            line_pairs = [(j, j + 1) for j in range(n - 1)]
 
         for a, b in line_pairs:
             if a < n and b < n:
-                ax, ay = int(kps[a*2]), int(kps[a*2+1])
-                bx, by = int(kps[b*2]), int(kps[b*2+1])
+                ax, ay = int(kps[a * 2]), int(kps[a * 2 + 1])
+                bx, by = int(kps[b * 2]), int(kps[b * 2 + 1])
                 if (ax > 0 or ay > 0) and (bx > 0 or by > 0):
                     cv2.line(frame, (ax, ay), (bx, by), (0, 255, 0), 2)
         return frame
