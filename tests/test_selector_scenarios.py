@@ -8,19 +8,15 @@ from typing import List, Tuple
 
 import numpy as np
 
-from ball_in_play_selector import (
-    Detection,
-    FrameResult,
-    SelectorConfig,
-    Track,
-    build_tracks,
+from ball_in_play_selector import Detection, FrameResult, SelectorConfig, Track, select_ball_in_play
+from ball_in_play_selector.association import build_tracks
+from ball_in_play_selector.core import (
     direction_cosine,
     refine_trajectory,
-    select_ball_in_play,
-    select_timeline_chain,
     selected_tracks,
     trajectory_observations,
 )
+from ball_in_play_selector.scoring import select_timeline_chain
 
 FRAME_SHAPE = (360, 640)
 WIDTH, HEIGHT = FRAME_SHAPE[1], FRAME_SHAPE[0]

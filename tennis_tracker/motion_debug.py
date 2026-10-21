@@ -149,8 +149,7 @@ def draw_motion_masks(frame: np.ndarray, raw_motion: Optional[np.ndarray], boost
 
 def draw_selected_ball(vis: np.ndarray, result: FrameResult, anchor_radius: float) -> None:
     """The selected position: its detector box (or an estimated box) and, off detections, the search region."""
-    fx = float(result.cx or 0.0)
-    fy = float(result.cy or 0.0)
+    fx, fy = result.cx, result.cy
     src = str(result.source)
     color = MOTION_DEBUG_SOURCE_COLOR[src]
     if not (fx > 0 or fy > 0):

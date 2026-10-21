@@ -10,20 +10,16 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ball_in_play_selector import SelectorConfig, predict_projectile
+from ball_in_play_selector import RawDetection, SelectorConfig, predict_projectile
 
 from .config import Config
 
 Point = Tuple[float, float]
 Box = Tuple[int, int, int, int]
-Detection = Tuple[Sequence[float], float]        # (xyxy box, confidence)
-CoastingRoi = Tuple[int, int, int, int, int]     # (frame_idx, x1, y1, x2, y2)
+CoastingRoi = Tuple[int, int, int, int, int]     # (frame_index, x1, y1, x2, y2)
 
 # A jump faster than this (px/frame) is a new ball, not the tracked one moving.
 _VELOCITY_RESET_SPEED_PX = 150.0
-# Velocity blend between the latest step and the recent history.
-_VELOCITY_STEP_WEIGHT, _VELOCITY_HISTORY_WEIGHT = 0.6, 0.4
-_POSITION_HISTORY_LEN = 8
 # Detection-to-track assignment: distance minus this many px per unit of confidence.
 _ASSIGN_CONF_BONUS_PX = 20.0
 # Acceptance radius: a fraction of the frame diagonal or the track's speed
@@ -49,12 +45,11 @@ _FULL_FRAME_AREA_FRAC = 0.7
 class ROITrack:
     """One ball hypothesis: last position, velocity and how long since the detector saw it."""
 
-    def __init__(self, start_pos: Point, frame_idx: int, conf: float = 1.0, diag_box: float = 0.0) -> None:
+    def __init__(self, start_pos: Point, frame_index: int, conf: float = 1.0, diag_box: float = 0.0) -> None:
         self.last_pos = start_pos
         self.last_vel: Point = (0.0, 0.0)
         self.frames_since_det = 0
-        self.last_frame_idx = frame_idx
-        self.pos_history: List[Tuple[float, float, int]] = [(start_pos[0], start_pos[1], frame_idx)]
+        self.last_frame_index = frame_index
         self.last_conf = conf
         self.last_diag_box = diag_box
         self.coasting_rois: List[CoastingRoi] = []
@@ -67,40 +62,22 @@ class ROITrack:
     def predicted_center(self, phys_cfg: SelectorConfig) -> Point:
         return self.predict_roi(max(self.frames_since_det, 1), phys_cfg)
 
-    def update(self, pos: Point, frame_idx: int, conf: float = 1.0, diag_box: float = 0.0) -> None:
-        """Take a detection at ``pos``; the coasting history is cleared except this frame's ROI."""
-        self.last_frame_idx = frame_idx
+    def update(self, pos: Point, frame_index: int, conf: float = 1.0, diag_box: float = 0.0) -> None:
+        """Take a detection at ``pos``; the coasting history is cleared except this frame's ROI.
+
+        The velocity is the step from the last detection, per frame since it;
+        a step faster than ``_VELOCITY_RESET_SPEED_PX`` is another ball, so
+        the velocity restarts from zero.
+        """
+        self.last_frame_index = frame_index
         self.last_conf = conf
         self.last_diag_box = diag_box
         # The ROI generated for this frame found the ball, so it was right; the rest were not.
-        self.coasting_rois = [r for r in self.coasting_rois if r[0] == frame_idx]
+        self.coasting_rois = [r for r in self.coasting_rois if r[0] == frame_index]
         dt_since_last = max(self.frames_since_det + 1, 1)
         vx = (pos[0] - self.last_pos[0]) / dt_since_last
         vy = (pos[1] - self.last_pos[1]) / dt_since_last
-
-        speed = (vx ** 2 + vy ** 2) ** 0.5
-        if speed > _VELOCITY_RESET_SPEED_PX:
-            self.pos_history.clear()
-            self.pos_history.append((pos[0], pos[1], frame_idx))
-            self.last_vel = (0.0, 0.0)
-        else:
-            self.pos_history.append((pos[0], pos[1], frame_idx))
-            if len(self.pos_history) > _POSITION_HISTORY_LEN:
-                self.pos_history.pop(0)
-
-            if len(self.pos_history) >= 2:
-                recent = self.pos_history[-2:]
-                if recent[-1][2] != recent[0][2]:
-                    dt_hist = recent[-1][2] - recent[0][2]
-                    vx_hist = (recent[-1][0] - recent[0][0]) / max(dt_hist, 1)
-                    vy_hist = (recent[-1][1] - recent[0][1]) / max(dt_hist, 1)
-                    self.last_vel = (_VELOCITY_STEP_WEIGHT * vx + _VELOCITY_HISTORY_WEIGHT * vx_hist,
-                                     _VELOCITY_STEP_WEIGHT * vy + _VELOCITY_HISTORY_WEIGHT * vy_hist)
-                else:
-                    self.last_vel = (vx, vy)
-            else:
-                self.last_vel = (vx, vy)
-
+        self.last_vel = (0.0, 0.0) if (vx ** 2 + vy ** 2) ** 0.5 > _VELOCITY_RESET_SPEED_PX else (vx, vy)
         self.last_pos = pos
         self.frames_since_det = 0
 
@@ -139,7 +116,7 @@ class ROIMotionTracker:
         self.last_rois_visual: Optional[List[Box]] = None
         self.ball_visible = False
 
-    def _assign_detections(self, dets: Sequence[Detection], frame_idx: int) -> None:
+    def _assign_detections(self, dets: Sequence[RawDetection], frame_index: int) -> None:
         """Greedily match tracks to detections by predicted distance; the rest start new tracks."""
         unassigned: List[Dict[str, Any]] = [
             {"pos": ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0), "conf": conf, "bbox": bbox}
@@ -159,16 +136,16 @@ class ROIMotionTracker:
             max_dist = min(base_max_dist, self.phys_cfg.max_speed_px_per_frame * _ASSIGN_MAX_SPEED_SLACK)
             if dist < max_dist:
                 d = unassigned.pop(best_idx)
-                t.update(d["pos"], frame_idx, conf=d["conf"], diag_box=_box_diagonal(d["bbox"]))
+                t.update(d["pos"], frame_index, conf=d["conf"], diag_box=_box_diagonal(d["bbox"]))
             else:
                 t.frames_since_det += 1
         for d in unassigned:
-            self.tracks.append(ROITrack(d["pos"], frame_idx, conf=d["conf"], diag_box=_box_diagonal(d["bbox"])))
+            self.tracks.append(ROITrack(d["pos"], frame_index, conf=d["conf"], diag_box=_box_diagonal(d["bbox"])))
 
-    def update_from_dets(self, dets: Sequence[Detection], frame_idx: int) -> List[CoastingRoi]:
+    def update_from_dets(self, dets: Sequence[RawDetection], frame_index: int) -> List[CoastingRoi]:
         """Fold this frame's ball detections in.
 
-        Returns the coasting ROIs ``(frame_idx, x1, y1, x2, y2)`` of every track
+        Returns the coasting ROIs ``(frame_index, x1, y1, x2, y2)`` of every track
         that timed out or merged into another; the motion inside them was never
         ball evidence and the caller erases it.
         """
@@ -176,7 +153,7 @@ class ROIMotionTracker:
             for t in self.tracks:
                 t.frames_since_det += 1
         else:
-            self._assign_detections(dets, frame_idx)
+            self._assign_detections(dets, frame_index)
 
         dropped_rois: List[CoastingRoi] = []
         for t in self.tracks:
@@ -226,8 +203,8 @@ class ROIMotionTracker:
                     max(0, min(int(x + radius), w)), max(0, min(int(y + radius), h)))
         return (max(0, int(x - radius)), max(0, int(y - radius)), min(w, int(x + radius)), min(h, int(y + radius)))
 
-    def next_rois(self, frame_idx: int) -> Tuple[Optional[List[Box]], Optional[List[Box]]]:
-        """Advance to ``frame_idx`` and return its motion ROIs.
+    def next_rois(self, frame_index: int) -> Tuple[Optional[List[Box]], Optional[List[Box]]]:
+        """Advance to ``frame_index`` and return its motion ROIs.
 
         Returns ``(rois, rois_visual)``: the ``(x1, y1, x2, y2)`` regions to
         compute motion in (or None for the full frame) and their tight visual
@@ -246,7 +223,7 @@ class ROIMotionTracker:
                 return self.last_rois, self.last_rois_visual
             return None, None
 
-        rois, rois_visual = self._track_rois(frame_idx)
+        rois, rois_visual = self._track_rois(frame_index)
         valid_rois = self._valid_rois(rois)
         if valid_rois is None:                   # one ROI covers the frame: compute motion full-frame
             self.last_rois = None
@@ -266,14 +243,14 @@ class ROIMotionTracker:
         self._fullframe_counter += 1
         return force_fullframe
 
-    def _track_rois(self, frame_idx: int) -> Tuple[List[Box], List[Box]]:
-        """``(motion, visual)`` ROIs about every track's predicted position at ``frame_idx``
+    def _track_rois(self, frame_index: int) -> Tuple[List[Box], List[Box]]:
+        """``(motion, visual)`` ROIs about every track's predicted position at ``frame_index``
         (tracks whose prediction or radius is not finite are skipped), recording the motion ROI
         of a track that has lost the ball as a coasting ROI."""
         rois: List[Box] = []
         rois_visual: List[Box] = []
         for t in self.tracks:
-            pred_cx, pred_cy = t.predict_roi(max(1, frame_idx - t.last_frame_idx), self.phys_cfg)
+            pred_cx, pred_cy = t.predict_roi(max(1, frame_index - t.last_frame_index), self.phys_cfg)
             if not (math.isfinite(float(pred_cx)) and math.isfinite(float(pred_cy))):
                 continue
             radius_visual, radius_motion = self._track_radii(t)
@@ -285,7 +262,7 @@ class ROIMotionTracker:
             # Only coasting frames are recorded: recording every frame made the
             # retroactive erase O(N) when a track dropped.
             if t.frames_since_det > 0:
-                t.coasting_rois.append((frame_idx, *roi))
+                t.coasting_rois.append((frame_index, *roi))
         return rois, rois_visual
 
     def _valid_rois(self, rois: List[Box]) -> Optional[List[Box]]:

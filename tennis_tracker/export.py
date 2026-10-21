@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from ball_in_play_selector import FrameResult, PackedMask, Track
+from ball_in_play_selector import FrameResult, PackedMask, RawDetection, Track
 
 from .pass1 import Pass1Result
 from .run_context import RunContext, RunResult
@@ -44,9 +44,9 @@ def frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict[
     if result is None:
         return row
     row.update({
-        "present": result.cx is not None and result.cy is not None,
-        "x": None if result.cx is None else float(result.cx),
-        "y": None if result.cy is None else float(result.cy),
+        "present": True,
+        "x": float(result.cx),
+        "y": float(result.cy),
         "conf": float(result.conf),
         "source": str(result.source),
         "interpolated": bool(result.interpolated),
@@ -81,7 +81,7 @@ def track_to_json(track: Optional[Track]) -> Optional[Dict[str, Any]]:
         "conf": float(obs.conf),
         "area": float(obs.area),
         "on_motion": bool(obs.on_motion),
-    } for obs in (track.observations or [])]
+    } for obs in track.observations]
     return {
         "track_id": int(track.track_id),
         "score": float(track.score),
@@ -89,7 +89,7 @@ def track_to_json(track: Optional[Track]) -> Optional[Dict[str, Any]]:
         "span": int(track.span),
         "first_frame": int(track.first_frame),
         "last_obs_frame": int(track.last_obs_frame),
-        "score_breakdown": json_safe(track.score_breakdown or {}),
+        "score_breakdown": json_safe(track.score_breakdown),
         "observations": observations,
     }
 
@@ -120,25 +120,20 @@ def _extract_motion_candidates(
         x, y, w_box, h_box = cv2.boundingRect(contour)
         if w_box <= 0 or h_box <= 0:
             continue
-        moments = cv2.moments(contour)
-        if abs(float(moments.get("m00", 0.0))) <= 1e-9:
-            continue
-        cx = float(moments["m10"] / moments["m00"])
-        cy = float(moments["m01"] / moments["m00"])
-        perimeter = float(cv2.arcLength(contour, True))
-        compactness = (
-            float(4.0 * math.pi * area / max(perimeter * perimeter, 1e-9))
-            if perimeter > 0.0 else 0.0
-        )
-        aspect_ratio = float(max(w_box, h_box) / max(min(w_box, h_box), 1))
-        fill_ratio = float(area / max(float(w_box * h_box), 1.0))
+        moments = cv2.moments(contour)        # m00 is the area, so it is non-zero here
+        cx = moments["m10"] / moments["m00"]
+        cy = moments["m01"] / moments["m00"]
+        perimeter = cv2.arcLength(contour, True)
+        compactness = 4.0 * math.pi * area / max(perimeter * perimeter, 1e-9) if perimeter > 0.0 else 0.0
+        aspect_ratio = max(w_box, h_box) / max(min(w_box, h_box), 1)
+        fill_ratio = area / max(float(w_box * h_box), 1.0)
 
         dist_to_search = None
         if search_x is not None and search_y is not None:
-            dist_to_search = float(math.hypot(cx - float(search_x), cy - float(search_y)))
+            dist_to_search = math.hypot(cx - search_x, cy - search_y)
         dist_to_selected = None
         if selected_x is not None and selected_y is not None:
-            dist_to_selected = float(math.hypot(cx - float(selected_x), cy - float(selected_y)))
+            dist_to_selected = math.hypot(cx - selected_x, cy - selected_y)
 
         score = 0.0
         score += _SCORE_COMPACTNESS * max(0.0, min(1.0, compactness))
@@ -146,8 +141,7 @@ def _extract_motion_candidates(
         score += _SCORE_AREA * min(area, _SCORE_AREA_SATURATION_PX) / _SCORE_AREA_SATURATION_PX
         if dist_to_search is not None:
             score -= min(dist_to_search, _SCORE_DISTANCE_CAP_PX) / _SCORE_DISTANCE_DIVISOR
-        if aspect_ratio > 1.0:
-            score -= max(0.0, aspect_ratio - 1.0) * _SCORE_ASPECT_PENALTY
+        score -= max(0.0, aspect_ratio - 1.0) * _SCORE_ASPECT_PENALTY
 
         candidates.append({
             "frame": int(frame_idx),
@@ -161,11 +155,11 @@ def _extract_motion_candidates(
             "fill_ratio": fill_ratio,
             "distance_to_search": dist_to_search,
             "distance_to_selected": dist_to_selected,
-            "score": float(score),
+            "score": score,
         })
 
-    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
-    return candidates[:max(1, int(max_candidates))]
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return candidates[:max(1, max_candidates)]
 
 
 def _choose_motion_mask(boost_mask: Optional[PackedMask],
@@ -179,9 +173,9 @@ def _choose_motion_mask(boost_mask: Optional[PackedMask],
 
 
 def _result_position(result: Optional[FrameResult]) -> Tuple[Optional[float], Optional[float]]:
-    if result is None or result.cx is None or result.cy is None:
+    if result is None:
         return None, None
-    return float(result.cx), float(result.cy)
+    return result.cx, result.cy
 
 
 def _result_search(
@@ -224,8 +218,7 @@ def _motion_diagnostic_reason(
         return "no_search_anchor"
     best_dist = candidates[0].get("distance_to_search")
     if best_dist is not None:
-        gate = max(_BLOB_TOO_FAR_MIN_GATE_PX, float(search_radius) if search_radius > 0.0 else 0.0)
-        if float(best_dist) > gate:
+        if best_dist > max(_BLOB_TOO_FAR_MIN_GATE_PX, search_radius):
             return "blob_too_far_from_search"
     if selected_source == "interp":
         return "interp_selected_over_motion_candidate"
@@ -236,7 +229,7 @@ def _motion_diagnostic_reason(
 
 def build_motion_diagnostics(
     per_frame: List[Optional[FrameResult]],
-    detections_by_frame: List[List[Tuple[list, float]]],
+    detections_by_frame: List[List[RawDetection]],
     boost_masks: List[Optional[PackedMask]],
     raw_motions: List[Optional[PackedMask]],
     width: int,
@@ -285,12 +278,7 @@ def build_motion_diagnostics(
             selected_source, has_detections, mask_source, candidates, search_x, search_y, search_radius)
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
-        should_export_frame = (
-            selected_source == "motion" or
-            (not has_detections and selected_source != "motion") or
-            bool(candidates and not has_detections)
-        )
-        if should_export_frame:
+        if selected_source == "motion" or not has_detections:
             diagnostic_frames.append({
                 "frame": int(frame_idx),
                 "selected_source": selected_source,

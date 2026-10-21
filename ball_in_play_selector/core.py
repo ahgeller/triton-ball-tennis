@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 
 from .config import REFERENCE_DIAG_PX, SelectorConfig
-from .models import Detection, FrameResult, Source, Track
+from .models import Detection, FrameResult, RawDetection, Source, Track
 from .physics import predict_projectile
 from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
 from .association import build_detections, build_tracks
@@ -44,9 +44,7 @@ _BLOB_PULL = 0.75
 _BLOB_PULL_DECAY = 0.5
 _ENDPOINT_PULL_WEIGHT = 0.5
 # A tail may run into the next track only if its projectile prediction lands
-# within max(40 px at 1080p, 5.5% of the diagonal) of that track's start.
-_HANDOVER_GATE_PX = 40.0
-_HANDOVER_GATE_MIN_PX = 12.0
+# within 5.5% of the diagonal (~121 px at 1080p) of that track's start.
 _HANDOVER_GATE_DIAG_FRAC = 0.055
 # A ball that left over the top edge (last two points in the top 5% / 15% of
 # the frame) is waited for at its exit point instead of being projected.
@@ -61,9 +59,28 @@ _JUMP_GATE_MIN_PX = 120.0
 _JUMP_GATE_DIAG_FRAC = 0.055
 # Shortest continuous run the trajectory refit will touch.
 _MIN_REFIT_RUN = 9
-# Refit weight per source: a detector point anchors the fit, a motion blob is a
-# coarse observation, a fitted fill carries almost no information of its own.
+# Refit weight per source: a detector point anchors the fit (a weak one a
+# little less), a motion blob is a coarse observation, a fitted fill carries
+# almost no information of its own, and a spike almost none at all.
 _REFINE_SOURCE_WEIGHT = {"det": 1.0, "motion": 0.30, "interp": 0.15}
+_REFINE_WEAK_DET_WEIGHT = 0.6
+_REFINE_SPIKE_WEIGHT = 0.02
+# Detector confidence that makes a point a full-weight anchor, and the one
+# past which it counts as a strong detection whose residual bounds the refit.
+_REFINE_FULL_WEIGHT_CONF = 0.70
+_REFINE_STRONG_DET_CONF = 0.55
+# Every point is fitted over at most this many neighbours on each side, with a
+# Huber loss that down-weights residuals beyond this many pixels.
+_REFINE_WINDOW = 10
+_REFINE_HUBER_PX = 4.0
+# How far the refit may move a point: a strong detection, a motion blob, a fill.
+_REFIT_BOUND_STRONG_DET_PX = 3.0
+_REFIT_BOUND_MOTION_PX = 6.0
+_REFIT_BOUND_FILL_PX = 12.0
+# A strong detection whose residual exceeds max(9 px, 4x the median residual
+# of the other detector points) is off the path, so its move is unbounded.
+_REFIT_OUTLIER_MIN_PX = 9.0
+_REFIT_OUTLIER_RESIDUAL_MULT = 4.0
 # Past this much correction a "det" point is no longer where the detector
 # fired, so it stops being reported as one (~44 px at 1080p).
 _REFINE_DET_RELABEL_FRAC = 0.02
@@ -189,6 +206,15 @@ def trajectory_observations(track: Track, fps: float) -> List[Detection]:
     return kept
 
 
+class MotionBlob(NamedTuple):
+    """A connected component of a motion mask: its centroid, xyxy box and pixel area."""
+
+    x: float
+    y: float
+    bbox: Tuple[int, int, int, int]
+    area: float
+
+
 def motion_near(
     mask_obj: Optional[MaskLike],
     x: float,
@@ -196,11 +222,11 @@ def motion_near(
     reference_area: float,
     gate: float,
     area_ratio_max: float,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[MotionBlob]:
     """Nearest motion component within `gate` px of (x, y), or None.
 
-    Returns ``{"x", "y", "bbox", "area"}`` for the closest component whose
-    pixel area lies in ``[2, area_ratio_max * reference_area]``.
+    Returns the closest component whose pixel area lies in
+    ``[2, area_ratio_max * reference_area]``.
     """
     mask = ensure_mask_u8(mask_obj)
     if mask is None or not cv2.countNonZero(mask):
@@ -219,7 +245,7 @@ def motion_near(
         cx, cy = map(float, centers[index])
         distance = math.hypot(cx - x, cy - y)
         if distance <= gate and distance < best_distance:
-            best = {"x": cx, "y": cy, "bbox": tuple(map(int, (bx, by, bx + bw, by + bh))), "area": area}
+            best = MotionBlob(cx, cy, (int(bx), int(by), int(bx + bw), int(by + bh)), area)
             best_distance = distance
     return best
 
@@ -249,7 +275,7 @@ def _motion_candidate(
     raw_motions: Optional[Sequence[Optional[MaskLike]]],
     gate: float,
     area_ratio_max: float,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[MotionBlob]:
     for masks in (boost_masks, raw_motions):
         if masks is None or frame >= len(masks):
             continue
@@ -295,7 +321,7 @@ def frame_result(
     y: float,
     source: Source,
     detection: Optional[Detection] = None,
-    motion: Optional[Dict[str, Any]] = None,
+    motion: Optional[MotionBlob] = None,
     search_radius: float = 0.0,
 ) -> FrameResult:
     """Build one output row; `detection` or `motion` supplies bbox/confidence."""
@@ -305,7 +331,7 @@ def frame_result(
         bbox = (detection.x1, detection.y1, detection.x2, detection.y2)
         confidence = float(detection.conf)
     elif motion is not None:
-        bbox = motion["bbox"]
+        bbox = motion.bbox
     return FrameResult(
         cx=float(x),
         cy=float(y),
@@ -393,36 +419,33 @@ def _refit_bound(
     if spikes[index]:
         return None
     if is_strong_det[index]:
-        det_mask = base_w >= 0.6
+        det_mask = base_w >= _REFINE_WEAK_DET_WEIGHT     # the detector points of the window
         det_mask[local] = False
         if det_mask.any():
             other_residual = float(np.median(residual[det_mask]))
-            if residual[local] > max(9.0, 4.0 * other_residual):
+            if residual[local] > max(_REFIT_OUTLIER_MIN_PX, _REFIT_OUTLIER_RESIDUAL_MULT * other_residual):
                 return None
-        return 3.0
+        return _REFIT_BOUND_STRONG_DET_PX
     if source == "motion":
-        return 6.0
-    return 12.0
+        return _REFIT_BOUND_MOTION_PX
+    return _REFIT_BOUND_FILL_PX
 
 
-def _refine_run(results: List[FrameResult], start: int, end: int, diag: float = REFERENCE_DIAG_PX) -> None:
-    """Robust weighted local polynomial refit of one continuous trajectory run."""
-    points = results[start:end]
-    m = len(points)
-    x = np.array([item.cx for item in points])
-    y = np.array([item.cy for item in points])
+def _refine_weights(points: Sequence[FrameResult]) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-point fit weights and the strong-detection flags, before spikes are marked."""
     weights = np.array([
-        (1.0 if item.conf >= 0.70 else 0.6) if item.source == "det"
-        else _REFINE_SOURCE_WEIGHT.get(item.source, 0.15)
+        (1.0 if item.conf >= _REFINE_FULL_WEIGHT_CONF else _REFINE_WEAK_DET_WEIGHT) if item.source == "det"
+        else _REFINE_SOURCE_WEIGHT[item.source]
         for item in points
     ])
     is_strong_det = np.array([
-        item.source == "det" and item.conf >= 0.55 for item in points
+        item.source == "det" and item.conf >= _REFINE_STRONG_DET_CONF for item in points
     ])
+    return weights, is_strong_det
 
-    spikes = _find_spikes(x, y)
-    weights[spikes] = 0.02
-    is_strong_det[spikes] = False
+
+def _despiked(x: np.ndarray, y: np.ndarray, spikes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """The path with the spike points linearly bridged, for finding kinks."""
     clean_x = x.copy()
     clean_y = y.copy()
     if spikes.any() and not spikes.all():
@@ -430,9 +453,12 @@ def _refine_run(results: List[FrameResult], start: int, end: int, diag: float = 
         bad = np.flatnonzero(spikes)
         clean_x[bad] = np.interp(bad, good, x[good])
         clean_y[bad] = np.interp(bad, good, y[good])
+    return clean_x, clean_y
 
-    kinks = _find_trajectory_kinks(clean_x, clean_y)
-    boundaries = [0] + kinks + [m - 1]
+
+def _segment_bounds(m: int, kinks: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
+    """Per point, the first and last index of its segment; a kink is a segment of its own."""
+    boundaries = [0] + list(kinks) + [m - 1]
     segment_lo = np.zeros(m, dtype=int)
     segment_hi = np.full(m, m - 1, dtype=int)
     for lo, hi in zip(boundaries, boundaries[1:]):
@@ -441,36 +467,51 @@ def _refine_run(results: List[FrameResult], start: int, end: int, diag: float = 
     for kink in kinks:
         segment_lo[kink] = kink
         segment_hi[kink] = kink
+    return segment_lo, segment_hi
 
-    window = 10
-    huber_px = 4.0
+
+def _local_fit(
+    tt: np.ndarray, xx: np.ndarray, yy: np.ndarray, base_w: np.ndarray, degree: int
+) -> Tuple[float, float, np.ndarray]:
+    """Two rounds of a Huber-reweighted weighted polynomial fit; the fitted
+    position at ``tt == 0`` and the last round's residuals."""
+    count = len(tt)
+    robust = np.ones(count)
+    fit_x = fit_y = 0.0
+    residual = np.zeros(count)
+    for _ in range(2):
+        sqrt_w = np.sqrt(base_w * robust)
+        design = np.vander(tt, degree + 1)
+        lhs = design * sqrt_w[:, None]
+        rhs = np.stack([xx * sqrt_w, yy * sqrt_w], axis=1)
+        coeffs, *_ = np.linalg.lstsq(lhs, rhs, rcond=None)
+        fitted = design @ coeffs
+        residual = np.hypot(fitted[:, 0] - xx, fitted[:, 1] - yy)
+        robust = np.minimum(1.0, _REFINE_HUBER_PX / np.maximum(residual, 1e-9))
+        fit_x, fit_y = coeffs[-1, 0], coeffs[-1, 1]
+    return fit_x, fit_y, residual
+
+
+def _refit_positions(
+    points: Sequence[FrameResult], x: np.ndarray, y: np.ndarray, weights: np.ndarray,
+    is_strong_det: np.ndarray, spikes: np.ndarray, kinks: Sequence[int],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Every point refitted within its segment and window, moved at most its bound."""
+    m = len(points)
+    segment_lo, segment_hi = _segment_bounds(m, kinks)
     new_x = x.copy()
     new_y = y.copy()
     for i in range(m):
-        lo = max(int(segment_lo[i]), i - window)
-        hi = min(int(segment_hi[i]), i + window)
+        lo = max(int(segment_lo[i]), i - _REFINE_WINDOW)
+        hi = min(int(segment_hi[i]), i + _REFINE_WINDOW)
         count = hi - lo + 1
         if count < 3:
             continue
-        tt = np.arange(lo, hi + 1, dtype=np.float64) - i
-        xx = x[lo:hi + 1]
-        yy = y[lo:hi + 1]
         base_w = weights[lo:hi + 1].copy()
         if base_w.sum() <= 0.0:
             continue
-        degree = 2 if count >= 6 else 1
-        robust = np.ones(count)
-        fit_x = fit_y = None
-        for _ in range(2):
-            sqrt_w = np.sqrt(base_w * robust)
-            design = np.vander(tt, degree + 1)
-            lhs = design * sqrt_w[:, None]
-            rhs = np.stack([xx * sqrt_w, yy * sqrt_w], axis=1)
-            coeffs, *_ = np.linalg.lstsq(lhs, rhs, rcond=None)
-            fitted = design @ coeffs
-            residual = np.hypot(fitted[:, 0] - xx, fitted[:, 1] - yy)
-            robust = np.minimum(1.0, huber_px / np.maximum(residual, 1e-9))
-            fit_x, fit_y = coeffs[-1, 0], coeffs[-1, 1]
+        tt = np.arange(lo, hi + 1, dtype=np.float64) - i
+        fit_x, fit_y, residual = _local_fit(tt, x[lo:hi + 1], y[lo:hi + 1], base_w, 2 if count >= 6 else 1)
         local = i - lo
         bound = _refit_bound(i, spikes, is_strong_det, points[i].source, residual, local, base_w)
         dx = fit_x - x[i]
@@ -482,6 +523,20 @@ def _refine_run(results: List[FrameResult], start: int, end: int, diag: float = 
             dy *= scale
         new_x[i] = x[i] + dx
         new_y[i] = y[i] + dy
+    return new_x, new_y
+
+
+def _refine_run(results: List[FrameResult], start: int, end: int, diag: float = REFERENCE_DIAG_PX) -> None:
+    """Robust weighted local polynomial refit of one continuous trajectory run."""
+    points = results[start:end]
+    x = np.array([item.cx for item in points])
+    y = np.array([item.cy for item in points])
+    weights, is_strong_det = _refine_weights(points)
+    spikes = _find_spikes(x, y)
+    weights[spikes] = _REFINE_SPIKE_WEIGHT
+    is_strong_det[spikes] = False
+    kinks = _find_trajectory_kinks(*_despiked(x, y, spikes))
+    new_x, new_y = _refit_positions(points, x, y, weights, is_strong_det, spikes, kinks)
 
     # Repairing a short target switch needs a large correction, so the move
     # itself stays unbounded. Large relocations are labeled as fitted recovery;
@@ -530,7 +585,7 @@ class _Scene:
 
     def motion_candidate(
         self, frame: int, x: float, y: float, area: float, steps: int, speed: float
-    ) -> Tuple[Optional[Dict[str, Any]], float]:
+    ) -> Tuple[Optional[MotionBlob], float]:
         """Nearest usable blob to (x, y) at `frame`, with the radius searched."""
         radius = _motion_search_radius(self.cfg, steps, speed)
         blob = _motion_candidate(
@@ -659,8 +714,8 @@ def _fill_gap(
             offset_active = False
             continue
         if motion is not None:
-            target_x = _BLOB_PULL * (motion["x"] - base_x)
-            target_y = _BLOB_PULL * (motion["y"] - base_y)
+            target_x = _BLOB_PULL * (motion.x - base_x)
+            target_y = _BLOB_PULL * (motion.y - base_y)
             if offset_active:
                 offset_x = _BLOB_PULL_DECAY * (offset_x + target_x)
                 offset_y = _BLOB_PULL_DECAY * (offset_y + target_y)
@@ -713,11 +768,10 @@ def _extend_tail(
         next_dt = next_start - right.frame
         predicted_x, predicted_y = predict_projectile((right.cx, right.cy), (vx, vy), next_dt, cfg)
         next_observation = next_track.observations[0]
-        handover_gate = max(_HANDOVER_GATE_MIN_PX, _HANDOVER_GATE_PX * (cfg.diag / REFERENCE_DIAG_PX))
         if math.hypot(
             predicted_x - next_observation.cx,
             predicted_y - next_observation.cy,
-        ) > max(handover_gate, _HANDOVER_GATE_DIAG_FRAC * cfg.diag):
+        ) > _HANDOVER_GATE_DIAG_FRAC * cfg.diag:
             return
     top_reentry = (
         dt > scene.fill_frames
@@ -753,11 +807,11 @@ def _extend_tail(
         misses = 0
         if results[frame] is None:
             results[frame] = frame_result(
-                motion["x"], motion["y"], "motion", motion=motion,
+                motion.x, motion.y, "motion", motion=motion,
                 search_radius=search_radius,
             )
         if top_reentry:
-            reentry_x, reentry_y = motion["x"], motion["y"]
+            reentry_x, reentry_y = motion.x, motion.y
 
 
 def _close_single_frame_holes(scene: _Scene, results: List[Optional[FrameResult]]) -> None:
@@ -818,7 +872,7 @@ def _drop_implausible_fills(scene: _Scene, results: List[Optional[FrameResult]])
 
 
 def select_ball_in_play(
-    detections_by_frame: Sequence[Sequence[Tuple[Sequence[float], float]]],
+    detections_by_frame: Sequence[Sequence[RawDetection]],
     fps: float,
     width: int,
     height: int,

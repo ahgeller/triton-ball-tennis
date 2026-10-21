@@ -11,7 +11,7 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-from ball_in_play_selector import FrameResult, Track
+from ball_in_play_selector import FrameResult, RawDetection, Track
 
 from .config import Config
 from .court_events import PlayerBoxes
@@ -134,7 +134,7 @@ def draw_player_boxes(targets: Iterable[np.ndarray], player_boxes: PlayerBoxes) 
         rectangle(targets, (px1, py1), (px2, py2), COLOR_PLAYER_BOX, 2)
 
 
-def draw_raw_detections(targets: Iterable[np.ndarray], dets: Sequence[Tuple[Sequence[float], float]]) -> None:
+def draw_raw_detections(targets: Iterable[np.ndarray], dets: Sequence[RawDetection]) -> None:
     """Every detector proposal as a thin box with its bottom edge emphasised."""
     targets = tuple(targets)
     for ball_box, _conf in dets:

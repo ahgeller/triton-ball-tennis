@@ -15,10 +15,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from ball_in_play_selector import PackedMask
+from ball_in_play_selector import PackedMask, RawDetection
 
 from .court_geometry import court_keypoints_key
-from .ball_detectors import Detection
 from .court_events import PlayerBoxes
 from .frame_window import FrameWindow
 from .motion import BackgroundModel, build_court_side_protect_mask, preprocess_frame_cuda
@@ -46,7 +45,7 @@ except ImportError:          # optional: without it the automatic cache budget i
 class Pass1Result:
     """Everything pass 1 learned, one entry per decoded frame in source order."""
 
-    detections: List[List[Detection]] = field(default_factory=list)
+    detections: List[List[RawDetection]] = field(default_factory=list)
     boost_masks: List[Optional[PackedMask]] = field(default_factory=list)
     raw_motions: List[Optional[PackedMask]] = field(default_factory=list)
     rois: List[Optional[List[Box]]] = field(default_factory=list)          # visual ROI boxes
@@ -256,7 +255,7 @@ class _Pass1Collector:
 
     # -- committing frames ------------------------------------------------------
 
-    def _commit(self, record: FrameRecord, dets: List[Detection]) -> None:
+    def _commit(self, record: FrameRecord, dets: List[RawDetection]) -> None:
         """Append the frame's evidence; retire the ROIs of tracks that just timed out."""
         t0 = self.timing.start()
         out = self.result

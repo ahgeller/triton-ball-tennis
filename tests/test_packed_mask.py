@@ -1,7 +1,8 @@
 """PackedMask: the one packed-mask format the tracker stores and the selector reads."""
 import numpy as np
 
-from ball_in_play_selector import PackedMask, ensure_mask_u8
+from ball_in_play_selector import PackedMask
+from ball_in_play_selector.utils import ensure_mask_u8
 
 
 def _mask(h=20, w=30):

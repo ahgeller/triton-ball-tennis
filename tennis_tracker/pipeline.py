@@ -173,9 +173,9 @@ def _select(ctx: RunContext, pass1: Pass1Result) -> Selection:
         # output so late-rally segments stay visible.  Never from other tracks:
         # the path must only reflect the chosen track's positions.
         for fi, res in enumerate(per_frame):
-            if fi in display_path or res is None or res.cx is None or res.cy is None:
+            if fi in display_path or res is None:
                 continue
-            display_path[fi] = (float(res.cx), float(res.cy), res.source in ("det", "motion"))
+            display_path[fi] = (res.cx, res.cy, res.source in ("det", "motion"))
     timing.add("selector_post", post_t0)
     timing.add("selector_total", selector_t0)
     return Selection(per_frame, chosen_track, all_tracks, court_polygon, last_kps, display_path)

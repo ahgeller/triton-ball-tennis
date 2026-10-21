@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 import torch
+from ball_in_play_selector import RawDetection
 
 from .config import Config
 from .engine_boxes import decode_engine_boxes, engine_output_mode
@@ -26,8 +27,6 @@ from .engine_session import TensorRTRuntimeSession
 from .frame_rate import require_phase_stride
 from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
 
-# One ball detection: an xyxy box in source pixels and its confidence.
-Detection = Tuple[List[float], float]
 # A BGR HWC uint8 frame, either a host array or a CUDA tensor of the same layout.
 FrameInput = Union[np.ndarray, torch.Tensor]
 
@@ -64,13 +63,13 @@ class BallDetectorBackend:
     def prepare_video(self, video_path: Path, fps: float, width: int, height: int, total: int) -> None:
         """Hook for whole-clip backends; ``total`` is the container's frame count hint."""
 
-    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[Detection]:
+    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[RawDetection]:
         raise NotImplementedError
 
     def detect_async_start(self, frame_bgr: FrameInput, frame_index: int) -> Any:
         raise NotImplementedError
 
-    def detect_async_finish(self, pending: Any) -> List[Detection]:
+    def detect_async_finish(self, pending: Any) -> List[RawDetection]:
         raise NotImplementedError
 
     def supports_cuda_frame(self) -> bool:
@@ -82,7 +81,7 @@ class CachedDetections:
     """GridTrackNet's pending token: the detections are final when it is issued."""
 
     frame_index: int
-    detections: List[Detection]
+    detections: List[RawDetection]
 
 
 class GridTrackNetBallDetector(BallDetectorBackend):
@@ -112,7 +111,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self._frame_tensor = frame_tensor
         self.model = load_model(Path(weights_path), self.device)
         # One entry per decoded source frame, appended by the prepass.
-        self.precomputed: Optional[List[List[Detection]]] = None
+        self.precomputed: Optional[List[List[RawDetection]]] = None
         # Progressive prepass state: frames < ready_upto are final; ``_done``
         # once the prepass has released its capture (with or without an error).
         self._ready_upto = 0
@@ -282,7 +281,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self._raise_if_failed()
 
     def detect_clip(self, video_path: Path, fps: float, width: int, height: int,
-                    total: int) -> List[List[Detection]]:
+                    total: int) -> List[List[RawDetection]]:
         """Run the prepass in the foreground and return each decoded frame's detections.
 
         Index ``i`` of the result holds frame ``i``'s detections: an empty list
@@ -292,7 +291,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         self.prepare_video(video_path, fps, width, height, total, background=False)
         return list(self.precomputed)
 
-    def detections_at(self, index: int) -> List[Detection]:
+    def detections_at(self, index: int) -> List[RawDetection]:
         """Detections for source frame ``index``, waiting for the prepass if it
         is behind.  Raises ``IndexError`` once the prepass has finished and
         decoded no such frame."""
@@ -305,7 +304,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
             )
         return self.precomputed[index]
 
-    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[Detection]:
+    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[RawDetection]:
         """Detections for source frame ``frame_index``.  ``frame_bgr`` is never
         read: the prepass already decoded the clip."""
         return self.detect_async_start(frame_bgr, frame_index).detections
@@ -316,7 +315,7 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         index = int(frame_index)
         return CachedDetections(index, self.detections_at(index))
 
-    def detect_async_finish(self, pending: CachedDetections) -> List[Detection]:
+    def detect_async_finish(self, pending: CachedDetections) -> List[RawDetection]:
         return pending.detections
 
 
@@ -326,7 +325,7 @@ def decode_ball_predictions(
     conf_threshold: float,
     cls_filter: Optional[List[int]],
     output_mode: str,
-) -> List[Detection]:
+) -> List[RawDetection]:
     """Turn one engine output tensor into ``(xyxy_box, confidence)`` pairs in source pixels."""
     rows = decode_engine_boxes(preds, scale, conf_threshold, _BALL_NMS_IOU, output_mode, cls_filter)
     return [([float(row[0]), float(row[1]), float(row[2]), float(row[3])], float(row[4])) for row in rows]
@@ -398,7 +397,7 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
     def supports_cuda_frame(self) -> bool:
         return self.device.type == "cuda"
 
-    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[Detection]:
+    def detect(self, frame_bgr: FrameInput, frame_index: int) -> List[RawDetection]:
         return self.detect_async_finish(self.detect_async_start(frame_bgr, frame_index))
 
     def detect_async_start(self, frame_bgr: FrameInput, frame_index: int) -> TensorRTBallPending:
@@ -415,7 +414,7 @@ class TensorRTRuntimeBallDetector(BallDetectorBackend):
         outputs = self.session.forward_tensor(t, out_slot=out_slot)
         return TensorRTBallPending(outputs, scale, self.session.completion_event(), t)
 
-    def detect_async_finish(self, pending: TensorRTBallPending) -> List[Detection]:
+    def detect_async_finish(self, pending: TensorRTBallPending) -> List[RawDetection]:
         self.session.wait(pending.event)
         return decode_ball_predictions(
             pending.outputs[0], pending.scale, self.cfg.conf, self.cls_filter, self.output_mode

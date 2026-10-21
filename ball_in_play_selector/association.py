@@ -4,7 +4,7 @@ import math
 from typing import List, Optional, Sequence, Tuple
 
 from .config import SelectorConfig
-from .models import Detection, Track
+from .models import Detection, RawDetection, Track
 from .utils import MaskLike, ensure_mask_u8, pxpf_at_fps
 from .physics import xy_dist
 
@@ -17,7 +17,7 @@ def _static_speed_threshold(cfg: SelectorConfig, diag: float) -> float:
 
 
 def build_detections(
-    detections_by_frame: Sequence[Sequence[Tuple[Sequence[float], float]]],
+    detections_by_frame: Sequence[Sequence[RawDetection]],
     motion_masks: Optional[Sequence[Optional[MaskLike]]] = None
 ) -> List[List[Detection]]:
     """Turn per-frame ``(bbox_xyxy, confidence)`` ball candidates into Detections.
@@ -43,18 +43,9 @@ def build_detections(
             if mask is not None:
                 my = max(0, min(int(cy), mask.shape[0] - 1))
                 mx = max(0, min(int(cx), mask.shape[1] - 1))
-                # Check 3x3 patch instead of single center pixel to avoid
-                # sub-pixel alignment misses on moving balls.
-                h_mask, w_mask = mask.shape[:2]
-                for dy in (-1, 0, 1):
-                    if on_motion:
-                        break
-                    py = max(0, min(my + dy, h_mask - 1))
-                    for dx in (-1, 0, 1):
-                        px = max(0, min(mx + dx, w_mask - 1))
-                        if mask[py, px] > 0:
-                            on_motion = True
-                            break
+                # A 3x3 patch, not the centre pixel alone: a moving ball's
+                # centre can sit a pixel off its blob.
+                on_motion = bool(mask[max(my - 1, 0):my + 2, max(mx - 1, 0):mx + 2].any())
 
             frame_list.append(Detection(
                 frame=t, cx=cx, cy=cy,

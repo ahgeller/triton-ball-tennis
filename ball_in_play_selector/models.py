@@ -1,8 +1,13 @@
-from typing import Optional, List, Tuple, Dict, Literal
+from typing import Optional, List, Sequence, Tuple, Dict, Literal
 from dataclasses import dataclass, field
 
 from .config import SelectorConfig
 from .physics import BallKalmanFilter
+
+# One ball candidate as the detector hands it over: an xyxy box in source
+# pixels and its confidence.  ``association.build_detections`` turns the
+# per-frame lists of these into ``Detection`` rows.
+RawDetection = Tuple[Sequence[float], float]
 
 
 @dataclass
@@ -156,8 +161,10 @@ Source = Literal["det", "motion", "interp"]
 
 @dataclass
 class FrameResult:
-    cx: Optional[float] = None
-    cy: Optional[float] = None
+    """One frame's selected ball position; a frame without one is ``None``, not a row."""
+
+    cx: float
+    cy: float
     conf: float = 0.0
     interpolated: bool = False
     bbox: Optional[Tuple[float, float, float, float]] = None

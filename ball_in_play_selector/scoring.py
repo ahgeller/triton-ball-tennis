@@ -116,18 +116,18 @@ def is_near_player(
     x: float,
     y: float,
     player_boxes_by_frame: Optional[PlayerBoxesByFrame],
-    frame_idx: int,
+    frame_index: int,
     margin: float = 80,
 ) -> bool:
     """Check if (x,y) is near any player bbox at given frame.
 
-    ``player_boxes_by_frame[frame_idx]`` is a dict (slot -> xyxy) or a list of
+    ``player_boxes_by_frame[frame_index]`` is a dict (slot -> xyxy) or a list of
     xyxy boxes; each box is dilated by ``margin`` and by twice its height
     upward (serve toss above the head).
     """
-    if player_boxes_by_frame is None or frame_idx >= len(player_boxes_by_frame):
+    if player_boxes_by_frame is None or frame_index >= len(player_boxes_by_frame):
         return False
-    pboxes = player_boxes_by_frame[frame_idx]
+    pboxes = player_boxes_by_frame[frame_index]
     if pboxes is None:
         return False
     # pboxes can be a dict (slot->bbox) or list of bboxes
@@ -451,6 +451,30 @@ def _court_fractions(
     n = len(track.observations)
     return near_court / n, far_outside / n, strict_inside / n
 
+def _near_player_fractions(
+    track: Track,
+    player_boxes_by_frame: Optional[PlayerBoxesByFrame],
+    court_poly: Optional[np.ndarray],
+    expand_px: float,
+) -> Tuple[float, float]:
+    """Fractions of the observations beside a player, and beside a player while
+    near the court (every near-player observation when there is no court)."""
+    if player_boxes_by_frame is None or not track.observations:
+        return 0.0, 0.0
+    near_player_count = 0
+    near_player_court_count = 0
+    for obs in track.observations:
+        if not is_near_player(obs.cx, obs.cy, player_boxes_by_frame, obs.frame, margin=_NEAR_PLAYER_MARGIN_PX):
+            continue
+        near_player_count += 1
+        if court_poly is None:
+            near_player_court_count += 1
+        elif cv2.pointPolygonTest(court_poly, (float(obs.cx), float(obs.cy)), True) >= -expand_px:
+            near_player_court_count += 1
+    n = len(track.observations)
+    return near_player_count / n, near_player_court_count / n
+
+
 def _motion_consistency(track: Track) -> float:
     """Score 0-1 for how smooth/consistent the track motion is.
     High jitter = low score. Smooth arcs = high score."""
@@ -547,28 +571,9 @@ def score_tracks(
             trk, court_poly, cfg.court_expand_px
         )
         motion_overlap = sum(1 for o in obs if o.on_motion) / max(n, 1)
-
-        near_player_frac = 0.0
-        near_player_court_frac = 0.0
-        if player_boxes_by_frame is not None and n > 0:
-            near_player_count = 0
-            near_player_court_count = 0
-            for o in obs:
-                near_player = is_near_player(
-                    o.cx, o.cy, player_boxes_by_frame, o.frame, margin=_NEAR_PLAYER_MARGIN_PX
-                )
-                if near_player:
-                    near_player_count += 1
-                    if court_poly is None:
-                        near_player_court_count += 1
-                    else:
-                        cdist = cv2.pointPolygonTest(
-                            court_poly, (float(o.cx), float(o.cy)), True
-                        )
-                        if cdist >= -cfg.court_expand_px:
-                            near_player_court_count += 1
-            near_player_frac = near_player_count / n
-            near_player_court_frac = near_player_court_count / n
+        near_player_frac, near_player_court_frac = _near_player_fractions(
+            trk, player_boxes_by_frame, court_poly, cfg.court_expand_px
+        )
 
         avg_speed, peak_speed = _track_speed_stats(trk)
         extent = _track_extent(trk)
@@ -590,12 +595,10 @@ def score_tracks(
         # weaker.  The court term is the near-court fraction (inside OR within
         # the margin), not strict_inside_frac, so near-edge detections don't
         # destroy track scores.
-        inside_mult = inside_frac
-        motion_mult = motion_evidence
         near_player_mult = _NEAR_PLAYER_MULT_FLOOR + _NEAR_PLAYER_MULT_RANGE * near_player_frac
 
         # Non-negative by construction: fractions times a positive sum.
-        total_score = base_add * inside_mult * motion_mult * near_player_mult
+        total_score = base_add * inside_frac * motion_evidence * near_player_mult
 
         trk.score = total_score
         trk.score_breakdown = {
@@ -622,8 +625,8 @@ def score_tracks(
             "obs_add": float(obs_add),
             "span_add": float(span_add),
             "additive_core": float(base_add),
-            "motion_mult": float(motion_mult),
-            "inside_mult": float(inside_mult),
+            "motion_mult": float(motion_evidence),
+            "inside_mult": float(inside_frac),
             "near_player_mult": float(near_player_mult),
             "movement_quality": float(motion_smooth),
         }

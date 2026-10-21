@@ -8,5 +8,5 @@ def test_small_motion_component_uses_pixel_area():
     mask = np.zeros((100, 100), np.uint8)
     mask[49:52, 49:52] = 255
     result = motion_near(mask, 50, 50, 175., 20., 4.)
-    assert (result["x"], result["y"], result["area"]) == (50., 50., 9.)
+    assert (result.x, result.y, result.area) == (50., 50., 9.)
     assert motion_near(mask, 0, 0, 175., 20., 4.) is None
