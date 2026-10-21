@@ -89,7 +89,7 @@ def visible_tracks(entries: List[LabelRow], own_size: Tuple[int, int], meta: Vid
 
 # --------------------------------------------------------------------------- writing it
 
-def remapped_rows(entries: List[LabelRow], frames: np.ndarray, alignment: Alignment, fixed_by_hand: Set[int],
+def remapped_rows(entries: List[LabelRow], frames: np.ndarray, alignment: Alignment, reviewed: Set[int],
                   total: int, own_size: Tuple[int, int], video_size: Tuple[int, int]) -> List[Tuple[int, str, str]]:
     """The label file's rows re-timed onto the video: ``(video frame, x cell, y cell)`` for every row
     that lands inside the video and outside a cut, scaled from the labels' own frame size
@@ -99,7 +99,7 @@ def remapped_rows(entries: List[LabelRow], frames: np.ndarray, alignment: Alignm
     width, height = video_size
     per_frame = dict(zip(frames.tolist(), alignment.chosen.tolist()))
     drop_frames = {int(frames[i]) for i in alignment.dropped}
-    if drop_frames & fixed_by_hand:
+    if drop_frames & reviewed:
         raise ValueError("Alignment would drop a reviewed row; nothing changed")
     current = int(alignment.chosen[0])
     written = []
@@ -108,7 +108,7 @@ def remapped_rows(entries: List[LabelRow], frames: np.ndarray, alignment: Alignm
         if entry.frame in drop_frames:
             continue
         index = int(round(entry.frame * alignment.rate)) + current
-        if entry.frame in fixed_by_hand and (index != entry.frame or not 0 <= index < total):
+        if entry.frame in reviewed and (index != entry.frame or not 0 <= index < total):
             raise ValueError("Alignment would move a reviewed row; nothing changed")
         if not 0 <= index < total:
             continue
@@ -163,11 +163,11 @@ def swap_video(label_clip: str, video_clip: str) -> None:
     print(f"  [media] {media.name} is now a copy of {source.name}")
 
 
-def apply_alignment(entries: List[LabelRow], frames: np.ndarray, alignment: Alignment, fixed_by_hand: Set[int],
+def apply_alignment(entries: List[LabelRow], frames: np.ndarray, alignment: Alignment, reviewed: Set[int],
                     meta: VideoMeta, own_size: Tuple[int, int], label_clip: str, video_clip: str) -> int:
     """Rewrite the label file (backed up first) and, when the labels belong to a different video,
     swap that video in under them. Nothing is written if a reviewed row would move."""
-    written = remapped_rows(entries, frames, alignment, fixed_by_hand, meta.total, own_size, (meta.width, meta.height))
+    written = remapped_rows(entries, frames, alignment, reviewed, meta.total, own_size, (meta.width, meta.height))
     path = label_csv(label_clip)
     backup_copy(path, "realign")
     write_label_cells(path, written)
@@ -205,12 +205,12 @@ def own_frame_size(label_clip: str, video_clip: str, meta: VideoMeta) -> Tuple[i
     return own.width, own.height
 
 
-def pinned_rows(fixed_by_hand: Set[int], tracks: Tracks) -> np.ndarray:
+def pinned_rows(reviewed: Set[int], tracks: Tracks) -> np.ndarray:
     """Which visible rows a person has reviewed in the label tool (``reviewed_frames``).
 
     Clicking the ball says "it is here on this frame" and SPACE says "it is right where it is",
     so either way that row stays put and the solve works around it."""
-    pinned = np.array([f in fixed_by_hand for f in tracks.frames.tolist()], bool)
+    pinned = np.array([f in reviewed for f in tracks.frames.tolist()], bool)
     if pinned.any():
         print(f"  {int(pinned.sum())} frame(s) you corrected by hand are pinned and will not move")
     return pinned
@@ -238,13 +238,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     now = agreement(tracks, evidence, 0)
     print(f"  as it stands:  agree {now[0]:.2f} on {now[1]} judged, median {now[2]:.1f} px")
 
-    fixed_by_hand = reviewed_frames(label_clip)          # a damaged review file is an error: no alignment
-    if fixed_by_hand and label_clip != video_clip:
+    reviewed = reviewed_frames(label_clip)          # a damaged review file is an error: no alignment
+    if reviewed and label_clip != video_clip:
         print("Cannot replace the video under reviewed labels; resolve the source mapping manually first")
         return 1
-    pinned = pinned_rows(fixed_by_hand, tracks)
+    pinned = pinned_rows(reviewed, tracks)
     chunks = int(min(60, max(8, len(entries) // 60)))
-    best = solve_alignment(tracks, evidence, fixed_by_hand, pinned, chunks)
+    best = solve_alignment(tracks, evidence, reviewed, pinned, chunks)
     if best is None:
         print("  nothing in this video puts the labels on the ball - not salvageable this way")
         return 1
@@ -263,7 +263,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.apply:
         print("\n  (dry run - pass --apply to write it)")
         return 0
-    return apply_alignment(entries, tracks.frames, best, fixed_by_hand, meta, own_size, label_clip, video_clip)
+    return apply_alignment(entries, tracks.frames, best, reviewed, meta, own_size, label_clip, video_clip)
 
 
 if __name__ == "__main__":

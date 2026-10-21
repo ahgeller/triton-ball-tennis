@@ -143,13 +143,13 @@ def unplaceable_at_cuts(tracks: Tracks, evidence: Evidence, chosen: np.ndarray) 
     return drop
 
 
-def solve_alignment(tracks: Tracks, evidence: Evidence, fixed_by_hand: Set[int], pinned: np.ndarray,
+def solve_alignment(tracks: Tracks, evidence: Evidence, reviewed: Set[int], pinned: np.ndarray,
                     chunks: int) -> Optional[Alignment]:
     """The best alignment over RATES, reporting each rate tried; None when no rate puts the labels
     on the ball. Reviewed rows allow rate 1 only and keep offset 0."""
     best = None
     for rate in RATES:
-        if fixed_by_hand and rate != 1.0:
+        if reviewed and rate != 1.0:
             continue  # a reviewed source-frame index is an exact temporal anchor
         based = tracks.at_rate(rate)
         offsets = candidates(based, evidence, chunks)
@@ -161,7 +161,7 @@ def solve_alignment(tracks: Tracks, evidence: Evidence, fixed_by_hand: Set[int],
         # Invisible reviewed rows are not in the visual solve, but are equally
         # authoritative. Reject any candidate that would shift their segment.
         if any(int(chosen[max(0, int(np.searchsorted(tracks.frames, f, side="right")) - 1)]) != 0
-               for f in fixed_by_hand):
+               for f in reviewed):
             continue
         result = agreement(based, evidence, chosen)
         print(f"  rate {rate:g}: {offsets.size} candidate offsets in {offsets.min():+d}..{offsets.max():+d}"
