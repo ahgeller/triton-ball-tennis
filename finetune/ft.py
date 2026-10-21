@@ -41,7 +41,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 # Only stdlib-backed finetune modules at the top: ft.py must import without cv2, numpy or torch so
 # ensure_interpreter can hand over to an interpreter that has them.
 from finetune.data_policy import OWN_SOURCES, evaluation_clips, read_review_status
-from finetune.fileio import write_atomic
+from finetune.fileio import backup_copy, copy_atomic, write_atomic
 from finetune.label_audit import audit_labels, check_label_file, matches_any, open_flags, outstanding_flags
 from finetune.labels import LabelFormatError, read_labels, reviewed_frames
 from finetune.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
@@ -481,10 +481,9 @@ def cmd_promote(args: argparse.Namespace) -> int:
         if sha8(source) == sha8(ws.REPO_WEIGHTS):
             print(f"{ws.REPO_WEIGHTS.name} already is {source.name}; nothing to do")
             return 0
-        backup = ws.REPO_WEIGHTS.with_name(f"{ws.REPO_WEIGHTS.stem}_prev_{dt.datetime.now():%Y%m%d_%H%M%S}.npz")
-        shutil.copyfile(ws.REPO_WEIGHTS, backup)
+        backup = backup_copy(ws.REPO_WEIGHTS, "promote")
         print(f"[backup ] {ws.REPO_WEIGHTS.name} -> {backup.name}")
-    shutil.copyfile(source, ws.REPO_WEIGHTS)
+    copy_atomic(source, ws.REPO_WEIGHTS)
     print(f"[promote] {source} -> {ws.REPO_WEIGHTS}")
     print("next: python finetune/ft.py eval      (own-camera clips)\n"
           "      python check_parity.py          (the Pomona gate; a new model may legitimately move its numbers)")

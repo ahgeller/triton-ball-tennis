@@ -48,7 +48,7 @@ from tennis_tracker.gridtracknet import (
 )
 from tennis_tracker.frame_rate import require_phase_stride
 from finetune.data_policy import is_trainable, is_verified, read_review_status
-from finetune.fileio import write_atomic
+from finetune.fileio import copy_atomic, write_atomic
 from finetune.labels import Labels, read_labels as read_label_points
 from finetune.scoring import REFERENCE_HEIGHT, scale_for_width, score
 from finetune import workspace as ws
@@ -538,8 +538,7 @@ def pick_winner(args: argparse.Namespace, clips: List[Clip], val_clips: List[str
         print(f"[eval] starting weights on {val_clips}: {baseline}")
         if not better(trained, baseline):
             winner, winner_stats = args.weights, baseline
-    args.save.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(winner, args.save)
+    copy_atomic(winner, args.save)
     write_atomic(args.run_dir / "winner.json", json.dumps({"winner": str(winner), "metrics": winner_stats,
                                                            "validation_clips": val_clips}, indent=2))
     print(f"[done] best model -> {args.save}  (from {winner.name}: {winner_stats})")

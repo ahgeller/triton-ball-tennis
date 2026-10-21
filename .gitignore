@@ -22,6 +22,7 @@ finetune/labels/grid_*
 finetune/labels/video1[3-9]_ball.csv
 finetune/labels/video[2-5][0-9]_ball.csv
 models/*_prev_*.npz
+models/*.before_promote_*
 finetune/.training-python
 
 # Local source media and label safety copies; already tracked samples stay tracked.

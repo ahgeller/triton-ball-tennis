@@ -154,6 +154,18 @@ def test_a_failed_write_leaves_the_old_file_and_no_temporary(tmp_path):
     assert backup.name.startswith("settings.json.before_test_") and backup.read_text(encoding="utf-8") == "old"
 
 
+def test_copy_atomic_lands_the_whole_file_or_nothing(tmp_path):
+    source, target = tmp_path / "new.npz", tmp_path / "sub" / "weights.npz"
+    source.write_bytes(b"\x00" * 1000 + b"end")
+    fileio.copy_atomic(source, target)
+    assert target.read_bytes() == source.read_bytes() and not list(tmp_path.rglob("*.tmp"))
+    fileio.copy_atomic(source, target)                         # over an existing file too
+    assert target.read_bytes() == source.read_bytes()
+    with pytest.raises(FileNotFoundError):
+        fileio.copy_atomic(tmp_path / "missing", target)
+    assert target.read_bytes() == source.read_bytes()          # the failed copy left it alone
+
+
 # --------------------------------------------------------------------------- video facts
 
 def write_clip(path: Path, count: int, size=(64, 36), fps=30.0) -> Path:

@@ -230,7 +230,7 @@ separately). `ft.py check` flags files that break this rule.
 
 5. **Use it** — `.\finetune.ps1 promote` copies the winner over
    `models/gridtracknet_weights_torch.npz` (the old file is kept as
-   `*_prev_<timestamp>.npz`) — only worth doing when `runs/<tag>/winner.json`
+   `*.npz.before_promote_<timestamp>`) — only worth doing when `runs/<tag>/winner.json`
    says the new weights won. Then `.\finetune.ps1 eval` and
    `python check_parity.py`. Go back to step 1 with `--weights` pointing at
    the new model. `.\finetune.ps1 status` at any point shows what is

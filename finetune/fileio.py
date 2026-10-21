@@ -1,10 +1,11 @@
 """Writing workspace files so a crash, a power cut or a locked file never leaves a torn one.
 
-Every label CSV, sidecar JSON, manifest and settings file in the workspace goes through here:
-the content is written to a temporary file beside the target, flushed to disk, and then moved
-over the target, so the target is always either the old file or the complete new one. Windows
-refuses the move while another program (Excel, an editor, a virus scan) has the target open,
-so the move is retried for a moment before the error is raised.
+Every label CSV, sidecar JSON, manifest and settings file in the workspace, and every weights
+file the tracker runs, goes through here: the content is written to a temporary file beside the
+target, flushed to disk, and then moved over the target, so the target is always either the old
+file or the complete new one. Windows refuses the move while another program (Excel, an editor,
+a virus scan) has the target open, so the move is retried for a moment before the error is
+raised.
 """
 from __future__ import annotations
 
@@ -62,8 +63,21 @@ def atomic_csv(path: Path) -> Iterator[csv.writer]:
         yield csv.writer(handle)
 
 
+def copy_atomic(source: Path, path: Path) -> None:
+    """Copy `source` over `path` through a temporary file beside it, flushed to disk first, so a
+    reader of `path` sees the old file or the complete copy and nothing in between."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = temporary_for(path)
+    with source.open("rb") as reader, temporary.open("wb") as writer:
+        shutil.copyfileobj(reader, writer)
+        writer.flush()
+        os.fsync(writer.fileno())
+    replace_file(temporary, path)
+
+
 def backup_copy(path: Path, tag: str) -> Path:
-    """Copy `path` to `<name>.before_<tag>_<timestamp>` beside it and return the copy's path."""
+    """Copy `path` to `<name>.before_<tag>_<timestamp>` beside it and return the copy's path. Every
+    bulk write over a workspace file (an import, a shift, a realignment, a promotion) makes one."""
     stamp = f"{dt.datetime.now():%Y%m%d_%H%M%S_%f}"
     backup = path.with_name(f"{path.name}.before_{tag}_{stamp}")
     shutil.copyfile(path, backup)

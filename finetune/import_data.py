@@ -47,8 +47,8 @@ import cv2
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from finetune.fileio import backup_copy
-from finetune.labels import LabelPoint, read_labels, reviewed_frames, write_labels
+from finetune.fileio import backup_copy, copy_atomic
+from finetune.labels import LabelPoint, read_label_rows, read_labels, reviewed_frames, write_labels
 from finetune import workspace as ws
 from finetune.workspace import (DEFAULT_SOURCES, MANIFEST_COLUMNS, VIDEO_SUFFIXES, clip_of, label_csv, natural_key,
                                 read_manifest, video_meta, write_manifest)
@@ -232,9 +232,10 @@ def import_archive(src: Path, manifest: Manifest, force: bool, link: bool, dry_r
         if dst_csv.is_file() and dst_video.is_file() and not force:
             action = "kept"
         else:
+            read_label_rows(csv_path)          # a malformed file is a LabelFormatError before anything is written
             protect_existing(dst_csv)
             copy_media(video, dst_video, link)
-            shutil.copyfile(csv_path, dst_csv)
+            copy_atomic(csv_path, dst_csv)
             action = "copied"
         report(clip, action, record(manifest, clip, dst_video, "custom", "archive", "own-camera", str(video)))
         count += 1
