@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from .config import SelectorConfig
-from .models import FrameResult, Track
+from .models import Detection, FrameResult, Source, Track
 from .physics import _predict_projectile
 from .scoring import _is_near_player, _select_timeline_chain, _stitch_track_chain, score_tracks
 from .tracking import build_detections, build_tracks
@@ -224,7 +224,21 @@ def _direction_cosine(first, second, third) -> float:
     return -1.0 if scale < 1e-6 else (ax * bx + ay * by) / scale
 
 
-def _result(x, y, source, detection=None, motion=None, search_radius=0.0) -> FrameResult:
+_SOURCE_REASON: Dict[str, str] = {
+    "det": "selected_track_observation",
+    "motion": "bounded_motion_correction",
+    "interp": "bounded_linear_fill",
+}
+
+
+def _result(
+    x: float,
+    y: float,
+    source: Source,
+    detection: Optional[Detection] = None,
+    motion: Optional[Dict[str, Any]] = None,
+    search_radius: float = 0.0,
+) -> FrameResult:
     bbox = None
     confidence = 0.0
     if detection is not None:
@@ -245,16 +259,13 @@ def _result(x, y, source, detection=None, motion=None, search_radius=0.0) -> Fra
         # Reported so the pipeline diagnostics judge a blob against the radius
         # the selector actually used, not an unrelated one of their own.
         search_radius=float(search_radius),
-        source_reason={
-            "det": "selected_track_observation",
-            "motion": "bounded_motion_correction",
-            "interp": "bounded_linear_fill",
-            "carry": "evidence_bounded_tail",
-        }[source],
+        source_reason=_SOURCE_REASON[source],
     )
 
 
-_REFINE_SOURCE_WEIGHT = {"det": 1.0, "motion": 0.30, "interp": 0.15, "carry": 0.10}
+# Refit weight per source: a detector point anchors the fit, a motion blob is a
+# coarse observation, a fitted fill carries almost no information of its own.
+_REFINE_SOURCE_WEIGHT = {"det": 1.0, "motion": 0.30, "interp": 0.15}
 _REFERENCE_DIAG = 2203.0        # diagonal of 1920x1080
 # Past this much correction a "det" point is no longer where the detector
 # fired, so it stops being reported as one (~44 px at 1080p).

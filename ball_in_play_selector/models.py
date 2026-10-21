@@ -1,4 +1,4 @@
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Literal
 from dataclasses import dataclass, field
 
 from .config import SelectorConfig
@@ -125,6 +125,14 @@ class Track:
             return self.observations[-1].area if self.observations else 0.0
         return sum(self.historical_areas) / len(self.historical_areas)
 
+# What decided a frame's position:
+#   'det'    = a detector observation on the selected track
+#   'motion' = a motion blob near the predicted path (bounded correction)
+#   'interp' = a fitted position: bounded fill between anchors, or a detector
+#              point the trajectory refit relocated too far to still call raw
+Source = Literal["det", "motion", "interp"]
+
+
 @dataclass
 class FrameResult:
     cx: Optional[float] = None
@@ -132,30 +140,13 @@ class FrameResult:
     conf: float = 0.0
     interpolated: bool = False
     bbox: Optional[Tuple[float, float, float, float]] = None
-    # Debug-only placeholder entries may carry guide-circle metadata without
-    # representing a selected ball output for that frame.
-    debug_only: bool = False
-    # Debug: what decided this frame's position
-    # 'det' = YOLO detection, 'motion' = motion blob tracking,
-    # 'interp' = interpolation between detections,
-    # 'carry' = predicted continuation during short loss,
-    # 'guide' = chosen-track guide fallback
-    source: str = 'det'
-    # Debug: search region used for motion tracking
+    source: Source = "det"
+    # Search region the selector used to look for a motion blob this frame
+    # (centre = predicted point, radius 0 when no search happened).
     search_cx: float = 0.0
     search_cy: float = 0.0
     search_radius: float = 0.0
-    # Debug: guide-side detection gate/search circle used this frame (if any)
-    guide_search_cx: float = 0.0
-    guide_search_cy: float = 0.0
-    guide_search_radius: float = 0.0
-    guide_search_exact: bool = False
-    guide_search_frozen: bool = False
-    guide_search_hold: bool = False
-    # Debug: normalized selector explanation for this frame.
+    # Short machine-readable explanation of `source` for the JSON export.
     source_reason: str = ""
-    source_reasons: List[str] = field(default_factory=list)
-    source_rejects: Dict[str, int] = field(default_factory=dict)
-    source_policy: Dict[str, Any] = field(default_factory=dict)
     # Immutable detector location, separate from the selected/refitted coordinates.
     measurement: Optional[Tuple[float, float]] = None
