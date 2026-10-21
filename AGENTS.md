@@ -15,9 +15,12 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   single-frame TensorRT ball engine. At about 60 FPS, even and odd phases each
   run at about 30 FPS. Preserve source-frame indices and temporal order.
   `engine_session.py`: the TensorRT session the ball, player and court engines
-  share. `player_detector.py`: TensorRT players with ByteTrack association.
-  `court_detector.py`: court keypoints every N frames, last good result cached.
-  `detectors.py` only re-exports these.
+  share; `engine_files.py`: locating engine files, their Ultralytics metadata
+  and I/O tensor table (no CUDA); `engine_boxes.py`: decoding detection-engine
+  outputs into boxes for the ball and player backends. `player_detector.py`:
+  TensorRT players with ByteTrack association. `court_detector.py`: court
+  keypoints every N frames, last good result cached. `paths.py`: the model asset
+  paths every consumer (Config defaults, scripts, the workspace) spells once.
 - `tennis_tracker/pipeline.py`: orders the stages, calls the selector and court
   events, reports. `run_context.py`: data the stages pass each other. `pass1.py`
   (with `frame_window.py`): decoding, background/motion state, ROI collection,

@@ -133,9 +133,10 @@ python evaluate_archive.py --archive finetune --mode raw --clips video13
 
 ```text
 clean_tracker.py                         Command-line entry point
-evaluate_archive.py                      Detector/pipeline scoring on hand-labelled clips
-validate_tracking.py                     Tracking JSON vs. hand labels
-check_parity.py                          Frozen Pomona benchmark gate
+evaluate_archive.py                      Detector/pipeline scoring on hand-labelled clips (evaluation/archive.py)
+validate_tracking.py                     Tracking JSON vs. hand labels (evaluation/tracking.py)
+check_parity.py                          Frozen Pomona benchmark gate (evaluation/parity.py)
+evaluation/                              The scorers behind those three entry points
 build_trt_engines.py                     YOLO checkpoint -> ONNX -> TensorRT engine builder
 requirements.txt                         Python packages (see Requirements)
 tennis_tracker/pipeline.py               Run entry point: orders the stages, calls the selector
@@ -149,9 +150,11 @@ tennis_tracker/motion_debug.py           Motion-debug video drawing
 tennis_tracker/tracking.py               ROI tracking for motion search
 tennis_tracker/ball_detectors.py         GridTrackNet prepass and the TensorRT ball engine
 tennis_tracker/engine_session.py         TensorRT session shared by the engine backends
+tennis_tracker/engine_files.py           Engine files on disk: metadata, class names, I/O tensors
+tennis_tracker/engine_boxes.py           Decoding detection-engine outputs into boxes
 tennis_tracker/player_detector.py        TensorRT player detection with ByteTrack association
 tennis_tracker/court_detector.py         Court keypoint engine, run every N frames
-tennis_tracker/detectors.py              Re-exports the detector backends
+tennis_tracker/paths.py                  Model asset paths, spelled once
 tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
 tennis_tracker/court_geometry.py         Court keypoints, side guides, polygon, homography
 tennis_tracker/court_overlay.py          Bounces, player contacts, rally legs
