@@ -524,7 +524,8 @@ def run_cli(argv: List[str]) -> int:
 
     args, rest = parser.parse_known_args(argv)
     args.rest = rest
-    return args.func(args)
+    status = args.func(args)
+    return 0 if status is None else status        # listings (status, paths) report no exit status
 
 
 def main() -> int:

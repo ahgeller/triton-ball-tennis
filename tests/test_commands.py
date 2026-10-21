@@ -5,7 +5,8 @@ ft.run_cli in test_ft.py."""
 import math
 
 from finetune import commands
-from finetune.commands import clip_counts, cmd_paths, label_stats, measure_camera_motion, review_progress, sha8, shown
+from finetune.commands import (clip_counts, cmd_paths, label_frame_size, label_stats, measure_camera_motion,
+                               print_own_camera_clips, print_unfinished_clips, review_progress, sha8, shown)
 from finetune.data import workspace
 from finetune.data.labels import write_labels
 from finetune.data.workspace import ROOT
@@ -25,6 +26,31 @@ def test_label_stats_and_counts_prefer_the_manifest_row(workspace_dir, capsys):
     assert clip_counts("rally", csv_path, None, {"rally": video}) == (3, 2)
     assert clip_counts("rally", csv_path, None, {"rally": workspace_dir / "videos" / "missing.avi"}) == (3, 3)
     assert "counting rally_ball.csv as 1080p" in capsys.readouterr().out
+
+
+def test_label_frame_size_falls_back_to_the_reference_frame(workspace_dir, capsys):
+    csv_path = workspace_dir / "labels" / "rally_ball.csv"
+    assert label_frame_size(None, csv_path) == (1920, 1080)
+    assert label_frame_size(write_clip(workspace_dir / "videos" / "rally.avi", 2, SIZE), csv_path) == SIZE
+    assert capsys.readouterr().out == ""
+    assert label_frame_size(workspace_dir / "videos" / "missing.avi", csv_path) == (1920, 1080)
+    assert "[warn]" in capsys.readouterr().out
+
+
+def test_status_sections_list_own_clips_pending_videos_and_orphans(workspace_dir, capsys):
+    finals = {"video10": workspace_dir / "labels" / "video10_ball.csv", "grid_match1": workspace_dir / "labels" / "g_ball.csv"}
+    manifest = {"video10": {"source": "custom", "fps": "60", "width": "1920", "height": "1080", "label_frames": "40",
+                            "visible": "30", "note": "baseline"},
+                "grid_match1": {"source": "gridtracknet"}}
+    print_own_camera_clips(finals, manifest)
+    out = capsys.readouterr().out
+    assert "own-camera clips" in out and "video10" in out and "1920x1080 @60" in out and "grid_match1" not in out
+    print_own_camera_clips({"grid_match1": finals["grid_match1"]}, manifest)
+    assert capsys.readouterr().out == ""                                       # nothing from an own camera: no section
+    print_unfinished_clips({"video10": workspace_dir / "v.mp4", "video11": workspace_dir / "w.mp4"}, finals, {"video11"})
+    out = capsys.readouterr().out
+    assert "draft ready -> python finetune/ft.py label video11" in out
+    assert "label files without a video: grid_match1" in out and "video10" not in out
 
 
 def test_review_progress_reads_the_sidecar(workspace_dir, capsys):
@@ -47,7 +73,7 @@ def test_sha8_and_shown(tmp_path):
 
 
 def test_paths_lists_the_interpreter_workspace_and_sources(workspace_dir, capsys):
-    assert cmd_paths(None) == 0
+    assert cmd_paths(None) is None                                           # a listing: no exit status
     out = capsys.readouterr().out
     assert f"workspace  {workspace.WORKSPACE}" in out and f"repo       {ROOT}" in out
     assert all(f"source {name:11s}" in out for name in workspace.DEFAULT_SOURCES)

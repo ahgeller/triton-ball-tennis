@@ -4,12 +4,13 @@ is imported here, so the hand-over itself never needs those packages."""
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 from finetune.data.fileio import write_atomic
 from finetune.data.workspace import ROOT
@@ -27,8 +28,30 @@ def python_names() -> Tuple[str, ...]:
     return ("python.exe",) if os.name == "nt" else ("python3", "python")
 
 
+def venv_pythons() -> Iterator[Path]:
+    """Where a venv in or beside the repository would keep its interpreter (Windows and POSIX layouts)."""
+    for root in (ROOT, ROOT.parent):
+        for venv in (".venv", "venv"):
+            for name in python_names():
+                yield root / venv / "Scripts" / name
+                yield root / venv / "bin" / name
+
+
+def conda_pythons(home: Path) -> Iterator[Path]:
+    """Every environment under the conda / miniconda / anaconda / miniforge roots in ``home``."""
+    conda_roots = ("anaconda3", "miniconda3", "miniforge3", "mambaforge")
+    for base in (home / ".conda" / "envs", *(home / root / "envs" for root in conda_roots)):
+        if not base.is_dir():
+            continue
+        for env in sorted(base.iterdir()):
+            for name in python_names():
+                yield env / name
+                yield env / "bin" / name
+
+
 def candidate_interpreters() -> List[Path]:
-    """Places a torch + cv2 interpreter tends to live, best guess first."""
+    """Places a torch + cv2 interpreter tends to live, best guess first: the environment variable,
+    the cached winner, venvs, conda environments, this interpreter, then PATH."""
     found: List[Path] = []
 
     def add(path) -> None:
@@ -41,19 +64,10 @@ def candidate_interpreters() -> List[Path]:
     add(os.environ.get("TENNIS_FINETUNE_PYTHON"))
     if PYTHON_CACHE.is_file():                       # whatever worked last time
         add(PYTHON_CACHE.read_text(encoding="utf-8").strip())
-    for root in (ROOT, ROOT.parent):                 # a venv in or beside the repo
-        for venv in (".venv", "venv"):
-            for name in python_names():
-                add(root / venv / "Scripts" / name)
-                add(root / venv / "bin" / name)
-    home = Path.home()                               # conda / miniconda / anaconda / miniforge environments
-    conda_roots = ("anaconda3", "miniconda3", "miniforge3", "mambaforge")
-    for base in (home / ".conda" / "envs", *(home / root / "envs" for root in conda_roots)):
-        if base.is_dir():
-            for env in sorted(base.iterdir()):
-                for name in python_names():
-                    add(env / name)
-                    add(env / "bin" / name)
+    for candidate in venv_pythons():
+        add(candidate)
+    for candidate in conda_pythons(Path.home()):
+        add(candidate)
     add(sys.executable)
     for name in python_names():                      # finally whatever is on PATH
         add(shutil.which(name))
@@ -84,18 +98,28 @@ def training_python() -> Optional[Path]:
     if fallback is None:
         PYTHON_CACHE.unlink(missing_ok=True)         # the cached one stopped working
         return None
-    try:
-        write_atomic(PYTHON_CACHE, str(fallback))
-    except OSError as error:
-        print(f"[python] could not remember {fallback} in {PYTHON_CACHE.name} ({error}); it will be probed again next time")
+    remember_interpreter(fallback)
     return fallback
+
+
+def remember_interpreter(python: Path) -> bool:
+    """Cache ``python`` as the interpreter to try first next time. The cache is only a shortcut
+    past the probes, so a write that fails (a read-only checkout, say) is reported and the
+    interpreter is still used; returns whether it was remembered."""
+    try:
+        write_atomic(PYTHON_CACHE, str(python))
+    except OSError as error:
+        print(f"[python] could not remember {python} in {PYTHON_CACHE.name} ({error}); it will be probed again next time")
+        return False
+    return True
 
 
 def current_is_complete() -> bool:
     """Does this very interpreter have cv2 (the Qt build), numpy and torch? Torch is only looked up,
     not imported: importing it costs seconds, and the menu itself never needs it."""
     try:
-        import importlib.util
+        # Imported here because their absence is the question this function answers: the module
+        # itself must load on an interpreter without them (see the module docstring).
         import cv2
         import numpy
     except ImportError:
@@ -112,6 +136,8 @@ def wait_child(command: List[str], **kwargs) -> int:
     interrupted = False
     while True:
         try:
+            # No timeout on purpose: the child is the interactive label tool or a training run,
+            # which runs as long as the user keeps it open; the user ends it, not a clock.
             return process.wait()
         except KeyboardInterrupt:
             if not interrupted:

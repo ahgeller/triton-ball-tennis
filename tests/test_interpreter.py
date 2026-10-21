@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from finetune import interpreter
-from finetune.interpreter import (QT_NEEDED_EXIT, candidate_interpreters, ensure_interpreter, probe_interpreter,
-                                  python_names, training_python, wait_child)
+from finetune.interpreter import (QT_NEEDED_EXIT, candidate_interpreters, conda_pythons, ensure_interpreter,
+                                  probe_interpreter, python_names, remember_interpreter, training_python, venv_pythons,
+                                  wait_child)
 
 
 def test_candidates_end_with_this_interpreter_and_the_path():
@@ -15,6 +16,27 @@ def test_candidates_end_with_this_interpreter_and_the_path():
     assert Path(sys.executable) in found
     assert len(found) == len(set(found))
     assert all(name.endswith(".exe") for name in python_names()) == (os.name == "nt")
+
+
+def test_venv_and_conda_layouts_are_searched_in_a_fixed_order(tmp_path):
+    venvs = list(venv_pythons())
+    assert venvs[0].parts[-3:-1] == (".venv", "Scripts") and all(p.name in python_names() for p in venvs)
+    assert len(venvs) == 2 * 2 * 2 * len(python_names())            # (repo, parent) x (.venv, venv) x (Scripts, bin)
+    assert list(conda_pythons(tmp_path)) == []                       # no conda roots: nothing to try
+    (tmp_path / ".conda" / "envs" / "b").mkdir(parents=True)
+    (tmp_path / "miniconda3" / "envs" / "a").mkdir(parents=True)
+    found = list(conda_pythons(tmp_path))
+    assert found[0].parent == tmp_path / ".conda" / "envs" / "b" and found[-1].parent == tmp_path / "miniconda3" / "envs" / "a" / "bin"
+
+
+def test_remember_interpreter_reports_a_cache_it_could_not_write(tmp_path, capsys):
+    with patch.object(interpreter, "PYTHON_CACHE", tmp_path / ".training-python"):
+        assert remember_interpreter(tmp_path / "python") is True
+        assert (tmp_path / ".training-python").read_text(encoding="utf-8") == str(tmp_path / "python")
+    with patch.object(interpreter, "PYTHON_CACHE", tmp_path / "no-such-dir" / "x" / ".training-python"), \
+            patch.object(interpreter, "write_atomic", side_effect=OSError("read-only")):
+        assert remember_interpreter(tmp_path / "python") is False
+    assert "could not remember" in capsys.readouterr().out
 
 
 def test_probe_answers_none_for_a_python_that_is_not_there(tmp_path, capsys):

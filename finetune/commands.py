@@ -60,17 +60,23 @@ def drafted_clips() -> Set[str]:
 
 # --------------------------------------------------------------------------- status
 
+def label_frame_size(video: Optional[Path], csv_path: Path) -> Tuple[int, int]:
+    """The (width, height) a label file's "no ball" sentinel is read at: the video's, or the 1080p
+    reference when there is no video or it cannot be opened. Status only counts rows, so an
+    unreadable video costs a possibly miscounted sentinel, not the listing."""
+    if video is not None:
+        try:
+            return video_meta(video)[1:3]
+        except RuntimeError as error:
+            print(f"[warn] {error}; counting {csv_path.name} as 1080p")
+    return int(REFERENCE_WIDTH), int(REFERENCE_HEIGHT)
+
+
 def clip_counts(clip: str, csv_path: Path, row: Optional[Dict[str, str]], videos: Dict[str, Path]) -> Tuple[int, int]:
     """(label rows, visible balls): from clips.csv when the clip is listed, else counted from the file."""
     if row:
         return int(row["label_frames"]), int(row["visible"])
-    width, height = int(REFERENCE_WIDTH), int(REFERENCE_HEIGHT)
-    if clip in videos:
-        try:
-            width, height = video_meta(videos[clip])[1:3]
-        except RuntimeError as error:
-            print(f"[warn] {error}; counting {csv_path.name} as 1080p")
-    return label_stats(csv_path, width, height)
+    return label_stats(csv_path, *label_frame_size(videos.get(clip), csv_path))
 
 
 def print_source_table(finals: Dict[str, Path], manifest: Dict[str, dict], videos: Dict[str, Path]) -> None:
@@ -128,28 +134,24 @@ def print_models() -> None:
               f"recall={metrics.get('recall', 0):.3f} wrong={metrics.get('wrong', 0):.3f} false_alarm={metrics.get('false_alarm', 0):.3f}")
 
 
-def cmd_status(args: argparse.Namespace) -> int:
-    manifest = read_manifest()
-    videos = videos_in()
-    finals = {clip_of(p): p for p in label_files()}
-    drafts = drafted_clips()
-    if not videos and not finals:
-        print(f"Workspace {ws.WORKSPACE} is empty. Start with:  python finetune/ft.py import all")
-        return 0
-
-    print(f"workspace  {ws.WORKSPACE}")
-    print_source_table(finals, manifest, videos)
+def print_own_camera_clips(finals: Dict[str, Path], manifest: Dict[str, dict]) -> None:
+    """The clips from the user's own cameras, with their size, label counts and review progress."""
     own = [clip for clip in sorted(finals, key=natural_key) if (manifest.get(clip, {}).get("source") or "custom") in OWN_SOURCES]
-    if own:
-        print("\nown-camera clips")
-        for clip in own:
-            row = manifest.get(clip, {})
-            size = f"{row.get('width', '?')}x{row.get('height', '?')} @{float(row['fps']):.0f}" if row.get("fps") else ""
-            progress = review_progress(clip, int(row.get("label_frames", 0) or 0))
-            note = row.get("note", "")
-            print(f"  {clip:12s} {size:16s} labels={row.get('label_frames', '?'):>4s} visible={row.get('visible', '?'):>4s}"
-                  f"  {progress:18s} {note[:60]}")
+    if not own:
+        return
+    print("\nown-camera clips")
+    for clip in own:
+        row = manifest.get(clip, {})
+        size = f"{row.get('width', '?')}x{row.get('height', '?')} @{float(row['fps']):.0f}" if row.get("fps") else ""
+        progress = review_progress(clip, int(row.get("label_frames", 0) or 0))
+        note = row.get("note", "")
+        print(f"  {clip:12s} {size:16s} labels={row.get('label_frames', '?'):>4s} visible={row.get('visible', '?'):>4s}"
+              f"  {progress:18s} {note[:60]}")
 
+
+def print_unfinished_clips(videos: Dict[str, Path], finals: Dict[str, Path], drafts: Set[str]) -> None:
+    """Videos still without a final label file (and whether a draft awaits), and label files
+    whose video is gone."""
     pending = sorted(set(videos) - set(finals), key=natural_key)
     if pending:
         print("\nvideos without a final label file")
@@ -159,12 +161,30 @@ def cmd_status(args: argparse.Namespace) -> int:
     orphans = sorted(set(finals) - set(videos), key=natural_key)
     if orphans:
         print(f"\nlabel files without a video: {', '.join(orphans[:LISTED_CLIPS])}{' ...' if len(orphans) > LISTED_CLIPS else ''}")
+
+
+def print_exclusions() -> None:
     excluded = read_exclusions()
     if excluded:
         print(f"\nexcluded from training by exclude.txt ({len(excluded)}): {', '.join(excluded[:LISTED_CLIPS])}"
               f"{' ...' if len(excluded) > LISTED_CLIPS else ''}")
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    """Print what is in the workspace. A listing has no failure mode, so it reports nothing
+    back; ``ft.run_cli`` treats that as exit code 0."""
+    manifest = read_manifest()
+    videos = videos_in()
+    finals = {clip_of(p): p for p in label_files()}
+    if not videos and not finals:
+        print(f"Workspace {ws.WORKSPACE} is empty. Start with:  python finetune/ft.py import all")
+        return
+    print(f"workspace  {ws.WORKSPACE}")
+    print_source_table(finals, manifest, videos)
+    print_own_camera_clips(finals, manifest)
+    print_unfinished_clips(videos, finals, drafted_clips())
+    print_exclusions()
     print_models()
-    return 0
 
 
 # --------------------------------------------------------------------------- check
@@ -242,6 +262,8 @@ def measure_camera_motion(video: Path) -> Tuple[float, float, float]:
     camera gives well under a pixel of shift, pans and hand-held phones give several. Returns
     (p75_shift_px, max_shift_px at 1080p, fraction of pairs whose correlation response was weak = cuts/zooms).
     """
+    # Imported here, not at the top: this module must load under an interpreter without OpenCV
+    # or numpy (see the module docstring); only the camera command needs them.
     import cv2
     import numpy as np
     fps, width, _, total = video_meta(video)
@@ -310,11 +332,11 @@ def cmd_camera(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------- paths
 
-def cmd_paths(args: argparse.Namespace) -> int:
+def cmd_paths(args: argparse.Namespace) -> None:
+    """Print the interpreter, workspace and data source paths (a listing: no exit status)."""
     print(f"python     {sys.executable}")
     print(f"workspace  {ws.WORKSPACE}")
     print(f"repo       {ROOT}")
     print(f"weights    {ws.REPO_WEIGHTS}")
     for name, path in DEFAULT_SOURCES.items():
         print(f"source {name:11s} {'ok ' if path.exists() else 'MISSING'} {path}")
-    return 0
