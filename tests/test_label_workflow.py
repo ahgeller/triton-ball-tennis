@@ -115,15 +115,15 @@ def test_mixed_resolution_pages_keep_source_identity():
     tool.grid_view.toggle()
     assert tool.grid_view.indices == [0, 1]
     tool.grid_view.page(1)
-    assert (tool.session.clip, tool.session.width, tool.session.height) == ("large", 1920, 1080)
+    assert (tool.session.source.clip, tool.session.width, tool.session.height) == ("large", 1920, 1080)
     assert tool.grid_view.indices == [2, 3]
 
 
 def test_grid_tiles_read_their_own_clip_without_moving_the_cursor():
     tool = make_tool(source("small", 3, 640, 360), source("large", 3, 1920, 1080))
     read = []
-    tool.session.frame = lambda index: read.append((tool.session.source.clip, index)) or np.zeros(
-        (tool.session.source.height, tool.session.source.width, 3), np.uint8)
+    for src in tool.session.sources:
+        src.frame = lambda index, src=src: read.append((src.clip, index)) or np.zeros((src.height, src.width, 3), np.uint8)
     tool.grid_view.toggle()
     tool.grid_view.page(1)                                  # the page of clip "large": rows 3..5
     tool.grid_view.select(1)
@@ -221,9 +221,9 @@ def test_drawn_picture_and_stored_click_agree_to_the_pixel():
     tool.session.rows[0].x, tool.session.rows[0].y = 100.5, 50.5
     tool.session.zoom = tool.session.zoom_target = 6.
     tool.follow_ball()
-    tool.session.frame = lambda index: blank           # the same markers over nothing, to subtract
+    tool.session.source.frame = lambda index: blank    # the same markers over nothing, to subtract
     markers = tool.render()[:tool.session.view_h].astype(int)
-    tool.session.frame = lambda index: image
+    tool.session.source.frame = lambda index: image
     drawn = tool.render()[:tool.session.view_h].astype(int)
     lit = np.argwhere(np.abs(drawn - markers).max(2) > 127)
     (top, left), (bottom, right) = lit.min(0), lit.max(0)
@@ -242,7 +242,7 @@ def test_drawn_picture_and_stored_click_agree_to_the_pixel():
 def test_idle_render_is_cached_and_every_change_redraws():
     tool = make_tool()
     frames = {}
-    tool.session.frame = lambda index: frames.setdefault(index, np.zeros((720, 1280, 3), np.uint8))
+    tool.session.source.frame = lambda index: frames.setdefault(index, np.zeros((720, 1280, 3), np.uint8))
     tool.follow_ball()
     first = tool.render()
     with patch.object(cv2, "warpAffine", wraps=cv2.warpAffine) as warp:
@@ -324,11 +324,11 @@ def test_stepping_back_near_the_start_hits_the_cache():
         clip.cache_limit = 64
         tool = Tool([clip])
         tool.session.cursor = len(rows) - 1
-        tool.session.frame(rows[-1].frame)
+        tool.session.source.frame(rows[-1].frame)
         Capture.opened = 0
         for i in range(len(rows) - 1, -1, -1):       # `a` all the way back to the start
             tool.session.cursor = i
-            assert int(tool.session.frame(rows[i].frame)[0, 0, 0]) == rows[i].frame
+            assert int(tool.session.source.frame(rows[i].frame)[0, 0, 0]) == rows[i].frame
     assert Capture.opened <= 2                       # was one reopen per press
 
 

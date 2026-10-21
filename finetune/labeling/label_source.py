@@ -388,7 +388,7 @@ class Prefetcher:
                 self.warm_frame_before(index)
             if frame in session.source.frame_cache or frame in session.source.missing:
                 continue
-            session.frame(frame)
+            session.source.frame(frame)
             worked = True
             if time.monotonic() - started > PREFETCH_BUDGET_S:
                 break
@@ -413,4 +413,4 @@ class Prefetcher:
             before = session.rows[index - 1].frame
             if (before not in session.source.frame_cache and before not in session.source.missing
                     and before >= session.source.position >= 0):
-                session.frame(before)
+                session.source.frame(before)

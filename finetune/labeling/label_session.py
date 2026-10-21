@@ -74,18 +74,10 @@ class LabelSession:
     def source(self) -> Source:
         return self.by_clip[self.rows[self.cursor].clip]
 
-    @property
-    def clip(self) -> str:
-        return self.source.clip
-
     def clip_bounds(self, index: int) -> Tuple[int, int]:
         """(first, last + 1) row indices of the clip row `index` belongs to."""
         source = self.by_clip[self.rows[index].clip]
         return source.start, source.start + len(source.rows)
-
-    def frame(self, index: int) -> np.ndarray:
-        """The picture of source frame `index` of the clip we are in (see Source.frame)."""
-        return self.source.frame(index)
 
     def frame_missing(self) -> bool:
         """True when the frame under the cursor has no picture, so nothing should be said about it."""

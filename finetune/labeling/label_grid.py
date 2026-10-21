@@ -137,7 +137,7 @@ class GridView:
         ui = session.ui
         band = int(round(28 * ui))                       # title strip above each tile
         # A page is one clip (prepare stops at a clip's end) and the cursor is on it, so
-        # session.frame reads every tile from the right clip without touching the cursor.
+        # session.source.frame reads every tile from the right clip without touching the cursor.
         for slot, index in enumerate(self.indices):
             row = rows[index]
             rows_of = max(1, self.size // 4)
@@ -156,7 +156,7 @@ class GridView:
                         color, max(1, int(ui)))
             cv2.rectangle(canvas, (left, top), (right-1, bottom-1), (255, 180, 50) if index == session.cursor else (65, 65, 65), 2)
             tiles.append((index, (left, y0, right-1, bottom-1), ox, oy, scale))
-        caption =(f"{session.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}"
+        caption =(f"{session.source.clip} | click=center  right click=full frame  SPACE=confirm these {len(tiles)}"
                    f"{' (orange crosses are hints on offer)' if offers else ''}  a/d=page  TAB=single")
         thin = max(1, int(ui))
         cv2.putText(canvas, fit_text(caption, session.view_w - 12, .48 * ui, thin),
@@ -176,7 +176,7 @@ class GridView:
         session = self.session
         row = session.rows[index]
         ui = session.ui
-        image = session.frame(row.frame)
+        image = session.source.frame(row.frame)
         scale = width / 96.0 * self.zoom if row.visible else min(width / session.width, height / session.height)
         cx, cy = self.centers[index] if row.visible else (session.width / 2, session.height / 2)
         ox, oy = cx - width / (2 * scale), cy - height / (2 * scale)

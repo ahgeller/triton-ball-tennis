@@ -89,7 +89,7 @@ class SheetView:
         if key == self.cache_key:
             return self.cache
         selected = session.cursor
-        base = session.frame(rows[selected].frame)
+        base = session.source.frame(rows[selected].frame)
         ui, thin = session.ui, max(1, int(round(session.ui)))
         scale = min(session.view_w / session.width, session.view_h / session.height)
         shown_w, shown_h = max(1, int(round(session.width * scale))), max(1, int(round(session.height * scale)))

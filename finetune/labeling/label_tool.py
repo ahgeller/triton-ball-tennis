@@ -183,10 +183,10 @@ class Tool:
         with the mouse parked on, the previous detection.
         """
         session = self.session
-        if self.last_clip != session.clip:
+        if self.last_clip != session.source.clip:
             if self.last_clip is not None:
                 session.by_clip[self.last_clip].release()   # let go of the clip being left, decoder included
-            self.last_clip = session.clip
+            self.last_clip = session.source.clip
             session.width, session.height = session.source.width, session.source.height
             self.fit_view(*(self.client or (session.view_w, session.view_h + session.hud_h)))
         session.anchor = None
@@ -272,7 +272,7 @@ class Tool:
         session = self.session
         session.centre_view()
         row = session.rows[session.cursor]
-        image = session.frame(row.frame)
+        image = session.source.frame(row.frame)
         mode = session.filter_name
         before = session.previous_image() if mode == "motion" else None
         key = self.render_state(image, before)

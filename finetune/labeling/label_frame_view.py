@@ -103,7 +103,7 @@ class FrameView:
             draw_ghost(display, *session.to_view(*session.ghost), radius, ui)
 
     def thumbnail(self, frame: int, image: np.ndarray, width: int, height: int) -> np.ndarray:
-        key = (self.session.clip, frame, width)
+        key = (self.session.source.clip, frame, width)
         thumb = self.thumbs.get(key)
         if thumb is None:
             thumb = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)

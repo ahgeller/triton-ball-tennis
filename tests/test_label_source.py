@@ -28,7 +28,7 @@ def prefetching_tool(count=20, step=1, direction=1, walk=None, cursor=5):
     clip = fake_source("a", count, 64, 36, origin=(10.0, 10.0), step=(0.0, 0.0), conf=0.9)
     tool = Tool([clip])
     decoded = []
-    tool.session.frame = lambda index: decoded.append(index) or clip.frame_cache.setdefault(index, np.zeros((36, 64, 3), np.uint8))
+    clip.frame = lambda index: decoded.append(index) or clip.frame_cache.setdefault(index, np.zeros((36, 64, 3), np.uint8))
     tool.session.cursor, tool.session.step, tool.session.direction = cursor, step, direction
     if walk is not None:
         tool.session.walk, tool.session.walk_pos = walk, walk.index(cursor)
