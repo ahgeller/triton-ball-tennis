@@ -34,7 +34,12 @@ _BLOB_TOO_FAR_MIN_GATE_PX = 18.0
 _SCORE_COMPACTNESS, _SCORE_FILL, _SCORE_AREA, _SCORE_AREA_SATURATION_PX = 50.0, 25.0, 15.0, 600.0
 _SCORE_DISTANCE_CAP_PX, _SCORE_DISTANCE_DIVISOR, _SCORE_ASPECT_PENALTY = 300.0, 6.0, 4.0
 _MAX_CANDIDATES_PER_FRAME = 5
-_SCHEMA_VERSION = 1
+# The tracking JSON and its motion-diagnostics block are versioned apart, each bumped when
+# its keys change. Version 2 of both: the detector stopped being YOLO, so ``yolo_gap_frames``
+# became ``detector_gap_frames``, the reason ``yolo_detection_available`` became
+# ``detection_available``, and the chosen track's ``score_breakdown`` keys were renamed.
+_TRACKING_SCHEMA_VERSION = 2
+_MOTION_DIAGNOSTICS_SCHEMA_VERSION = 2
 
 
 def json_safe(value: Any) -> Any:
@@ -360,7 +365,7 @@ def build_motion_diagnostics(
             prev_pos = (selected_x, selected_y)
 
     return {
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": _MOTION_DIAGNOSTICS_SCHEMA_VERSION,
         "summary": {
             "frames_analyzed": int(total_frames),
             "detector_gap_frames": int(detector_gap_frames),
@@ -384,7 +389,7 @@ def write_tracking_json(ctx: RunContext, pass1: Pass1Result, result: RunResult) 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     chosen = result.chosen_track
     payload: TrackingJson = {
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": _TRACKING_SCHEMA_VERSION,
         "video": {
             "input": str(cfg.input_video),
             "output": str(cfg.output_video),
