@@ -14,27 +14,17 @@ from finetune.labeling import label_window as win
 from finetune.labeling.label_store import Row, apply_flags, apply_review, load_rows, save_flags, save_review
 from finetune.labeling.label_tool import ZOOM_STEP, Tool
 from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV
+from tests._helpers import ball_frames, fake_source, fake_tool, write_frames
 
 
 def source(clip, count=10, width=1280, height=720):
-    rows = [Row(i, 30.25 + i*11, 24.75+i*3, True, "csv", 0.) for i in range(count)]
-    for row in rows:
-        row.clip = clip
-    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
-    return SimpleNamespace(clip=clip, rows=rows, width=width, height=height, frame_cache={},
-                           dirty=False, cursor=0, start=0, missing=set(), saved_cursor=0,
-                           capture=capture, position=0, release=lambda: None)
+    """This file's clips: 720p by default, the balls 11 px apart along x (see fake_source)."""
+    return fake_source(clip, count, width, height, origin=(30.25, 24.75), step=(11.0, 3.0))
 
 
 def make_tool(*sources):
-    """A Tool over `sources` (one 10-row clip by default) whose frames are blank arrays, one per
-    frame as the real cache hands back, centred on its first ball."""
-    tool = Tool(list(sources or [source("test")]))
-    frames = {}
-    tool.frame = lambda index: frames.setdefault(
-        (tool.source.clip, index), np.zeros((tool.source.height, tool.source.width, 3), np.uint8))
-    tool.follow_ball()
-    return tool
+    """A headless Tool over `sources` (one 10-row clip by default), centred on its first ball."""
+    return fake_tool(*(sources or [source("test")]))
 
 
 # --------------------------------------------------------------------------- the single-frame view
@@ -482,28 +472,6 @@ def hint(row, x=None, y=None, trusted=True, ball_here=True, seed="label"):
             "trusted": trusted, "ball_here": ball_here}
 
 
-def write_clip(path, frames, fps=30):
-    """Encode ``frames`` losslessly (FFV1 in AVI, as tests/test_pipeline_run.py does), so what
-    refine.suggest measures is the synthetic picture itself and not an encoder's noise."""
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"FFV1"), fps, (frames[0].shape[1], frames[0].shape[0]))
-    if not writer.isOpened():
-        pytest.skip("this OpenCV build cannot write FFV1; the test needs a lossless clip")
-    for image in frames:
-        writer.write(image)
-    writer.release()
-    return path
-
-
-def ball_frames(positions, size=(360, 640)):
-    """Grey frames with a 3x3 bright ball whose middle pixel is at each (column, row)."""
-    frames = []
-    for column, row in positions:
-        image = np.full(size + (3,), 90, np.uint8)
-        image[row - 1:row + 2, column - 1:column + 2] = (60, 230, 230)
-        frames.append(image)
-    return frames
-
-
 def test_centroid_finds_the_ball_in_label_coordinates():
     from finetune.labeling.refine import motion_centroid
     previous, current, following = ball_frames([(40, 30), (50, 40), (60, 50)])
@@ -517,7 +485,7 @@ def test_centroid_finds_the_ball_in_label_coordinates():
 def test_suggest_reads_a_video_and_scores_trust(tmp_path):
     from finetune.labeling import refine
     path_of = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]   # an exact parabola
-    video = write_clip(tmp_path / "clip.avi", ball_frames(path_of))
+    video = write_frames(tmp_path / "clip.avi", ball_frames(path_of))
     seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
     found = refine.suggest(video, seeds, refine.PassOptions(1))
     assert set(found) == set(range(12))       # the ends diff against one side only
@@ -542,7 +510,7 @@ def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(tmp_path
             seen.extend(crop.shape for crop, _, _ in items)
             return [(start[0] + (8.0 if abs(start[0] - 160.5) < 2 else 0.5), start[1], self.sure)
                     for _, _, start in items]
-    video = write_clip(tmp_path / "clip.avi", ball_frames(path_of))
+    video = write_frames(tmp_path / "clip.avi", ball_frames(path_of))
     seeds = {i: (column + 0.9, row + 0.2) for i, (column, row) in enumerate(path_of)}
     plain = refine.suggest(video, seeds, refine.PassOptions(1))
     placed = refine.suggest(video, seeds, refine.PassOptions(1, placer=Nudge()))
@@ -555,7 +523,7 @@ def test_a_placer_moves_the_chosen_points_and_a_far_move_is_not_trusted(tmp_path
     assert plain[5]["trusted"]
     assert not placed[5]["trusted"]
     # a self-check decides trust by itself
-    video = write_clip(tmp_path / "clip2.avi", ball_frames(path_of))
+    video = write_frames(tmp_path / "clip2.avi", ball_frames(path_of))
     unsure, checked = Nudge(), Nudge()
     unsure.sure, checked.sure = False, True
     doubted = refine.suggest(video, seeds, refine.PassOptions(1, placer=unsure))
@@ -665,10 +633,7 @@ def test_label_tool_reloads_the_placer_when_the_current_version_changes():
 # --------------------------------------------------------------------------- the grid from the keyboard
 
 def grid_tool():
-    tool = Tool([source("test", 40)])
-    tool.frame = lambda index: np.zeros((720, 1280, 3), np.uint8)
-    tool.follow_ball()
-    return tool
+    return make_tool(source("test", 40))
 
 
 def test_sixteen_tiles_page_and_select_from_the_keyboard():

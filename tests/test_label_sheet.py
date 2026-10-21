@@ -1,33 +1,11 @@
 """finetune/labeling/label_sheet.py: the trajectory sheet as a state machine over a synthetic tool -
 which rows it shows, what a click and a key do, and what each render records. Frames are blank
 arrays; no workspace file is read."""
-from types import SimpleNamespace
-
 import cv2
-import numpy as np
 
-from finetune.labeling.label_store import Row
-from finetune.labeling.label_tool import Tool
 from finetune.labeling.label_sheet import SHEET_ROWS
 from finetune.labeling.label_window import KEY_TAB
-
-WIDTH, HEIGHT = 640, 360
-
-
-def source(clip, count):
-    rows = [Row(i, 100.0 + 5 * i, 80.0 + 2 * i, True, "csv", 0.0) for i in range(count)]
-    for row in rows:
-        row.clip = clip
-    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
-    return SimpleNamespace(clip=clip, rows=rows, width=WIDTH, height=HEIGHT, frame_cache={}, dirty=False, cursor=0,
-                           start=0, missing=set(), saved_cursor=0, capture=capture, position=0, release=lambda: None)
-
-
-def tool_over(*sources):
-    tool = Tool(list(sources))
-    tool.frame = lambda index: np.zeros((HEIGHT, WIDTH, 3), np.uint8)
-    tool.follow_ball()
-    return tool
+from tests._helpers import fake_source as source, fake_tool as tool_over
 
 
 # --------------------------------------------------------------------------- the trajectory sheet

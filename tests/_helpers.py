@@ -1,7 +1,8 @@
 """Synthetic fixtures shared by the regression tests. No match media or labels."""
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from types import SimpleNamespace
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from unittest.mock import patch
 
 import cv2
@@ -16,16 +17,64 @@ from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice
 from tennis_tracker.video_io import VideoWriter
 
 
-def write_clip(path: Path, count: int, size=(64, 36), fps=30.0) -> Path:
-    """A tiny FFV1 video of `count` frames, frame i filled with the value i (skips the test when
-    this OpenCV build cannot write FFV1)."""
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"FFV1"), fps, size)
+def write_frames(path: Path, frames: Sequence[np.ndarray], fps: float = 30.0) -> Path:
+    """Encode `frames` losslessly (FFV1 in AVI), so what a test measures is the synthetic picture
+    itself and not an encoder's noise; skips the test when this OpenCV build cannot write FFV1."""
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"FFV1"), fps, (frames[0].shape[1], frames[0].shape[0]))
     if not writer.isOpened():
         pytest.skip("this OpenCV build cannot write FFV1")
-    for index in range(count):
-        writer.write(np.full((size[1], size[0], 3), index, np.uint8))
+    for image in frames:
+        writer.write(image)
     writer.release()
     return path
+
+
+def write_clip(path: Path, count: int, size=(64, 36), fps=30.0) -> Path:
+    """A tiny video of `count` frames, frame i filled with the value i (see write_frames)."""
+    return write_frames(path, [np.full((size[1], size[0], 3), index, np.uint8) for index in range(count)], fps)
+
+
+def ball_frames(positions: Iterable[Tuple[int, int]], size=(360, 640)) -> List[np.ndarray]:
+    """Grey frames with a 3x3 bright ball whose middle pixel is at each (column, row)."""
+    frames = []
+    for column, row in positions:
+        image = np.full(size + (3,), 90, np.uint8)
+        image[row - 1:row + 2, column - 1:column + 2] = (60, 230, 230)
+        frames.append(image)
+    return frames
+
+
+# --------------------------------------------------------------------------- the label tool
+
+def fake_source(clip: str, count: int = 6, width: int = 640, height: int = 360, origin=(100.0, 80.0),
+                step=(5.0, 2.0), conf: float = 0.0, **extra) -> SimpleNamespace:
+    """A ``label_source.Source`` stand-in with no video: `count` rows of `clip` along a line from
+    `origin` in steps of `step`, every row visible at `conf`, and the fields the label tool reads.
+    `extra` adds or overrides fields (label_cli reads video, flagged and zoom)."""
+    from finetune.labeling.label_store import Row
+
+    rows = [Row(i, origin[0] + i * step[0], origin[1] + i * step[1], True, "csv", conf) for i in range(count)]
+    for row in rows:
+        row.clip = clip
+    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
+    fields = dict(clip=clip, rows=rows, width=width, height=height, frame_cache={}, dirty=False, cursor=0, start=0,
+                  missing=set(), saved_cursor=0, capture=capture, position=0, release=lambda: None)
+    return SimpleNamespace(**{**fields, **extra})
+
+
+def fake_tool(*sources: SimpleNamespace, follow: bool = True):
+    """A headless ``label_tool.Tool`` over `sources` (one fake_source by default) whose frames are
+    blank arrays, one per (clip, frame) as the real cache hands back, centred on its first ball
+    (`follow`); no window is opened."""
+    from finetune.labeling.label_tool import Tool
+
+    tool = Tool(list(sources or [fake_source("a")]))
+    frames: Dict[Tuple[str, int], np.ndarray] = {}
+    tool.frame = lambda index: frames.setdefault(
+        (tool.source.clip, index), np.zeros((tool.source.height, tool.source.width, 3), np.uint8))
+    if follow:
+        tool.follow_ball()
+    return tool
 
 # A detector output the metric probe returns for every five-frame unit.
 _PROBE_POINT = (100, 100)

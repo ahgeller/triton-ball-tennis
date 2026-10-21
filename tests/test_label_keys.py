@@ -1,32 +1,17 @@
 """finetune/labeling/label_keys.py: the key handler's own rules - direction keys across the
 backends, which keys the single-frame view claims, and q with unsaved labels. The full key table
 (every key, every view) is pinned in test_label_workflow.py through Tool.handle_key."""
-from types import SimpleNamespace
 from unittest.mock import patch
-
-import numpy as np
 
 from finetune.labeling import label_window as win
 from finetune.labeling.label_keys import KeyHandler
-from finetune.labeling.label_store import Row
 from finetune.labeling.label_tool import Tool
 from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV
-
-
-def source(clip, count=4):
-    rows = [Row(i, 30.0 + i, 20.0 + i, True, "csv", 0.9) for i in range(count)]
-    for row in rows:
-        row.clip = clip
-    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
-    return SimpleNamespace(clip=clip, rows=rows, width=64, height=36, frame_cache={}, dirty=False, cursor=0,
-                           start=0, missing=set(), saved_cursor=0, capture=capture, position=0, release=lambda: None)
+from tests._helpers import fake_source, fake_tool
 
 
 def tool_over():
-    tool = Tool([source("a")])
-    tool.frame = lambda index: np.zeros((36, 64, 3), np.uint8)
-    tool.follow_ball()
-    return tool
+    return fake_tool(fake_source("a", 4, 64, 36, origin=(30.0, 20.0), step=(1.0, 1.0), conf=0.9))
 
 
 def test_direction_keys_match_every_backends_arrow_codes():

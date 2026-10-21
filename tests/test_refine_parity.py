@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tests.test_label_workflow import ball_frames, write_clip   # noqa: E402
+from tests._helpers import ball_frames, write_frames   # noqa: E402
 
 FIXTURE = Path(__file__).with_name("fixtures") / "refine_suggest_parity.json"
 PATH = [(100 + 12 * i, 200 - 18 * i + i * i) for i in range(12)]          # an exact parabola
@@ -64,7 +64,7 @@ def run_variant(name: str) -> dict:
     from finetune.labeling import refine
     path, kwargs = variants()[name]
     with tempfile.TemporaryDirectory() as directory:
-        video = write_clip(Path(directory) / "clip.avi", ball_frames(path))
+        video = write_frames(Path(directory) / "clip.avi", ball_frames(path))
         found = refine.suggest(video, kwargs["seeds"], refine.PassOptions(**{k: v for k, v in kwargs.items() if k != "seeds"}))
     return json.loads(json.dumps({str(frame): dict(hint) for frame, hint in sorted(found.items())}))
 

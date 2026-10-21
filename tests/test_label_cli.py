@@ -3,30 +3,22 @@ nothing is opened and no window is made."""
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from finetune.labeling import label_cli
 from finetune.labeling.label_cli import announce, apply_settings, build_parser, open_sources, qt_backend, starting_cursor
 from finetune.labeling.label_draw import FILTERS
-from finetune.labeling.label_store import Row
-from finetune.labeling.label_tool import Tool
+from tests._helpers import fake_source, fake_tool
 
 
 def source(clip, count=4, cursor=0, flagged=0):
-    rows = [Row(i, 30.0 + i, 20.0 + i, True, "csv", 0.9) for i in range(count)]
-    for row in rows:
-        row.clip = clip
-    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
-    return SimpleNamespace(clip=clip, rows=rows, width=64, height=36, frame_cache={}, dirty=False, cursor=cursor,
-                           start=0, missing=set(), saved_cursor=0, capture=capture, position=0, release=lambda: None,
-                           video=SimpleNamespace(name=f"{clip}.mp4"), flagged=flagged, zoom=2.0)
+    """A clip as the command line sees it: with a video name, its audit's flag count and a zoom."""
+    return fake_source(clip, count, 64, 36, origin=(30.0, 20.0), step=(1.0, 1.0), conf=0.9, cursor=cursor,
+                       video=SimpleNamespace(name=f"{clip}.mp4"), flagged=flagged, zoom=2.0)
 
 
 def tool_over(*sources):
-    tool = Tool(list(sources))
-    tool.frame = lambda index: np.zeros((36, 64, 3), np.uint8)
-    return tool
+    return fake_tool(*sources, follow=False)
 
 
 def test_parser_defaults_to_the_workspace_folders_and_takes_a_range():

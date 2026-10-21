@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from finetune.labeling.label_source import Source
-from tests._helpers import Capture
+from tests._helpers import Capture, fake_source
 
 
 def test_duplicate_video_frames_keep_sequential_identity():
@@ -23,15 +23,9 @@ def test_duplicate_video_frames_keep_sequential_identity():
 # --------------------------------------------------------------------------- the prefetcher
 
 def prefetching_tool(count=20, step=1, direction=1, walk=None, cursor=5):
-    from finetune.labeling.label_store import Row
     from finetune.labeling.label_tool import Tool
 
-    rows = [Row(i, 10.0, 10.0, True, "csv", 0.9) for i in range(count)]
-    for row in rows:
-        row.clip = "a"
-    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
-    clip = SimpleNamespace(clip="a", rows=rows, width=64, height=36, frame_cache={}, dirty=False, cursor=0, start=0,
-                           missing=set(), saved_cursor=0, capture=capture, position=0, release=lambda: None)
+    clip = fake_source("a", count, 64, 36, origin=(10.0, 10.0), step=(0.0, 0.0), conf=0.9)
     tool = Tool([clip])
     decoded = []
     tool.frame = lambda index: decoded.append(index) or clip.frame_cache.setdefault(index, np.zeros((36, 64, 3), np.uint8))

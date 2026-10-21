@@ -1,31 +1,20 @@
 """finetune/labeling/label_frame_view.py: the single-frame picture and HUD over a synthetic tool -
 what the text lines say, what a render records for the mouse, and what a click on a chip or the
 inset does. Frames are blank arrays."""
-from types import SimpleNamespace
-
 import numpy as np
 
 from finetune.labeling.label_frame_view import INSET_SHARE, THUMBNAILS_KEPT
-from finetune.labeling.label_store import Row
-from finetune.labeling.label_tool import Tool
+from tests._helpers import fake_source, fake_tool
 
 WIDTH, HEIGHT = 640, 360
 
 
 def source(clip, count=6):
-    rows = [Row(i, 100.0 + 5 * i, 80.0 + 2 * i, True, "csv", 0.8) for i in range(count)]
-    for row in rows:
-        row.clip = clip
-    capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
-    return SimpleNamespace(clip=clip, rows=rows, width=WIDTH, height=HEIGHT, frame_cache={}, dirty=False, cursor=0,
-                           start=0, missing=set(), saved_cursor=0, capture=capture, position=0, release=lambda: None)
+    return fake_source(clip, count, WIDTH, HEIGHT, conf=0.8)
 
 
 def tool_over(*sources):
-    tool = Tool(list(sources or [source("a")]))
-    tool.frame = lambda index: np.zeros((HEIGHT, WIDTH, 3), np.uint8)
-    tool.follow_ball()
-    return tool
+    return fake_tool(*(sources or [source("a")]))
 
 
 def test_hud_place_names_the_clip_the_run_and_the_walk():
