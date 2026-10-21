@@ -24,8 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line; the folder defaults are the workspace's as it is now (``TENNIS_WORKSPACE``)."""
     parser = argparse.ArgumentParser(description=label_tool.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("clips", nargs="+", help="Clip stem(s), or a range like video22..video53")
-    parser.add_argument("--videos", type=Path, default=ws.VIDEOS)
-    parser.add_argument("--labels", type=Path, default=ws.LABELS)
+    parser.add_argument("--videos", type=Path, default=ws.current().videos)
+    parser.add_argument("--labels", type=Path, default=ws.current().labels)
     parser.add_argument("--zoom", type=float, default=None, help="Starting zoom (default: last used, else 2)")
     parser.add_argument("--grid", action="store_true", help="Review a page of enlarged ball crops together (z: 8 or 16); TAB toggles this view")
     parser.add_argument("--uncertain", action="store_true",

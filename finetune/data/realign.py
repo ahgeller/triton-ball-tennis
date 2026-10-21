@@ -69,7 +69,7 @@ def detections(clip: str) -> Tuple[Evidence, VideoMeta]:
     """What the detector is confident about in the clip's video, and the video's facts."""
     video = require_video(clip)
     meta = video_meta(video)
-    points = detect_points(ball_detector(ws.REPO_WEIGHTS), video, meta)
+    points = detect_points(ball_detector(ws.current().repo_weights), video, meta)
     confident = {frame: (x, y) for frame, (x, y, conf) in points.items() if conf >= DETECTION_CONF}
     return Evidence.of(confident, meta.total, scale_for_width(meta.width)), meta
 
@@ -152,7 +152,7 @@ def write_preview(video: Path, tracks: Tracks, alignment: Alignment, out: Path) 
 def swap_video(label_clip: str, video_clip: str) -> None:
     """Put the video the labels belong to under them, keeping the one that did not as a .bak."""
     source = require_video(video_clip)
-    media = ws.VIDEOS / f"{label_clip}{source.suffix.lower()}"
+    media = ws.current().videos / f"{label_clip}{source.suffix.lower()}"
     wrong = find_video(label_clip)
     if wrong is not None:
         orphan = wrong.with_name(f"{label_clip}_wrong_video{wrong.suffix}.bak")
@@ -258,7 +258,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if best.dropped:
         print(f"  {len(best.dropped)} visible row(s) sit inside a cut the detector cannot place - dropped, not guessed")
     if args.preview:
-        out = write_preview(require_video(video_clip), tracks, best, ws.WORKSPACE / f"realign_{label_clip}.png")
+        out = write_preview(require_video(video_clip), tracks, best, ws.current().root / f"realign_{label_clip}.png")
         print(f"  preview -> {out}")
     if not args.apply:
         print("\n  (dry run - pass --apply to write it)")

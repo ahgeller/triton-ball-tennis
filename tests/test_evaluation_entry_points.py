@@ -57,5 +57,5 @@ def test_archive_scorer_uses_the_workspace_and_the_shared_model_paths():
     from finetune.data import workspace
     from tennis_tracker import paths
 
-    assert archive.default_archive() == workspace.WORKSPACE or archive.ARCHIVE_VARIABLE in __import__("os").environ
+    assert archive.default_archive() == workspace.current().root or archive.ARCHIVE_VARIABLE in __import__("os").environ
     assert archive.MODELS["gridtracknet"] == paths.GRIDTRACKNET_WEIGHTS

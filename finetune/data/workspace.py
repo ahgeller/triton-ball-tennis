@@ -11,11 +11,10 @@ The layout is a ``Workspace``: one root folder, every other path a property deri
 moment (else the ``finetune/`` folder this package sits in), so nothing here is fixed at import.
 The contract for every module that needs a path:
 
-- read it when called, never at import: ``ws.current().labels``, or the module-level names
-  (``ws.LABELS``, ``ws.MODELS``, ...), which ``__getattr__`` answers from ``current()`` on every
-  access and which exist for the many call sites written before ``Workspace`` did;
-- never bind a path to a module constant (``MODELS = ws.MODELS / "x"`` snapshots the workspace
-  of import time), and never ``from finetune.data.workspace import LABELS``;
+- read it when called, never at import: ``ws.current().labels`` (a function that needs several
+  binds ``layout = ws.current()`` once and reads them from that);
+- never bind a path to a module constant (``MODELS = ws.current().models / "x"`` snapshots the
+  workspace of import time);
 - a test points the whole workspace somewhere else by replacing ``current`` alone
   (``tests/conftest.py: workspace_dir``); there is no second thing to patch.
 
@@ -28,8 +27,6 @@ from __future__ import annotations
 import csv
 import os
 import re
-import sys
-import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Union
@@ -117,37 +114,6 @@ def current() -> Workspace:
     Read on every call; tests replace this function to relocate everything at once."""
     override = os.environ.get(WORKSPACE_VARIABLE)
     return Workspace(Path(override).resolve() if override else DEFAULT_WORKSPACE)
-
-
-# The module-level names many call sites read (``ws.LABELS``): each one is ``current()``'s
-# matching path, looked up on every access, never a stored value.
-_LAYOUT_NAMES = {
-    "WORKSPACE": "root", "VIDEOS": "videos", "LABELS": "labels", "MODELS": "models", "RUNS": "runs",
-    "CACHE": "cache", "MANIFEST": "manifest", "EXCLUDE_FILE": "exclude_file", "REVIEW_STATUS": "review_status",
-    "BEST_WEIGHTS": "best_weights", "REPO_WEIGHTS": "repo_weights",
-}
-
-
-def __getattr__(name: str) -> Path:
-    attribute = _LAYOUT_NAMES.get(name)
-    if attribute is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(current(), attribute)
-
-
-class _LayoutModule(types.ModuleType):
-    """This module's type: assigning one of the layout names (``workspace.LABELS = ...``, what a
-    test written for the old constants would do) is refused, because the helpers read
-    ``current()`` and would ignore it silently."""
-
-    def __setattr__(self, name: str, value) -> None:
-        if name in _LAYOUT_NAMES:
-            raise AttributeError(f"workspace.{name} is read from workspace.current() when asked; to relocate the "
-                                 "workspace replace current() (tests/conftest.py: workspace_dir)")
-        super().__setattr__(name, value)
-
-
-sys.modules[__name__].__class__ = _LayoutModule
 
 
 class VideoMeta(NamedTuple):

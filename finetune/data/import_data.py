@@ -66,7 +66,7 @@ def import_archive(src: Path, manifest: Manifest, options: ImportOptions) -> int
         if video is None:
             print(f"[skip] {csv_path.name}: no video next to it")
             continue
-        dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
+        dst_video = ws.current().videos / f"{clip}{video.suffix.lower()}"
         dst_csv = label_csv(clip)
         if options.dry_run:
             print(f"[plan] {clip}: copy {video.name} + {csv_path.name}")
@@ -135,7 +135,7 @@ def import_tracknetv2(src: Path, manifest: Manifest, options: ImportOptions, pre
     visibility_seen: Dict[int, int] = {}
     for csv_path, video, section, match, rally in _tracknetv2_rallies(src):
         clip = "_".join(part for part in (prefix, section, match, rally) if part)
-        dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
+        dst_video = ws.current().videos / f"{clip}{video.suffix.lower()}"
         dst_csv = label_csv(clip)
         if options.dry_run:
             print(f"[plan] {clip}: copy {video.name} + convert {csv_path.name}")
@@ -159,7 +159,7 @@ def _import_grid_video(clip: str, video: Path, raw: Dict[int, TrackNetRow], mani
                        options: ImportOptions) -> bool:
     """A GridTrackNet match that ships its video: copy it and map Labels.csv onto it (``grid_frame``,
     scaled from GRID_LABEL_CANVAS). False when no label lands on the video."""
-    dst_video = ws.VIDEOS / f"{clip}{video.suffix.lower()}"
+    dst_video = ws.current().videos / f"{clip}{video.suffix.lower()}"
     dst_csv = label_csv(clip)
     if options.dry_run:
         print(f"[plan] {clip}: copy '{video.name}' + convert {len(raw)} labels")
@@ -274,8 +274,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     wanted = ["archive", "video11", "grid", "prof"] if "all" in args.sources else list(dict.fromkeys(args.sources))
     if "tracknet" in wanted and args.src is None:
         parser.error("'tracknet' needs --src <folder>")
-    ws.VIDEOS.mkdir(exist_ok=True)
-    ws.LABELS.mkdir(exist_ok=True)
+    ws.current().videos.mkdir(exist_ok=True)
+    ws.current().labels.mkdir(exist_ok=True)
     manifest = Manifest()
     options = ImportOptions(keep_occluded=args.keep_occluded, force=args.force, link=args.link, dry_run=args.dry_run)
     importers: Dict[str, Callable[[Path], int]] = {

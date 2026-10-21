@@ -46,7 +46,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     sits on the ball; the captions give each mark's distance from your label in 1080p px."""
     video, labels_csv = find_video(clip), label_csv(clip)
     if video is None or not labels_csv.is_file():
-        print(f"{clip}: no video or labels under {ws.WORKSPACE}")
+        print(f"{clip}: no video or labels under {ws.current().root}")
         return None
     width, height = video_meta(video)[1:3]
     seeds = read_labels(labels_csv, width, height)
@@ -61,7 +61,7 @@ def sheet(clip: str, names: Sequence[str], count: int = 36, out: Optional[Path] 
     marks_of = {f: [seeds[f], found[0][f], found[1][f]] for f in frames}
     tiles = sheet_tiles(video, marks_of, (width, height))
     board = sheet_board(tiles, clip, names)
-    out = out or (ws.CACHE / "sheets" / f"{clip}_{names[0]}_vs_{names[1]}.png")
+    out = out or (ws.current().cache / "sheets" / f"{clip}_{names[0]}_vs_{names[1]}.png")
     out.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out), board)
     print(f"wrote {out}")

@@ -3,14 +3,15 @@ TENNIS_WORKSPACE override, on folders under tmp_path. No real workspace file is 
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from finetune.data import workspace
-from tennis_tracker.paths import ROOT
 from finetune.data.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, draft_files, find_video,
                                      label_csv, label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
                                      require_video, review_json, suspect_json, unsaved_csv, videos_in, write_manifest)
+from tennis_tracker.paths import ROOT
 
 
 
@@ -81,13 +82,13 @@ def test_the_default_paths_follow_the_patched_workspace(workspace_dir):
     add_exclusion("x", "why")
     assert (workspace_dir / "exclude.txt").is_file() and read_exclusions() == ["x"]
     write_manifest({"x": {"clip": "x"}})
-    assert read_manifest()["x"]["clip"] == "x" and workspace.MANIFEST.parent == workspace_dir
+    assert read_manifest()["x"]["clip"] == "x" and workspace.current().manifest.parent == workspace_dir
 
 
 def test_tennis_workspace_relocates_the_workspace_without_touching_the_code_paths(tmp_path):
     env = dict(os.environ, TENNIS_WORKSPACE=str(tmp_path))
     code = ("from finetune.data import workspace as w; "
-            "print(w.WORKSPACE); print(w.LABELS); print(w.MANIFEST); print(w.REPO_WEIGHTS)")
+            "layout = w.current(); print(layout.root); print(layout.labels); print(layout.manifest); print(layout.repo_weights)")
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
     lines = out.stdout.splitlines()
     assert lines[:3] == [str(tmp_path.resolve()), str(tmp_path.resolve() / "labels"), str(tmp_path.resolve() / "clips.csv")]
@@ -113,23 +114,20 @@ def test_tennis_workspace_reaches_the_label_tool_and_pretrack(tmp_path):
     assert videos.is_dir() and labels.is_dir()                   # made under the relocated workspace
 
 
-def test_the_layout_is_one_object_and_every_module_name_reads_it_when_asked(tmp_path, monkeypatch):
-    """No path is stored at import: ``ws.LABELS`` and the rest answer from ``current()`` on every
-    access, so replacing ``current`` (what ``workspace_dir`` does) moves all of them, the tracker's
-    weights included, and the environment is read as it is now."""
+def test_the_layout_is_one_object_and_nothing_else_holds_a_workspace_path(tmp_path, monkeypatch):
+    """Every path is a property of the ``Workspace`` that ``current()`` builds when asked; the
+    module stores none of them, so replacing ``current`` (what ``workspace_dir`` does) moves all
+    of them, the tracker's weights included, and the environment is read as it is now."""
     layout = workspace.Workspace(tmp_path, repo_weights=tmp_path / "tracker.npz")
     assert layout.videos == tmp_path / "videos" and layout.labels == tmp_path / "labels"
     assert layout.manifest == tmp_path / workspace.MANIFEST_NAME and layout.exclude_file == tmp_path / workspace.EXCLUDE_NAME
     assert layout.review_status == tmp_path / workspace.REVIEW_STATUS_NAME
     assert layout.best_weights == tmp_path / "models" / workspace.BEST_WEIGHTS_NAME
-    assert set(workspace._LAYOUT_NAMES) == {"WORKSPACE", "VIDEOS", "LABELS", "MODELS", "RUNS", "CACHE", "MANIFEST",
-                                            "EXCLUDE_FILE", "REVIEW_STATUS", "BEST_WEIGHTS", "REPO_WEIGHTS"}
-    assert not any(name in vars(workspace) for name in workspace._LAYOUT_NAMES)
+    assert not any(isinstance(value, Path) and value.is_relative_to(workspace.DEFAULT_WORKSPACE)
+                   and value != workspace.DEFAULT_WORKSPACE for value in vars(workspace).values())
     monkeypatch.setattr(workspace, "current", lambda: layout)
-    assert workspace.WORKSPACE == tmp_path and workspace.LABELS == layout.labels
-    assert workspace.REPO_WEIGHTS == layout.repo_weights and workspace.BEST_WEIGHTS == layout.best_weights
-    with pytest.raises(AttributeError):
-        workspace.NOT_A_PATH
+    assert workspace.current().root == tmp_path and workspace.current().labels == layout.labels
+    assert workspace.current().repo_weights == layout.repo_weights and workspace.current().best_weights == layout.best_weights
     monkeypatch.undo()
     monkeypatch.setenv(workspace.WORKSPACE_VARIABLE, str(tmp_path / "elsewhere"))
     assert workspace.current().root == (tmp_path / "elsewhere").resolve()

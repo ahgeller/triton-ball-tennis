@@ -189,13 +189,14 @@ def self_test() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--videos", type=Path, default=ws.VIDEOS)
-    parser.add_argument("--labels", type=Path, default=ws.LABELS)
-    parser.add_argument("--weights", type=Path, default=ws.REPO_WEIGHTS,
+    layout = ws.current()
+    parser.add_argument("--videos", type=Path, default=layout.videos)
+    parser.add_argument("--labels", type=Path, default=layout.labels)
+    parser.add_argument("--weights", type=Path, default=layout.repo_weights,
                         help="Starting weights (also the .npz template for saving)")
-    parser.add_argument("--save", type=Path, default=ws.BEST_WEIGHTS)
-    parser.add_argument("--data-dir", type=Path, default=ws.CACHE / "data")
-    parser.add_argument("--run-dir", type=Path, default=ws.RUNS / "train")
+    parser.add_argument("--save", type=Path, default=layout.best_weights)
+    parser.add_argument("--data-dir", type=Path, default=layout.cache / "data")
+    parser.add_argument("--run-dir", type=Path, default=layout.runs / "train")
     parser.add_argument("--val-clips", nargs="*", help="Held-out clip stems or globs (default: video10 if present, else the last clip)")
     parser.add_argument("--sources", nargs="*", help="Only use clips whose clips.csv source is listed (e.g. custom grid)")
     parser.add_argument("--exclude-clips", nargs="*", help="Clip stems or globs to leave out entirely")

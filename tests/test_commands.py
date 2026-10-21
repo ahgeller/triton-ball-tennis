@@ -75,7 +75,7 @@ def test_sha8_and_shown(tmp_path):
 def test_paths_lists_the_interpreter_workspace_and_sources(workspace_dir, capsys):
     assert cmd_paths(None) is None                                           # a listing: no exit status
     out = capsys.readouterr().out
-    assert f"workspace  {workspace.WORKSPACE}" in out and f"repo       {ROOT}" in out
+    assert f"workspace  {workspace.current().root}" in out and f"repo       {ROOT}" in out
     assert all(f"source {name:11s}" in out for name in workspace.DEFAULT_SOURCES)
 
 

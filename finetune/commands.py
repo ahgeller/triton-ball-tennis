@@ -120,14 +120,15 @@ def shown(path: Path) -> str:
 
 def print_models() -> None:
     print("\nmodels")
-    if ws.REPO_WEIGHTS.is_file():
-        print(f"  tracker uses   {shown(ws.REPO_WEIGHTS)}  sha {sha8(ws.REPO_WEIGHTS)}  "
-              f"{dt.datetime.fromtimestamp(ws.REPO_WEIGHTS.stat().st_mtime):%Y-%m-%d %H:%M}")
-    if ws.BEST_WEIGHTS.is_file():
-        same = sha8(ws.BEST_WEIGHTS) == sha8(ws.REPO_WEIGHTS) if ws.REPO_WEIGHTS.is_file() else False
-        print(f"  last winner    {shown(ws.BEST_WEIGHTS)}  sha {sha8(ws.BEST_WEIGHTS)}  "
+    layout = ws.current()
+    if layout.repo_weights.is_file():
+        print(f"  tracker uses   {shown(layout.repo_weights)}  sha {sha8(layout.repo_weights)}  "
+              f"{dt.datetime.fromtimestamp(layout.repo_weights.stat().st_mtime):%Y-%m-%d %H:%M}")
+    if layout.best_weights.is_file():
+        same = sha8(layout.best_weights) == sha8(layout.repo_weights) if layout.repo_weights.is_file() else False
+        print(f"  last winner    {shown(layout.best_weights)}  sha {sha8(layout.best_weights)}  "
               f"{'(already promoted)' if same else '-> python finetune/ft.py promote'}")
-    for winner in sorted(ws.RUNS.glob("*/winner.json"), key=lambda p: p.stat().st_mtime)[-3:]:
+    for winner in sorted(layout.runs.glob("*/winner.json"), key=lambda p: p.stat().st_mtime)[-3:]:
         try:
             payload = json.loads(winner.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
@@ -181,9 +182,9 @@ def cmd_status(args: argparse.Namespace) -> None:
     videos = videos_in()
     finals = {clip_of(p): p for p in label_files()}
     if not videos and not finals:
-        print(f"Workspace {ws.WORKSPACE} is empty. Start with:  python finetune/ft.py import all")
+        print(f"Workspace {ws.current().root} is empty. Start with:  python finetune/ft.py import all")
         return
-    print(f"workspace  {ws.WORKSPACE}")
+    print(f"workspace  {ws.current().root}")
     print_source_table(finals, manifest, videos)
     print_own_camera_clips(finals, manifest)
     print_unfinished_clips(videos, finals, drafted_clips())
@@ -205,7 +206,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         checked += 1
         video = videos.get(clip)
         if video is None:
-            print(f"[fail] {clip}: no video in {ws.VIDEOS}")
+            print(f"[fail] {clip}: no video in {ws.current().videos}")
             problems += 1
             continue
         try:
@@ -232,18 +233,19 @@ def cmd_check(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- promote
 
 def cmd_promote(args: argparse.Namespace) -> int:
-    source = Path(args.weights) if args.weights else ws.BEST_WEIGHTS
+    layout = ws.current()
+    source = Path(args.weights) if args.weights else layout.best_weights
     if not source.is_file():
         print(f"No weights at {source}; train first (python finetune/ft.py train)")
         return 1
-    if ws.REPO_WEIGHTS.is_file():
-        if sha8(source) == sha8(ws.REPO_WEIGHTS):
-            print(f"{ws.REPO_WEIGHTS.name} already is {source.name}; nothing to do")
+    if layout.repo_weights.is_file():
+        if sha8(source) == sha8(layout.repo_weights):
+            print(f"{layout.repo_weights.name} already is {source.name}; nothing to do")
             return 0
-        backup = backup_copy(ws.REPO_WEIGHTS, "promote")
-        print(f"[backup ] {ws.REPO_WEIGHTS.name} -> {backup.name}")
-    copy_atomic(source, ws.REPO_WEIGHTS)
-    print(f"[promote] {source} -> {ws.REPO_WEIGHTS}")
+        backup = backup_copy(layout.repo_weights, "promote")
+        print(f"[backup ] {layout.repo_weights.name} -> {backup.name}")
+    copy_atomic(source, layout.repo_weights)
+    print(f"[promote] {source} -> {layout.repo_weights}")
     print("next: python finetune/ft.py eval      (the reviewed clips)\n"
           "      python check_parity.py          (the Pomona gate; a new model may legitimately move its numbers)")
     return 0
@@ -339,8 +341,8 @@ def cmd_camera(args: argparse.Namespace) -> int:
 def cmd_paths(args: argparse.Namespace) -> None:
     """Print the interpreter, workspace and data source paths (a listing: no exit status)."""
     print(f"python     {sys.executable}")
-    print(f"workspace  {ws.WORKSPACE}")
+    print(f"workspace  {ws.current().root}")
     print(f"repo       {ROOT}")
-    print(f"weights    {ws.REPO_WEIGHTS}")
+    print(f"weights    {ws.current().repo_weights}")
     for name, path in DEFAULT_SOURCES.items():
         print(f"source {name:11s} {'ok ' if path.exists() else 'MISSING'} {path}")

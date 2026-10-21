@@ -105,9 +105,9 @@ def _copy_video_in(source: Path, name: str, force: bool) -> bool:
         return False
     if phase_stride(fps) is None:
         print(f"[skip] {source.name}: {fps:.2f} FPS is neither 30 nor 60. Re-encode first, e.g.\n"
-              f"       ffmpeg -i \"{source}\" -vf fps=30 -c:v libx264 -crf 12 \"{ws.VIDEOS / (name + '.mp4')}\"")
+              f"       ffmpeg -i \"{source}\" -vf fps=30 -c:v libx264 -crf 12 \"{ws.current().videos / (name + '.mp4')}\"")
         return False
-    destination = ws.VIDEOS / f"{name}{source.suffix.lower()}"
+    destination = ws.current().videos / f"{name}{source.suffix.lower()}"
     if destination.exists() and not force:
         print(f"[keep] {destination.name} already exists (use --force to overwrite)")
     else:
@@ -121,7 +121,7 @@ def add_videos(sources: List[Path], name: Optional[str] = None, force: bool = Fa
     """Copy videos into ``videos/`` (``clip_name`` names them; `name` names a single one) and,
     with `prelabel`, draft their labels with pretrack.py. Returns the clips now in the workspace
     and the exit status (pretrack's when it ran, else 0). The menu and ``ft.py add`` both do this."""
-    ws.VIDEOS.mkdir(exist_ok=True)
+    ws.current().videos.mkdir(exist_ok=True)
     added = []
     for source in sources:
         source = Path(source)
@@ -157,8 +157,8 @@ def cmd_label(args: argparse.Namespace) -> int:
     if clip in read_exclusions():
         print(f"[warn] {clip} is in exclude.txt: its labels belong to a different cut of the video,"
               " so every frame looks wrong. There is nothing here worth correcting by hand.")
-    if not any(ws.VIDEOS.glob(f"{clip}.*")):
-        print(f"No video named {clip}.* in {ws.VIDEOS}. Add one with:  python finetune/ft.py add <path> --name {clip}")
+    if not any(ws.current().videos.glob(f"{clip}.*")):
+        print(f"No video named {clip}.* in {ws.current().videos}. Add one with:  python finetune/ft.py add <path> --name {clip}")
         return 1
     if not label_csv(clip).is_file() and not draft_csv(clip).is_file():
         print(f"[label] no labels for {clip} yet; pre-labelling first")
@@ -200,14 +200,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
     """Score the detector on the clips whose labels may stand as ground truth (``data_policy``):
     the reviewed clips not in exclude.txt, own-camera ones only when there is no review policy.
     ``--clips`` narrows that; ``--all`` lifts the gate (every labelled clip)."""
-    command = ["--mode", "raw", "--models", "gridtracknet", "--archive", str(ws.WORKSPACE)]
+    command = ["--mode", "raw", "--models", "gridtracknet", "--archive", str(ws.current().root)]
     if args.weights:
         command += ["--gridtracknet-weights", str(Path(args.weights).resolve())]
     clips = args.clips
     if args.all:
         command.append("--include-excluded")
     elif not clips:
-        clips = evaluation_clips(labelled_clips(), read_manifest(), read_review_status(ws.WORKSPACE), read_exclusions())
+        clips = evaluation_clips(labelled_clips(), read_manifest(), read_review_status(ws.current().root), read_exclusions())
         if not clips:
             print("no clips qualify for the default evaluation (reviewed labels not in exclude.txt); "
                   "name some with --clips, or --all for every labelled clip")

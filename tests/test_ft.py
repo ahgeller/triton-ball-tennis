@@ -73,25 +73,26 @@ def test_resolve_choice_refuses_an_ambiguous_substring(capsys):
 # --------------------------------------------------------------------------- promote
 
 def test_promote_backs_up_the_tracker_weights_and_copies_the_winner_atomically(workspace_dir, capsys):
-    workspace.MODELS.mkdir()
+    layout = workspace.current()
+    layout.models.mkdir()
     assert ft.run_cli(["promote"]) == 1                               # nothing trained yet
     assert "No weights at" in capsys.readouterr().out
-    workspace.BEST_WEIGHTS.write_bytes(b"new weights")
+    layout.best_weights.write_bytes(b"new weights")
     assert ft.run_cli(["promote"]) == 0                               # no tracker weights yet: nothing to back up
-    assert workspace.REPO_WEIGHTS.read_bytes() == b"new weights"
-    assert not list(workspace.MODELS.glob("*.before_promote_*"))
+    assert layout.repo_weights.read_bytes() == b"new weights"
+    assert not list(layout.models.glob("*.before_promote_*"))
     assert ft.run_cli(["promote"]) == 0
     assert "already is" in capsys.readouterr().out                    # identical: a no-op
-    assert not list(workspace.MODELS.glob("*.before_promote_*"))
-    workspace.BEST_WEIGHTS.write_bytes(b"newer weights")
+    assert not list(layout.models.glob("*.before_promote_*"))
+    layout.best_weights.write_bytes(b"newer weights")
     assert ft.run_cli(["promote"]) == 0
-    backup, = workspace.MODELS.glob("tracker.npz.before_promote_*")
-    assert backup.read_bytes() == b"new weights" and workspace.REPO_WEIGHTS.read_bytes() == b"newer weights"
-    assert not list(workspace.MODELS.glob("*.tmp"))
+    backup, = layout.models.glob("tracker.npz.before_promote_*")
+    assert backup.read_bytes() == b"new weights" and layout.repo_weights.read_bytes() == b"newer weights"
+    assert not list(layout.models.glob("*.tmp"))
     other = workspace_dir / "other.npz"
     other.write_bytes(b"explicit")
     assert ft.run_cli(["promote", "--weights", str(other)]) == 0
-    assert workspace.REPO_WEIGHTS.read_bytes() == b"explicit" and len(list(workspace.MODELS.glob("*.before_promote_*"))) == 2
+    assert layout.repo_weights.read_bytes() == b"explicit" and len(list(layout.models.glob("*.before_promote_*"))) == 2
 
 
 # --------------------------------------------------------------------------- check and status
@@ -142,7 +143,7 @@ def test_commands_hand_their_arguments_to_the_right_script(workspace_dir):
                             ("training/pretrack.py", ["--clips", "x"])]
     module, arguments = launched[4]
     assert module == "evaluation.archive"
-    assert arguments[:6] == ["--mode", "raw", "--models", "gridtracknet", "--archive", str(workspace.WORKSPACE)]
+    assert arguments[:6] == ["--mode", "raw", "--models", "gridtracknet", "--archive", str(workspace.current().root)]
     assert arguments[6:] == ["--gridtracknet-weights", str(Path("w.npz").resolve()), "--clips", "video13"]
     assert launched[5] == ("labeling/label_tool.py", ["video10", "video11", "--zoom", "3.0"])
 

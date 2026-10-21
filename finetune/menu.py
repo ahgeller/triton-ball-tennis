@@ -26,7 +26,7 @@ def _clips_line(finals: Set[str], manifest: Dict[str, dict]) -> str:
     """How many labelled clips the trainer would admit by default (``data_policy.is_trainable``:
     reviewed, trusted source, not in exclude.txt), and how many of those are the user's own."""
     excluded = set(read_exclusions())
-    status = read_review_status(ws.WORKSPACE)
+    status = read_review_status(ws.current().root)
     ready = {c for c in finals if is_trainable(c, clip_source(c, manifest), status, excluded)}
     own = [c for c in ready if clip_source(c, manifest) in OWN_SOURCES]
     line = f"{len(ready)} of {len(finals)} labelled clips ready for training ({len(own)} from your own camera)"
@@ -46,10 +46,11 @@ def _summary_lines() -> List[str]:
     if pending:
         lines.append(f"{len(pending)} video(s) still need labels: " + ", ".join(pending[:6])
                      + (" ..." if len(pending) > 6 else "") + "   -> pick 3")
-    if ws.REPO_WEIGHTS.is_file():
-        lines.append(f"tracker model: {ws.REPO_WEIGHTS.name} "
-                     f"({dt.datetime.fromtimestamp(ws.REPO_WEIGHTS.stat().st_mtime):%Y-%m-%d %H:%M})")
-        if ws.BEST_WEIGHTS.is_file() and sha8(ws.BEST_WEIGHTS) != sha8(ws.REPO_WEIGHTS):
+    layout = ws.current()
+    if layout.repo_weights.is_file():
+        lines.append(f"tracker model: {layout.repo_weights.name} "
+                     f"({dt.datetime.fromtimestamp(layout.repo_weights.stat().st_mtime):%Y-%m-%d %H:%M})")
+        if layout.best_weights.is_file() and sha8(layout.best_weights) != sha8(layout.repo_weights):
             lines.append("a training winner is waiting - pick 7 to make it the tracker's model")
     return lines
 
@@ -221,10 +222,10 @@ def _menu_train() -> None:
 
 
 def _menu_promote() -> None:
-    if not ws.BEST_WEIGHTS.is_file():
+    if not ws.current().best_weights.is_file():
         print("no training winner yet - train first (option 6)")
         return
-    confirm = ft.ask(f"make {ws.BEST_WEIGHTS.name} the tracker's model? the current one is backed up first [y/N] ")
+    confirm = ft.ask(f"make {ws.current().best_weights.name} the tracker's model? the current one is backed up first [y/N] ")
     if confirm and confirm.lower().startswith("y"):
         ft.run_cli(["promote"])
 

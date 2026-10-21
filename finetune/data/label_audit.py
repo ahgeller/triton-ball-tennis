@@ -170,7 +170,7 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
 
     videos = videos_in()
     clips = _audit_clips(patterns, read_manifest())
-    weights_path = Path(weights).resolve() if weights else ws.REPO_WEIGHTS
+    weights_path = Path(weights).resolve() if weights else ws.current().repo_weights
     detector = ball_detector(weights_path)
     print(f"\naudit: {len(clips)} clips against {weights_path.name} "
           f"(agree = detector within {AGREE_PX:.0f} px of the label, measured on the fast labels; "
@@ -198,7 +198,7 @@ def shift_labels(clip: str, delta_frames: int, width: int, height: int, total: i
     backup_copy(path, "shift")
     rows, _ = write_labels(path, shifted, width, height)
     manifest = read_manifest()
-    if clip in manifest and ws.MANIFEST.is_file():
+    if clip in manifest and ws.current().manifest.is_file():
         manifest[clip]["label_frames"] = str(rows)
         note = manifest[clip].get("note", "")
         manifest[clip]["note"] = (note + "; " if note else "") + f"audit {dt.date.today()}: shifted {delta_frames:+d} frames"

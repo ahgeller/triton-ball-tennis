@@ -281,5 +281,5 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
         return path
     write_atomic(cnn_refiner.current_file(), path.name)
     log(f"saved {path.name}; the label tool uses it from its next start "
-        f"(older versions stay in {models.relative_to(ws.WORKSPACE.parent)})")
+        f"(older versions stay in {models.relative_to(ws.current().root.parent)})")
     return path

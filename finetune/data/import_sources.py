@@ -226,7 +226,7 @@ class Manifest:
     """clips.csv as the importers fill it: ``put`` a clip's row, ``save`` when a source is done."""
 
     def __init__(self, path: Optional[Path] = None):
-        self.path = ws.MANIFEST if path is None else path
+        self.path = ws.current().manifest if path is None else path
         self.rows: Dict[str, dict] = read_manifest(self.path)
 
     def put(self, clip: str, **fields) -> None:
@@ -284,7 +284,7 @@ def import_tracknet_frames(folder: Path, clip: str, manifest: Manifest, provenan
         print(f"[skip] {clip}: {len(missing)} labelled frames have no image (first {missing[:3]})")
         return False
     ordered = sorted(raw)
-    dst_video = ws.VIDEOS / f"{clip}.mp4"
+    dst_video = ws.current().videos / f"{clip}.mp4"
     dst_csv = label_csv(clip)
     if options.dry_run:
         print(f"[plan] {clip}: encode {len(ordered)} frames from {folder}")

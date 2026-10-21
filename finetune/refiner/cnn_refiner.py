@@ -185,12 +185,12 @@ class Placer:
 # (TENNIS_WORKSPACE, the tests' workspace_dir fixture) is honoured.
 def models_dir() -> Path:
     """Where the versions and current.txt live: the workspace's models folder, under refiner/."""
-    return ws.MODELS / "refiner"
+    return ws.current().models / "refiner"
 
 
 def cache_dir() -> Path:
     """Where the training crops are cached: the workspace's cache folder, under refiner/."""
-    return ws.CACHE / "refiner"
+    return ws.current().cache / "refiner"
 
 
 def versions() -> List[Path]:
