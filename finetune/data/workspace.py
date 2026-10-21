@@ -1,7 +1,8 @@
 """Where the workspace keeps things, its records, and the facts about a clip's video.
 
 The workspace is laid out as ``videos/<clip>.<ext>`` + ``labels/<clip>_ball.csv`` (plus the
-sidecars described in ``finetune.data.labels``), with ``clips.csv`` listing every imported clip,
+sidecars described in ``finetune.data.labels`` and the landing labels ``labels/<clip>_bounces.csv``
+of ``finetune.data.bounce_labels``), with ``clips.csv`` listing every imported clip,
 ``exclude.txt`` the clips training skips and ``review_status.json`` the review policy. Every
 script used to spell these paths out for itself; this is the one place they are defined, and
 the one place ``clips.csv`` and ``exclude.txt`` are read and written.
@@ -47,6 +48,7 @@ DRAFT_SUFFIX = "_ball.csv.draft"
 REVIEW_SUFFIX = "_ball.review.json"
 SUSPECT_SUFFIX = "_ball.suspect.json"
 UNSAVED_SUFFIX = "_ball.unsaved.csv"      # the label tool's rescue copy when the label file cannot be written
+BOUNCE_SUFFIX = "_bounces.csv"            # the frames where the ball landed (``finetune.data.bounce_labels``)
 
 MANIFEST_COLUMNS = ("clip", "source", "section", "group", "width", "height", "fps", "stride",
                     "label_frames", "visible", "camera", "motion_px", "origin", "note")
@@ -179,6 +181,10 @@ def suspect_json(clip: str, labels: Optional[Path] = None) -> Path:
 
 def unsaved_csv(clip: str, labels: Optional[Path] = None) -> Path:
     return _labels_dir(labels) / f"{clip}{UNSAVED_SUFFIX}"
+
+
+def bounce_csv(clip: str, labels: Optional[Path] = None) -> Path:
+    return _labels_dir(labels) / f"{clip}{BOUNCE_SUFFIX}"
 
 
 def _files_ending(suffix: str, labels: Optional[Path]) -> List[Path]:

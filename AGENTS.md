@@ -93,7 +93,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   audit flagged for a person (the flag sidecar the label tool and the menu read); `detect.py`,
   the raw GridTrackNet prepass over one clip (torch only when a detector is built), which
   the audit, `realign.py`, `pretrack.py`, `evaluation/archive.py` and the trainer's winner
-  metric all run; `workspace.py`, where the workspace keeps things and a clip's video
+  metric all run; `bounce_labels.py`, the landing labels (`labels/<clip>_bounces.csv`, the
+  frames where the ball landed, points optional) the court-event scorer reads;
+  `workspace.py`, where the workspace keeps things and a clip's video
   facts, and the one place `clips.csv` and `exclude.txt` are read and written
   (`TENNIS_WORKSPACE` relocates the workspace); `detector_metrics.py`, the detector metric (`DetectorMetrics`);
   `data_policy.py`, which clips may be trained, validated or scored on;
@@ -112,8 +114,11 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `evaluation/`: `validate.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
   the pipeline on workspace clips with `finetune/data/detector_metrics.py` (`pipeline_score.py`
-  scores one pipeline run's clip), `parity.py` is the Pomona gate. `validate_tracking.py`, `evaluate_archive.py` and `check_parity.py`
-  at the root are thin entry points to them.
+  scores one pipeline run's clip), `court_events_score.py` scores a `--court` pipeline
+  run's landings against the landing labels (tiers, a 0.1 s match, `--compare`, and
+  `--recompute` to rerun the event stages on a run's frames without the GPU),
+  `parity.py` is the Pomona gate. `validate_tracking.py`, `evaluate_archive.py`,
+  `score_court_events.py` and `check_parity.py` at the root are thin entry points to them.
 
 ## Environment and commands
 

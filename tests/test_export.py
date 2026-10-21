@@ -11,7 +11,7 @@ from ball_in_play_selector.core import frame_result
 from tennis_tracker import tracking_schema
 from tennis_tracker.court import court_scene
 from tennis_tracker.court.court_scene import BallPoint, BounceEvent, ContactEvent
-from tennis_tracker.export import RunResult, court_events_to_json, frame_result_to_json
+from tennis_tracker.export import RunResult, court_events_to_json, frame_result_to_json, frame_row_to_result
 from tennis_tracker.run_context import CourtEvents
 
 
@@ -42,6 +42,21 @@ def test_export_preserves_measurement_after_position_changes():
     assert row["y"] == 100.5
     assert row["position_kind"] == result.position_kind == "filtered"
     assert frame_result_to_json(1, frame_result(5, 6, "interp"))["position_kind"] == "recovered"
+
+
+def test_frame_row_to_result_reverses_frame_result_to_json():
+    """A scorer rebuilds the selection from the JSON's rows: every field the row holds comes
+    back, and writing the rebuilt result gives the same row."""
+    detection = SimpleNamespace(cx=100., cy=103., conf=.9, x1=98, y1=101, x2=102, y2=105)
+    detected = frame_result(100.5, 103.25, "det", detection=detection, search_radius=12.0)
+    moved = frame_result(5., 6., "motion", motion=SimpleNamespace(bbox=(1., 2., 3., 4.)), search_radius=30.0)
+    filled = frame_result(7., 8., "interp")
+    for result in (detected, moved, filled):
+        row = frame_result_to_json(3, result)
+        back = frame_row_to_result(row)
+        assert back == result and back.position_kind == result.position_kind
+        assert frame_result_to_json(3, back) == row
+    assert frame_row_to_result({"frame": 4, "present": False}) is None
 
 
 def test_the_schema_s_literals_are_the_selector_s_and_the_court_s():

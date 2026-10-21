@@ -126,6 +126,21 @@ def _is_service_leg(start: CourtPoint, end: CourtPoint, first_after_reset: bool)
     return False
 
 
+def inferred_landings(
+    confirmed: Sequence[BounceEvent],
+    candidates: Sequence[BounceEvent],
+    kinematic: Sequence[BounceEvent],
+    fps: float,
+) -> List[BounceEvent]:
+    """The candidates and kinematic bounces that may stand as inferred landings: those not
+    within ``EVENT_MERGE_S`` of a confirmed one, which already covers that landing. The leg
+    assembly places these (``_place_bounces``) and the landing scorer's ``placed`` tier is them."""
+    confirmed_frames = {int(event.frame) for event in confirmed}
+    merge = seconds_to_frames(EVENT_MERGE_S, fps)
+    return [event for event in list(candidates) + list(kinematic)
+            if not any(abs(int(event.frame) - value) <= merge for value in confirmed_frames)]
+
+
 def _place_bounces(
     confirmed: Sequence[BounceEvent],
     candidates: Sequence[BounceEvent],
@@ -141,11 +156,7 @@ def _place_bounces(
             placed.append(_PlacedBounce(int(event.frame), point, "confirmed", float(event.score),
                                         event.origin, event.position))
 
-    confirmed_frames = {int(event.frame) for event in confirmed}
-    merge = seconds_to_frames(EVENT_MERGE_S, fps)
-    for event in list(candidates) + list(kinematic):
-        if any(abs(int(event.frame) - value) <= merge for value in confirmed_frames):
-            continue
+    for event in inferred_landings(confirmed, candidates, kinematic, fps):
         point = project(event.frame, event.x, event.y)
         if point is not None and _within(point, _INFERRED_BOUNCE_BOUNDS):
             placed.append(_PlacedBounce(int(event.frame), point, "inferred", float(event.score),

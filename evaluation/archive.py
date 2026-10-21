@@ -72,7 +72,7 @@ def default_archive() -> Path:
     return Path(override) if override else ws.current().root
 
 
-def _archive_folders(archive: Path) -> Tuple[Path, List[Path]]:
+def archive_folders(archive: Path) -> Tuple[Path, List[Path]]:
     """(the labels folder, the folders a video may sit in): finetune/{videos,labels} or the flat
     archive layout, where both share one folder."""
     label_dir = archive / "labels" if (archive / "labels").is_dir() else archive
@@ -88,7 +88,7 @@ def _skip_reason(clip: str, status: Optional[dict], excluded: Set[str], include_
 def list_clips(names: Optional[List[str]], archive: Path, include_excluded: bool = False) -> List[ClipPair]:
     """Pairs of (video, label csv) whose labels may stand as ground truth (reviewed, not in
     exclude.txt; every clip with ``include_excluded``), narrowed to the stems or globs in `names`."""
-    label_dir, video_dirs = _archive_folders(archive)
+    label_dir, video_dirs = archive_folders(archive)
     review_status = read_review_status(archive)
     excluded = set(read_exclusions(archive))
     clips = []

@@ -92,6 +92,29 @@ def frame_result_to_json(frame_index: int, result: Optional[FrameResult]) -> Fra
     return row
 
 
+def frame_row_to_result(row: FrameRow) -> Optional[FrameResult]:
+    """``frame_result_to_json`` reversed: the selected position a ``frames`` row holds, None
+    for a frame without one, so a scorer can rebuild the selection from a tracking JSON."""
+    if not row.get("present"):
+        return None
+    measurement = row.get("measurement")
+    search, selection = row.get("search") or {}, row.get("selection") or {}
+    bbox = row.get("bbox")
+    return FrameResult(
+        cx=float(row["x"]),
+        cy=float(row["y"]),
+        conf=float(row.get("conf", 0.0)),
+        interpolated=bool(row.get("interpolated", False)),
+        bbox=None if bbox is None else tuple(float(value) for value in bbox),
+        source=row.get("source", "det"),
+        search_cx=float(search.get("x", 0.0)),
+        search_cy=float(search.get("y", 0.0)),
+        search_radius=float(search.get("radius", 0.0)),
+        source_reason=str(selection.get("reason", "")),
+        measurement=None if measurement is None else (float(measurement["x"]), float(measurement["y"])),
+    )
+
+
 @dataclass
 class RunResult:
     """What ``pipeline.run`` returns: the selection, the per-frame court and
