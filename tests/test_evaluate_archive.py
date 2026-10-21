@@ -120,3 +120,22 @@ def test_score_pipeline_clip_takes_the_court_as_last_seen_when_the_payload_does_
                           {"frame": 2, "present": True, "x": 20, "y": 20, "source": "det"}]}
     result = score_pipeline_clip({2: None}, payload, 1920)
     assert result.landed == {"line": 1} and result.bad_frames == [(2, "invisible", "det", "line")]
+
+
+def test_report_raw_pools_pairs_at_1080p_and_measures_the_hit_offset(capsys):
+    from evaluation.archive import HIT_PX, PER_CLIP_CONF, _hit_offset, _pooled_pairs, report_raw
+    rows = [((100.0, 100.0), (101.0, 102.0), 0.9),          # a hit, 1 right and 2 down
+            ((100.0, 100.0), (100.0, 100.0), 0.3),          # too faint at the per-clip threshold
+            (None, (50.0, 50.0), 0.8),                      # a false alarm
+            ((200.0, 200.0), None, 0.0)]                    # a miss
+    per_clip = [("clip", {"fps": 30.0, "width": 960, "elapsed": 1.0}, rows)]
+    pairs = _pooled_pairs(per_clip, 0.5)
+    assert pairs[0] == ((200.0, 200.0), (202.0, 204.0)) and pairs[1] == ((200.0, 200.0), None)
+    assert pairs[2] == (None, (100.0, 100.0)) and pairs[3] == ((400.0, 400.0), None)
+    assert len(_pooled_pairs(per_clip, 0.2)) == 4 and _pooled_pairs(per_clip, 0.2)[1][1] == (200.0, 200.0)
+    dx, dy, count = _hit_offset(per_clip)
+    assert (dx, dy, count) == (1.0, 2.0, 1) and PER_CLIP_CONF > 0.3 and HIT_PX >= 3
+    report_raw("probe", per_clip, [0.5])
+    out = capsys.readouterr().out
+    assert "probe: threshold sweep" in out and "conf>=0.50" in out and "clip" in out
+    assert "mean offset on hits dx=+1.00px dy=+2.00px (n=1)" in out

@@ -90,6 +90,20 @@ class TensorRTRuntimeSession:
         self.input_name: Optional[str] = None
         self.dynamic = False
         self.fp16 = False
+        self._bind_tensors(trt)
+        self.input_h, self.input_w = self._input_size()
+
+        # Slot 0 is the binding buffers themselves; extra slots are private copies.
+        slots = max(1, int(output_slots)) if self.use_async else 1
+        self.output_slots: List[Dict[str, torch.Tensor]] = [
+            {name: self.bindings[name].data for name in self.output_names}
+        ]
+        for _ in range(1, slots):
+            self.output_slots.append({name: torch.empty_like(self.bindings[name].data) for name in self.output_names})
+        self._slot_cursor = 0
+
+    def _bind_tensors(self, trt: Any) -> None:
+        """A device buffer per engine tensor, the input's dynamic profile shape set first."""
         for io in iter_engine_io(self.engine, trt):
             np_dtype = trt.nptype(io.dtype)
             self.binding_order.append(io.name)
@@ -106,6 +120,8 @@ class TensorRTRuntimeSession:
             tensor = torch.empty(shape_now, dtype=_torch_dtype(np_dtype), device=self.device)
             self.bindings[io.name] = _Binding(io.name, io.index, np_dtype, shape_now, tensor, int(tensor.data_ptr()))
 
+    def _input_size(self) -> Tuple[int, int]:
+        """(height, width) of the one NCHW input; an engine without it, or without outputs, raises."""
         if self.input_name is None:
             raise RuntimeError("TensorRT engine has no input tensor.")
         if not self.output_names:
@@ -113,17 +129,7 @@ class TensorRTRuntimeSession:
         inp_shape = tuple(self.bindings[self.input_name].shape)
         if len(inp_shape) != 4:
             raise RuntimeError(f"Unsupported TensorRT input shape: {inp_shape}")
-        self.input_h = int(inp_shape[2])
-        self.input_w = int(inp_shape[3])
-
-        # Slot 0 is the binding buffers themselves; extra slots are private copies.
-        slots = max(1, int(output_slots)) if self.use_async else 1
-        self.output_slots: List[Dict[str, torch.Tensor]] = [
-            {name: self.bindings[name].data for name in self.output_names}
-        ]
-        for _ in range(1, slots):
-            self.output_slots.append({name: torch.empty_like(self.bindings[name].data) for name in self.output_names})
-        self._slot_cursor = 0
+        return int(inp_shape[2]), int(inp_shape[3])
 
     @property
     def output_slot_count(self) -> int:

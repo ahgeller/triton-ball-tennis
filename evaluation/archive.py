@@ -154,21 +154,20 @@ def raw_rows(detector, clips: List[ClipPair], name: str) -> List[Tuple[str, dict
     return out
 
 
-def report_raw(name: str, per_clip: List[Tuple[str, dict, list]], thresholds: List[float]) -> None:
-    print(f"\n=== {name}: threshold sweep (all clips pooled) ===")
-    for threshold in thresholds:
-        pairs = []
-        for _, meta, rows in per_clip:
-            scale = scale_for_width(meta["width"])
-            pairs.extend((None if label is None else (label[0] * scale, label[1] * scale),
-                          (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
-                         for label, pred, conf in rows)
-        print(fmt(f"conf>={threshold:.2f}", score(pairs, 1.0)))
-    print(f"\n=== {name}: per clip at conf>={PER_CLIP_CONF:.2f} ===")
-    for clip, meta, rows in per_clip:
-        pairs = [(label, pred if conf >= PER_CLIP_CONF else None) for label, pred, conf in rows]
-        print(fmt(clip, score(pairs, scale_for_width(meta["width"]))))
-    # Systematic offset on confident hits (positive = prediction below/right of label).
+def _pooled_pairs(per_clip: List[Tuple[str, dict, list]], threshold: float) -> list:
+    """Every clip's (label, prediction) pairs at 1080p scale, a prediction under `threshold` a miss."""
+    pairs = []
+    for _, meta, rows in per_clip:
+        scale = scale_for_width(meta["width"])
+        pairs.extend((None if label is None else (label[0] * scale, label[1] * scale),
+                      (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
+                     for label, pred, conf in rows)
+    return pairs
+
+
+def _hit_offset(per_clip: List[Tuple[str, dict, list]]) -> Tuple[float, float, int]:
+    """(sum dx, sum dy, count) over confident hits: the systematic offset of predictions from
+    labels (positive = prediction below/right of label), in native pixels."""
     dx = dy = 0.0
     count = 0
     for _, meta, rows in per_clip:
@@ -177,6 +176,18 @@ def report_raw(name: str, per_clip: List[Tuple[str, dict, list]], thresholds: Li
                 dx += pred[0] - label[0]
                 dy += pred[1] - label[1]
                 count += 1
+    return dx, dy, count
+
+
+def report_raw(name: str, per_clip: List[Tuple[str, dict, list]], thresholds: List[float]) -> None:
+    print(f"\n=== {name}: threshold sweep (all clips pooled) ===")
+    for threshold in thresholds:
+        print(fmt(f"conf>={threshold:.2f}", score(_pooled_pairs(per_clip, threshold), 1.0)))
+    print(f"\n=== {name}: per clip at conf>={PER_CLIP_CONF:.2f} ===")
+    for clip, meta, rows in per_clip:
+        pairs = [(label, pred if conf >= PER_CLIP_CONF else None) for label, pred, conf in rows]
+        print(fmt(clip, score(pairs, scale_for_width(meta["width"]))))
+    dx, dy, count = _hit_offset(per_clip)
     if count:
         print(f"{name}: mean offset on hits dx={dx / count:+.2f}px dy={dy / count:+.2f}px (n={count})")
 

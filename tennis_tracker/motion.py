@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import math
 import time
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from .config import Config
 from .court_geometry import build_court_side_guides
-from .frame_window import FrameWindow
+from .frame_window import FrameWindow, GpuFrame
 
 
 # Boost mask component filter.
@@ -235,55 +235,49 @@ def build_court_side_protect_mask(h: int, w: int, court_keypoints: Optional[Sequ
         return None
 
     protect = None
-    left_edge_ref = np.array([0.0, float(h) * 0.5], dtype=np.float32)
-    right_edge_ref = np.array([float(w - 1), float(h) * 0.5], dtype=np.float32)
-
     for side in ("left", "right"):
         g = guides.get(side)
         if g is None:
             continue
-
-        # Primary rule: explicit "left of left line / right of right line".
-        relation = "left" if side == "left" else "right"
-        m = _x_relation_mask_from_line(h, w, g["anchor"], g["dir"], relation)
-        if m is not None:
-            protect = m if protect is None else (protect | m)
-            continue
-
-        # Fallback for near-horizontal lines: keep the outside half-plane.
-        inside_sign = _line_side_value(g["anchor"], g["dir"], g["base"])
-        if abs(float(inside_sign)) < 1e-6:
-            continue
-
-        edge_ref = left_edge_ref if side == "left" else right_edge_ref
-        edge_sign = _line_side_value(g["anchor"], g["dir"], edge_ref)
-
-        # If midpoint lies on the line, sample corners of that edge.
-        if abs(float(edge_sign)) < 1e-6:
-            fallback_refs = (
-                [np.array([0.0, 0.0], dtype=np.float32),
-                 np.array([0.0, float(h - 1)], dtype=np.float32)]
-                if side == "left" else
-                [np.array([float(w - 1), 0.0], dtype=np.float32),
-                 np.array([float(w - 1), float(h - 1)], dtype=np.float32)]
-            )
-            for ref in fallback_refs:
-                edge_sign = _line_side_value(g["anchor"], g["dir"], ref)
-                if abs(float(edge_sign)) >= 1e-6:
-                    break
-
-        # Enforce "outside" side: must be opposite the court-side base point.
-        # If edge sample is ambiguous/wrong, fall back to the opposite of inside_sign.
-        if abs(float(edge_sign)) < 1e-6 or edge_sign * inside_sign > 0:
-            keep_sign = -inside_sign
-        else:
-            keep_sign = edge_sign
-
-        m = _halfplane_mask_from_line(h, w, g["anchor"], g["dir"], keep_sign)
+        m = _side_protect_mask(h, w, side, g)
         if m is not None:
             protect = m if protect is None else (protect | m)
 
     return protect if protect is not None and np.any(protect) else None
+
+
+def _side_protect_mask(h: int, w: int, side: str, g: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+    """The pixels outside one side guide: left of the left line / right of the right line, or,
+    for a near-horizontal line, the half-plane away from the court."""
+    # Primary rule: explicit "left of left line / right of right line".
+    m = _x_relation_mask_from_line(h, w, g["anchor"], g["dir"], side)
+    if m is not None:
+        return m
+    # Fallback for near-horizontal lines: keep the outside half-plane.
+    inside_sign = _line_side_value(g["anchor"], g["dir"], g["base"])
+    if abs(float(inside_sign)) < 1e-6:
+        return None
+    edge_sign = _outside_edge_sign(h, w, side, g)
+    # Enforce "outside" side: must be opposite the court-side base point.
+    # If edge sample is ambiguous/wrong, fall back to the opposite of inside_sign.
+    if abs(float(edge_sign)) < 1e-6 or edge_sign * inside_sign > 0:
+        keep_sign = -inside_sign
+    else:
+        keep_sign = edge_sign
+    return _halfplane_mask_from_line(h, w, g["anchor"], g["dir"], keep_sign)
+
+
+def _outside_edge_sign(h: int, w: int, side: str, g: Dict[str, np.ndarray]) -> float:
+    """Which side of the guide the frame's own edge is on, sampled at that edge's midpoint and,
+    when the midpoint lies on the line, at its corners."""
+    x_edge = 0.0 if side == "left" else float(w - 1)
+    edge_sign = _line_side_value(g["anchor"], g["dir"], np.array([x_edge, float(h) * 0.5], dtype=np.float32))
+    if abs(float(edge_sign)) < 1e-6:
+        for ref in (np.array([x_edge, 0.0], dtype=np.float32), np.array([x_edge, float(h - 1)], dtype=np.float32)):
+            edge_sign = _line_side_value(g["anchor"], g["dir"], ref)
+            if abs(float(edge_sign)) >= 1e-6:
+                break
+    return edge_sign
 
 def _hsv_to_bgr_cuda(h_t: torch.Tensor, s_t: torch.Tensor, v_t: torch.Tensor) -> torch.Tensor:
     """Convert HSV tensors (all 0-1 range) to BGR tensor (0-255 uint8)."""
@@ -522,29 +516,41 @@ def _boost_masks(raw_motion: Optional[torch.Tensor], raw_motion_ungated: Optiona
         return out
 
     if rois is not None:
-        h_u8, w_u8 = int(raw_motion.shape[0]), int(raw_motion.shape[1])
-        raw_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
-        narrow_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
-        wide_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8) if wide_distinct else None
-        for rx1, ry1, rx2, ry2 in rois:
-            raw_roi = download(raw_motion[ry1:ry2, rx1:rx2])
-            wide_roi = download(boost_source[ry1:ry2, rx1:rx2]) if wide_distinct else None
-            raw_roi = _clean_raw_motion_mask(raw_roi, cfg)
-            np.maximum(raw_u8[ry1:ry2, rx1:rx2], raw_roi, out=raw_u8[ry1:ry2, rx1:rx2])
-            if raw_roi.max() > 0:
-                np.maximum(narrow_u8[ry1:ry2, rx1:rx2], components(raw_roi, timed=True),
-                           out=narrow_u8[ry1:ry2, rx1:rx2])
-            if wide_distinct and wide_roi.max() > 0:
-                np.maximum(wide_u8[ry1:ry2, rx1:rx2], components(wide_roi, timed=False),
-                           out=wide_u8[ry1:ry2, rx1:rx2])
-        narrow = _nonempty(narrow_u8)
-        wide = _nonempty(wide_u8) if wide_distinct else narrow
+        raw_u8, narrow, wide = _roi_boost_masks(raw_motion, boost_source if wide_distinct else None, rois, cfg,
+                                                download, components)
     else:
         raw_u8 = _clean_raw_motion_mask(download(raw_motion), cfg)
         wide_src = download(boost_source) if wide_distinct else None
         narrow = _nonempty(components(raw_u8, timed=True))
         wide = _nonempty(components(wide_src, timed=False)) if wide_distinct else narrow
     return _BoostMasks(raw_u8, narrow, wide, narrow is not None or wide is not None)
+
+
+def _roi_boost_masks(raw_motion: torch.Tensor, wide_source: Optional[torch.Tensor], rois: List[Roi], cfg: Config,
+                     download: Callable[[torch.Tensor], np.ndarray],
+                     components: Callable[[np.ndarray, bool], np.ndarray]
+                     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    """The raw, narrow and wide masks assembled ROI by ROI (``wide_source`` None: the wide mask
+    is the narrow one), each ROI downloaded and filtered on its own."""
+    wide_distinct = wide_source is not None
+    h_u8, w_u8 = int(raw_motion.shape[0]), int(raw_motion.shape[1])
+    raw_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
+    narrow_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8)
+    wide_u8 = np.zeros((h_u8, w_u8), dtype=np.uint8) if wide_distinct else None
+    for rx1, ry1, rx2, ry2 in rois:
+        raw_roi = download(raw_motion[ry1:ry2, rx1:rx2])
+        wide_roi = download(wide_source[ry1:ry2, rx1:rx2]) if wide_distinct else None
+        raw_roi = _clean_raw_motion_mask(raw_roi, cfg)
+        np.maximum(raw_u8[ry1:ry2, rx1:rx2], raw_roi, out=raw_u8[ry1:ry2, rx1:rx2])
+        if raw_roi.max() > 0:
+            np.maximum(narrow_u8[ry1:ry2, rx1:rx2], components(raw_roi, timed=True),
+                       out=narrow_u8[ry1:ry2, rx1:rx2])
+        if wide_distinct and wide_roi.max() > 0:
+            np.maximum(wide_u8[ry1:ry2, rx1:rx2], components(wide_roi, timed=False),
+                       out=wide_u8[ry1:ry2, rx1:rx2])
+    narrow = _nonempty(narrow_u8)
+    wide = _nonempty(wide_u8) if wide_distinct else narrow
+    return raw_u8, narrow, wide
 
 
 def _bgr_u8_hwc(t_chw: torch.Tensor) -> torch.Tensor:
@@ -607,6 +613,21 @@ def _enhance_bgr(t_chw: torch.Tensor, curr_v: torch.Tensor, curr_s: torch.Tensor
     return _hsv_to_bgr_cuda(h_t, s_t, v_t)
 
 
+def _enhanced_frame(curr: GpuFrame, raw_motion: Optional[torch.Tensor], masks: _BoostMasks,
+                    protect_mask: Optional[torch.Tensor], cfg: Config, skip_dim: bool,
+                    return_cuda_frame: bool) -> Optional[torch.Tensor]:
+    """The detector input as HWC uint8 on CUDA: boosted where a ball-sized blob was found, else at
+    most the static background dimmed; None when the source frame is to be used as it is."""
+    t = curr.chw
+    if not masks.has_blobs:
+        # No ball-sized blob: at most dim the static background.
+        if raw_motion is not None and not skip_dim:
+            return _dim_static_bgr(t, raw_motion, protect_mask, cfg)
+        return _bgr_u8_hwc(t) if return_cuda_frame else None
+    boost_src = masks.detector_boost_u8 if masks.detector_boost_u8 is not None else masks.selector_boost_u8
+    return _enhance_bgr(t, curr.v, curr.s, raw_motion, boost_src, protect_mask, cfg)
+
+
 @torch.no_grad()
 def preprocess_frame_cuda(window: FrameWindow, background: BackgroundModel, cfg: Config, *,
                           rois: Optional[List[Roi]] = None,
@@ -630,23 +651,13 @@ def preprocess_frame_cuda(window: FrameWindow, background: BackgroundModel, cfg:
     perf_t0 = time.perf_counter() if perf is not None else 0.0
     frame = window.curr
     curr = window.curr_gpu
-    t = curr.chw
 
     raw_motion, raw_motion_ungated = _raw_motion_cuda(window, background, cfg, rois)
     masks = _boost_masks(raw_motion, raw_motion_ungated, cfg, rois, need_detector_boost, perf)
 
     enhanced: Optional[torch.Tensor] = None       # HWC uint8 on CUDA, None = the source frame
-    if skip_dim and not need_cpu_frame and not return_cuda_frame:
-        pass
-    elif not masks.has_blobs:
-        # No ball-sized blob: at most dim the static background.
-        if raw_motion is not None and not skip_dim:
-            enhanced = _dim_static_bgr(t, raw_motion, protect_mask, cfg)
-        elif return_cuda_frame:
-            enhanced = _bgr_u8_hwc(t)
-    else:
-        boost_src = masks.detector_boost_u8 if masks.detector_boost_u8 is not None else masks.selector_boost_u8
-        enhanced = _enhance_bgr(t, curr.v, curr.s, raw_motion, boost_src, protect_mask, cfg)
+    if not (skip_dim and not need_cpu_frame and not return_cuda_frame):
+        enhanced = _enhanced_frame(curr, raw_motion, masks, protect_mask, cfg, skip_dim, return_cuda_frame)
 
     if enhanced is None:
         result = PreprocessResult(frame, None, masks.raw_u8, masks.selector_boost_u8)

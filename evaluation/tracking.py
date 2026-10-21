@@ -122,13 +122,8 @@ def _large_jumps(
     return jumps
 
 
-def validate(
-    predictions: Dict[str, Any],
-    annotations: Dict[str, Any],
-    jump_px: float,
-    jump_max_gap: int,
-) -> Dict[str, Any]:
-    pred_frames = _prediction_frames(predictions)
+def _label_rows(annotations: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """(the visible labels with a position, the absent labels), ignored ranges left out."""
     ignore_ranges = annotations.get("ignore_ranges", [])
     visible_labels = []
     absent_labels = []
@@ -142,7 +137,12 @@ def validate(
             visible_labels.append(row)
         elif not visible:
             absent_labels.append(row)
+    return visible_labels, absent_labels
 
+
+def _match_labels(pred_frames: Dict[int, Dict[str, Any]],
+                  visible_labels: List[Dict[str, Any]]) -> Tuple[List[float], List[int], List[Dict[str, Any]]]:
+    """(the error of every visible label with a prediction, the frames without one, the matches)."""
     errors: List[float] = []
     misses: List[int] = []
     matches: List[Dict[str, Any]] = []
@@ -162,23 +162,42 @@ def validate(
             "pred": {"x": float(pred["x"]), "y": float(pred["y"]), "source": pred.get("source")},
             "label": {"x": float(label["x"]), "y": float(label["y"])},
         })
+    return errors, misses, matches
 
-    false_positive_frames = []
-    for label in absent_labels:
-        frame = int(label["frame"])
-        if _prediction_present(pred_frames.get(frame)):
-            false_positive_frames.append(frame)
+
+def _error_statistics(errors: List[float]) -> Dict[str, Any]:
+    """The summary's error figures: None where there was no match to measure."""
+    return {
+        "mean_error_px": statistics.fmean(errors) if errors else None,
+        "median_error_px": statistics.median(errors) if errors else None,
+        "p90_error_px": _percentile(errors, 90.0),
+        "max_error_px": max(errors) if errors else None,
+        "within_5px": sum(1 for e in errors if e <= 5.0),
+        "within_10px": sum(1 for e in errors if e <= 10.0),
+        "within_20px": sum(1 for e in errors if e <= 20.0),
+    }
+
+
+def validate(
+    predictions: Dict[str, Any],
+    annotations: Dict[str, Any],
+    jump_px: float,
+    jump_max_gap: int,
+) -> Dict[str, Any]:
+    pred_frames = _prediction_frames(predictions)
+    visible_labels, absent_labels = _label_rows(annotations)
+    errors, misses, matches = _match_labels(pred_frames, visible_labels)
+    false_positive_frames = [int(label["frame"]) for label in absent_labels
+                             if _prediction_present(pred_frames.get(int(label["frame"])))]
+    large_jumps = _large_jumps(pred_frames, jump_px=jump_px, max_gap=jump_max_gap)
 
     pred_present = sum(1 for row in pred_frames.values() if _prediction_present(row))
-    total_prediction_frames = len(pred_frames)
     recall = len(errors) / max(len(visible_labels), 1)
     precision_on_labeled_absence = None
     if absent_labels:
         precision_on_labeled_absence = 1.0 - (
             len(false_positive_frames) / max(len(absent_labels), 1)
         )
-
-    large_jumps = _large_jumps(pred_frames, jump_px=jump_px, max_gap=jump_max_gap)
     summary = {
         "prediction_file_summary": predictions.get("summary", {}),
         "labeled_visible_frames": len(visible_labels),
@@ -194,15 +213,9 @@ def validate(
         "absence_precision": precision_on_labeled_absence,
         "absence_specificity": precision_on_labeled_absence,
         "prediction_present_frames": pred_present,
-        "prediction_total_frames": total_prediction_frames,
-        "prediction_filled_ratio": pred_present / max(total_prediction_frames, 1),
-        "mean_error_px": statistics.fmean(errors) if errors else None,
-        "median_error_px": statistics.median(errors) if errors else None,
-        "p90_error_px": _percentile(errors, 90.0),
-        "max_error_px": max(errors) if errors else None,
-        "within_5px": sum(1 for e in errors if e <= 5.0),
-        "within_10px": sum(1 for e in errors if e <= 10.0),
-        "within_20px": sum(1 for e in errors if e <= 20.0),
+        "prediction_total_frames": len(pred_frames),
+        "prediction_filled_ratio": pred_present / max(len(pred_frames), 1),
+        **_error_statistics(errors),
         "source_counts": _source_counts(pred_frames),
         "large_jump_count": len(large_jumps),
     }
@@ -250,6 +263,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             json.dump(report, f, indent=2)
 
     summary = report["summary"]
+    _print_summary(summary)
+    return 2 if _gates_failed(args, summary) else 0
+
+
+def _print_summary(summary: Dict[str, Any]) -> None:
     print("[validation] labels matched/missed: "
           f"{summary['matched_visible_frames']}/{summary['missed_visible_frames']}")
     print("[validation] recall: "
@@ -269,6 +287,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print("[validation] absence false positives: "
               f"{summary['false_positive_absent_frames']}/{summary['labeled_absent_frames']}")
 
+
+def _gates_failed(args: argparse.Namespace, summary: Dict[str, Any]) -> bool:
+    """Whether any threshold given on the command line is missed (a missing number fails it)."""
     failed = False
     if args.max_mean_error is not None:
         mean_error = summary["mean_error_px"]
@@ -280,8 +301,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         failed = failed or float(summary["localization_recall_10px"]) < float(args.min_recall)
     if args.min_presence_recall is not None:
         failed = failed or float(summary["presence_recall"]) < float(args.min_presence_recall)
-
-    return 2 if failed else 0
+    return failed
 
 
 if __name__ == "__main__":

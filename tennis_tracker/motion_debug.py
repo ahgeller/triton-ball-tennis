@@ -166,21 +166,25 @@ def draw_selected_ball(vis: np.ndarray, result: FrameResult, anchor_radius: floa
         cv2.putText(vis, src[:3].upper(), (cx_i - br, max(cy_i - br - 3, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
     cv2.circle(vis, (cx_i, cy_i), 4, color, -1)
-
-    # The search region for every non-detection frame: the selector's radius
-    # when it searched, else an estimate from the ball size.
     if src != "det":
-        sr = float(result.search_radius or 0.0)
-        scx = float(result.search_cx or fx)
-        scy = float(result.search_cy or fy)
-        draw_sr = (int(round(sr)) if sr > 1
-                   else max(int(round(anchor_radius * _SEARCH_RADIUS_FALLBACK_SCALE)), _SEARCH_RADIUS_FALLBACK_MIN))
-        draw_scx = int(round(scx)) if scx > 0 else cx_i
-        draw_scy = int(round(scy)) if scy > 0 else cy_i
-        cv2.circle(vis, (draw_scx, draw_scy), draw_sr, COLOR_SEARCH, 1, cv2.LINE_AA)
-        cv2.drawMarker(vis, (draw_scx, draw_scy), COLOR_SEARCH, cv2.MARKER_CROSS, SEARCH_MARKER_SIZE, 1)
-        cv2.putText(vis, f"r={draw_sr}", (draw_scx + draw_sr + 3, draw_scy),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_SEARCH, 1)
+        _draw_search_region(vis, result, anchor_radius, (fx, fy), (cx_i, cy_i))
+
+
+def _draw_search_region(vis: np.ndarray, result: FrameResult, anchor_radius: float, centre: Tuple[float, float],
+                        centre_px: Tuple[int, int]) -> None:
+    """The search region of a non-detection frame: the selector's radius when it searched, else
+    an estimate from the ball size, about the search centre (the ball when there was none)."""
+    sr = float(result.search_radius or 0.0)
+    scx = float(result.search_cx or centre[0])
+    scy = float(result.search_cy or centre[1])
+    draw_sr = (int(round(sr)) if sr > 1
+               else max(int(round(anchor_radius * _SEARCH_RADIUS_FALLBACK_SCALE)), _SEARCH_RADIUS_FALLBACK_MIN))
+    draw_scx = int(round(scx)) if scx > 0 else centre_px[0]
+    draw_scy = int(round(scy)) if scy > 0 else centre_px[1]
+    cv2.circle(vis, (draw_scx, draw_scy), draw_sr, COLOR_SEARCH, 1, cv2.LINE_AA)
+    cv2.drawMarker(vis, (draw_scx, draw_scy), COLOR_SEARCH, cv2.MARKER_CROSS, SEARCH_MARKER_SIZE, 1)
+    cv2.putText(vis, f"r={draw_sr}", (draw_scx + draw_sr + 3, draw_scy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_SEARCH, 1)
 
 
 def _aged_color_and_thickness(age: float) -> Tuple[Color, int]:

@@ -5,7 +5,7 @@ Engine policy: see ``engine_session.open_engine_session``.
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -91,11 +91,21 @@ class CourtDetector:
         if float(conf[best_i]) < self.cfg.court_conf:
             return self._report_miss(frame_index)
 
-        row = rows[best_i]
+        flat = self._keypoints_of(rows[best_i], scale)
+        if flat is None:
+            return self.keypoints
+        if len(flat) >= 2 * self._MIN_KEYPOINTS:
+            self.keypoints = flat
+            return self.keypoints
+        return self._report_miss(frame_index)
+
+    def _keypoints_of(self, row: np.ndarray, scale: Tuple[float, float]) -> Optional[List[float]]:
+        """The row's keypoints as a flat [x0, y0, x1, y1, ...] in frame pixels, remapped to the
+        semantic order when configured; None when the row carries no keypoints."""
         kpt_raw = row[self._KEYPOINT_COLUMN:]
         nk = int(kpt_raw.shape[0] // 3)
         if nk <= 0:
-            return self.keypoints
+            return None
         k = kpt_raw[: nk * 3].reshape(nk, 3)
         xy = k[:, :2].astype(np.float32)
         sx, sy = float(scale[0]), float(scale[1])
@@ -103,12 +113,7 @@ class CourtDetector:
         xy[:, 1] *= sy
         if xy.shape[0] == 14 and self.cfg.court_remap_semantic_14:
             xy = self._remap_kpt_indices(xy)
-
-        flat = np.asarray(xy, dtype=np.float32).reshape(-1).astype(float).tolist()
-        if len(flat) >= 2 * self._MIN_KEYPOINTS:
-            self.keypoints = flat
-            return self.keypoints
-        return self._report_miss(frame_index)
+        return np.asarray(xy, dtype=np.float32).reshape(-1).astype(float).tolist()
 
     def draw(self, frame: np.ndarray) -> np.ndarray:
         """Draw the cached keypoints on ``frame`` (``court_drawing.draw_court``); untouched while there are none."""
