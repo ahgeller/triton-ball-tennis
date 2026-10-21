@@ -180,8 +180,6 @@ class FakeGridTrackNet:
     instances: List["FakeGridTrackNet"] = []
 
     def __init__(self, weights_path: str, cfg: Config):
-        if int(cfg.skip_frame_detect) > 1:
-            raise ValueError("call-order contract needs skip_frame_detect=1")
         self.weights_path = str(weights_path)
         self.cfg = cfg
         self.prepared: Optional[Dict[str, Any]] = None
@@ -532,6 +530,18 @@ def test_zero_frame_video_prints_and_returns_none(tmp_path, monkeypatch, fake_cu
     debug_writers = CapturingVideoWriter.streams
     assert set(debug_writers) == {cfg.output_debug_path, cfg.output_detector_input_debug_path, cfg.output_guide_path}
     assert all(writer.hashes == [] and not writer.closed for writer in debug_writers.values())
+
+
+def test_skip_frame_detection_hands_the_detector_the_true_frame_index(tmp_path, monkeypatch, fake_cuda, clip):
+    """With ``skip_frame_detect=2`` the detector is asked about every other
+    frame; because run() passes ``frame_index``, the frames it is asked about
+    are the even source frames, not a call-order sequence shifted by the skips."""
+    result = run_pipeline(tmp_path, monkeypatch, clip, **JSON_ONLY_OVERRIDES,
+                          skip_frame_detect=2, skip_frame_require_roi=False)
+    detector = FakeGridTrackNet.instances[-1]
+    assert [index for index, _ in detector.inputs_seen] == list(range(0, FRAMES, 2))
+    det_frames = {row["frame"] for row in result["json"]["frames"] if row.get("source") == "det"}
+    assert det_frames and all(frame % 2 == 0 for frame in det_frames)
 
 
 def test_run_is_deterministic_in_process(tmp_path, monkeypatch, fake_cuda, clip):

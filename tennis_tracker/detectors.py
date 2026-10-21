@@ -385,12 +385,12 @@ class GridTrackNetBallDetector(BallDetectorBackend):
     thread) and caches one detection per source frame; ``detections_at(i)``
     returns frame ``i``'s result, waiting for the prepass if it is behind.
 
-    ``detect`` / ``detect_async_start`` without ``frame_index`` hand out the
-    cached results in call order, one call per source frame: they never read
-    the frame they are given.  That contract breaks as soon as a caller skips
-    a frame, which is why the constructor refuses ``cfg.skip_frame_detect > 1``
-    (every later frame would receive an earlier frame's detections with no
-    error).  Pass ``frame_index`` to be independent of call order.
+    ``detect`` / ``detect_async_start`` never read the frame they are given:
+    the prepass already decoded the clip.  With ``frame_index`` they answer
+    for that source frame, which is what ``pipeline.run`` passes, so skipping
+    frames is safe.  Without it they hand out the cached results in call
+    order, one call per source frame, and a caller that skips a frame shifts
+    every later answer.
     """
 
     uses_raw_frames = True
@@ -400,12 +400,6 @@ class GridTrackNetBallDetector(BallDetectorBackend):
     def __init__(self, weights_path: str, cfg: Config):
         if not torch.cuda.is_available():
             raise RuntimeError("GridTrackNet requires CUDA-enabled torch.")
-        if int(cfg.skip_frame_detect) > 1:
-            raise ValueError(
-                "GridTrackNet returns one cached result per source frame in call order; "
-                f"skip_frame_detect={cfg.skip_frame_detect} would skip calls and shift every later "
-                "frame's detections. Use skip_frame_detect=1 with this backend."
-            )
         self.cfg = cfg
         self.device = torch.device(f"cuda:{int(cfg.device)}")
         self._decode = decode_predictions
