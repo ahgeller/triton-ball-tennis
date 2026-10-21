@@ -15,7 +15,7 @@ from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetec
 from .motion import _pack_mask_u8, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, draw_motion_debug_frame
 from .tracking import ROIMotionTracker
 from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
-from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP
+from .rendering import MOTION_DEBUG_SOURCE_COLOR, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_GUIDE, COLOR_GUIDE_INTERP
 from .court_minimap import draw_court_minimap
 from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
@@ -39,19 +39,16 @@ def _json_safe(value):
 
 def _frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict[str, Any]:
     row: Dict[str, Any] = {"frame": int(frame_idx), "present": False}
-    if result is None or bool(getattr(result, "debug_only", False)):
-        if result is not None and bool(getattr(result, "debug_only", False)):
-            row["debug_only"] = True
+    if result is None:
         return row
-
     row.update({
         "present": result.cx is not None and result.cy is not None,
         "x": None if result.cx is None else float(result.cx),
         "y": None if result.cy is None else float(result.cy),
-        "conf": float(getattr(result, "conf", 0.0)),
-        "source": str(getattr(result, "source", "")),
-        "interpolated": bool(getattr(result, "interpolated", False)),
-        "bbox": _json_safe(getattr(result, "bbox", None)),
+        "conf": float(result.conf),
+        "source": str(result.source),
+        "interpolated": bool(result.interpolated),
+        "bbox": _json_safe(result.bbox),
         "measurement": (
             {"x": float(result.measurement[0]), "y": float(result.measurement[1]),
              "conf": float(result.conf), "bbox": _json_safe(result.bbox)}
@@ -62,24 +59,11 @@ def _frame_result_to_json(frame_idx: int, result: Optional[FrameResult]) -> Dict
             else "filtered" if result.measurement is not None else "recovered"
         ),
         "search": {
-            "x": float(getattr(result, "search_cx", 0.0)),
-            "y": float(getattr(result, "search_cy", 0.0)),
-            "radius": float(getattr(result, "search_radius", 0.0)),
+            "x": float(result.search_cx),
+            "y": float(result.search_cy),
+            "radius": float(result.search_radius),
         },
-        "guide_search": {
-            "x": float(getattr(result, "guide_search_cx", 0.0)),
-            "y": float(getattr(result, "guide_search_cy", 0.0)),
-            "radius": float(getattr(result, "guide_search_radius", 0.0)),
-            "exact": bool(getattr(result, "guide_search_exact", False)),
-            "frozen": bool(getattr(result, "guide_search_frozen", False)),
-            "hold": bool(getattr(result, "guide_search_hold", False)),
-        },
-        "selection": _json_safe(getattr(result, "source_policy", {}) or {
-            "source": str(getattr(result, "source", "")),
-            "reason": str(getattr(result, "source_reason", "")),
-            "reasons": list(getattr(result, "source_reasons", []) or []),
-            "rejects": dict(getattr(result, "source_rejects", {}) or {}),
-        }),
+        "selection": {"source": str(result.source), "reason": str(result.source_reason)},
     })
     return row
 
@@ -217,7 +201,7 @@ def _choose_motion_mask(boost_mask, raw_motion) -> Tuple[Optional[Any], str, boo
 
 
 def _result_position(result: Optional[FrameResult]) -> Tuple[Optional[float], Optional[float]]:
-    if result is None or bool(getattr(result, "debug_only", False)):
+    if result is None:
         return None, None
     if result.cx is None or result.cy is None:
         return None, None
@@ -229,10 +213,10 @@ def _result_search(
     prev_pos: Optional[Tuple[float, float]],
     diag: float,
 ) -> Tuple[Optional[float], Optional[float], float, str]:
-    if result is not None and not bool(getattr(result, "debug_only", False)):
-        sx = float(getattr(result, "search_cx", 0.0))
-        sy = float(getattr(result, "search_cy", 0.0))
-        sr = float(getattr(result, "search_radius", 0.0))
+    if result is not None:
+        sx = float(result.search_cx)
+        sy = float(result.search_cy)
+        sr = float(result.search_radius)
         if sr > 0.0 and (sx != 0.0 or sy != 0.0):
             return sx, sy, sr, "result_search"
         rx, ry = _result_position(result)
@@ -269,8 +253,8 @@ def _motion_diagnostic_reason(
         if float(best_dist) > gate:
             return "blob_too_far_from_search"
 
-    if selected_source in ("carry", "guide", "interp"):
-        return f"{selected_source}_selected_over_motion_candidate"
+    if selected_source == "interp":
+        return "interp_selected_over_motion_candidate"
     if selected_source:
         return "non_motion_selected_over_motion_candidate"
     return "lost_despite_motion_candidate"
@@ -319,8 +303,8 @@ def _build_motion_diagnostics(
         result = per_frame[frame_idx] if frame_idx < len(per_frame) else None
         selected_x, selected_y = _result_position(result)
         selected_source = None
-        if result is not None and not bool(getattr(result, "debug_only", False)):
-            selected_source = str(getattr(result, "source", "") or "")
+        if result is not None:
+            selected_source = str(result.source or "")
             if selected_source:
                 selected_source_counts[selected_source] = int(selected_source_counts.get(selected_source, 0)) + 1
 
@@ -383,7 +367,6 @@ def _build_motion_diagnostics(
                     "x": selected_x,
                     "y": selected_y,
                 },
-                "selection": _json_safe(getattr(result, "source_policy", {}) if result is not None else {}),
                 "candidate_count_exported": int(len(candidates)),
                 "candidates": candidates,
             })
@@ -1127,7 +1110,7 @@ def run(cfg):
             if gi in guide_map or gr is None or gr.cx is None or gr.cy is None:
                 continue
             src = str(getattr(gr, "source", ""))
-            exact = src in ("det", "motion", "guide")
+            exact = src in ("det", "motion")
             guide_map[gi] = (float(gr.cx), float(gr.cy), exact)
 
         # Note: we intentionally do NOT backfill guide_map from other (orange/blue) tracks.
@@ -1170,7 +1153,6 @@ def run(cfg):
     trail_max = max(10, int(round(fps * 0.25)))
     guide_trail = []  # list of (x, y, exact) or None for guide gaps
     guide_trail_max = max(40, trail_max + 20)
-    last_guide_point_dbg = None  # (x, y, exact)
     # Display-only smoothing for the magenta motion-search center (orange MOT path).
     # This does not affect selector logic; it only stabilizes the debug overlay.
     last_motion_search_dbg = None  # (x, y)
@@ -1212,10 +1194,7 @@ def run(cfg):
             guide_write_elapsed = 0.0
         dets = all_frame_dets[fi]
         frame_result = per_frame[fi]
-        guide_state_result = frame_result
-        display_result = None
-        if frame_result is not None and not bool(getattr(frame_result, "debug_only", False)):
-            display_result = frame_result
+        display_result = frame_result
         frame_out = frame.copy()
         guide_frame = frame.copy() if guide_writer is not None else None
         court_kps = all_court_kps[fi]
@@ -1428,33 +1407,13 @@ def run(cfg):
                     cv2.circle(guide_frame, (rcx, rcy), i_rad, COLOR_INTERP, -1)
                     cv2.putText(guide_frame, "PHY", (rcx + 10, rcy - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_INTERP, 1)
-            elif display_result.source == 'carry':
-                last_motion_search_dbg = None
-                last_motion_search_dbg_frame = -1
-                # BLUE - short predicted carry when temporarily lost
-                c_rad = int(np.clip(round(cached_anchor_radius), 4, 12))
-                cv2.circle(frame_out, (rcx, rcy), c_rad, COLOR_CARRY, -1)
-                cv2.putText(frame_out, "PHY", (rcx + 10, rcy - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_CARRY, 1)
-                if guide_frame is not None:
-                    cv2.circle(guide_frame, (rcx, rcy), c_rad, COLOR_CARRY, -1)
-                    cv2.putText(guide_frame, "PHY", (rcx + 10, rcy - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_CARRY, 1)
 
-            # State circle (court-scaled radius) used by trail-only blue/yellow/green logic.
-            if (
-                display_result.source in ('det', 'carry', 'interp') and
-                float(getattr(display_result, "search_radius", 0.0) or 0.0) > 0.0
-            ):
-                scx = int(round(float(getattr(display_result, "search_cx", rcx))))
-                scy = int(round(float(getattr(display_result, "search_cy", rcy))))
-                sr = int(round(float(getattr(display_result, "search_radius", 0.0))))
-                if display_result.source == 'det':
-                    scol = COLOR_DET
-                elif display_result.source == 'carry':
-                    scol = COLOR_CARRY
-                else:
-                    scol = COLOR_INTERP
+            # State circle (court-scaled radius): the selector's search region.
+            if display_result.source in ('det', 'interp') and float(display_result.search_radius) > 0.0:
+                scx = int(round(float(display_result.search_cx)))
+                scy = int(round(float(display_result.search_cy)))
+                sr = int(round(float(display_result.search_radius)))
+                scol = COLOR_DET if display_result.source == 'det' else COLOR_INTERP
                 if draw_main_search_regions:
                     cv2.circle(frame_out, (scx, scy), sr, (15, 15, 15), 2, cv2.LINE_AA)
                     cv2.circle(frame_out, (scx, scy), sr, scol, 1, cv2.LINE_AA)
@@ -1470,7 +1429,7 @@ def run(cfg):
             prev_src = None
             if prev is not None:
                 prev_src = prev[4]
-                # Source transition: det resuming after carry/motion/interp.
+                # Source transition: det resuming after motion/interp.
                 # Don't force-break - instead check if the positions are reasonably close.
                 # A break only happens if the distance exceeds the jump threshold below.
 
@@ -1497,7 +1456,7 @@ def run(cfg):
                         if dist > bridge_px:
                             trail.append(None)
                             prev = None
-                        elif prev_src in ("carry", "interp") and src == "det" and dist > transition_px:
+                        elif prev_src == "interp" and src == "det" and dist > transition_px:
                             trail.append(None)
                             prev = None
 
@@ -1509,7 +1468,7 @@ def run(cfg):
                                 prev = None
                         elif prev2 is not None and _trail_direction_break(prev2, prev, (trail_cx, trail_cy)):
                             # Direction-change segment breaks should be stricter on confident sources only.
-                            if not (_is_soft_source(src) or _is_soft_source(prev_src) or
+                            if not (src == "interp" or prev_src == "interp" or
                                     (source_transition and dist <= bridge_px * 1.4)):
                                 trail.append(None)
                                 prev = None
@@ -1595,53 +1554,12 @@ def run(cfg):
             ggx, ggy, gexact = guide_info
             guide_pt_dbg = (int(round(ggx)), int(round(ggy)), bool(gexact))
             guide_trail.append(guide_pt_dbg)
-            last_guide_point_dbg = guide_pt_dbg
         elif guide_trail and guide_trail[-1] is not None:
             guide_trail.append(None)
         while len(guide_trail) > guide_trail_max:
             guide_trail.pop(0)
 
         if guide_frame is not None:
-            # Draw the actual guide-side detection gate/search circle used by the selector
-            # (exact-guide lock or frozen-guide reacquire radius) when available.
-            gate_dbg = None
-            if guide_state_result is not None:
-                gsr = float(getattr(guide_state_result, "guide_search_radius", 0.0) or 0.0)
-                if gsr > 0.0:
-                    gate_dbg = (
-                        int(round(float(getattr(guide_state_result, "guide_search_cx", 0.0)))),
-                        int(round(float(getattr(guide_state_result, "guide_search_cy", 0.0)))),
-                        float(gsr),
-                        bool(getattr(guide_state_result, "guide_search_exact", False)),
-                        bool(getattr(guide_state_result, "guide_search_frozen", False)),
-                        bool(getattr(guide_state_result, "guide_search_hold", False)),
-                    )
-            if gate_dbg is not None:
-                if len(gate_dbg) >= 6:
-                    gsx, gsy, gsr, gexact_dbg, gfrozen_dbg, ghold_dbg = gate_dbg[:6]
-                else:
-                    gsx, gsy, gsr, gexact_dbg, gfrozen_dbg = gate_dbg
-                    ghold_dbg = False
-                if ghold_dbg:
-                    gate_col = (255, 0, 0)    # blue hold guide circle (selector logic)
-                    gate_label = "GUIDE DET R (hold)"
-                elif gfrozen_dbg:
-                    gate_col = (0, 200, 255)  # orange-ish frozen reacquire circle
-                    gate_label = "GUIDE DET R (frozen)"
-                elif gexact_dbg:
-                    gate_col = (0, 255, 0)    # green exact-guide lock
-                    gate_label = "GUIDE DET R (exact)"
-                else:
-                    gate_col = (0, 255, 255)  # yellow soft/interp guide gate
-                    gate_label = "GUIDE DET R (interp)"
-                cv2.circle(guide_frame, (gsx, gsy), int(round(gsr)), (15, 15, 15), 2, cv2.LINE_AA)
-                cv2.circle(guide_frame, (gsx, gsy), int(round(gsr)), gate_col, 1, cv2.LINE_AA)
-                cv2.drawMarker(guide_frame, (gsx, gsy), gate_col, cv2.MARKER_CROSS, 10, 1)
-                cv2.putText(
-                    guide_frame, gate_label, (gsx + 10, gsy + 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, gate_col, 1
-                )
-
             if display_result is None:
                 for i in range(1, len(guide_trail)):
                     p0 = guide_trail[i - 1]
@@ -1712,21 +1630,14 @@ def run(cfg):
                     cv2.rectangle(vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 1)
 
             if frame_result is not None:
-                vis_fx = float(getattr(frame_result, 'cx', 0.0) or 0.0)
-                vis_fy = float(getattr(frame_result, 'cy', 0.0) or 0.0)
-                vis_bbox = getattr(frame_result, 'bbox', None)
-                vis_src  = str(getattr(frame_result, 'source', ''))
-                vis_sr   = float(getattr(frame_result, 'search_radius', 0.0) or 0.0)
-                vis_scx  = float(getattr(frame_result, 'search_cx', 0.0) or vis_fx)
-                vis_scy  = float(getattr(frame_result, 'search_cy', 0.0) or vis_fy)
-
-                # Color by source
-                src_colors = {
-                    'det': (0, 220, 60), 'motion': (0, 160, 255),
-                    'carry': (255, 160, 0), 'guide': (255, 255, 0),
-                    'interp': (0, 220, 220),
-                }
-                ball_col = src_colors.get(vis_src, (200, 200, 200))
+                vis_fx = float(frame_result.cx or 0.0)
+                vis_fy = float(frame_result.cy or 0.0)
+                vis_bbox = frame_result.bbox
+                vis_src = str(frame_result.source)
+                vis_sr = float(frame_result.search_radius or 0.0)
+                vis_scx = float(frame_result.search_cx or vis_fx)
+                vis_scy = float(frame_result.search_cy or vis_fy)
+                ball_col = MOTION_DEBUG_SOURCE_COLOR[vis_src]
 
                 if vis_fx > 0 or vis_fy > 0:
                     cx_i = int(round(vis_fx))
@@ -1740,7 +1651,7 @@ def run(cfg):
                                     (bx1, max(by1 - 4, 12)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, ball_col, 1)
                     else:
-                        # -- Estimated ball box from cached radius (carry/motion/guide) --
+                        # -- Estimated ball box from cached radius (motion/interp) --
                         br = max(int(round(cached_anchor_radius)), 6)
                         cv2.rectangle(vis, (cx_i - br, cy_i - br), (cx_i + br, cy_i + br),
                                       ball_col, 1)
@@ -1752,7 +1663,7 @@ def run(cfg):
                     cv2.circle(vis, (cx_i, cy_i), 4, ball_col, -1)
 
                     # -- Physics / KF search radius circle --
-                    # Show for ALL non-det frames. If search_radius is populated (carry/motion),
+                    # Show for ALL non-det frames. If search_radius is populated (motion/interp),
                     # use it; otherwise fall back to a reasonable estimate.
                     if vis_src != 'det':
                         draw_sr = int(round(vis_sr)) if vis_sr > 1 else max(int(round(cached_anchor_radius * 2.5)), 20)
@@ -1934,7 +1845,7 @@ def run(cfg):
         timing["pass2_total"] = time.perf_counter() - pass2_perf_t0
 
     elapsed = time.time() - t0
-    filled = sum(1 for r in per_frame if r is not None and not bool(getattr(r, "debug_only", False)))
+    filled = sum(1 for r in per_frame if r is not None)
     if cfg.tracking_json:
         _write_tracking_json(
             cfg.tracking_json,

@@ -7,20 +7,23 @@ from .court_geometry import build_court_side_guides, clip_infinite_line_to_frame
 # Trail rendering constants
 COLOR_DET = (0, 255, 0)
 COLOR_MOTION = (0, 165, 255)
-COLOR_PHYSICS = (255, 255, 0)
-COLOR_INTERP = COLOR_PHYSICS
-COLOR_CARRY = COLOR_PHYSICS
+COLOR_INTERP = (255, 255, 0)
 COLOR_RAW = (0, 180, 180)
 COLOR_SEARCH = (255, 0, 255)
 COLOR_GUIDE = (255, 255, 255)
 COLOR_GUIDE_INTERP = (180, 220, 255)
 
+# Trail colour per FrameResult.source, before the age fade.
 _SOURCE_BASE_COLOR: Dict[str, Tuple[int, int, int]] = {
     "det": (40, 255, 40),
     "motion": (0, 185, 255),
-    "carry": COLOR_PHYSICS,
-    "interp": COLOR_PHYSICS,
-    "guide": COLOR_GUIDE,
+    "interp": COLOR_INTERP,
+}
+# Marker colour per FrameResult.source in the motion-debug video.
+MOTION_DEBUG_SOURCE_COLOR: Dict[str, Tuple[int, int, int]] = {
+    "det": (0, 220, 60),
+    "motion": (0, 160, 255),
+    "interp": (0, 220, 220),
 }
 
 
@@ -159,10 +162,6 @@ def _trail_jump_fracs(src, cfg: Config):
         return min(cfg.trail_hard_switch_x_frac, 0.24), min(cfg.trail_hard_switch_y_frac, 0.24)
     if src == "interp":
         return 0.16, 0.16
-    if src == "guide":
-        return 0.13, 0.13
-    if src == "carry":
-        return 0.12, 0.12
     return 0.18, 0.18
 
 def _get_track_color(track_id: int) -> Tuple[int, int, int]:
@@ -183,9 +182,6 @@ def _get_track_color(track_id: int) -> Tuple[int, int, int]:
         b = min(255, int(b * scale))
         
     return (b, g, r)  # OpenCV uses BGR
-
-def _is_soft_source(src):
-    return src in ("interp", "carry", "guide")
 
 def _trail_prev2(trail_list):
     # Return previous and second-previous non-gap trail points.
