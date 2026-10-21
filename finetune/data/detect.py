@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 from finetune.data.workspace import VideoMeta
 
 if TYPE_CHECKING:
-    from tennis_tracker.ball_detectors import GridTrackNetBallDetector
+    from tennis_tracker.engines.ball_detectors import GridTrackNetBallDetector
 
 BallPoint = Tuple[float, float, float]     # x, y (native pixels) and confidence
 
@@ -24,7 +24,7 @@ def ball_detector(weights: Path, conf: float = 0.0, device: str = "0",
     frame spacing fed to the model (None: the training cadence, 2 at 60 FPS and 1 at 30)."""
     import torch
     from tennis_tracker.config import Config
-    from tennis_tracker import ball_detectors as backends
+    from tennis_tracker.engines import ball_detectors as backends
     # These scripts own their process: let cuDNN autotune the fixed-shape convolutions.
     torch.backends.cudnn.benchmark = True
     cfg = Config(conf=conf, device=device, gridtracknet_source_stride=source_stride)

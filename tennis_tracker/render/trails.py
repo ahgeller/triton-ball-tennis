@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult, Track
 
-from .court_geometry import court_axis_spans
+from ..court.court_geometry import court_axis_spans
 from .rendering import (
     COLOR_DISPLAY_PATH, COLOR_DISPLAY_PATH_INTERP, COLOR_INTERP, COLOR_OUTLINE, Canvas, Color, Point,
 )

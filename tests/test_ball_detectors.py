@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 import torch
 
-from tennis_tracker import ball_detectors
-from tennis_tracker.ball_detectors import (
+from tennis_tracker.engines import ball_detectors
+from tennis_tracker.engines.ball_detectors import (
     BallDetectorBackend,
     CachedDetections,
     GridTrackNetBallDetector,

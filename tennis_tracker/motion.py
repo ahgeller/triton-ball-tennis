@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .court_geometry import build_court_side_guides
+from .court.court_geometry import build_court_side_guides
 from .frame_window import FrameWindow, GpuFrame
 
 

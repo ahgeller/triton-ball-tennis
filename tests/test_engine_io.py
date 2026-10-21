@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 import torch
 
-from tennis_tracker import engine_session
+from tennis_tracker.engines import engine_session
 from tennis_tracker.config import Config
-from tennis_tracker.ball_detectors import TensorRTBallPending, TensorRTRuntimeBallDetector, decode_ball_predictions
-from tennis_tracker.engine_boxes import engine_output_mode
-from tennis_tracker.engine_files import (
+from tennis_tracker.engines.ball_detectors import TensorRTBallPending, TensorRTRuntimeBallDetector, decode_ball_predictions
+from tennis_tracker.engines.engine_boxes import engine_output_mode
+from tennis_tracker.engines.engine_files import (
     EngineIO,
     engine_class_names,
     find_ball_class_id_from_names,
@@ -19,7 +19,7 @@ from tennis_tracker.engine_files import (
     read_engine_header,
     split_engine_header,
 )
-from tennis_tracker.engine_session import TensorRTRuntimeSession
+from tennis_tracker.engines.engine_session import TensorRTRuntimeSession
 
 PAYLOAD = b"\x00TRT engine bytes\xff\xfe"
 

@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .config import Config
+from ..config import Config
 from .engine_files import iter_engine_io, read_engine_header, resolve_engine_path
 
 

@@ -1,4 +1,4 @@
-"""tennis_tracker.trails: the chosen ball's trail breaks where it should, the display-path trail
+"""tennis_tracker.render.trails: the chosen ball's trail breaks where it should, the display-path trail
 keeps exact and filled points apart, and the candidate overlay draws every track. Synthetic
 frames and results only."""
 from types import SimpleNamespace
@@ -7,8 +7,8 @@ import numpy as np
 from ball_in_play_selector import Detection, FrameResult
 
 from tennis_tracker.config import Config
-from tennis_tracker.rendering import Canvas
-from tennis_tracker.trails import (
+from tennis_tracker.render.rendering import Canvas
+from tennis_tracker.render.trails import (
     CANDIDATE_TRAIL_LEN, TRAIL_MIN_LEN, TRAIL_SECONDS, _TRAIL_DIRECTION_BRIDGE_SCALE, BallTrail, CandidateTrackTrails,
     DisplayPathTrail, _reversal_breaks, _SegmentLimits, _trail_jump_fracs, _transition_too_far, track_color,
 )

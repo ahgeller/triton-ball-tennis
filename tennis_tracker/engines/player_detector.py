@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from .config import Config
+from ..config import Config
 from .engine_boxes import POSTPROCESSED_COLUMNS, decode_engine_boxes, engine_output_mode
 from .engine_session import TensorRTRuntimeSession, open_engine_session
 

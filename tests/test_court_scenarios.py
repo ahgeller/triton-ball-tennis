@@ -6,8 +6,8 @@ and expected values as they are.
 import numpy as np
 
 from ball_in_play_selector import FrameResult
-from tennis_tracker.court_minimap import _visible_completed_legs, draw_court_minimap
-from tennis_tracker.court_events import (
+from tennis_tracker.court.court_minimap import _visible_completed_legs, draw_court_minimap
+from tennis_tracker.court.court_events import (
     BouncePrediction,
     ContactEvent,
     CourtScene,
@@ -19,8 +19,8 @@ from tennis_tracker.court_events import (
     infer_kinematic_bounces,
 )
 from tennis_tracker.config import Config
-from tennis_tracker.court_detector import CourtDetector
-from tennis_tracker.court_drawing import draw_court
+from tennis_tracker.engines.court_detector import CourtDetector
+from tennis_tracker.court.court_drawing import draw_court
 
 HD_WIDTH, HD_HEIGHT = 1920, 1080
 # A serve from the near baseline into the far service box, in court coordinates.

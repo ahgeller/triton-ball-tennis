@@ -9,7 +9,7 @@ from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.workspace import VideoMeta
 from finetune.training import metrics
 from finetune.training.metrics import METRIC_SLACK, promotion_improves, score_weights
-from tennis_tracker import ball_detectors
+from tennis_tracker.engines import ball_detectors
 from tests._helpers import Capture, cpu_detector, metric_probe
 
 

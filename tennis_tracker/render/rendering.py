@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult, RawDetection, Track
 
-from .config import Config
-from .court_events import PlayerBoxes
+from ..config import Config
+from ..court.court_events import PlayerBoxes
 
 Color = Tuple[int, int, int]
 Point = Tuple[int, int]

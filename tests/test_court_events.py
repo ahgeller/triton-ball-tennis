@@ -7,10 +7,10 @@ import numpy as np
 import pytest
 
 from ball_in_play_selector import FrameResult
-from tennis_tracker.court_geometry import court_keypoints_key
+from tennis_tracker.court.court_geometry import court_keypoints_key
 from tests.test_pipeline_run import FULL_OVERRIDES, clip, load_golden, render_env, run_pipeline  # noqa: F401
-from tennis_tracker import court_events
-from tennis_tracker.court_events import (
+from tennis_tracker.court import court_events
+from tennis_tracker.court.court_events import (
     BounceEvent,
     BouncePrediction,
     ContactEvent,

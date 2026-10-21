@@ -47,7 +47,7 @@ import pytest
 
 from tennis_tracker import pass1, pass2, pipeline
 from tennis_tracker.config import Config
-from tennis_tracker.court_detector import CourtDetector
+from tennis_tracker.engines.court_detector import CourtDetector
 from tennis_tracker.export import RunResult
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "pipeline_run_golden.json"

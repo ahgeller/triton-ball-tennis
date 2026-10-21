@@ -11,8 +11,8 @@ import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult
 
-from .config import Config
-from .court_drawing import draw_court_side_guides
+from ..config import Config
+from ..court.court_drawing import draw_court_side_guides
 from .rendering import MOTION_DEBUG_SOURCE_COLOR, SEARCH_MARKER_SIZE
 
 try:

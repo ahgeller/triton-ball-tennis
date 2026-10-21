@@ -43,7 +43,7 @@ def main() -> None:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
-    paths = [*ROOT.glob("*.py"), *ROOT.glob("tennis_tracker/*.py"),
+    paths = [*ROOT.glob("*.py"), *ROOT.glob("tennis_tracker/**/*.py"),
              *ROOT.glob("ball_in_play_selector/*.py"), *ROOT.glob("finetune/*.py"),
              ws / "clips.csv", ws / "exclude.txt", *ws.glob("labels/*_ball.csv"),
              GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, COURT_ENGINE, ROOT / "sample/pomona.mp4",

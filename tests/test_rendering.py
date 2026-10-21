@@ -1,4 +1,4 @@
-"""tennis_tracker.rendering: the marker sizes, the search-centre smoothing, and what each drawing
+"""tennis_tracker.render.rendering: the marker sizes, the search-centre smoothing, and what each drawing
 primitive puts where.  These assert structure (which pixels a marker covers, which frame gets a
 call, what the HUD says) and do not depend on how this OpenCV build rasterises, unlike the
 byte-exact frame hashes in tests/test_pipeline_run.py."""
@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 from ball_in_play_selector import FrameResult
 
-from tennis_tracker import rendering
+from tennis_tracker.render import rendering
 from tennis_tracker.config import Config
-from tennis_tracker.rendering import (
+from tennis_tracker.render.rendering import (
     COLOR_DET,
     COLOR_INTERP,
     COLOR_MOTION,
@@ -26,7 +26,7 @@ from tennis_tracker.rendering import (
     draw_raw_detections,
     draw_selected_result,
 )
-from tennis_tracker.trails import BallTrail
+from tennis_tracker.render.trails import BallTrail
 
 WIDTH, HEIGHT = 320, 180
 

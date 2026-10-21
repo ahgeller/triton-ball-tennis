@@ -9,10 +9,10 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .config import Config
-from .court_geometry import LINE_PAIRS_14
+from ..config import Config
+from ..court.court_geometry import LINE_PAIRS_14
 from .engine_session import open_engine_session
-from .court_drawing import draw_court
+from ..court.court_drawing import draw_court
 
 _NEVER = -10**9
 

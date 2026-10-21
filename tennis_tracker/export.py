@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from ball_in_play_selector import FrameResult, PackedMask, RawDetection, Track
 
-from .court_events import PlayerBoxes
+from .court.court_events import PlayerBoxes
 from .pass1 import Pass1Result
 from .run_context import RunContext
 

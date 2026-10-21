@@ -1,13 +1,13 @@
-"""tennis_tracker.court_drawing on blank frames: which keypoints are joined, which are skipped,
+"""tennis_tracker.court.court_drawing on blank frames: which keypoints are joined, which are skipped,
 and what the court layer adds for each of its inputs."""
 import numpy as np
 
 from tennis_tracker.config import Config
-from tennis_tracker.court_drawing import (
+from tennis_tracker.court.court_drawing import (
     _court_line_pairs, _detected_court_point, draw_court, draw_court_layer, draw_court_side_guides,
     draw_homography_net_line,
 )
-from tennis_tracker.court_geometry import LINE_PAIRS_14
+from tennis_tracker.court.court_geometry import LINE_PAIRS_14
 
 WIDTH, HEIGHT = 320, 180
 

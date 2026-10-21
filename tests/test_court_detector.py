@@ -1,9 +1,9 @@
 """The court detector without an engine: keypoint remapping, line pairs and the disabled state."""
 import numpy as np
 
-from tennis_tracker import court_geometry
+from tennis_tracker.court import court_geometry
 from tennis_tracker.config import Config
-from tennis_tracker.court_detector import CourtDetector
+from tennis_tracker.engines.court_detector import CourtDetector
 
 
 def test_line_pairs_are_the_shared_court_geometry_constant():

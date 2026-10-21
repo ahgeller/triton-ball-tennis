@@ -14,17 +14,17 @@ from typing import Any, List, Optional
 import cv2
 import numpy as np
 
-from .court_geometry import MIN_KEYPOINT_VALUES, build_ground_projection_model, court_keypoints_key
-from .court_minimap import draw_court_minimap
+from .court.court_geometry import MIN_KEYPOINT_VALUES, build_ground_projection_model, court_keypoints_key
+from .court.court_minimap import draw_court_minimap
 from .motion import build_court_side_protect_mask
-from .motion_debug import RawMotionTrails, draw_motion_masks, draw_selected_ball
+from .render.motion_debug import RawMotionTrails, draw_motion_masks, draw_selected_ball
 from .pass1 import Pass1Result
-from .court_drawing import draw_court_layer
-from .rendering import (
+from .court.court_drawing import draw_court_layer
+from .render.rendering import (
     Canvas, MarkerSizer, SearchCentreSmoother, draw_hud, draw_motion_rois, draw_player_boxes, draw_raw_detections,
     draw_selected_result,
 )
-from .trails import BallTrail, CandidateTrackTrails, DisplayPathTrail
+from .render.trails import BallTrail, CandidateTrackTrails, DisplayPathTrail
 from .run_context import CourtEvents, RunContext, Selection
 from .video_io import VideoWriter
 

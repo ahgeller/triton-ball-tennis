@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pytest
 
-from tennis_tracker.court_geometry import (
+from tennis_tracker.court.court_geometry import (
     CORNER_ORDER,
     MIN_KEYPOINT_VALUES,
     build_court_polygon,

@@ -159,29 +159,32 @@ tennis_tracker/run_context.py            Data the stages pass each other
 tennis_tracker/pass1.py                  Decode, motion evidence, ROIs and detections per frame
 tennis_tracker/frame_window.py           Previous/current/next frames for pass 1's temporal gate
 tennis_tracker/pass2.py                  Render the tracking and debug videos
-tennis_tracker/export.py                 Tracking JSON export
+tennis_tracker/export.py                 What a run returns, and the tracking JSON export
 tennis_tracker/motion.py                 CUDA background model and motion masks
-tennis_tracker/motion_debug.py           Motion-debug video drawing
 tennis_tracker/roi_tracking.py           ROI tracking for motion search
-tennis_tracker/ball_detectors.py         GridTrackNet prepass and the TensorRT ball engine
-tennis_tracker/engine_session.py         TensorRT session shared by the engine backends
-tennis_tracker/engine_files.py           Engine files on disk: metadata, class names, I/O tensors
-tennis_tracker/engine_boxes.py           Decoding detection-engine outputs into boxes
-tennis_tracker/player_detector.py        TensorRT player detection with ByteTrack association
-tennis_tracker/court_detector.py         Court keypoint engine, run every N frames
-tennis_tracker/paths.py                  Model asset paths, spelled once
 tennis_tracker/headless.py               Running the tracker from another program, nothing drawn
 tennis_tracker/gridtracknet.py           GridTrackNet model and decoder
-tennis_tracker/court_geometry.py         Court keypoints, side guides, polygon, homography
-tennis_tracker/court_events.py           Bounces, player contacts, rally legs
-tennis_tracker/court_minimap.py          Court minimap drawing
-tennis_tracker/rendering.py              Frame drawing: canvas, markers, HUD
-tennis_tracker/court_drawing.py          Court keypoints, lines, net line and polygon
-tennis_tracker/trails.py                 Ball, display-path and candidate-track trails
-tennis_tracker/display_path.py           The chosen track's display path
-tennis_tracker/summaries.py              Console summaries printed at the end of a run
 tennis_tracker/video_io.py               Frame reader, video writer, CUDA uploads
-tennis_tracker/                          Also config, frame-rate rules, host-side helpers
+tennis_tracker/config.py                 The run's Config; paths.py: model asset paths, spelled once
+tennis_tracker/frame_rate.py             Frame-rate rules; utils.py: host-side helpers (FFmpeg, device)
+tennis_tracker/engines/                  The TensorRT engines and the detector backends:
+  ball_detectors.py                        GridTrackNet prepass and the TensorRT ball engine
+  player_detector.py                       TensorRT player detection with ByteTrack association
+  court_detector.py                        Court keypoint engine, run every N frames
+  engine_session.py                        TensorRT session shared by the engine backends
+  engine_files.py                          Engine files on disk: metadata, class names, I/O tensors
+  engine_boxes.py                          Decoding detection-engine outputs into boxes
+tennis_tracker/court/                    The court and what happens on it:
+  court_geometry.py                        Court keypoints, side guides, polygon, homography
+  court_events.py                          Bounces, player contacts, rally legs
+  court_drawing.py                         Court keypoints, lines, net line and polygon
+  court_minimap.py                         Court minimap drawing
+tennis_tracker/render/                   Drawing for pass 2:
+  rendering.py                             Frame drawing: canvas, markers, HUD
+  trails.py                                Ball, display-path and candidate-track trails
+  display_path.py                          The chosen track's display path
+  motion_debug.py                          Motion-debug video drawing
+  summaries.py                             Console summaries printed at the end of a run
 ball_in_play_selector/                   Track construction, scoring, and recovery
 models/gridtracknet_weights_torch.npz    GridTrackNet inference weights
 models/ctb_regr_bounce.cbm               CatBoost bounce model (--court)

@@ -9,11 +9,11 @@ from typing import Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .config import Config
+from ..config import Config
 from .court_geometry import (
     LINE_PAIRS_14, GroundModel, build_court_side_guides, clip_infinite_line_to_frame, homography_apply,
 )
-from .rendering import (
+from ..render.rendering import (
     COLOR_COURT_INDEX, COLOR_COURT_LINE, COLOR_COURT_POLYGON, COLOR_NET_LINE, COLOR_OUTLINE, COLOR_PLAYER_BOX, Color,
     Point,
 )

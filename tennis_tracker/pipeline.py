@@ -15,20 +15,20 @@ import torch
 from ball_in_play_selector import select_ball_in_play
 
 from .config import Config
-from .court_geometry import build_court_polygon, last_valid_court_keypoints
-from .court_events import (
+from .court.court_geometry import build_court_polygon, last_valid_court_keypoints
+from .court.court_events import (
     CourtScene, assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events,
 )
-from .ball_detectors import BallDetectorBackend, GridTrackNetBallDetector, TensorRTRuntimeBallDetector
-from .court_detector import CourtDetector
-from .engine_files import find_ball_class_id_from_names, read_engine_class_names, resolve_engine_path
+from .engines.ball_detectors import BallDetectorBackend, GridTrackNetBallDetector, TensorRTRuntimeBallDetector
+from .engines.court_detector import CourtDetector
+from .engines.engine_files import find_ball_class_id_from_names, read_engine_class_names, resolve_engine_path
 from .export import RunResult, write_tracking_json
 from .pass1 import Pass1Result, collect_pass1, erase_ghost_rois
 from .pass2 import render_pass2
-from .player_detector import PlayerDetector
-from .display_path import build_display_path
+from .engines.player_detector import PlayerDetector
+from .render.display_path import build_display_path
 from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
-from .summaries import print_selector_track_summary, print_timing_summary
+from .render.summaries import print_selector_track_summary, print_timing_summary
 from .utils import detect_device, print_platform_report, resolve_runtime
 
 _DEFAULT_FPS = 24.0                 # when the container reports none

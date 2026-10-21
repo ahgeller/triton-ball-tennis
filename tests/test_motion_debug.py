@@ -1,10 +1,10 @@
-"""tennis_tracker.motion_debug: raw-motion trails fall back to straight segments only when scipy
+"""tennis_tracker.render.motion_debug: raw-motion trails fall back to straight segments only when scipy
 cannot fit a spline; a bug in the drawing itself is not swallowed."""
 import numpy as np
 import pytest
 
-from tennis_tracker import motion_debug
-from tennis_tracker.motion_debug import RawMotionTrails, _fit_spline_trail
+from tennis_tracker.render import motion_debug
+from tennis_tracker.render.motion_debug import RawMotionTrails, _fit_spline_trail
 
 scipy = pytest.importorskip("scipy")
 

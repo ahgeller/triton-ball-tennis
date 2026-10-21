@@ -21,11 +21,11 @@ import numpy as np
 import torch
 from ball_in_play_selector import RawDetection
 
-from .config import Config
+from ..config import Config
 from .engine_boxes import OutputMode, decode_engine_boxes, engine_output_mode
 from .engine_session import TensorRTRuntimeSession
-from .frame_rate import require_phase_stride
-from .gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
+from ..frame_rate import require_phase_stride
+from ..gridtracknet import HEIGHT, WIDTH, decode_predictions, frame_tensor, load_model
 
 # A BGR HWC uint8 frame, either a host array or a CUDA tensor of the same layout.
 FrameInput = Union[np.ndarray, torch.Tensor]

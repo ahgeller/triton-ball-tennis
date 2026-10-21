@@ -1,7 +1,7 @@
-"""The console summaries in tennis_tracker/summaries.py, read back through capsys."""
+"""The console summaries in tennis_tracker/render/summaries.py, read back through capsys."""
 from types import SimpleNamespace
 
-from tennis_tracker.summaries import _percent_or_dash, _track_row, print_selector_track_summary, print_timing_summary
+from tennis_tracker.render.summaries import _percent_or_dash, _track_row, print_selector_track_summary, print_timing_summary
 
 
 def _track(track_id, score, breakdown):

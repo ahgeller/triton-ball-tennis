@@ -754,7 +754,7 @@ def test_a_click_far_from_every_point_does_nothing():
 def test_drafts_use_the_unshifted_detector_point():
     from finetune.training import pretrack
     from finetune.data.workspace import VideoMeta
-    from tennis_tracker import ball_detectors
+    from tennis_tracker.engines import ball_detectors
     seen = {}
 
     class Detector:

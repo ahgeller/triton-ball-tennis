@@ -13,8 +13,8 @@ import torch
 from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.workspace import VideoMeta
 from finetune.training import metrics
-from tennis_tracker import ball_detectors
-from tennis_tracker.ball_detectors import GridTrackNetBallDetector
+from tennis_tracker.engines import ball_detectors
+from tennis_tracker.engines.ball_detectors import GridTrackNetBallDetector
 from tennis_tracker.config import Config
 from tennis_tracker.motion import _PROBE_S_DIFF_SCALE, _clean_raw_motion_mask
 from tennis_tracker.utils import ENCODER_OPENCV, EncoderChoice

@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from tennis_tracker.config import Config
-from tennis_tracker.player_detector import PlayerDetector, PlayerPending, _load_bytetrack
+from tennis_tracker.engines.player_detector import PlayerDetector, PlayerPending, _load_bytetrack
 
 
 def test_load_bytetrack_reports_why_boxmot_is_missing():

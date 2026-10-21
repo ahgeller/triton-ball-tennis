@@ -17,10 +17,10 @@ import torch
 from ball_in_play_selector import FrameResult, Track
 
 from .config import Config
-from .ball_detectors import BallDetectorBackend
-from .court_detector import CourtDetector
-from .court_events import BounceEvent, ContactEvent, RallyLeg
-from .player_detector import PlayerDetector
+from .engines.ball_detectors import BallDetectorBackend
+from .engines.court_detector import CourtDetector
+from .court.court_events import BounceEvent, ContactEvent, RallyLeg
+from .engines.player_detector import PlayerDetector
 from .utils import EncoderChoice
 
 # A display-path point: (x, y, exact), exact when it is a track observation.

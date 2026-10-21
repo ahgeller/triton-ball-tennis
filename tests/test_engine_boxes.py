@@ -1,9 +1,9 @@
-"""tennis_tracker/engine_boxes.py: the engine-output decode shared by the ball and player backends."""
+"""tennis_tracker/engines/engine_boxes.py: the engine-output decode shared by the ball and player backends."""
 import numpy as np
 import pytest
 import torch
 
-from tennis_tracker.engine_boxes import (
+from tennis_tracker.engines.engine_boxes import (
     OUTPUT_MODE_POSTPROCESSED,
     OUTPUT_MODE_RAW,
     decode_engine_boxes,

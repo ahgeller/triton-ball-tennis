@@ -17,8 +17,8 @@ import numpy as np
 import torch
 from ball_in_play_selector import PackedMask, RawDetection
 
-from .court_geometry import court_keypoints_key
-from .court_events import PlayerBoxes
+from .court.court_geometry import court_keypoints_key
+from .court.court_events import PlayerBoxes
 from .frame_window import FrameWindow
 from .motion import BackgroundModel, DetectorInputRequest, build_court_side_protect_mask, preprocess_frame_cuda
 from .run_context import RunContext

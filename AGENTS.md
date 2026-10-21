@@ -11,33 +11,36 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   frames at 768x432 become 15 input channels. Output is five confidence/x-offset/
   y-offset grids at 48x27. Width-axis normalization reproduces the upstream export;
   its values are buffers, not trainable BatchNorm parameters.
-- `tennis_tracker/ball_detectors.py`: progressive GridTrackNet prepass and the
-  single-frame TensorRT ball engine. At about 60 FPS, even and odd phases each
-  run at about 30 FPS. Preserve source-frame indices and temporal order.
-  `engine_session.py`: the TensorRT session the ball, player and court engines
-  share; `engine_files.py`: locating engine files, their Ultralytics metadata
-  and I/O tensor table (no CUDA); `engine_boxes.py`: decoding detection-engine
-  outputs into boxes for the ball and player backends. `player_detector.py`:
-  TensorRT players with ByteTrack association. `court_detector.py`: court
-  keypoints every N frames, last good result cached. `paths.py`: the model asset
-  paths every consumer (Config defaults, scripts, the workspace) spells once.
-  `headless.py`: the one Config and run for a caller that wants the tracker's
-  answer and no video (`evaluation/archive.py`, `pretrack.py`).
+- `tennis_tracker/engines/`: `ball_detectors.py`, the progressive GridTrackNet
+  prepass and the single-frame TensorRT ball engine. At about 60 FPS, even and
+  odd phases each run at about 30 FPS. Preserve source-frame indices and
+  temporal order. `engine_session.py`: the TensorRT session the ball, player
+  and court engines share; `engine_files.py`: locating engine files, their
+  Ultralytics metadata and I/O tensor table (no CUDA); `engine_boxes.py`:
+  decoding detection-engine outputs into boxes for the ball and player
+  backends. `player_detector.py`: TensorRT players with ByteTrack association.
+  `court_detector.py`: court keypoints every N frames, last good result cached.
+  `tennis_tracker/paths.py`: the model asset paths every consumer (Config
+  defaults, scripts, the workspace) spells once. `headless.py`: the one Config
+  and run for a caller that wants the tracker's answer and no video
+  (`evaluation/archive.py`, `pretrack.py`).
 - `tennis_tracker/pipeline.py`: orders the stages, calls the selector and court
   events, reports. `run_context.py`: data the stages pass each other. `pass1.py`
   (with `frame_window.py`): decoding, background/motion state, ROI collection,
-  detector calls. `pass2.py`: rendering pass. `export.py`: tracking JSON.
-  `motion_debug.py`: motion-debug video. `court_geometry.py`: keypoints, side
-  guides, polygon, homography. `court_minimap.py`: minimap. `rendering.py`
-  draws only: the canvas, colours, markers and HUD, with `court_drawing.py`
-  (court layers), `trails.py` (ball, display-path and candidate trails) and
-  `display_path.py` (the chosen track's display path) beside it.
-  `summaries.py`: the console track table and timing report.
-- `ball_in_play_selector/`: candidate association, Kalman state, track scoring,
-  timeline selection, bounded recovery, trajectory refit.
-- `tennis_tracker/motion.py`, `roi_tracking.py`: CUDA motion masks and ROI tracking.
-- `tennis_tracker/court_events.py`: CatBoost/kinematic bounce candidates,
-  player contacts and schematic rally legs.
+  detector calls. `pass2.py`: rendering pass. `export.py`: `RunResult`, what a
+  run returns, and the tracking JSON. `motion.py`, `roi_tracking.py`: CUDA
+  motion masks and ROI tracking.
+- `tennis_tracker/court/`: `court_geometry.py`, keypoints, side guides, polygon,
+  homography; `court_events.py`, CatBoost/kinematic bounce candidates, player
+  contacts and schematic rally legs, each stage reading one `CourtScene`;
+  `court_drawing.py`, the court layers; `court_minimap.py`, the minimap.
+- `tennis_tracker/render/`: `rendering.py` draws only: the canvas, colours,
+  markers and HUD, with `trails.py` (ball, display-path and candidate trails),
+  `display_path.py` (the chosen track's display path) and `motion_debug.py`
+  (the motion-debug video) beside it. `summaries.py`: the console track table
+  and timing report.
+- `ball_in_play_selector/`: candidate association (`association.py`), Kalman
+  state, track scoring, timeline selection, bounded recovery, trajectory refit.
 - `finetune/refiner/refine.py`: model-free sub-pixel ball suggestions for the label tool
   (motion centroid, candidates chosen by trajectory, trust score).
 - `finetune/refiner/cnn_refiner.py`: small CNN, trained only on frames the user reviewed, that places

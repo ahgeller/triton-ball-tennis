@@ -8,7 +8,7 @@ import math
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from finetune.data.detector_metrics import HIT_PX, WRONG_PX, DetectorMetrics, scale_for_width
-from tennis_tracker.court_geometry import LINE_PAIRS_14, MIN_KEYPOINT_VALUES, last_valid_court_keypoints
+from tennis_tracker.court.court_geometry import LINE_PAIRS_14, MIN_KEYPOINT_VALUES, last_valid_court_keypoints
 
 LINE_PX = 10.0  # "on a court line" if within this many 1080p pixels of one
 
