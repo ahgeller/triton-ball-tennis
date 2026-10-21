@@ -215,6 +215,39 @@ def draw_homography_net_line(frame: np.ndarray, ground_model: Optional[GroundMod
     cv2.line(frame, (x1, y1), (x2, y2), COLOR_NET_LINE, 2, cv2.LINE_AA)
 
 
+def _detected_court_point(kps: Sequence[float], index: int) -> Optional[Point]:
+    """Keypoint ``index`` as integer pixels, or None when it is at ``(0, 0)`` or below (not detected)."""
+    x, y = int(kps[2 * index]), int(kps[2 * index + 1])
+    return (x, y) if (x > 0 or y > 0) else None
+
+
+def _court_line_pairs(n: int) -> Sequence[Tuple[int, int]]:
+    """Which keypoints to join: the semantic 14-point layout, else a chain through consecutive points."""
+    if n == 14:
+        return LINE_PAIRS_14
+    if n >= _COURT_MIN_LINE_POINTS:
+        return [(j, j + 1) for j in range(n - 1)]
+    return ()
+
+
+def _draw_court_points(frame: np.ndarray, kps: Sequence[float], cfg: Config) -> None:
+    for index in range(len(kps) // 2):
+        point = _detected_court_point(kps, index)
+        if point is None:
+            continue
+        cv2.circle(frame, point, 5, COLOR_COURT_LINE, -1)
+        if cfg.court_draw_indices:
+            cv2.putText(frame, str(index), (point[0], point[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_COURT_INDEX, 2)
+
+
+def _draw_court_lines(frame: np.ndarray, kps: Sequence[float]) -> None:
+    for a, b in _court_line_pairs(len(kps) // 2):
+        pa, pb = _detected_court_point(kps, a), _detected_court_point(kps, b)
+        if pa is not None and pb is not None:
+            cv2.line(frame, pa, pb, COLOR_COURT_LINE, 2)
+
+
 def draw_court(frame: np.ndarray, keypoints: Optional[Sequence[float]], cfg: Config) -> np.ndarray:
     """Draw court keypoints as green dots and, unless ``cfg.court_points_only``, the lines between them.
 
@@ -225,32 +258,9 @@ def draw_court(frame: np.ndarray, keypoints: Optional[Sequence[float]], cfg: Con
     """
     if keypoints is None:
         return frame
-    kps = keypoints
-    n = len(kps) // 2
-
-    for ki in range(0, len(kps) - 1, 2):
-        x, y = int(kps[ki]), int(kps[ki + 1])
-        if x > 0 or y > 0:
-            cv2.circle(frame, (x, y), 5, COLOR_COURT_LINE, -1)
-            if cfg.court_draw_indices:
-                cv2.putText(frame, str(ki // 2), (x, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_COURT_INDEX, 2)
-
-    if cfg.court_points_only:
-        return frame
-
-    line_pairs: Sequence[Tuple[int, int]] = ()
-    if n == 14:
-        line_pairs = LINE_PAIRS_14
-    elif n >= _COURT_MIN_LINE_POINTS:
-        line_pairs = [(j, j + 1) for j in range(n - 1)]
-
-    for a, b in line_pairs:
-        if a < n and b < n:
-            ax, ay = int(kps[a * 2]), int(kps[a * 2 + 1])
-            bx, by = int(kps[b * 2]), int(kps[b * 2 + 1])
-            if (ax > 0 or ay > 0) and (bx > 0 or by > 0):
-                cv2.line(frame, (ax, ay), (bx, by), COLOR_COURT_LINE, 2)
+    _draw_court_points(frame, keypoints, cfg)
+    if not cfg.court_points_only:
+        _draw_court_lines(frame, keypoints)
     return frame
 
 
