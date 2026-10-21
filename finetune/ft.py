@@ -15,22 +15,19 @@ interactive menu that walks through everything below. The commands remain for sc
     python finetune/ft.py hints list | use <version> its versions (all kept) and which one the tool uses
     python finetune/ft.py hints sheet <clip> [a b]   a zoomed PNG of where two versions disagree, to judge by eye
 
-Runs itself under the training venv automatically, so plain ``python`` works from any shell
-(``.\\finetune.ps1 <command>`` does the same from PowerShell). Sub-commands pass unknown
-arguments straight through to the underlying script (``ft.py train --epochs 3 --lr 0.3``).
+Runs itself under the training venv automatically (``finetune/interpreter.py``), so plain
+``python`` works from any shell (``.\\finetune.ps1 <command>`` does the same from PowerShell).
+Sub-commands pass unknown arguments straight through to the underlying script (``ft.py train
+--epochs 3 --lr 0.3``). The commands that work in this process (status, check, promote, camera,
+paths) live in ``finetune/commands.py``; the menu, the launchers and the script commands are here.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
-import json
-import math
-import os
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -40,142 +37,19 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 
 # Only stdlib-backed finetune modules at the top: ft.py must import without cv2, numpy or torch so
 # ensure_interpreter can hand over to an interpreter that has them.
+from finetune.commands import cmd_camera, cmd_check, cmd_paths, cmd_promote, cmd_status, drafted_clips, sha8
 from finetune.data.data_policy import OWN_SOURCES, evaluation_clips, read_review_status
-from finetune.data.fileio import backup_copy, copy_atomic, write_atomic
-from finetune.data.label_audit import audit_labels, check_label_file, matches_any, open_flags, outstanding_flags
-from finetune.data.labels import LabelFormatError, read_labels, reviewed_frames
-from finetune.data.scoring import REFERENCE_HEIGHT, REFERENCE_WIDTH
+from finetune.data.label_audit import open_flags, outstanding_flags
+from finetune.data.labels import reviewed_frames
 from finetune.data import workspace as ws
-from finetune.data.workspace import (DEFAULT_SOURCES, ROOT, clip_of, draft_csv, draft_files, label_csv, label_files,
-                                     natural_key, read_exclusions, read_manifest, review_json, video_meta, videos_in,
-                                     write_manifest)
+from finetune.data.workspace import ROOT, clip_of, draft_csv, label_csv, label_files, natural_key, read_exclusions, read_manifest, video_meta, videos_in
+from finetune.interpreter import ensure_interpreter, wait_child
 from tennis_tracker.frame_rate import phase_stride
 
-# cheapest first: cv2 rules out most interpreters fast. Exit 3 means usable for training but with an
-# OpenCV whose windows are not Qt's, which the label tool refuses (see label_tool.highgui_backend).
-TRAINING_IMPORTS = ("import sys, cv2, numpy, torch; sys.exit(0 if any(line.strip().startswith('GUI:') "
-                    "and 'QT' in line.upper() for line in cv2.getBuildInformation().splitlines()) else 3)")
 SCRIPTS = Path(__file__).resolve().parent           # the package folder the scripts live under (not the data workspace)
-PYTHON_CACHE = SCRIPTS / ".training-python"
-PROBE_TIMEOUT_S = 120              # an interpreter that takes longer than this to import torch is not usable
-QT_NEEDED_EXIT = 3                 # probe_interpreter's "usable, but its cv2 is not the Qt build"
-LISTED_CLIPS = 12                  # how many clip names status prints before "..."
 
 
-# --------------------------------------------------------------------------- interpreter
-
-def python_names() -> Tuple[str, ...]:
-    return ("python.exe",) if os.name == "nt" else ("python3", "python")
-
-
-def candidate_interpreters() -> List[Path]:
-    """Places a torch + cv2 interpreter tends to live, best guess first."""
-    found: List[Path] = []
-
-    def add(path) -> None:
-        if not path:
-            return
-        candidate = Path(path)
-        if candidate.is_file() and candidate not in found:
-            found.append(candidate)
-
-    add(os.environ.get("TENNIS_FINETUNE_PYTHON"))
-    if PYTHON_CACHE.is_file():                       # whatever worked last time
-        add(PYTHON_CACHE.read_text(encoding="utf-8").strip())
-    for root in (ROOT, ROOT.parent):                 # a venv in or beside the repo
-        for venv in (".venv", "venv"):
-            for name in python_names():
-                add(root / venv / "Scripts" / name)
-                add(root / venv / "bin" / name)
-    home = Path.home()                               # conda / miniconda / anaconda / miniforge environments
-    conda_roots = ("anaconda3", "miniconda3", "miniforge3", "mambaforge")
-    for base in (home / ".conda" / "envs", *(home / root / "envs" for root in conda_roots)):
-        if base.is_dir():
-            for env in sorted(base.iterdir()):
-                for name in python_names():
-                    add(env / name)
-                    add(env / "bin" / name)
-    add(sys.executable)
-    for name in python_names():                      # finally whatever is on PATH
-        add(shutil.which(name))
-    return found
-
-
-def probe_interpreter(python: Path) -> Optional[int]:
-    """0: has cv2 (Qt build), numpy and torch. 3: the same with a non-Qt cv2. None: not usable."""
-    print(f"[python] trying {python}", flush=True)
-    try:
-        done = subprocess.run([str(python), "-c", TRAINING_IMPORTS], capture_output=True, timeout=PROBE_TIMEOUT_S)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return done.returncode if done.returncode in (0, QT_NEEDED_EXIT) else None
-
-
-def training_python() -> Optional[Path]:
-    """First interpreter that can import cv2, numpy and torch, preferring one whose cv2 is the Qt
-    build the label tool needs; the winner is cached for next time."""
-    fallback = None
-    for candidate in candidate_interpreters():
-        result = probe_interpreter(candidate)
-        if result == 0:
-            fallback = candidate
-            break
-        if result == QT_NEEDED_EXIT and fallback is None:
-            fallback = candidate
-    if fallback is None:
-        PYTHON_CACHE.unlink(missing_ok=True)         # the cached one stopped working
-        return None
-    try:
-        write_atomic(PYTHON_CACHE, str(fallback))
-    except OSError as error:
-        print(f"[python] could not remember {fallback} in {PYTHON_CACHE.name} ({error}); it will be probed again next time")
-    return fallback
-
-
-def current_is_complete() -> bool:
-    """Does this very interpreter have cv2 (the Qt build), numpy and torch? Torch is only looked up,
-    not imported: importing it costs seconds, and the menu itself never needs it."""
-    try:
-        import importlib.util
-        import cv2
-        import numpy
-    except ImportError:
-        return False
-    qt = any(line.strip().startswith("GUI:") and "QT" in line.upper()
-             for line in cv2.getBuildInformation().splitlines())
-    return qt and bool(numpy.__version__) and importlib.util.find_spec("torch") is not None
-
-
-def wait_child(command: List[str], **kwargs) -> int:
-    """subprocess.call, minus its habit of killing the child 0.25 s after a Ctrl+C. The child got
-    the same Ctrl+C and may be saving labels; let it finish and pass its exit code on."""
-    process = subprocess.Popen(command, **kwargs)
-    interrupted = False
-    while True:
-        try:
-            return process.wait()
-        except KeyboardInterrupt:
-            if not interrupted:
-                interrupted = True
-                print("[wait] interrupted; letting the child finish saving", flush=True)
-
-
-def ensure_interpreter() -> Optional[int]:
-    """Re-run under the venv that has torch + cv2 when the current python lacks them. Returns the
-    exit code to finish with when the work was handed to that interpreter (or none was found),
-    None when this interpreter should carry on."""
-    if os.environ.get("TENNIS_FINETUNE_NO_REEXEC") or current_is_complete():
-        return None
-    python = training_python()
-    if python is not None and python.resolve() == Path(sys.executable).resolve():
-        return None                                  # the best there is; the label tool says if it is not Qt
-    if python is None:
-        print("No interpreter with cv2, numpy and torch was found; install them or point "
-              "TENNIS_FINETUNE_PYTHON at a python that has them", file=sys.stderr)
-        return 2
-    env = dict(os.environ, TENNIS_FINETUNE_NO_REEXEC="1")
-    return wait_child([str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env=env)
-
+# --------------------------------------------------------------------------- launching the scripts
 
 def run_command(command: List[str]) -> int:
     print("$", " ".join(f'"{part}"' if " " in part else part for part in command), flush=True)
@@ -193,146 +67,7 @@ def run_module(module: str, arguments: List[str]) -> int:
     return run_command([sys.executable, "-m", module, *arguments])
 
 
-# --------------------------------------------------------------------------- workspace facts
-
-def label_stats(csv_path: Path, width: int, height: int) -> Tuple[int, int]:
-    """(rows, rows with a visible ball) of a label file."""
-    labels = read_labels(csv_path, width, height)
-    return len(labels), sum(point is not None for point in labels.values())
-
-
-def review_progress(clip: str, rows: int) -> str:
-    """How many of a clip's frames a person has reviewed (confirmed or corrected), for status."""
-    try:
-        reviewed = len(reviewed_frames(clip))
-    except LabelFormatError as error:
-        print(f"[warn] {error}")
-        return "review file unreadable"
-    if not reviewed and not review_json(clip).is_file():
-        return ""
-    return f"{reviewed}/{rows} reviewed" if rows else f"{reviewed} reviewed"
-
-
-def sha8(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()[:8]
-
-
-def drafted_clips() -> Set[str]:
-    return {clip_of(p) for p in draft_files()}
-
-
 # --------------------------------------------------------------------------- commands
-
-def clip_counts(clip: str, csv_path: Path, row: Optional[Dict[str, str]], videos: Dict[str, Path]) -> Tuple[int, int]:
-    """(label rows, visible balls): from clips.csv when the clip is listed, else counted from the file."""
-    if row:
-        return int(row["label_frames"]), int(row["visible"])
-    width, height = int(REFERENCE_WIDTH), int(REFERENCE_HEIGHT)
-    if clip in videos:
-        try:
-            width, height = video_meta(videos[clip])[1:3]
-        except RuntimeError as error:
-            print(f"[warn] {error}; counting {csv_path.name} as 1080p")
-    return label_stats(csv_path, width, height)
-
-
-def print_source_table(finals: Dict[str, Path], manifest: Dict[str, dict], videos: Dict[str, Path]) -> None:
-    per_source: Dict[str, Dict[str, int]] = {}
-    for clip, csv_path in finals.items():
-        row = manifest.get(clip)
-        rows, visible = clip_counts(clip, csv_path, row, videos)
-        bucket = per_source.setdefault(row["source"] if row else "custom", {"clips": 0, "frames": 0, "visible": 0})
-        bucket["clips"] += 1
-        bucket["frames"] += rows
-        bucket["visible"] += visible
-    print("\nlabelled clips by source")
-    print(f"  {'source':22s} {'clips':>5s} {'label frames':>13s} {'visible':>8s}")
-    for source, bucket in sorted(per_source.items()):
-        print(f"  {source:22s} {bucket['clips']:5d} {bucket['frames']:13d} {bucket['visible']:8d}")
-    total = {key: sum(b[key] for b in per_source.values()) for key in ("clips", "frames", "visible")}
-    print(f"  {'total':22s} {total['clips']:5d} {total['frames']:13d} {total['visible']:8d}")
-    cameras: Dict[str, Dict[str, int]] = {}
-    for clip in finals:
-        row = manifest.get(clip)
-        if row:
-            bucket = cameras.setdefault(row.get("camera") or "untagged", {"clips": 0, "frames": 0})
-            bucket["clips"] += 1
-            bucket["frames"] += int(row.get("label_frames") or 0)
-    if cameras:
-        print("camera: " + ", ".join(f"{name} {b['clips']} clips / {b['frames']} frames" for name, b in sorted(cameras.items()))
-              + ("   -> python finetune/ft.py camera" if "untagged" in cameras else ""))
-
-
-def shown(path: Path) -> str:
-    """A path as status prints it: relative to the repository when it is inside it."""
-    try:
-        return str(path.relative_to(ROOT))
-    except ValueError:
-        return str(path)
-
-
-def print_models() -> None:
-    print("\nmodels")
-    if ws.REPO_WEIGHTS.is_file():
-        print(f"  tracker uses   {shown(ws.REPO_WEIGHTS)}  sha {sha8(ws.REPO_WEIGHTS)}  "
-              f"{dt.datetime.fromtimestamp(ws.REPO_WEIGHTS.stat().st_mtime):%Y-%m-%d %H:%M}")
-    if ws.BEST_WEIGHTS.is_file():
-        same = sha8(ws.BEST_WEIGHTS) == sha8(ws.REPO_WEIGHTS) if ws.REPO_WEIGHTS.is_file() else False
-        print(f"  last winner    {shown(ws.BEST_WEIGHTS)}  sha {sha8(ws.BEST_WEIGHTS)}  "
-              f"{'(already promoted)' if same else '-> python finetune/ft.py promote'}")
-    for winner in sorted(ws.RUNS.glob("*/winner.json"), key=lambda p: p.stat().st_mtime)[-3:]:
-        try:
-            payload = json.loads(winner.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            print(f"  run {winner.parent.name:12s} winner.json unreadable ({error})")
-            continue
-        metrics = payload.get("metrics", {})
-        print(f"  run {winner.parent.name:12s} val={payload.get('validation_clips')} winner={Path(payload.get('winner', '')).name} "
-              f"recall={metrics.get('recall', 0):.3f} wrong={metrics.get('wrong', 0):.3f} false_alarm={metrics.get('false_alarm', 0):.3f}")
-
-
-def cmd_status(args: argparse.Namespace) -> int:
-    manifest = read_manifest()
-    videos = videos_in()
-    finals = {clip_of(p): p for p in label_files()}
-    drafts = drafted_clips()
-    if not videos and not finals:
-        print(f"Workspace {ws.WORKSPACE} is empty. Start with:  python finetune/ft.py import all")
-        return 0
-
-    print(f"workspace  {ws.WORKSPACE}")
-    print_source_table(finals, manifest, videos)
-    own = [clip for clip in sorted(finals, key=natural_key) if (manifest.get(clip, {}).get("source") or "custom") in OWN_SOURCES]
-    if own:
-        print("\nown-camera clips")
-        for clip in own:
-            row = manifest.get(clip, {})
-            size = f"{row.get('width', '?')}x{row.get('height', '?')} @{float(row['fps']):.0f}" if row.get("fps") else ""
-            progress = review_progress(clip, int(row.get("label_frames", 0) or 0))
-            note = row.get("note", "")
-            print(f"  {clip:12s} {size:16s} labels={row.get('label_frames', '?'):>4s} visible={row.get('visible', '?'):>4s}"
-                  f"  {progress:18s} {note[:60]}")
-
-    pending = sorted(set(videos) - set(finals), key=natural_key)
-    if pending:
-        print("\nvideos without a final label file")
-        for clip in pending:
-            state = "draft ready -> python finetune/ft.py label " + clip if clip in drafts else "not pre-labelled -> python finetune/ft.py label " + clip
-            print(f"  {clip:30s} {state}")
-    orphans = sorted(set(finals) - set(videos), key=natural_key)
-    if orphans:
-        print(f"\nlabel files without a video: {', '.join(orphans[:LISTED_CLIPS])}{' ...' if len(orphans) > LISTED_CLIPS else ''}")
-    excluded = read_exclusions()
-    if excluded:
-        print(f"\nexcluded from training by exclude.txt ({len(excluded)}): {', '.join(excluded[:LISTED_CLIPS])}"
-              f"{' ...' if len(excluded) > LISTED_CLIPS else ''}")
-    print_models()
-    return 0
-
 
 def cmd_import(args: argparse.Namespace) -> int:
     return run_script("data/import_data.py", args.rest)
@@ -427,42 +162,6 @@ def offer_realign(clip: str, reviewed_before: Set[int]) -> None:
             run_cli(["check", "--audit", "--mark", "--clips", clip])
 
 
-def cmd_check(args: argparse.Namespace) -> int:
-    videos = videos_in()
-    manifest = read_manifest()
-    problems = 0
-    checked = 0
-    for csv_path in label_files():
-        clip = clip_of(csv_path)
-        if not matches_any(clip, args.clips):
-            continue
-        checked += 1
-        video = videos.get(clip)
-        if video is None:
-            print(f"[fail] {clip}: no video in {ws.VIDEOS}")
-            problems += 1
-            continue
-        try:
-            fps, width, height, total = video_meta(video)
-        except RuntimeError as error:
-            print(f"[fail] {clip}: {error}")
-            problems += 1
-            continue
-        issues, rows = check_label_file(csv_path, fps, width, height, total)
-        row = manifest.get(clip)
-        if row and (int(row["width"]) != width or int(row["height"]) != height):
-            issues.append(f"clips.csv says {row['width']}x{row['height']} but the video is {width}x{height}")
-        if issues:
-            problems += 1
-            print(f"[fail] {clip}: " + "; ".join(issues))
-        elif args.verbose:
-            print(f"[ ok ] {clip}: {rows} labels, {width}x{height} @{fps:.0f}")
-    print(f"{checked} label files checked, {problems} with problems")
-    if args.audit:
-        problems += audit_labels(args.clips, args.weights, args.fix, args.mark)
-    return 1 if problems else 0
-
-
 def cmd_eval(args: argparse.Namespace) -> int:
     clips = args.clips
     if not clips and not args.all:
@@ -481,115 +180,6 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 def cmd_hints(args: argparse.Namespace) -> int:
     return run_script("labeling/cnn_refiner.py", args.rest or ["list"])
-
-
-def cmd_promote(args: argparse.Namespace) -> int:
-    source = Path(args.weights) if args.weights else ws.BEST_WEIGHTS
-    if not source.is_file():
-        print(f"No weights at {source}; train first (python finetune/ft.py train)")
-        return 1
-    if ws.REPO_WEIGHTS.is_file():
-        if sha8(source) == sha8(ws.REPO_WEIGHTS):
-            print(f"{ws.REPO_WEIGHTS.name} already is {source.name}; nothing to do")
-            return 0
-        backup = backup_copy(ws.REPO_WEIGHTS, "promote")
-        print(f"[backup ] {ws.REPO_WEIGHTS.name} -> {backup.name}")
-    copy_atomic(source, ws.REPO_WEIGHTS)
-    print(f"[promote] {source} -> {ws.REPO_WEIGHTS}")
-    print("next: python finetune/ft.py eval      (own-camera clips)\n"
-          "      python check_parity.py          (the Pomona gate; a new model may legitimately move its numbers)")
-    return 0
-
-
-CAMERA_FIXED_PX = 2.5    # 75th-percentile shift between frames ~1 s apart (1080p px) at or below this = fixed
-CAMERA_MAX_PX = 8.0      # ... and no sampled pair moved more than this (a single pan breaks a background model)
-CAMERA_SAMPLES = 24      # frame pairs measured per clip
-CAMERA_GRID = (320, 180)     # the frame is measured at this size ...
-CAMERA_WEAK_RESPONSE = 0.15  # ... and a correlation peak under this is a cut or a zoom, not a shift
-CAMERA_MAX_WEAK = 0.25       # more weak pairs than this share and the camera is not "fixed"
-
-
-def measure_camera_motion(video: Path) -> Tuple[float, float, float]:
-    """Translation between frames ~1 s apart via phase correlation on a downscaled grey frame.
-
-    Players cover a small part of the frame, so the dominant peak is the static background; a fixed
-    camera gives well under a pixel of shift, pans and hand-held phones give several. Returns
-    (p75_shift_px, max_shift_px at 1080p, fraction of pairs whose correlation response was weak = cuts/zooms).
-    """
-    import cv2
-    import numpy as np
-    fps, width, _, total = video_meta(video)
-    step = max(1, int(round(fps)))
-    starts = np.linspace(0, max(0, total - step - 1), num=min(CAMERA_SAMPLES, max(1, total // step)), dtype=int)
-    shifts, weak = [], 0
-    window = cv2.createHanningWindow(CAMERA_GRID, cv2.CV_32F)
-    capture = cv2.VideoCapture(str(video))
-    for start in starts:
-        frames = []
-        for index in (int(start), int(start) + step):
-            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
-            ok, frame = capture.read()
-            if not ok:
-                break
-            grey = cv2.cvtColor(cv2.resize(frame, CAMERA_GRID, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-            frames.append(grey.astype(np.float32) / 255.0)
-        if len(frames) < 2:
-            continue
-        (dx, dy), response = cv2.phaseCorrelate(frames[0], frames[1], window)
-        if response < CAMERA_WEAK_RESPONSE:
-            weak += 1
-            continue
-        shifts.append(float(np.hypot(dx, dy)) * width / CAMERA_GRID[0])
-    capture.release()
-    if not shifts:
-        return float("nan"), float("nan"), 1.0
-    shifts.sort()
-    return shifts[min(len(shifts) - 1, (3 * len(shifts)) // 4)], shifts[-1], weak / max(len(starts), 1)
-
-
-def cmd_camera(args: argparse.Namespace) -> int:
-    """Tag every clip in clips.csv as a fixed or moving camera (``train --cameras fixed`` selects by it)."""
-    manifest = read_manifest()
-    if not manifest:
-        print("No clips.csv yet; run  python finetune/ft.py import all  first")
-        return 1
-    videos = videos_in()
-    clips = [c for c in sorted(manifest, key=natural_key) if matches_any(c, args.clips)]
-    counts: Dict[str, int] = {}
-    print(f"  {'clip':36s} {'p75 px':>7s} {'max px':>7s} {'cuts':>5s}  camera")
-    for clip in clips:
-        row = manifest[clip]
-        if row.get("camera") and not args.force:
-            counts[row["camera"]] = counts.get(row["camera"], 0) + 1
-            continue
-        video = videos.get(clip)
-        if video is None:
-            continue
-        p75, peak, weak = measure_camera_motion(video)
-        if math.isnan(p75):                       # no pair correlated: nothing measured
-            camera = "unknown"
-        elif p75 <= CAMERA_FIXED_PX and peak <= CAMERA_MAX_PX and weak <= CAMERA_MAX_WEAK:
-            camera = "fixed"
-        else:
-            camera = "moving"
-        row["camera"], row["motion_px"] = camera, "" if math.isnan(p75) else f"{p75:.1f}"
-        counts[camera] = counts.get(camera, 0) + 1
-        print(f"  {clip:36s} {p75:7.1f} {peak:7.1f} {weak:5.2f}  {camera}", flush=True)
-    write_manifest(manifest)
-    print("camera tags: " + ", ".join(f"{name}={count}" for name, count in sorted(counts.items())) +
-          f"  (fixed = 75th-pct shift <= {CAMERA_FIXED_PX:g} px and max <= {CAMERA_MAX_PX:g} px between frames 1 s apart;"
-          " edit clips.csv to override)")
-    return 0
-
-
-def cmd_paths(args: argparse.Namespace) -> int:
-    print(f"python     {sys.executable}")
-    print(f"workspace  {ws.WORKSPACE}")
-    print(f"repo       {ROOT}")
-    print(f"weights    {ws.REPO_WEIGHTS}")
-    for name, path in DEFAULT_SOURCES.items():
-        print(f"source {name:11s} {'ok ' if path.exists() else 'MISSING'} {path}")
-    return 0
 
 
 # --------------------------------------------------------------------------- interactive menu
@@ -938,7 +528,7 @@ def run_cli(argv: List[str]) -> int:
 
 
 def main() -> int:
-    handed_over = ensure_interpreter()
+    handed_over = ensure_interpreter(Path(__file__).resolve())
     if handed_over is not None:
         return handed_over
     if len(sys.argv) == 1:

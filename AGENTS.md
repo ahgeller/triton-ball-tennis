@@ -49,7 +49,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `x` keeps the draft, `y` takes a hint beside a reviewed label. `ft.py hints sheet <clip>`
   renders a zoomed PNG of where two versions disagree, for judging marks by eye. A trajectory
   prior on the hints was measured and makes them worse (see the module docstring).
-- `finetune/ft.py`: workflow front door. The rest of the package is three
+- `finetune/ft.py`: workflow front door (menu, launchers, script commands;
+  `commands.py` has the in-process commands, `interpreter.py` the venv
+  hand-over). The rest of the package is three
   subpackages. `finetune/labeling/`: `label_tool.py` (manual edits), split into
   `label_store.py` (a clip's rows and sidecars), `label_source.py` (one clip of a
   labelling run), `label_window.py` (window plumbing and the key tables),

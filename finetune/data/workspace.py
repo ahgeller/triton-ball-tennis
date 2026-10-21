@@ -73,7 +73,7 @@ def video_meta(path: Path) -> VideoMeta:
     """Frame rate, size and frame count of a video. Raises RuntimeError when it cannot be read:
     a capture that failed to open answers zeros for everything, and a 0x0 frame would make every
     label read as the invisible-ball sentinel."""
-    import cv2   # imported here so ft.py stays importable without cv2 (see ft.ensure_interpreter)
+    import cv2   # imported here so ft.py stays importable without cv2 (see finetune.interpreter.ensure_interpreter)
     capture = cv2.VideoCapture(str(path))
     try:
         if not capture.isOpened():
