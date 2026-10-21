@@ -42,7 +42,6 @@ def test_check_capabilities_returns_a_copy_without_private_attributes(monkeypatc
     assert choice.preferred == ENCODER_LIBX264
     assert not any(name.startswith("_") for name in vars(out))
     assert "NVENC disabled (ffmpeg lacks h264_nvenc), using libx264" in capsys.readouterr().out
-    assert utils._check_capabilities(cfg, "0").use_nvenc is True
 
 
 def test_ffmpeg_command_differs_only_in_codec_options():

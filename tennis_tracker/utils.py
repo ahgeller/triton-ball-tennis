@@ -151,12 +151,6 @@ def check_capabilities(cfg: Config, device_str: str) -> Tuple[Config, EncoderCho
     return cfg, encoder
 
 
-def _check_capabilities(cfg: Config, device_str: str) -> Config:
-    """Compatibility wrapper for ``pipeline.run``; prefer ``check_capabilities``."""
-    cfg, _ = check_capabilities(cfg, device_str)
-    return cfg
-
-
 def _ffmpeg_candidates() -> List[str]:
     candidates: List[str] = []
 
@@ -241,12 +235,6 @@ def _resolve_engine_path(model_path: Optional[str]) -> Optional[Path]:
     return engine if engine.exists() else None
 
 
-def _resolve_engine_path_for_ball(cfg: Config) -> Optional[Path]:
-    """Compatibility wrapper still imported by ``pipeline.py``; it should call
-    ``_resolve_engine_path(cfg.model_path)`` directly."""
-    return _resolve_engine_path(cfg.model_path)
-
-
 def split_engine_header(raw: bytes) -> Tuple[Optional[Dict[str, Any]], bytes]:
     """Separate the Ultralytics metadata header from a serialized engine.
 
@@ -292,11 +280,6 @@ def read_engine_class_names(engine_path: Optional[Path]) -> Dict[int, str]:
         return dict(_DEFAULT_ENGINE_NAMES)
     metadata, _ = read_engine_header(Path(engine_path))
     return engine_class_names(metadata)
-
-
-def _read_engine_names(engine_path: Optional[Path]) -> Dict[int, str]:
-    """Compatibility wrapper still imported by ``pipeline.py``; see ``read_engine_class_names``."""
-    return read_engine_class_names(engine_path)
 
 
 @dataclass(frozen=True)

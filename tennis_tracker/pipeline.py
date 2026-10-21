@@ -6,16 +6,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
+import torch
 from ball_in_play_selector import select_ball_in_play, FrameResult
-try:
-    import torch
-    HAS_TORCH = True
-except Exception:
-    torch = None
-    HAS_TORCH = False
 
 from .config import Config
-from .utils import _detect_device, _check_capabilities, _resolve_engine_path_for_ball, find_ball_class_id_from_names, _read_engine_names
+from .utils import _detect_device, check_capabilities, _resolve_engine_path, find_ball_class_id_from_names, read_engine_class_names
 from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
 from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, compute_motion_sv_from_hsv, refine_raw_motion_temporal_cpu, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, apply_exclude_mask_u8, preprocess_frame
 from .tracking import ROIMotionTracker
@@ -528,11 +523,10 @@ def run(cfg):
     if not str(device_str).isdigit():
         raise RuntimeError("The tracking runtime requires an NVIDIA CUDA device index such as --device 0.")
     device_index = int(device_str)
-    if not (HAS_TORCH and torch.cuda.is_available()) or device_index >= torch.cuda.device_count():
+    if not torch.cuda.is_available() or device_index >= torch.cuda.device_count():
         raise RuntimeError(f"CUDA device {device_index} is unavailable.")
     cfg.device = str(device_index)
-    cfg = _check_capabilities(cfg, device_str)
-    HAS_CUDA = HAS_TORCH and torch.cuda.is_available()
+    cfg, encoder = check_capabilities(cfg, device_str)
     is_cuda = device_str not in ("cpu", "mps")
 
     model_names = None
@@ -546,13 +540,13 @@ def run(cfg):
             raise FileNotFoundError(f"GridTrackNet weights not found: {model_path}")
         detector = GridTrackNetBallDetector(str(model_path), cfg)
     else:
-        trt_engine_path = _resolve_engine_path_for_ball(cfg)
+        trt_engine_path = _resolve_engine_path(cfg.model_path)
         if trt_engine_path is None:
             raise RuntimeError(
                 f"Ball TensorRT engine not found for model_path='{cfg.model_path}'. "
                 "Expected a .engine file."
             )
-        model_names = _read_engine_names(trt_engine_path)
+        model_names = read_engine_class_names(trt_engine_path)
         ball_cls_id, ball_cls_name = find_ball_class_id_from_names(model_names, cfg.ball_class_name)
         print(f"[init] Model classes: {model_names}")
         print(f"[init] Ball class: id={ball_cls_id}, name='{ball_cls_name}'")
@@ -585,16 +579,16 @@ def run(cfg):
     )
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
-        dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg)
+        dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg, encoder=encoder)
     if getattr(cfg, "save_yolo_input_debug", False):
         os.makedirs(os.path.dirname(cfg.output_yolo_input_debug_path) or ".", exist_ok=True)
-        yolo_dbg_writer = VideoWriter(cfg.output_yolo_input_debug_path, fps, w, h, cfg)
+        yolo_dbg_writer = VideoWriter(cfg.output_yolo_input_debug_path, fps, w, h, cfg, encoder=encoder)
     if cfg.save_guide_video:
         os.makedirs(os.path.dirname(cfg.output_guide_path) or ".", exist_ok=True)
-        guide_writer = VideoWriter(cfg.output_guide_path, fps, w, h, cfg)
+        guide_writer = VideoWriter(cfg.output_guide_path, fps, w, h, cfg, encoder=encoder)
 
     # Preprocessing mode
-    use_cuda = cfg.enable_preprocess and is_cuda and HAS_CUDA
+    use_cuda = cfg.enable_preprocess and is_cuda
     if use_cuda:
         print("[preprocess] CUDA S+V motion path")
         cuda_device = torch.device(f"cuda:{device_index}")
@@ -1018,7 +1012,7 @@ def run(cfg):
                     _finish_pending(prev_pending)
                     prev_pending = None
                 det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
-                det_pending = detector.detect_async_start(det_input)
+                det_pending = detector.detect_async_start(det_input, frame_index=frame_idx)
 
             # Don't exclude any court regions from motion detection - let the selector
             # decide what to do with sideline/alley motion (previously protect_mask
@@ -1073,7 +1067,7 @@ def run(cfg):
                 det_input = pre_frame_cuda if pre_frame_cuda is not None else pre_frame
                 if info_timing:
                     det_t0 = time.perf_counter()
-                det_pending = detector.detect_async_start(det_input)
+                det_pending = detector.detect_async_start(det_input, frame_index=frame_idx)
                 if info_timing:
                     timing["pass1_ball_detect"] = timing.get("pass1_ball_detect", 0.0) + (time.perf_counter() - det_t0)
             pending_det = {
@@ -1348,7 +1342,7 @@ def run(cfg):
     pass2_frames_rendered = 0
     if getattr(cfg, "save_tracking_video", True):
         os.makedirs(os.path.dirname(cfg.output_video) or ".", exist_ok=True)
-        writer = VideoWriter(cfg.output_video, fps, w, h, cfg)
+        writer = VideoWriter(cfg.output_video, fps, w, h, cfg, encoder=encoder)
         print(f"[writer] Tracking encoder: {writer._encoder}")
     else:
         writer = None
