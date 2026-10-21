@@ -116,6 +116,87 @@ def _association_plausible(
 
     return True
 
+class _TrailGuards:
+    """Pixel/frame thresholds of the trail-creation and reconnect guards."""
+
+    def __init__(self, cfg: SelectorConfig, diag: float) -> None:
+        self.stitch_enable = bool(cfg.trail_stitch_enable)
+        self.stitch_gap_frames = max(1, int(cfg.trail_stitch_gap_frames))
+        self.stitch_min_stale = max(1, int(cfg.trail_stitch_min_stale_frames))
+        self.stitch_min_obs = max(1, int(cfg.trail_stitch_min_obs))
+        self.stitch_dist_px = max(8.0, float(cfg.trail_stitch_dist_frac) * diag)
+        self.stitch_max_step_px = max(10.0, float(cfg.trail_stitch_max_step_frac) * diag)
+        self.stitch_pred_resid_px = max(10.0, float(cfg.trail_stitch_pred_resid_frac) * diag)
+        self.jump_break_px = max(10.0, float(cfg.trail_jump_break_frac) * diag)
+        self.jump_break_growth_px = max(0.0, float(cfg.trail_jump_break_growth_frac) * diag)
+
+
+def _best_stale_reconnect(
+    finished: List[Track],
+    det: Detection,
+    t: int,
+    cfg: SelectorConfig,
+    diag: float,
+    guards: _TrailGuards,
+) -> int:
+    """Index in `finished` of the stale track `det` may rejoin, or -1.
+
+    Reconnects only to genuinely stale, moving tracks, within distance, step,
+    prediction-residual, jump and plausibility bounds.
+    """
+    best_idx = -1
+    best_score = 1e12
+    for fi_idx, trk_prev in enumerate(finished):
+        if trk_prev.num_obs < guards.stitch_min_obs:
+            continue
+        recent = trk_prev.observations[-8:]
+        recent_dt = max(recent[-1].frame - recent[0].frame, 1)
+        recent_distance = sum(
+            xy_dist(a.cx, a.cy, b.cx, b.cy)
+            for a, b in zip(recent, recent[1:])
+        )
+        recent_speed = recent_distance / float(recent_dt)
+        recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
+        if (
+            recent_speed < fps_norm_pxpf(1.0, cfg)
+            and recent_motion < 0.25
+        ):
+            continue
+        gap = int(t - trk_prev.last_obs_frame)
+        if gap < guards.stitch_min_stale or gap > guards.stitch_gap_frames:
+            continue
+
+        raw_dist = math.sqrt(
+            (trk_prev.last_pos[0] - det.cx) ** 2 +
+            (trk_prev.last_pos[1] - det.cy) ** 2
+        )
+        if raw_dist > guards.stitch_dist_px:
+            continue
+
+        step = raw_dist / float(max(gap, 1))
+        if step > guards.stitch_max_step_px:
+            continue
+
+        pred_x, pred_y = trk_prev.predict(t)
+        pred_resid = math.sqrt((pred_x - det.cx) ** 2 + (pred_y - det.cy) ** 2)
+        pred_gate = guards.stitch_pred_resid_px * (1.0 + 0.25 * float(max(0, gap - 1)))
+        if pred_resid > pred_gate:
+            continue
+
+        jump_gate = guards.jump_break_px + guards.jump_break_growth_px * float(max(0, gap - 1))
+        if raw_dist > jump_gate:
+            continue
+
+        if not _association_plausible(trk_prev, det, max(gap, 1), cfg, diag):
+            continue
+
+        score = 0.60 * pred_resid + 0.40 * raw_dist
+        if score < best_score:
+            best_score = score
+            best_idx = fi_idx
+    return best_idx
+
+
 def build_tracks(
     all_dets: List[List[Detection]],
     cfg: SelectorConfig
@@ -126,15 +207,12 @@ def build_tracks(
     next_id = 0
     diag = cfg_diag(cfg)
     dt_cap = max(int(cfg.assoc_gate_growth_cap_frames), 1)
-    stitch_enable = bool(cfg.trail_stitch_enable)
-    stitch_gap_frames = max(1, int(cfg.trail_stitch_gap_frames))
-    stitch_min_stale = max(1, int(cfg.trail_stitch_min_stale_frames))
-    stitch_min_obs = max(1, int(cfg.trail_stitch_min_obs))
-    stitch_dist_px = max(8.0, float(cfg.trail_stitch_dist_frac) * diag)
-    stitch_max_step_px = max(10.0, float(cfg.trail_stitch_max_step_frac) * diag)
-    stitch_pred_resid_px = max(10.0, float(cfg.trail_stitch_pred_resid_frac) * diag)
-    jump_break_px = max(10.0, float(cfg.trail_jump_break_frac) * diag)
-    jump_break_growth_px = max(0.0, float(cfg.trail_jump_break_growth_frac) * diag)
+    guards = _TrailGuards(cfg, diag)
+    stitch_dist_px = guards.stitch_dist_px
+    stitch_max_step_px = guards.stitch_max_step_px
+    stitch_pred_resid_px = guards.stitch_pred_resid_px
+    jump_break_px = guards.jump_break_px
+    jump_break_growth_px = guards.jump_break_growth_px
 
     for t, frame_dets in enumerate(all_dets):
         # Predict positions for all active tracks
@@ -201,77 +279,22 @@ def build_tracks(
                 if trk.misses > cfg.max_gap_frames:
                     trk.alive = False
 
-        # Unmatched detections: start new tracks
+        # Unmatched detections: rejoin a stale track or start a new one
         for di, det in enumerate(frame_dets):
-            if di not in used_dets:
-                stitched = False
-
-                # Reconnect only to genuinely stale tracks, with motion/prediction bounds.
-                if stitch_enable and finished:
-                    best_idx = -1
-                    best_score = 1e12
-                    for fi_idx, trk_prev in enumerate(finished):
-                        if trk_prev.num_obs < stitch_min_obs:
-                            continue
-                        recent = trk_prev.observations[-8:]
-                        recent_dt = max(recent[-1].frame - recent[0].frame, 1)
-                        recent_distance = sum(
-                            xy_dist(a.cx, a.cy, b.cx, b.cy)
-                            for a, b in zip(recent, recent[1:])
-                        )
-                        recent_speed = recent_distance / float(recent_dt)
-                        recent_motion = sum(bool(obs.on_motion) for obs in recent) / len(recent)
-                        if (
-                            recent_speed < fps_norm_pxpf(1.0, cfg)
-                            and recent_motion < 0.25
-                        ):
-                            continue
-                        gap = int(t - trk_prev.last_obs_frame)
-                        if gap < stitch_min_stale or gap > stitch_gap_frames:
-                            continue
-
-                        raw_dist = math.sqrt(
-                            (trk_prev.last_pos[0] - det.cx) ** 2 +
-                            (trk_prev.last_pos[1] - det.cy) ** 2
-                        )
-                        if raw_dist > stitch_dist_px:
-                            continue
-
-                        step = raw_dist / float(max(gap, 1))
-                        if step > stitch_max_step_px:
-                            continue
-
-                        pred_x, pred_y = trk_prev.predict(t)
-                        pred_resid = math.sqrt((pred_x - det.cx) ** 2 + (pred_y - det.cy) ** 2)
-                        pred_gate = stitch_pred_resid_px * (1.0 + 0.25 * float(max(0, gap - 1)))
-                        if pred_resid > pred_gate:
-                            continue
-
-                        jump_gate = jump_break_px + jump_break_growth_px * float(max(0, gap - 1))
-                        if raw_dist > jump_gate:
-                            continue
-
-                        if not _association_plausible(trk_prev, det, max(gap, 1), cfg, diag):
-                            continue
-
-                        score = 0.60 * pred_resid + 0.40 * raw_dist
-                        if score < best_score:
-                            best_score = score
-                            best_idx = fi_idx
-
-                    if best_idx >= 0:
-                        trk = finished.pop(best_idx)
-                        trk.alive = True
-                        trk.misses = 0
-                        trk.update(det)
-                        active.append(trk)
-                        stitched = True
-
-                if not stitched:
-                    trk = Track(track_id=next_id, cfg=cfg)
-                    next_id += 1
-                    trk.update(det)
-                    active.append(trk)
+            if di in used_dets:
+                continue
+            best_idx = -1
+            if guards.stitch_enable and finished:
+                best_idx = _best_stale_reconnect(finished, det, t, cfg, diag, guards)
+            if best_idx >= 0:
+                trk = finished.pop(best_idx)
+                trk.alive = True
+                trk.misses = 0
+            else:
+                trk = Track(track_id=next_id, cfg=cfg)
+                next_id += 1
+            trk.update(det)
+            active.append(trk)
 
         # Move dead tracks to finished
         still_active = []
