@@ -107,8 +107,8 @@ def _clean_raw_motion_mask(mask_u8: Optional[np.ndarray], cfg: Config) -> Option
         return mask_u8
 
     out = mask_u8
-    close_size = int(getattr(cfg, "motion_raw_close_size", 0) or 0)
-    open_size = int(getattr(cfg, "motion_raw_open_size", 0) or 0)
+    close_size = int(cfg.motion_raw_close_size or 0)
+    open_size = int(cfg.motion_raw_open_size or 0)
     if close_size > 1:
         out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, _get_kernel(close_size))
     if open_size > 1:
@@ -127,10 +127,10 @@ def refine_raw_motion_temporal_cpu(
     if raw_motion_u8 is None:
         return None
     refined = raw_motion_u8
-    if bool(getattr(cfg, "motion_raw_temporal_gate", True)) and prev_bgr is not None and curr_bgr is not None:
-        hi = float(getattr(cfg, "motion_raw_temporal_hi", 18.0))
-        lo = float(getattr(cfg, "motion_raw_temporal_lo", 8.0))
-        very_hi = float(getattr(cfg, "motion_raw_temporal_very_hi", 36.0))
+    if bool(cfg.motion_raw_temporal_gate) and prev_bgr is not None and curr_bgr is not None:
+        hi = float(cfg.motion_raw_temporal_hi)
+        lo = float(cfg.motion_raw_temporal_lo)
+        very_hi = float(cfg.motion_raw_temporal_very_hi)
         d_prev = _motion_probe_delta_from_frames(prev_bgr, curr_bgr)
         if next_bgr is not None:
             d_next = _motion_probe_delta_from_frames(curr_bgr, next_bgr)
@@ -195,8 +195,8 @@ def filter_boost_mask(raw_motion, min_area, max_area, cfg, player_bboxes=None, b
             return buffers.boost_mask_u8  # Return pre-allocated empty buffer
         return np.zeros((img_h, img_w), dtype=np.uint8)
     
-    preserve_tiny = getattr(cfg, 'blob_preserve_tiny', True)
-    tiny_max_area = getattr(cfg, 'blob_tiny_max_area', 120)
+    preserve_tiny = cfg.blob_preserve_tiny
+    tiny_max_area = cfg.blob_tiny_max_area
     
     img_diag = math.hypot(float(img_w), float(img_h))
     ball_bypass_max_area = max(15, min(150, int(round(0.035 * img_diag))))
@@ -567,7 +567,7 @@ def preprocess_frame(frame, raw_motion, boost_mask, cfg,
                 player_bboxes=player_bboxes,
                 court_keypoints=court_keypoints,
                 player_pad=cfg.player_bbox_pad)
-        if bool(getattr(cfg, "debug_probe_motion_style", True)):
+        if bool(cfg.debug_probe_motion_style):
             return _draw_probe_motion_overlay(
                 frame, raw_motion, boost_mask, cfg,
                 protect_mask=protect_mask,
@@ -746,7 +746,7 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
     if prev_v is not None and prev_s is not None and master_var_v is not None and master_var_s is not None:
         thr = float(cfg.motion_thresh) / 255.0
         thr_sq = thr ** 2
-        k_sq = float(getattr(cfg, 'motion_k_std', 3.5)) ** 2
+        k_sq = float(cfg.motion_k_std) ** 2
         v_min = float(cfg.motion_v_min) / 255.0
 
         # If ROIs are specified, only compute motion diff inside the ROI regions
@@ -782,14 +782,14 @@ def preprocess_frame_cuda(frame, prev_v, prev_s, master_var_v, master_var_s, cfg
 
         if (
             raw_motion is not None and
-            bool(getattr(cfg, "motion_raw_temporal_gate", True)) and
+            bool(cfg.motion_raw_temporal_gate) and
             prev_frame_gpu_t is not None and
             prev_frame_v_cached is not None and
             prev_frame_s_cached is not None
         ):
-            hi = float(getattr(cfg, "motion_raw_temporal_hi", 18.0))
-            lo = float(getattr(cfg, "motion_raw_temporal_lo", 8.0))
-            very_hi = float(getattr(cfg, "motion_raw_temporal_very_hi", 36.0))
+            hi = float(cfg.motion_raw_temporal_hi)
+            lo = float(cfg.motion_raw_temporal_lo)
+            very_hi = float(cfg.motion_raw_temporal_very_hi)
             has_next = next_frame_gpu_t is not None and next_v_cached is not None and next_s_cached is not None
 
             def _temporal_roi(y1, y2, x1, x2):

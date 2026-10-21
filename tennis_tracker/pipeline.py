@@ -281,10 +281,10 @@ def _pass2_cache_budget_mb(cfg) -> float:
     the memory actually free right now, capped by ``pass2_cache_ceiling_mb`` --
     a fixed budget cannot know whether a 12 GiB clip fits on this machine.
     """
-    explicit = int(getattr(cfg, "pass2_cache_max_mb", 0) or 0)
+    explicit = int(cfg.pass2_cache_max_mb or 0)
     if explicit > 0:
         return float(explicit)
-    ceiling = float(max(1, int(getattr(cfg, "pass2_cache_ceiling_mb", 4096))))
+    ceiling = float(max(1, int(cfg.pass2_cache_ceiling_mb)))
     try:
         import psutil
 
@@ -456,7 +456,7 @@ def _write_tracking_json(
             ),
             "track_count": int(len(all_tracks or [])),
         },
-        "config": _json_safe(getattr(cfg, "__dict__", {})),
+        "config": _json_safe(vars(cfg)),
         "timing": _json_safe(timing or {}),
         "last_valid_court_keypoints": _json_safe(_last_valid_court_keypoints(court_keypoints_by_frame)),
         "chosen_track": _track_to_json(chosen_track),
@@ -470,7 +470,7 @@ def _write_tracking_json(
                 int(width),
                 int(height),
             )
-            if bool(getattr(cfg, "motion_diagnostics", False))
+            if bool(cfg.motion_diagnostics)
             else {}
         ),
         "frames": frame_rows,
@@ -485,15 +485,15 @@ def _validate_io_paths(cfg) -> Path:
         raise FileNotFoundError(f"Input video not found: {input_path}")
 
     outputs = []
-    if getattr(cfg, "save_tracking_video", True):
+    if cfg.save_tracking_video:
         outputs.append(("tracking video", cfg.output_video))
     if cfg.save_motion_debug:
         outputs.append(("motion debug video", cfg.output_debug_path))
-    if getattr(cfg, "save_yolo_input_debug", False):
+    if cfg.save_yolo_input_debug:
         outputs.append(("pre-YOLO video", cfg.output_yolo_input_debug_path))
     if cfg.save_guide_video:
         outputs.append(("guide video", cfg.output_guide_path))
-    if getattr(cfg, "tracking_json", None):
+    if cfg.tracking_json:
         outputs.append(("tracking JSON", cfg.tracking_json))
 
     seen = {}
@@ -514,7 +514,7 @@ def _detector_can_overlap(detector) -> bool:
 def run(cfg):
     input_path = _validate_io_paths(cfg)
     t0 = time.time()
-    info_timing = bool(getattr(cfg, "info_timing", False))
+    info_timing = bool(cfg.info_timing)
     timing = {} if info_timing else None
     init_perf_t0 = time.perf_counter() if info_timing else 0.0
 
@@ -573,14 +573,14 @@ def run(cfg):
     writer = None
     dbg_writer = yolo_dbg_writer = guide_writer = None
     needs_pass2_outputs = bool(
-        getattr(cfg, "save_tracking_video", True)
+        cfg.save_tracking_video
         or cfg.save_motion_debug
         or cfg.save_guide_video
     )
     if cfg.save_motion_debug:
         os.makedirs(os.path.dirname(cfg.output_debug_path) or ".", exist_ok=True)
         dbg_writer = VideoWriter(cfg.output_debug_path, fps, w, h, cfg, encoder=encoder)
-    if getattr(cfg, "save_yolo_input_debug", False):
+    if cfg.save_yolo_input_debug:
         os.makedirs(os.path.dirname(cfg.output_yolo_input_debug_path) or ".", exist_ok=True)
         yolo_dbg_writer = VideoWriter(cfg.output_yolo_input_debug_path, fps, w, h, cfg, encoder=encoder)
     if cfg.save_guide_video:
@@ -781,11 +781,11 @@ def run(cfg):
                 s_diff_sq = (curr_s_t - master_bg_s) ** 2
 
                 # Slow background updates where raw motion was detected last frame.
-                motion_freeze_alpha = float(getattr(cfg, 'motion_freeze_alpha', 0.004))
+                motion_freeze_alpha = float(cfg.motion_freeze_alpha)
                 if prev_raw_motion_cuda is not None:
-                    alpha_mask = torch.where(prev_raw_motion_cuda, motion_freeze_alpha, float(cfg.wta_alpha))
+                    alpha_mask = torch.where(prev_raw_motion_cuda, motion_freeze_alpha, float(cfg.background_alpha))
                 else:
-                    alpha_mask = float(cfg.wta_alpha)
+                    alpha_mask = float(cfg.background_alpha)
 
                 master_var_v.mul_(1.0 - alpha_mask).add_(alpha_mask * v_diff_sq)
                 master_var_s.mul_(1.0 - alpha_mask).add_(alpha_mask * s_diff_sq)
@@ -798,13 +798,13 @@ def run(cfg):
                 if prev_raw_motion_u8 is not None:
                     # CPU HSV background: mirror CUDA behavior with reduced but non-zero
                     # updates at previous-frame motion pixels to avoid permanent ghosts.
-                    motion_freeze_alpha = float(getattr(cfg, 'motion_freeze_alpha', 0.004))
-                    alpha_arr = np.full_like(master_hsv[:, :, 0], cfg.wta_alpha, dtype=np.float32)
+                    motion_freeze_alpha = float(cfg.motion_freeze_alpha)
+                    alpha_arr = np.full_like(master_hsv[:, :, 0], cfg.background_alpha, dtype=np.float32)
                     alpha_arr[prev_raw_motion_u8 > 0] = motion_freeze_alpha
                     alpha_arr = np.stack([alpha_arr] * 3, axis=-1)
                     master_hsv = master_hsv * (1.0 - alpha_arr) + hsv_curr.astype(np.float32) * alpha_arr
                 else:
-                    cv2.accumulateWeighted(hsv_curr, master_hsv, cfg.wta_alpha)
+                    cv2.accumulateWeighted(hsv_curr, master_hsv, cfg.background_alpha)
 
         # Detect ball - skip-frame YOLO for speed
         # When skip_n > 1: run YOLO every Nth frame, selector interpolates short gaps.
@@ -1238,8 +1238,8 @@ def run(cfg):
     bounce_events = []
     rally_legs = []
     contact_events = []
-    if bool(getattr(cfg, "draw_court_minimap", False)):
-        if not getattr(cfg, "bounce_model_path", None):
+    if bool(cfg.draw_court_minimap):
+        if not cfg.bounce_model_path:
             raise RuntimeError("--court requires Config.bounce_model_path")
         bounce_t0 = time.perf_counter()
         bounce_events, bounce_candidates = predict_bounces(
@@ -1340,7 +1340,7 @@ def run(cfg):
         print("[pass 2] Skipped (no video outputs selected)")
     pass2_perf_t0 = time.perf_counter() if info_timing else 0.0
     pass2_frames_rendered = 0
-    if getattr(cfg, "save_tracking_video", True):
+    if cfg.save_tracking_video:
         os.makedirs(os.path.dirname(cfg.output_video) or ".", exist_ok=True)
         writer = VideoWriter(cfg.output_video, fps, w, h, cfg, encoder=encoder)
         print(f"[writer] Tracking encoder: {writer._encoder}")
@@ -1366,8 +1366,8 @@ def run(cfg):
     # This does not affect selector logic; it only stabilizes the debug overlay.
     last_motion_search_dbg = None  # (x, y)
     last_motion_search_dbg_frame = -1
-    draw_main_search_regions = bool(getattr(cfg, "draw_search_regions", False))
-    draw_main_ball_trail = bool(getattr(cfg, "draw_ball_trail", True))
+    draw_main_search_regions = bool(cfg.draw_search_regions)
+    draw_main_ball_trail = bool(cfg.draw_ball_trail)
 
     # Per-track short history for visualization: tid -> list of (x, y)
     vis_track_trails = {int(t.track_id): [] for t in vis_track_list}
@@ -1771,7 +1771,7 @@ def run(cfg):
                     cv2.line(frame_out, p0, p1, (15, 15, 15), line_th + 1, cv2.LINE_AA)
                     cv2.line(frame_out, p0, p1, color, line_th, cv2.LINE_AA)
 
-        if bool(getattr(cfg, "draw_court_minimap", False)):
+        if bool(cfg.draw_court_minimap):
             draw_court_minimap(
                 frame_out,
                 ground_model,
@@ -1926,7 +1926,7 @@ def run(cfg):
 
             # -- Draw motion detection ROI boxes onto vis --
             # Green = survived   Red = ghost-pruned (didn't reattach)
-            if (not getattr(cfg, "debug_probe_motion_style", True)) and fi < len(all_rois) and all_rois[fi] is not None:
+            if (not cfg.debug_probe_motion_style) and fi < len(all_rois) and all_rois[fi] is not None:
                 for rx1, ry1, rx2, ry2 in all_rois[fi]:
                     cv2.rectangle(vis, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (0, 255, 0), 1)
 
@@ -1992,7 +1992,7 @@ def run(cfg):
             # Using actual contour centroids instead of ROI center/bottom gives the
             # correct ball position when motion is asymmetrically distributed in the ROI.
             current_blobs = []
-            if (not getattr(cfg, "debug_probe_motion_style", True)) and fi < len(all_rois) and all_rois[fi] is not None:
+            if (not cfg.debug_probe_motion_style) and fi < len(all_rois) and all_rois[fi] is not None:
                 for rx1, ry1, rx2, ry2 in all_rois[fi]:
                     irx1, iry1 = int(rx1), int(ry1)
                     irx2, iry2 = int(rx2), int(ry2)
@@ -2155,7 +2155,7 @@ def run(cfg):
 
     elapsed = time.time() - t0
     filled = sum(1 for r in per_frame if r is not None and not bool(getattr(r, "debug_only", False)))
-    if getattr(cfg, "tracking_json", None):
+    if cfg.tracking_json:
         _write_tracking_json(
             cfg.tracking_json,
             cfg,
@@ -2179,11 +2179,11 @@ def run(cfg):
         print(f"[done] Tracking JSON: {cfg.tracking_json}")
     print(f"\n[done] {filled}/{N} frames filled ({100*filled/max(1,N):.1f}%)")
     print(f"[done] {elapsed:.1f}s total")
-    if getattr(cfg, "save_tracking_video", True):
+    if cfg.save_tracking_video:
         print(f"[done] Tracking video: {cfg.output_video}")
     if cfg.save_motion_debug:
         print(f"[done] Motion debug:  {cfg.output_debug_path}")
-    if getattr(cfg, "save_yolo_input_debug", False):
+    if cfg.save_yolo_input_debug:
         print(f"[done] Pre-YOLO debug:  {cfg.output_yolo_input_debug_path}")
     if cfg.save_guide_video:
         print(f"[done] Guide Debug:  {cfg.output_guide_path}")

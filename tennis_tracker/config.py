@@ -1,20 +1,22 @@
 from dataclasses import dataclass
 from typing import Optional
 
+
 @dataclass
 class Config:
     # paths
     input_video: str = r"input_videos/TMP.mp4"
     output_video: str = "output_videos/prof_test.mp4"
     model_path: str = r"models/gridtracknet_weights_torch.npz"
-    
+
     # Ball detector
     ball_class_name: Optional[str] = None
     conf: float = 0.50
     device: str = "auto"
-    # Shift applied to GridTrackNet points, in px at 1080p (positive = down). Was 1.6; on the 41
-    # hand-verified clips video13-53 that put detections a median 2 px below the labels, and 0
-    # takes the median error from 3.0 to 2.3 px (p90 6.5 -> 5.8) at every confidence threshold.
+    # Shift applied to GridTrackNet points, in px at 1080p (positive = down).
+    # Measured on the 41 hand-verified clips video13-53: with 0 the median error
+    # is 2.3 px (p90 5.8) at every confidence threshold; with 1.6 it was 3.0 px
+    # (p90 6.5), the detections sitting a median 2 px below the labels.
     gridtracknet_y_offset_px: float = 0.0
     gridtracknet_source_stride: Optional[int] = None  # None = 2 at 60 FPS / 1 at 30 FPS (the training cadence)
     gridtracknet_prepass_background: bool = True  # overlap the detector prepass with pass 1
@@ -47,9 +49,9 @@ class Config:
     bounce_model_path: Optional[str] = None
     num_players: int = 4
 
-    # Ball tracking
-
-    # preprocessing
+    # Detector-input preprocessing (HSV boost of motion blobs, dimming of static
+    # pixels). GridTrackNet reads raw frames, so these only shape the TensorRT
+    # ball-engine input and the debug views.
     enable_preprocess: bool = True
     pre_sat_boost: float = 1.55
     pre_val_boost: float = 1.04
@@ -57,23 +59,32 @@ class Config:
     dim_static: float = 0.88
     static_sat_scale: float = 0.75
     motion_dilate: int = 5
-    
-    # motion detection - IMPROVED for better ball continuity
-    wta_alpha: float = 0.02               # Base background update rate at static pixels
-    motion_freeze_alpha: float = 0.015    # Faster background/variance adaptation at motion pixels to let parked balls settle
-    motion_thresh: float = 11.0           # Minimum pixel diff floor (additive term in threshold); too high makes system blind to very weak motion
-    motion_k_std: float = 3.0             # Std-dev multiplier; balanced with additive floor so variance can suppress static-ball halos
-    motion_v_min: float = 40.0           # Lowered to catch dimmer ball motion in shadows
-    motion_raw_temporal_gate: bool = True  # C++ probe-style frame-to-frame proof before raw foreground becomes motion evidence
+
+    # Background model and motion mask. The background is an exponential mean
+    # and variance of the S and V channels; a pixel is motion when its squared
+    # difference exceeds motion_thresh^2 + motion_k_std^2 * variance.
+    background_alpha: float = 0.02         # background/variance update rate at static pixels
+    # Update rate at pixels that were motion on the previous frame. 0.015 is
+    # below background_alpha, so moving objects are absorbed into the
+    # background more slowly there; a parked ball still settles within a few
+    # seconds instead of being frozen as a permanent ghost.
+    motion_freeze_alpha: float = 0.015
+    motion_thresh: float = 11.0            # additive floor of the threshold, in 0-255 units
+    motion_k_std: float = 3.0              # std-dev multiplier of the variance term; balanced against motion_thresh so variance suppresses static-ball halos
+    motion_v_min: float = 40.0             # V below this is never motion; low enough to keep dim balls in shadow
+    motion_raw_temporal_gate: bool = True  # frame-to-frame delta test before raw foreground becomes motion evidence
     motion_raw_temporal_hi: float = 18.0
     motion_raw_temporal_lo: float = 8.0
     motion_raw_temporal_very_hi: float = 36.0
     motion_raw_close_size: int = 2
     motion_raw_open_size: int = 0
-    boost_max_blob_area: int = 600   # Reduced from 1200: large blobs (sqrt(1200/pi) 19px radius) overshoot the ball
+    # Components above boost_max_blob_area px are not ball-sized: a 1200 px
+    # blob (radius ~19 px) overshoots the ball.
+    boost_max_blob_area: int = 600
     boost_min_blob_area: int = 0
-    
-    # Speed: skip-frame ball YOLO (run every Nth frame, interpolate gaps)
+
+    # Skip-frame ball detection: run the detector every Nth frame and let the
+    # selector interpolate the gaps.
     skip_frame_yolo: int = 1          # 1 = every frame
     skip_frame_require_roi: bool = True
     skip_preprocess_dim: bool = True
@@ -90,11 +101,11 @@ class Config:
     roi_motion_bleed_frac: float = 0.0       # extend the underlying cropping boundary for motion processing to capture long blurred streaks without affecting the tight visual box
     roi_fullframe_interval: int = 15        # while lost, probe full frame every N frames; 0 disables
 
-    # blob shape filtering - IMPROVED for small tennis balls
+    # Blob shape filtering of the boost mask.
     blob_shape_filter: bool = True
     blob_max_aspect: float = 4.0
-    blob_preserve_tiny: bool = True       # NEW: preserve very small ball-sized blobs
-    blob_tiny_max_area: int = 120         # NEW: max area for "tiny" ball blobs to preserve
+    blob_preserve_tiny: bool = True       # components up to blob_tiny_max_area px bypass the aspect test (a tennis ball is a few px across)
+    blob_tiny_max_area: int = 120
 
     # outputs / debug
     save_tracking_video: bool = True
@@ -130,9 +141,9 @@ class Config:
     use_async_writer: bool = True
     async_queue: int = 16
     cache_input_frames_pass2: bool = True  # keep decoded frames in RAM to avoid second decode
-    # 0 = size it from RAM that is actually free at start-up (half of it,
-    # up to pass2_cache_ceiling_mb).  A fixed 768 could never hold a 1080p
-    # clip -- one needs 12-22 GiB -- so the cache never engaged at all.
+    # 0 sizes the pass-2 frame cache from the RAM free at start-up (half of
+    # it, capped by pass2_cache_ceiling_mb). A 1080p clip needs 12-22 GiB, so
+    # a small fixed budget never engages the cache at all.
     pass2_cache_max_mb: int = 0
     pass2_cache_ceiling_mb: int = 4096
     progress_every: int = 200
