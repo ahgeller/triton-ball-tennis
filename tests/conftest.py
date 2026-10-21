@@ -7,9 +7,15 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# The bootstrap: pytest.ini's pythonpath does the same, but a test run started another way
+# (an IDE on one file, say) still needs the repository on sys.path before the project imports.
+_REPOSITORY = Path(__file__).resolve().parent.parent
+if str(_REPOSITORY) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY))
+
+from tennis_tracker.paths import ROOT  # noqa: E402  (needs the bootstrap above)
+
+assert ROOT == _REPOSITORY, "tests/ must sit directly under the repository tennis_tracker.paths names"
 
 
 @pytest.fixture

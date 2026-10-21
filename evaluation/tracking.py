@@ -263,29 +263,34 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             json.dump(report, f, indent=2)
 
     summary = report["summary"]
-    _print_summary(summary)
+    for line in summary_lines(summary):
+        print(line)
     return 2 if _gates_failed(args, summary) else 0
 
 
-def _print_summary(summary: Dict[str, Any]) -> None:
-    print("[validation] labels matched/missed: "
-          f"{summary['matched_visible_frames']}/{summary['missed_visible_frames']}")
-    print("[validation] recall: "
-          f"{summary['recall']:.3f}")
-    print("[validation] error px: "
-          f"mean={_fmt_optional(summary['mean_error_px'])} "
-          f"median={_fmt_optional(summary['median_error_px'])} "
-          f"p90={_fmt_optional(summary['p90_error_px'])} "
-          f"max={_fmt_optional(summary['max_error_px'])}")
-    print("[validation] prediction filled ratio: "
-          f"{summary['prediction_filled_ratio']:.3f}")
-    print("[validation] sources: "
-          f"{json.dumps(summary['source_counts'], sort_keys=True)}")
-    print("[validation] large jumps: "
-          f"{summary['large_jump_count']}")
+def summary_lines(summary: Dict[str, Any]) -> List[str]:
+    """The console report of a validation summary, one ``[validation]`` line per figure."""
+    lines = [
+        "[validation] labels matched/missed: "
+        f"{summary['matched_visible_frames']}/{summary['missed_visible_frames']}",
+        "[validation] recall: "
+        f"{summary['recall']:.3f}",
+        "[validation] error px: "
+        f"mean={_fmt_optional(summary['mean_error_px'])} "
+        f"median={_fmt_optional(summary['median_error_px'])} "
+        f"p90={_fmt_optional(summary['p90_error_px'])} "
+        f"max={_fmt_optional(summary['max_error_px'])}",
+        "[validation] prediction filled ratio: "
+        f"{summary['prediction_filled_ratio']:.3f}",
+        "[validation] sources: "
+        f"{json.dumps(summary['source_counts'], sort_keys=True)}",
+        "[validation] large jumps: "
+        f"{summary['large_jump_count']}",
+    ]
     if summary["labeled_absent_frames"]:
-        print("[validation] absence false positives: "
-              f"{summary['false_positive_absent_frames']}/{summary['labeled_absent_frames']}")
+        lines.append("[validation] absence false positives: "
+                     f"{summary['false_positive_absent_frames']}/{summary['labeled_absent_frames']}")
+    return lines
 
 
 def _gates_failed(args: argparse.Namespace, summary: Dict[str, Any]) -> bool:
