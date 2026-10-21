@@ -10,9 +10,27 @@ import pytest
 from finetune.data import workspace
 from finetune.data.workspace import (MANIFEST_COLUMNS, add_exclusion, clip_of, draft_csv, draft_files, find_video,
                                      label_csv, label_files, labelled_clips, natural_key, read_exclusions, read_manifest,
-                                     require_video, review_json, suspect_json, unsaved_csv, videos_in, write_manifest)
+                                     recording_of, require_video, review_json, suspect_json, unsaved_csv, videos_in,
+                                     write_manifest)
 from tennis_tracker.paths import ROOT
 
+
+
+def test_recording_of_keeps_one_recording_s_clips_together():
+    manifest = {
+        "grid_match47": {"group": "grid_match47", "origin": r"C:\data\match47\gravel amature.mp4"},
+        "grid_match49": {"group": "grid_match49", "origin": r"C:\data\match47\gravel amature.mp4"},
+        "grid_match53": {"group": "grid_match53", "origin": r"C:\data\match53\frames"},
+        "video13": {"group": "prof_game2", "origin": r"C:\data\game2\Clip1"},
+        "video14": {"group": "prof_game2", "origin": r"C:\data\game2\Clip2"},
+        "video1": {"group": "own-camera", "origin": r"C:\data\video1.mp4"},
+        "loose": {"group": "", "origin": ""},
+    }
+    assert recording_of("grid_match47", manifest) == recording_of("grid_match49", manifest) == "C:/data/match47/gravel amature.mp4"
+    assert recording_of("grid_match53", manifest) == "C:/data/match53"
+    assert recording_of("video13", manifest) == recording_of("video14", manifest) == "prof_game2"
+    assert recording_of("video1", manifest) == "own-camera"
+    assert recording_of("loose", manifest) == "loose" and recording_of("unlisted", manifest) == "unlisted"
 
 
 def test_a_clip_names_its_files(tmp_path):

@@ -236,6 +236,29 @@ def read_manifest(path: Optional[Path] = None) -> Dict[str, dict]:
         return {row["clip"]: {key: row.get(key) or "" for key in MANIFEST_COLUMNS} for row in csv.DictReader(handle)}
 
 
+_RECORDING_PART = re.compile(r"frames|Clip\d+", re.IGNORECASE)   # one recording's frame folder or clip folder
+
+
+def recording_of(clip: str, manifest: Optional[Dict[str, dict]] = None) -> str:
+    """The recording a clip was cut from, for keeping one camera's footage on one side of a split.
+
+    Its clips.csv group when that names a shared one (an importer's default group is the clip's
+    own name and says nothing); else its origin with a trailing ``frames`` or ``ClipN`` folder
+    dropped, so the three rallies cut from one video (grid_match47, 49 and 50) and the clips of
+    one TrackNet game share a recording; else the clip itself.
+    """
+    row = (read_manifest() if manifest is None else manifest).get(clip)
+    if row is None:
+        return clip
+    group = row.get("group") or ""
+    if group and group != clip:
+        return group
+    parts = [part for part in re.split(r"[\\/]", row.get("origin") or "") if part]
+    if parts and _RECORDING_PART.fullmatch(parts[-1]):
+        parts.pop()
+    return "/".join(parts) or clip
+
+
 def write_manifest(rows: Dict[str, dict], path: Optional[Path] = None) -> None:
     """Write clip -> row as clips.csv, atomically, in natural clip order."""
     with atomic_csv(current().manifest if path is None else path) as writer:

@@ -1,14 +1,13 @@
 """Training the network that places the label tool's suggestions (``cnn_refiner.Placer``).
 
-``train`` first trains FOLDS networks that each leave a third of the clips out (TrackNet clips
-of one game together) and scores them on those: that sets how sure is sure enough (at most
+``train`` first trains FOLDS networks that each leave a third of the clips out (the clips of one
+recording together, ``workspace.recording_of``) and scores them on those: that sets how sure is sure enough (at most
 SURE_FAR_SHARE of the "sure" frames more than FAR_PX off) and is the check a version must pass.
 Then it trains on everything, saves the version in ``cnn_refiner.models_dir()`` and makes it
 current when it passes. ``python finetune/refiner/hints.py train`` runs it. The crops come from
 ``refiner_crops``; fitting and scoring one network is ``refiner_fitting``."""
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence
@@ -17,7 +16,7 @@ import numpy as np
 
 from finetune.data import workspace as ws
 from finetune.data.fileio import write_atomic
-from finetune.data.workspace import read_manifest
+from finetune.data.workspace import read_manifest, recording_of
 from finetune.refiner import cnn_refiner
 from finetune.refiner.refiner_crops import gather_crops
 from finetune.refiner.refiner_fitting import fold_errors, to_device, train_network
@@ -29,14 +28,17 @@ FOLDS = 3
 FAR_PX = 5.0               # a placement this far off (1080p px) counts as a miss in the self-check
 
 
+def recordings(clips: Sequence[str]) -> Dict[str, str]:
+    """{clip: the recording it was cut from}, one manifest read for all of them."""
+    manifest = read_manifest()
+    return {clip: recording_of(clip, manifest) for clip in clips}
+
+
 def folds(clips: Sequence[str], sizes: Dict[str, int]) -> Dict[str, int]:
-    """{clip: fold}: whole groups (the TrackNet clips of one game together, other clips alone),
-    balanced by frame count, the same every run."""
-    origin = {clip: row["origin"] for clip, row in read_manifest().items()}
-    group_of = {}
-    for clip in clips:
-        parts = re.split(r"[\\/]", origin.get(clip, ""))
-        group_of[clip] = next((p for p in parts if re.fullmatch(r"game\d+", p)), clip)
+    """{clip: fold}: whole recordings (one video's rallies, one TrackNet game's clips, one camera's
+    own clips), balanced by frame count, the same every run. A fold's clips are what its test
+    network never saw, so a court it trained on must not come back in another clip."""
+    group_of = recordings(clips)
     totals: Dict[str, int] = {}
     for clip, group in group_of.items():
         totals[group] = totals.get(group, 0) + sizes[clip]
@@ -65,13 +67,15 @@ def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed:
     log("gathering the frames you have reviewed ...")
     crops = gather_crops(log)
     total = sum(len(c) for c in crops.values())
-    if total < 500 or len(crops) < FOLDS:
-        log(f"only {total} reviewed frames in {len(crops)} clips - label more before training")
+    fold_of = folds(sorted(crops), {c: len(v) for c, v in crops.items()})
+    # Fewer recordings than folds leaves a test network nothing it never saw.
+    if total < 500 or len(set(fold_of.values())) < FOLDS:
+        log(f"only {total} reviewed frames in {len(crops)} clips of {len(set(recordings(crops).values()))} "
+            f"recordings - label more (from at least {FOLDS} recordings) before training")
         return None
     device = "cuda" if torch.cuda.is_available() else "cpu"
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
-    fold_of = folds(sorted(crops), {c: len(v) for c, v in crops.items()})
     log(f"{total} frames from {len(crops)} clips ({device}): {FOLDS} test networks, then the final one")
     errors, confs = [], []
     for k in range(FOLDS):

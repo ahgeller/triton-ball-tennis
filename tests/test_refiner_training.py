@@ -8,11 +8,13 @@ import pytest
 import torch
 
 from finetune.data.labels import write_labels
-from finetune.data.workspace import REVIEW_STATUS_NAME, add_exclusion, label_csv, review_json
+from finetune.data.workspace import (MANIFEST_COLUMNS, REVIEW_STATUS_NAME, add_exclusion, label_csv, review_json,
+                                     write_manifest)
+from finetune.refiner import refiner_training
 from finetune.refiner.cnn_refiner import CROP, WINDOW
 from finetune.refiner.refiner_crops import crops_from_video, cut_label, frame_users, gather_crops
 from finetune.refiner.refiner_fitting import sample_batch, to_device
-from finetune.refiner.refiner_training import FAR_PX, SURE_FAR_SHARE, sure_threshold
+from finetune.refiner.refiner_training import FAR_PX, FOLDS, SURE_FAR_SHARE, folds, sure_threshold
 from tests._helpers import write_clip
 
 SIZE = (160, 90)
@@ -61,6 +63,32 @@ def test_sure_threshold_keeps_far_misses_rare():
     sure = confs >= threshold
     assert np.mean(errors[sure] > FAR_PX) <= SURE_FAR_SHARE and sure.sum() > 1990
     assert sure_threshold(np.array([9.0, 9.0]), np.array([0.9, 0.8])) == 1.0    # nothing is ever sure
+
+
+def _manifest_rows(origins):
+    """clips.csv rows, each clip its own group (the importer's default), with the given origins."""
+    rows = {}
+    for clip, origin in origins.items():
+        rows[clip] = dict.fromkeys(MANIFEST_COLUMNS, "")
+        rows[clip].update(clip=clip, group=clip, origin=origin)
+    return rows
+
+
+def test_folds_keep_the_clips_of_one_recording_together(workspace_dir):
+    # Three rallies cut from one video must not calibrate a network that trained on that court.
+    write_manifest(_manifest_rows({f"rally{i}": rf"C:\m\match{i // 2}\video.mp4" for i in range(6)}))
+    fold_of = folds([f"rally{i}" for i in range(6)], {f"rally{i}": 100 for i in range(6)})
+    assert fold_of["rally0"] == fold_of["rally1"] and fold_of["rally2"] == fold_of["rally3"]
+    assert fold_of["rally4"] == fold_of["rally5"] and len(set(fold_of.values())) == FOLDS
+
+
+def test_train_refuses_fewer_recordings_than_folds(workspace_dir, monkeypatch):
+    write_manifest(_manifest_rows({clip: r"C:\m\match1\video.mp4" for clip in ("a", "b", "c")}))
+    crops = {clip: np.zeros((300, CROP, CROP, 9), np.uint8) for clip in ("a", "b", "c")}
+    monkeypatch.setattr(refiner_training, "gather_crops", lambda log: crops)
+    lines = []
+    assert refiner_training.train(epochs=1, log=lambda *parts: lines.append(" ".join(map(str, parts)))) is None
+    assert any("900 reviewed frames in 3 clips of 1 recordings" in line for line in lines)
 
 
 def test_gather_crops_skips_clips_listed_in_exclude_txt(workspace_dir):
