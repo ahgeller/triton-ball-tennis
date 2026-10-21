@@ -138,7 +138,7 @@ def test_commands_hand_their_arguments_to_the_right_script(workspace_dir):
         assert ft.run_cli(["eval", "--clips", "video13", "--weights", "w.npz"]) == 0
         assert ft.run_cli(["label", "video10", "--zoom", "3", "video11"]) == 0      # two clips: one run
     assert launched[:4] == [("training/train_gridtracknet.py", ["--epochs", "3", "--lr", "0.3"]),
-                            ("data/import_data.py", ["all"]), ("labeling/cnn_refiner.py", ["list"]),
+                            ("data/import_data.py", ["all"]), ("refiner/hints.py", ["list"]),
                             ("training/pretrack.py", ["--clips", "x"])]
     module, arguments = launched[4]
     assert module == "evaluation.archive"

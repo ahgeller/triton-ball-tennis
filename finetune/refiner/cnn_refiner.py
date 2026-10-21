@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 from finetune.data import workspace as ws
 from finetune.data.fileio import write_atomic
-from finetune.data.scoring import REFERENCE_HEIGHT
+from finetune.data.detector_metrics import REFERENCE_HEIGHT
 
 CURRENT_NAME = "current.txt"     # in models_dir(): names the version the label tool uses
 CROP = 96            # cut around a point at 1080p scale ...

@@ -136,7 +136,7 @@ def _label_menu_rows(manifest: Dict[str, dict], videos: Dict[str, Path], finals:
 def _print_label_notes(counts: Dict[str, int], suspects: Dict[str, Dict[str, List[int]]]) -> None:
     """The legend: what each tag means, and which clips have frames an audit left open."""
     print(f"  csv = labels came with the clip, already ground truth ({counts['csv']})   "
-          f"det = machine guesses nobody has checked, yours to correct ({counts['det']})")
+          f"det = machine guesses nobody has reviewed, yours to correct ({counts['det']})")
     if counts["BAD"]:
         print(f"  BAD = labels do not match this video at all, excluded from training ({counts['BAD']}) - "
               f"see exclude.txt; there is nothing to correct in these, they belong to another cut")
@@ -231,11 +231,11 @@ def _menu_promote() -> None:
 
 def _menu_hints() -> None:
     print("the label tool's suggestions (what y places) are put where you would click by a small")
-    print("network trained on the frames you have checked, which also decides which ones are sure")
+    print("network trained on the frames you have reviewed, which also decides which ones are sure")
     print("(bright orange). Retrain it after labelling more; every version is kept and the new one")
     print("is used from the label tool's next start.")
     print()
-    ft.run_script("labeling/cnn_refiner.py", ["list"])
+    ft.run_script("refiner/hints.py", ["list"])
     print()
     print("  t) train a new version now (about 10 minutes on the GPU)")
     print("  u <version>) go back to an older version, e.g. u refiner-20261019-120547 (a date alone")
@@ -247,11 +247,11 @@ def _menu_hints() -> None:
     if not answer:
         return
     if answer.lower() in ("t", "train"):
-        ft.run_script("labeling/cnn_refiner.py", ["train"])
+        ft.run_script("refiner/hints.py", ["train"])
     elif answer.lower().startswith("u "):
-        ft.run_script("labeling/cnn_refiner.py", ["use", answer[2:].strip()])
+        ft.run_script("refiner/hints.py", ["use", answer[2:].strip()])
     elif answer.lower().startswith("s "):
-        ft.run_script("labeling/cnn_refiner.py", ["sheet"] + answer[2:].split())
+        ft.run_script("refiner/hints.py", ["sheet"] + answer[2:].split())
     else:
         print(f"  '{answer}' is not an option")
 

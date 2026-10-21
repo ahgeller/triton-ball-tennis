@@ -221,7 +221,7 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 
 def cmd_hints(args: argparse.Namespace) -> int:
-    return run_script("labeling/cnn_refiner.py", args.rest or ["list"])
+    return run_script("refiner/hints.py", args.rest or ["list"])
 
 
 # --------------------------------------------------------------------------- main
@@ -271,7 +271,7 @@ def run_cli(argv: List[str]) -> int:
     p.set_defaults(func=cmd_eval, forwards=True)
     p = subparsers.add_parser("train", help="train_gridtracknet.py (all its options pass through)")
     p.set_defaults(func=cmd_train, forwards=True)
-    p = subparsers.add_parser("hints", help="cnn_refiner.py: train | list | use <version> (its arguments pass through)")
+    p = subparsers.add_parser("hints", help="hints.py: train | list | use <version> | sheet <clip> (its arguments pass through)")
     p.set_defaults(func=cmd_hints, forwards=True)
     p = subparsers.add_parser("promote", help="copy the winning weights over the tracker's model (with backup)")
     p.add_argument("--weights", help="which .npz to promote (default: finetune/models/gridtracknet_best.npz)")

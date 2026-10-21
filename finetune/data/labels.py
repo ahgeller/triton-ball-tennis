@@ -202,7 +202,7 @@ def frame_list(state: Mapping, key: str, path: Path) -> List[int]:
 
 def read_review(path: Path) -> Optional[dict]:
     """The review sidecar's content, or None when there is none yet. A damaged file is an error
-    naming the file: it is somebody's record of which frames they checked, so it is never
+    naming the file: it is somebody's record of which frames they reviewed, so it is never
     silently replaced by a fresh one."""
     return read_json_object(path, "review file")
 
