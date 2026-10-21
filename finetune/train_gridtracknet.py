@@ -33,7 +33,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TypedDict
+from typing import Dict, List, Optional, Sequence, Tuple, TypedDict
 
 import cv2
 import numpy as np
@@ -49,7 +49,7 @@ from tennis_tracker.gridtracknet import (
 from tennis_tracker.frame_rate import require_phase_stride
 from finetune.data_policy import is_trainable, is_verified, read_review_status
 from finetune.fileio import copy_atomic, write_atomic
-from finetune.labels import Labels, read_labels as read_label_points
+from finetune.labels import LabelPoint, read_labels
 from finetune.scoring import REFERENCE_HEIGHT, scale_for_width, score
 from finetune import workspace as ws
 from finetune.workspace import MANIFEST_NAME, clip_of, find_video, label_files, read_exclusions, read_manifest
@@ -67,15 +67,25 @@ METRIC_SLACK = 0.005       # a candidate may be worse by this on wrong/false-ala
 WRONG_PENALTY = 2.0        # ... and each unit of extra wrong-object rate costs this much recall
 
 Clip = Tuple[str, Path, Path, str]   # (clip, video, label csv, source)
+Target = Optional[List[float]]       # a training target: [x, y] on the image, or None for no ball
+
+
+class TrainingUnit(TypedDict):
+    """One training sample: five cached frames at model cadence and their targets."""
+    clip: str
+    source: str
+    frames: List[str]       # cache-relative paths, frames/<clip>/<index>.jpg
+    points: List[Target]    # one per frame, in the clip's native pixels
+    size: List[int]         # [width, height] of the clip
 
 
 # --------------------------------------------------------------------------- labels
 
-def read_labels(path: Path, width: int, height: int) -> Dict[int, Optional[List[float]]]:
+def training_targets(path: Path, width: int, height: int) -> Dict[int, Target]:
     """The label file as frame -> [x, y] (clamped onto the image) or None, as the targets want it."""
-    labels: Labels = read_label_points(path, width, height)
-    return {frame: None if point is None else [min(max(point[0], 0.0), width - 1.0), min(max(point[1], 0.0), height - 1.0)]
-            for frame, point in labels.items()}
+    def target(point: LabelPoint) -> Target:
+        return None if point is None else [min(max(point[0], 0.0), width - 1.0), min(max(point[1], 0.0), height - 1.0)]
+    return {frame: target(point) for frame, point in read_labels(path, width, height).items()}
 
 
 def matches(clip: str, patterns: Optional[List[str]]) -> bool:
@@ -142,7 +152,7 @@ class ClipRecord(TypedDict):
     fps: float
     stride: int
     size: List[int]
-    samples: List[dict]
+    samples: List[TrainingUnit]
     visible: int
 
 
@@ -169,16 +179,12 @@ def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> ClipRecord:
             print(f"[data] {clip}: cache entry unreadable ({error}); rebuilding it")
     fps, width, height, _ = video_meta(video)
     stride = require_phase_stride(fps)
-    labels = read_labels(csv_path, width, height)
-    samples, needed = [], set()
+    labels = training_targets(csv_path, width, height)
+    samples: List[TrainingUnit] = []
+    needed = set()
     for window in build_units(labels, stride):
-        samples.append({
-            "clip": clip,
-            "source": source,
-            "frames": [f"frames/{clip}/{index:06d}.jpg" for index in window],
-            "points": [labels[index] for index in window],
-            "size": [width, height],
-        })
+        samples.append(TrainingUnit(clip=clip, source=source, frames=[f"frames/{clip}/{index:06d}.jpg" for index in window],
+                                    points=[labels[index] for index in window], size=[width, height]))
         needed.update(window)
     frame_dir = data_dir / "frames" / clip
     if frame_dir.exists():
@@ -281,7 +287,7 @@ def photometric_augment(images: np.ndarray, rng: Augmenter) -> np.ndarray:
 
 
 class UnitDataset(Dataset):
-    def __init__(self, data_dir: Path, samples: list, augment: bool, strength: str = "basic") -> None:
+    def __init__(self, data_dir: Path, samples: Sequence[TrainingUnit], augment: bool, strength: str = "basic") -> None:
         self.data_dir, self.samples, self.augment, self.strength = data_dir, samples, augment, strength
         self.rng: Optional[Augmenter] = None     # made in the process that reads, see Augmenter
 
@@ -320,7 +326,8 @@ class UnitDataset(Dataset):
         return torch.from_numpy(np.ascontiguousarray(images)), make_target(points, width, height)
 
 
-def make_sampler(samples: list, oversample: Dict[str, float], epoch_units: Optional[int]):
+def make_sampler(samples: Sequence[TrainingUnit], oversample: Dict[str, float],
+                 epoch_units: Optional[int]) -> Optional[WeightedRandomSampler]:
     """Weighted sampling by source (weight 0 drops a source from training); None = plain shuffle."""
     weights = [float(oversample.get(sample["source"], 1.0)) for sample in samples]
     if epoch_units is None and all(weight == 1.0 for weight in weights):
@@ -399,7 +406,7 @@ def detector_metrics(weights: Path, clips: List[Clip], device: torch.device, thr
     with torch.inference_mode():
         for clip, video, csv_path, _ in clips:
             fps, width, height, total = video_meta(video)
-            labels = read_labels(csv_path, width, height)
+            labels = training_targets(csv_path, width, height)
             scale = scale_for_width(width)
             predictions = predict_clip(model, video, require_phase_stride(fps), width, height, device, threshold)
             for frame, label in labels.items():

@@ -54,7 +54,7 @@ def metric_probe(count: int, labels: Dict[int, Optional[List[float]]]) -> Dict[s
     width, height = _PROBE_SIZE
     with patch.object(training, "load_model", return_value=lambda _: None), \
          patch.object(training, "video_meta", return_value=(_PROBE_FPS, width, height, count)), \
-         patch.object(training, "read_labels", return_value=labels), \
+         patch.object(training, "training_targets", return_value=labels), \
          patch.object(training.cv2, "VideoCapture", side_effect=lambda _: Capture(count)), \
          patch.object(training, "frame_tensor", return_value=torch.zeros(3, 1, 1)), \
          patch.object(training, "decode_predictions",

@@ -546,7 +546,7 @@ def measure_camera_motion(video: Path) -> Tuple[float, float, float]:
 
 
 def cmd_camera(args: argparse.Namespace) -> int:
-    """Tag every clip in clips.csv as a fixed or moving camera (needed by the background channel)."""
+    """Tag every clip in clips.csv as a fixed or moving camera (``train --cameras fixed`` selects by it)."""
     manifest = read_manifest()
     if not manifest:
         print("No clips.csv yet; run  python finetune/ft.py import all  first")
