@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from finetune.training.dataset import Augmenter, make_sampler, make_target, photometric_augment
+from finetune.training.dataset import Augmenter, make_sampler, make_target, photometric_augment, unit_weights
 from tennis_tracker.gridtracknet import FRAMES_PER_UNIT, GRID_COLS, GRID_ROWS
 
 SIZE = (64, 36)
@@ -25,13 +25,26 @@ def test_target_marks_the_cell_and_its_offsets_and_nothing_for_an_absent_ball():
 # --------------------------------------------------------------------------- the sampler
 
 def test_sampler_weights_by_source_and_is_absent_without_weights():
-    units = [{"source": "a"}, {"source": "b"}, {"source": "a"}]
+    units = [{"source": "a", "points": [[1.0, 1.0]]}, {"source": "b", "points": [[1.0, 1.0]]}, {"source": "a", "points": [[1.0, 1.0]]}]
     assert make_sampler(units, {}, None) is None
     only_a = make_sampler(units, {"b": 0.0}, None)
     assert only_a is not None and len(only_a) == 2 and set(iter(only_a)) <= {0, 2}   # drawn with replacement
     assert len(make_sampler(units, {}, 7)) == 7                                     # --epoch-units draws that many
     with pytest.raises(ValueError, match="weight 0"):
         make_sampler(units, {"a": 0.0, "b": 0.0}, None)
+
+
+def test_unit_weights_raise_absent_ball_units_and_the_flagged_ones():
+    units = [{"source": "a", "points": [[1.0, 1.0], None, [2.0, 2.0]]},      # holds a no-ball frame
+             {"source": "b", "points": [[1.0, 1.0], [2.0, 2.0]]},
+             {"source": "a", "points": [[1.0, 1.0]]}]
+    assert unit_weights(units, {}) == [1.0, 1.0, 1.0]
+    assert unit_weights(units, {"a": 2.0}, absent=3.0) == [6.0, 1.0, 2.0]
+    assert unit_weights(units, {}, false_alarms=4.0, flagged={1, 2}) == [1.0, 4.0, 4.0]
+    assert unit_weights(units, {"b": 0.5}, absent=3.0, false_alarms=4.0, flagged={0}) == [12.0, 0.5, 1.0]
+    sampler = make_sampler(units, {}, None, absent=3.0)
+    assert sampler is not None and list(sampler.weights) == [3.0, 1.0, 1.0] and len(sampler) == 3
+    assert make_sampler(units, {}, None, absent=1.0, false_alarms=1.0, flagged={0}) is None
 
 
 

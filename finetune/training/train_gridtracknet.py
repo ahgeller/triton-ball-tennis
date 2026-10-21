@@ -11,6 +11,7 @@ tags every clip with a source so you can pick, hold out and oversample by source
     python finetune/training/train_gridtracknet.py --holdout mixed_v1           # the fixed held-out set in holdouts.json
     python finetune/training/train_gridtracknet.py --sources custom             # own footage only
     python finetune/training/train_gridtracknet.py --oversample custom=6 --epoch-units 20000
+    python finetune/training/train_gridtracknet.py --augment basic translate reverse --oversample-absent 3
     python finetune/training/train_gridtracknet.py --from-scratch --epochs 30   # train a fresh network on everything
     python finetune/training/train_gridtracknet.py --self-test
 
@@ -46,10 +47,11 @@ from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.fileio import copy_atomic, write_atomic
 from finetune.data import workspace as ws
 from finetune.training.clips import Clip, ClipSelection, find_clips, resolve_val_clips, validation_split
-from finetune.training.dataset import Augmenter, UnitDataset, make_sampler, make_target, photometric_augment
+from finetune.training.dataset import (AUGMENTATIONS, Augmenter, UnitDataset, make_sampler, make_target,
+                                       photometric_augment, unit_weights)
 from finetune.training.frame_cache import build_units, prepare_data
 from finetune.training.loop import evaluate_loss, fresh_model, gridtracknet_loss, save_weights, train_epoch
-from finetune.training.metrics import promotion_improves, score_weights
+from finetune.training.metrics import FALSE_ALARM_CONF, false_alarm_units, promotion_improves, score_weights
 
 SEED = 7                   # every run draws the same augmentation and sampling sequence unless --seed says otherwise
 RESULTS_COLUMNS = ("epoch", "train_loss", "val_loss", "seconds", "score_seconds", *DetectorMetrics._fields)
@@ -66,11 +68,15 @@ def parse_oversample(items: Optional[List[str]]) -> Dict[str, float]:
     return weights
 
 
-def run_config(args: argparse.Namespace, names: List[str], val_clips: List[str], oversample: Dict[str, float]) -> dict:
+def run_config(args: argparse.Namespace, names: List[str], val_clips: List[str], oversample: Dict[str, float],
+               flagged: int = 0) -> dict:
     """What a run was: the clips, the held-out ones and how they were chosen, and every option that
-    shaped the training, as ``config.json`` records it."""
+    shaped the training (``flagged``: how many training units ``--oversample-false-alarms`` weighted
+    up), as ``config.json`` records it."""
     return {"clips": names, "validation_clips": val_clips, "holdout": args.holdout, "val_clips": args.val_clips,
-            "sources": args.sources, "cameras": args.cameras, "augment": args.augment, "oversample": oversample,
+            "sources": args.sources, "cameras": args.cameras, "augment": sorted(set(args.augment)),
+            "oversample": oversample, "oversample_absent": args.oversample_absent,
+            "oversample_false_alarms": args.oversample_false_alarms, "false_alarm_units": flagged,
             "epoch_units": args.epoch_units, "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
             "seed": args.seed, "score_every": args.score_every,
             "from_scratch": args.from_scratch, "weights": str(args.weights)}
@@ -173,8 +179,15 @@ def train(args: argparse.Namespace) -> None:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
 
-    sampler = make_sampler(manifest["train"], oversample, args.epoch_units)
-    train_loader = DataLoader(UnitDataset(args.data_dir, manifest["train"], augment=True, strength=args.augment),
+    flagged = set()
+    if args.oversample_false_alarms != 1.0:
+        flagged = false_alarm_units(args.weights, clips, manifest["train"], device)
+        print(f"[data] {len(flagged)} of {len(manifest['train'])} training units hold a no-ball frame the starting "
+              f"weights fired on at conf>={FALSE_ALARM_CONF:.2f}: "
+              f"sampled x{args.oversample_false_alarms:g}")
+    sampler = make_sampler(manifest["train"], oversample, args.epoch_units, args.oversample_absent,
+                           args.oversample_false_alarms, flagged)
+    train_loader = DataLoader(UnitDataset(args.data_dir, manifest["train"], augment=True, augmentations=args.augment),
                               batch_size=args.batch_size,
                               shuffle=sampler is None, sampler=sampler, num_workers=args.workers,
                               pin_memory=device.type == "cuda", persistent_workers=args.workers > 0)
@@ -190,7 +203,7 @@ def train(args: argparse.Namespace) -> None:
     optimizer = torch.optim.Adadelta(model.parameters(), lr=args.lr, rho=0.95, eps=1e-7)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
     args.run_dir.mkdir(parents=True, exist_ok=True)
-    write_atomic(args.run_dir / "config.json", json.dumps(run_config(args, names, val_clips, oversample), indent=2))
+    write_atomic(args.run_dir / "config.json", json.dumps(run_config(args, names, val_clips, oversample, len(flagged)), indent=2))
     print(f"[train] device={device} epochs={args.epochs} batch={args.batch_size} seed={args.seed} "
           f"units/epoch={len(train_loader) * args.batch_size} val={val_clips} score every {args.score_every}"
           + (f" oversample={oversample}" if oversample else ""))
@@ -230,9 +243,11 @@ def self_test() -> None:
     gapped = {index: None for index in range(0, 12) if index != 5}
     expect(all(5 not in window for window in build_units(gapped, 1)), "no unit across a label gap")
     expect(parse_oversample(["custom=4", "grid=0.5"]) == {"custom": 4.0, "grid": 0.5}, "--oversample parsing")
-    sampler = make_sampler([{"source": "a"}, {"source": "b"}], {"b": 0.0}, None)
+    units = [{"source": "a", "points": [None]}, {"source": "b", "points": [[1.0, 1.0]]}]
+    sampler = make_sampler(units, {"b": 0.0}, None)
     expect(sampler is not None and set(iter(sampler)) == {0}, "weight 0 drops a source")
-    expect(make_sampler([{"source": "a"}], {}, None) is None, "plain shuffle without weights")
+    expect(make_sampler(units, {}, None) is None, "plain shuffle without weights")
+    expect(unit_weights(units, {}, absent=3.0, false_alarms=2.0, flagged={1}) == [3.0, 2.0], "absent and flagged weights")
     expect(resolve_val_clips(["video1", "video10", "tnv2_Test_match1_1"], ["tnv2_Test_*"]) == ["tnv2_Test_match1_1"],
            "validation globs")
     expect(resolve_val_clips(["video1", "video10"], None) == ["video10"], "the default validation clip")
@@ -266,11 +281,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-excluded", action="store_true", help="Explicitly include excluded/unverified clips for training (validation still requires verified labels)")
     parser.add_argument("--cameras", nargs="*", choices=("fixed", "moving", "unknown", "untagged"),
                         help="Only clips with these clips.csv camera tags (from  ft.py camera), e.g. --cameras fixed")
-    parser.add_argument("--augment", choices=("basic", "strong"), default="basic",
-                        help="basic = flip + small gain (as before); strong = + gamma/contrast/colour cast/noise/blur "
-                             "for lighting diversity (dark courts)")
+    parser.add_argument("--augment", nargs="+", choices=AUGMENTATIONS, default=["basic"], metavar="NAME",
+                        help="The augmentations to draw, any of: basic (flip + small gain, the default), strong (flip + "
+                             "gamma/contrast/colour cast/noise/blur instead of the gain), translate (one shift of up to "
+                             "20 px at 768x432 for all five frames), reverse (time reversed), compress (JPEG re-encode "
+                             "and occasional blur)")
     parser.add_argument("--oversample", nargs="*", metavar="SOURCE=WEIGHT",
                         help="Relative sampling weight per source, e.g. custom=6 grid=1 tracknetv2=0.5 (0 drops it from training)")
+    parser.add_argument("--oversample-absent", type=float, default=1.0, metavar="K",
+                        help="Sampling weight of a unit holding an absent-ball label, relative to the others (default 1)")
+    parser.add_argument("--oversample-false-alarms", type=float, default=1.0, metavar="K",
+                        help="Sampling weight of a unit in which the starting weights fired (conf>=0.3) on a no-ball frame, "
+                             "found by one prepass over the training clips before the run (default 1: no prepass)")
     parser.add_argument("--epoch-units", type=int, help="Units drawn per epoch (default: every training unit once)")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=2)

@@ -17,7 +17,8 @@ from finetune.training import train_gridtracknet as training
 from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.labels import write_labels
 from finetune.training.clips import ClipSelection, find_clips
-from finetune.training.dataset import Augmenter, UnitDataset, make_target
+from finetune.training.dataset import (TRANSLATE_PX, Augmenter, UnitDataset, compress, make_target, reverse, translate,
+                                       translate_limits)
 from finetune.training.frame_cache import DATA_VERSION, TrainingUnit, prepare_clip, training_targets
 from finetune.training.loop import fresh_model
 from finetune.training.metrics import promotion_improves
@@ -179,12 +180,13 @@ def test_prepare_clip_refuses_a_video_that_ends_before_its_labels(tmp_path):
 
 # --------------------------------------------------------------------------- augmentation
 
-def unit_on_disk(data: Path) -> TrainingUnit:
-    """One unit whose five cached frames carry a mark on their left side."""
-    (data / "frames" / "u").mkdir(parents=True)
+def unit_on_disk(data: Path, stripe=(0, 10)) -> TrainingUnit:
+    """One unit whose five cached frames carry a red stripe over the cache columns `stripe`
+    (the left edge by default)."""
+    (data / "frames" / "u").mkdir(parents=True, exist_ok=True)
     for index in range(5):
         image = np.zeros((training.HEIGHT, training.WIDTH, 3), np.uint8)
-        image[:, :10] = (0, 0, 255)                               # red (BGR) stripe at the left
+        image[:, stripe[0]:stripe[1]] = (0, 0, 255)               # red (BGR) stripe
         cv2.imwrite(str(data / "frames" / "u" / f"{index:06d}.png"), image)
     return TrainingUnit(clip="u", source="custom", indices=list(range(5)), frames=[f"frames/u/{i:06d}.png" for i in range(5)],
                         points=[[100.0, 200.0], None, [1919.0, 0.0], [0.0, 1079.0], [500.5, 500.5]], size=[1920, 1080])
@@ -195,6 +197,27 @@ def forced(dataset: UnitDataset, flip: float) -> None:
     dataset.rng = Augmenter(0)
     dataset.rng.draws = random.Random(0)
     dataset.rng.draws.random = lambda: flip
+
+
+def scripted(dataset: UnitDataset, tosses, integers=()) -> None:
+    """Make the coin tosses answer `tosses` in turn and the integer draws `integers`."""
+    dataset.rng = Augmenter(0)
+    dataset.rng.draws = random.Random(0)
+    dataset.rng.draws.random = iter(tosses).__next__
+    dataset.rng.draws.randint = lambda low, high: next(remaining)
+    remaining = iter(integers)
+
+
+def stripe_centre(images: torch.Tensor) -> float:
+    """Where the red stripe's mass sits, in the unit's 1920-wide frame coordinates."""
+    red = images[0].numpy().sum(axis=0)
+    columns = np.arange(training.WIDTH) + 0.5
+    return float((red * columns).sum() / red.sum()) * 1920 / training.WIDTH
+
+
+def decoded_x(target: torch.Tensor, frame: int = 0) -> float:
+    row, col = np.argwhere(target[frame * 3].numpy() == 1)[0]
+    return (col + float(target[frame * 3 + 1, row, col])) * 1920 / training.GRID_COLS
 
 
 def test_flip_mirrors_the_frames_and_the_labels_about_the_image_width(tmp_path):
@@ -236,6 +259,99 @@ def test_flipped_label_lands_on_the_flipped_pixels(tmp_path):
     decoded_x = (col + float(target[1, row, col])) * 1920 / training.GRID_COLS
     assert abs(stripe_centre - 1907.5) < 0.05
     assert decoded_x == pytest.approx(1907.5) and decoded_x == pytest.approx(stripe_centre, abs=0.05)
+
+
+def test_translate_moves_the_stripe_and_the_label_by_the_same_shift(tmp_path):
+    # A stripe on cache pixels 40-49 has its centre at 45 cache pixels, 112.5 in the unit's
+    # 1920-wide frame coordinates; a shift of 16 cache pixels is 40 native ones, so stripe and
+    # label land at 152.5. (The stripe sits away from the edge because the border is replicated,
+    # which would stretch an edge stripe over the gap the shift opens.)
+    unit = unit_on_disk(tmp_path, stripe=(40, 50))
+    unit["points"] = [[112.5, 200.0], None, None, None, None]
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"translate"})
+    scripted(dataset, tosses=[1.0, 0.0], integers=[16, 0])               # no flip; translate, dx=16, dy=0
+    images, target = dataset[0]
+    assert abs(stripe_centre(images) - 152.5) < 0.05
+    assert decoded_x(target) == pytest.approx(152.5) and decoded_x(target) == pytest.approx(stripe_centre(images), abs=0.05)
+    for frame in range(1, 5):                                             # every frame shifted alike
+        assert torch.equal(images[frame * 3:frame * 3 + 3], images[:3])
+    assert float(target[3:].sum()) == 0.0                                 # no ball stays no ball
+    edge = unit_on_disk(tmp_path, stripe=(0, 10))
+    edge["points"] = [[12.5, 200.0], None, None, None, None]
+    dataset = UnitDataset(tmp_path, [edge], augment=True, augmentations={"translate"})
+    scripted(dataset, tosses=[1.0, 0.0], integers=[16, 0])
+    images, target = dataset[0]
+    assert float(images[0, :, :26].mean()) > 0.99 and float(images[0, :, 26:].mean()) < 0.01     # replicated: red fills the gap
+    assert decoded_x(target) == pytest.approx(52.5)
+
+
+def test_translate_is_held_so_that_no_label_leaves_the_image(tmp_path):
+    unit = unit_on_disk(tmp_path)                                         # labels at x=0 and x=1919, y=0 and y=1079
+    assert translate_limits(unit["points"], 1920, 1080, training.WIDTH, training.HEIGHT) == (0, 0, 0, 0)
+    assert translate_limits([[12.5, 200.0], None], 1920, 1080, training.WIDTH, training.HEIGHT) == (-5, 20, -20, 20)
+    assert translate_limits([[1910.0, 1070.0]], 1920, 1080, training.WIDTH, training.HEIGHT) == (-20, 3, -20, 3)
+    assert translate_limits([None] * 5, 1920, 1080, training.WIDTH, training.HEIGHT) == (-TRANSLATE_PX,) * 1 + (TRANSLATE_PX, -TRANSLATE_PX, TRANSLATE_PX)
+    images = np.zeros((15, training.HEIGHT, training.WIDTH), np.float32)
+    images[:, :, :10] = 1.0
+    shifted, points = translate(images, [[1919.0, 1079.0], None, [0.0, 0.0]], 0, 0, 1920, 1080)
+    assert np.array_equal(shifted, images) and points == [[1919.0, 1079.0], None, [0.0, 0.0]]
+    shifted, points = translate(images, [[100.0, 100.0]], -4, 8, 1920, 1080)
+    assert points == [[90.0, 120.0]] and shifted.shape == images.shape
+    assert float(shifted[0, 0, :6].sum()) == 6.0 and float(shifted[0, 0, 6]) == 0.0      # the stripe moved 4 left
+    assert float(shifted[0, 7].sum()) == 6.0 == float(shifted[0, 8].sum())                # rows moved 8 down, the top replicated
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"translate"})
+    scripted(dataset, tosses=[1.0, 0.0], integers=[0, 0])                 # the clamped draw: randint(0, 0)
+    images, target = dataset[0]
+    assert torch.equal(target, make_target(unit["points"], 1920, 1080))
+
+
+def test_reverse_reverses_the_frames_and_the_targets(tmp_path):
+    unit = unit_on_disk(tmp_path)
+    plain, forward = UnitDataset(tmp_path, [unit], augment=False)[0]
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"reverse"})
+    scripted(dataset, tosses=[1.0, 0.0])                                  # no flip; reverse
+    images, target = dataset[0]
+    assert torch.equal(target, make_target(unit["points"][::-1], 1920, 1080))
+    assert torch.equal(images.reshape(5, 3, training.HEIGHT, training.WIDTH).flip(0).reshape(15, training.HEIGHT, training.WIDTH), plain)
+    frames = np.arange(15, dtype=np.float32).reshape(15, 1, 1) * np.ones((15, 2, 2), np.float32)
+    reversed_frames, points = reverse(frames, [[1.0, 1.0], None, [3.0, 3.0], [4.0, 4.0], [5.0, 5.0]])
+    assert reversed_frames[:, 0, 0].tolist() == [12, 13, 14, 9, 10, 11, 6, 7, 8, 3, 4, 5, 0, 1, 2]
+    assert points == [[5.0, 5.0], [4.0, 4.0], [3.0, 3.0], None, [1.0, 1.0]]
+
+
+def test_compress_keeps_the_shape_and_the_labels_and_changes_only_the_pixels(tmp_path):
+    unit = unit_on_disk(tmp_path)
+    plain, forward = UnitDataset(tmp_path, [unit], augment=False)[0]
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"compress"})
+    scripted(dataset, tosses=[1.0, 0.0, 1.0], integers=[35])             # no flip; compress at quality 35; no blur
+    images, target = dataset[0]
+    assert images.shape == plain.shape and images.dtype == torch.float32 and torch.equal(target, forward)
+    assert 0.0 <= float(images.min()) <= float(images.max()) <= 1.0
+    assert not torch.equal(images, plain) and float((images - plain).abs().mean()) < 0.05    # artefacts, not another picture
+    assert float(images[0, 100, :5].mean()) > 0.8 and float(images[0, 100, 100:].mean()) < 0.1
+    rough = compress(plain.numpy(), 35)
+    assert np.array_equal(rough, images.numpy())                          # the dataset is the function, no more
+    assert float(np.abs(compress(plain.numpy(), 95) - plain.numpy()).mean()) < float(np.abs(rough - plain.numpy()).mean())
+
+
+def test_new_augmentations_draw_after_the_old_ones_so_old_runs_reproduce(tmp_path):
+    """A run with --augment basic makes exactly the draws it always made: the newer augmentations
+    draw nothing unless named, so the seed still reproduces an old run."""
+    unit = unit_on_disk(tmp_path)
+    before, after = UnitDataset(tmp_path, [unit], augment=True), UnitDataset(tmp_path, [unit], augment=True, augmentations={"basic"})
+    before.rng, after.rng = Augmenter(5), Augmenter(5)
+    for _ in range(3):
+        images, target = before[0]
+        again, target_again = after[0]
+        assert torch.equal(images, again) and torch.equal(target, target_again)
+    assert before.rng.draws.random() == after.rng.draws.random()         # the streams are in step
+    everything = UnitDataset(tmp_path, [unit], augment=True, augmentations=set(training.AUGMENTATIONS))
+    everything.rng = Augmenter(5)
+    images, target = everything[0]
+    assert images.shape == (15, training.HEIGHT, training.WIDTH) and target.shape == (15, training.GRID_ROWS, training.GRID_COLS)
+    with pytest.raises(ValueError, match="unknown augmentation"):
+        UnitDataset(tmp_path, [unit], augment=True, augmentations={"basic", "rotate"})
+    assert UnitDataset(tmp_path, [unit], augment=False, augmentations={"translate"}).augmentations == set()
 
 
 # --------------------------------------------------------------------------- the metric and the winner
@@ -338,6 +454,20 @@ def test_the_seed_is_recorded_and_defaults_to_the_fixed_one():
     args = parser.parse_args(["--seed", "11", "--score-every", "2"])
     config = training.run_config(args, [], [], {})
     assert config["seed"] == 11 and config["score_every"] == 2
+
+
+def test_augment_is_a_set_of_names_and_the_hard_negative_weights_are_recorded(capsys):
+    parser = training.build_parser()
+    assert parser.parse_args([]).augment == ["basic"]
+    args = parser.parse_args(["--augment", "translate", "basic", "reverse", "--oversample-absent", "3",
+                              "--oversample-false-alarms", "2.5"])
+    config = training.run_config(args, [], [], {}, flagged=42)
+    assert config["augment"] == ["basic", "reverse", "translate"] and config["oversample_absent"] == 3.0
+    assert config["oversample_false_alarms"] == 2.5 and config["false_alarm_units"] == 42
+    assert training.run_config(parser.parse_args([]), [], [], {})["false_alarm_units"] == 0
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--augment", "rotate"])
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_metric_counts_localization_errors():
