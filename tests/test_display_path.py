@@ -1,9 +1,10 @@
-"""rendering.build_display_path keeps observations and linear fills apart (exact vs. not)."""
+"""display_path.build_display_path keeps observations and linear fills apart (exact vs. not)."""
 from types import SimpleNamespace
 
 from ball_in_play_selector import Detection
 
-from tennis_tracker.rendering import _DIRECTION_BREAK_MIN_STEP_PX, _trail_direction_break, build_display_path
+from tennis_tracker.display_path import build_display_path
+from tennis_tracker.trails import _DIRECTION_BREAK_MIN_STEP_PX, _trail_direction_break
 
 WIDTH, HEIGHT, FRAMES = 1280, 720, 10
 

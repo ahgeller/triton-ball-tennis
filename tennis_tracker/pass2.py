@@ -19,10 +19,12 @@ from .court_minimap import draw_court_minimap
 from .motion import build_court_side_protect_mask
 from .motion_debug import RawMotionTrails, draw_motion_masks, draw_selected_ball
 from .pass1 import Pass1Result
+from .court_drawing import draw_court_layer
 from .rendering import (
-    BallTrail, CandidateTrackTrails, Canvas, DisplayPathTrail, MarkerSizer, SearchCentreSmoother,
-    draw_court_layer, draw_hud, draw_motion_rois, draw_player_boxes, draw_raw_detections, draw_selected_result,
+    Canvas, MarkerSizer, SearchCentreSmoother, draw_hud, draw_motion_rois, draw_player_boxes, draw_raw_detections,
+    draw_selected_result,
 )
+from .trails import BallTrail, CandidateTrackTrails, DisplayPathTrail
 from .run_context import CourtEvents, RunContext, Selection
 from .video_io import VideoWriter
 

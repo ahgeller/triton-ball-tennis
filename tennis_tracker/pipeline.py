@@ -24,7 +24,7 @@ from .export import write_tracking_json
 from .pass1 import Pass1Result, collect_pass1, erase_ghost_rois
 from .pass2 import render_pass2
 from .player_detector import PlayerDetector
-from .rendering import build_display_path
+from .display_path import build_display_path
 from .run_context import CourtEvents, RunContext, RunResult, Selection, Timing, VideoInfo
 from .summaries import print_selector_track_summary, print_timing_summary
 from .utils import detect_device, print_platform_report, resolve_runtime

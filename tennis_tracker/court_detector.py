@@ -12,7 +12,7 @@ import numpy as np
 from .config import Config
 from .court_geometry import LINE_PAIRS_14
 from .engine_session import open_engine_session
-from .rendering import draw_court
+from .court_drawing import draw_court
 
 _NEVER = -10**9
 
@@ -111,5 +111,5 @@ class CourtDetector:
         return self._report_miss(frame_index)
 
     def draw(self, frame: np.ndarray) -> np.ndarray:
-        """Draw the cached keypoints on ``frame`` (``rendering.draw_court``); untouched while there are none."""
+        """Draw the cached keypoints on ``frame`` (``court_drawing.draw_court``); untouched while there are none."""
         return draw_court(frame, self.keypoints, self.cfg)

@@ -19,7 +19,7 @@ from tennis_tracker.court_overlay import (
 )
 from tennis_tracker.config import Config
 from tennis_tracker.court_detector import CourtDetector
-from tennis_tracker.rendering import draw_court
+from tennis_tracker.court_drawing import draw_court
 
 HD_WIDTH, HD_HEIGHT = 1920, 1080
 # A serve from the near baseline into the far service box, in court coordinates.

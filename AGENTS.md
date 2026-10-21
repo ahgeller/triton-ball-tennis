@@ -27,7 +27,10 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   detector calls. `pass2.py`: rendering pass. `export.py`: tracking JSON.
   `motion_debug.py`: motion-debug video. `court_geometry.py`: keypoints, side
   guides, polygon, homography. `court_minimap.py`: minimap. `rendering.py`
-  draws only. `summaries.py`: the console track table and timing report.
+  draws only: the canvas, colours, markers and HUD, with `court_drawing.py`
+  (court layers), `trails.py` (ball, display-path and candidate trails) and
+  `display_path.py` (the chosen track's display path) beside it.
+  `summaries.py`: the console track table and timing report.
 - `ball_in_play_selector/`: candidate association, Kalman state, track scoring,
   timeline selection, bounded recovery, trajectory refit.
 - `tennis_tracker/motion.py`, `tracking.py`: CUDA motion masks and ROI tracking.

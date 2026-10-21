@@ -12,7 +12,8 @@ import numpy as np
 from ball_in_play_selector import FrameResult
 
 from .config import Config
-from .rendering import MOTION_DEBUG_SOURCE_COLOR, SEARCH_MARKER_SIZE, draw_court_side_guides
+from .court_drawing import draw_court_side_guides
+from .rendering import MOTION_DEBUG_SOURCE_COLOR, SEARCH_MARKER_SIZE
 
 try:
     import scipy.interpolate
