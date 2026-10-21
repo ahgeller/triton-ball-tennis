@@ -218,7 +218,7 @@ def _fix_clip(clip: str, audit: ClipAudit, stride: int, meta: VideoMeta) -> None
 
 def _audit_one(clip: str, video: Path, detector, fix: bool, mark: bool) -> bool:
     """Audit one clip against the detector and print its row; True when its labels disagree with it."""
-    from finetune.training.detect import detect_points
+    from finetune.data.detect import detect_points
 
     meta = video_meta(video)
     stride = _audit_stride(clip, meta.fps)
@@ -240,7 +240,7 @@ def audit_labels(patterns: Optional[List[str]], weights: Optional[str], fix: boo
     """Cross-check every label file against the raw detector: agreement at offset 0, and the best temporal
     shift. Catches public clips whose labels were made on a different cut of the video. Returns how
     many clips disagree."""
-    from finetune.training.detect import ball_detector   # the lazy GPU import: ft.py must load without torch
+    from finetune.data.detect import ball_detector   # the lazy GPU import: ft.py must load without torch
 
     videos = videos_in()
     clips = _audit_clips(patterns, read_manifest())

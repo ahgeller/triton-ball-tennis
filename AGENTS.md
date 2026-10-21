@@ -70,7 +70,10 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   suggestion model above (`refine.py`, `cnn_refiner.py`, `refiner_training.py`,
   `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
   file format; `label_check.py`, checks a label file against its video's facts;
-  `label_audit.py`, checks labels against the raw detector and flags frames; `workspace.py`, where the workspace keeps things and a clip's video
+  `label_audit.py`, checks labels against the raw detector and flags frames; `detect.py`,
+  the raw GridTrackNet prepass over one clip (torch only when a detector is built), which
+  the audit, `realign.py`, `pretrack.py`, `evaluation/archive.py` and the trainer's winner
+  metric all run; `workspace.py`, where the workspace keeps things and a clip's video
   facts, and the one place `clips.csv` and `exclude.txt` are read and written
   (`TENNIS_WORKSPACE` relocates the workspace); `scoring.py`, the detector metric;
   `data_policy.py`, which clips may be trained, validated or scored on;
@@ -85,8 +88,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   by and the winner rule), `clips.py` (which clips
   it trains on and holds out), `frame_cache.py` (the per-clip cache of frames
   and training units), `dataset.py` (targets, augmentation, the Dataset and
-  the sampler), `detect.py` (the raw prepass over a clip) and `pretrack.py`
-  (drafts).
+  the sampler) and `pretrack.py` (drafts).
 - `evaluation/`: `tracking.py` scores a tracking JSON against annotations in native
   pixels (`check_parity` freezes its numbers), `archive.py` scores the detector or
   the pipeline on workspace clips with `finetune/data/scoring.py` (`pipeline_score.py`

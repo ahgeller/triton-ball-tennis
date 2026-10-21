@@ -3,6 +3,6 @@ a script or ``python -m finetune.training.train_gridtracknet``), ``loop`` (the l
 validation loss and saving weights), ``metrics`` (the detector metric a run is judged by and the
 winner rule), ``clips`` (which clips it trains
 on and holds out), ``frame_cache`` (the per-clip cache of frames and training units), ``dataset``
-(targets, augmentation, the Dataset and the sampler), ``detect`` (the raw GridTrackNet prepass over
-one clip) and ``pretrack`` (drafts for the label tool from that prepass).
+(targets, augmentation, the Dataset and the sampler) and ``pretrack`` (drafts for the label tool
+from the raw GridTrackNet prepass, ``finetune.data.detect``).
 """

@@ -1,5 +1,8 @@
-"""Running the raw GridTrackNet prepass over a whole clip, for the scripts that draft, audit,
-realign or score labels against it."""
+"""Running the raw GridTrackNet prepass over a whole clip: the detector's own view of a clip, for
+the scripts that draft, audit, realign, score or judge labels against it (pretrack, the label
+audit, realign, evaluation.archive and the trainer's winner metric). It sits in the data layer
+because the data layer's scripts need it; torch and the tracker are imported only when a detector
+is built, so importing this module costs nothing beyond the standard library."""
 from __future__ import annotations
 
 from pathlib import Path

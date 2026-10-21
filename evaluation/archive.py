@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from finetune.data.data_policy import is_verified, read_review_status
-from finetune.training.detect import ball_detector, detect_points
+from finetune.data.detect import ball_detector, detect_points
 from finetune.data.labels import read_labels
 from finetune.data.scoring import HIT_PX, score, scale_for_width
 from finetune.data import workspace as ws

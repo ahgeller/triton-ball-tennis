@@ -35,7 +35,7 @@ from finetune.data import workspace as ws
 from finetune.data.fileio import atomic_csv
 from finetune.data.labels import COLUMNS, frame_name, sentinel
 from finetune.data.workspace import VideoMeta, draft_csv, label_csv, video_meta, videos_in
-from finetune.training.detect import ball_detector, detect_points
+from finetune.data.detect import ball_detector, detect_points
 from tennis_tracker.frame_rate import require_phase_stride
 from tennis_tracker.paths import COURT_ENGINE, PLAYER_ENGINE
 

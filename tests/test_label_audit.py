@@ -179,8 +179,8 @@ def run_audit(labels, confident, **options):
     output = io.StringIO()
     with patch.object(label_audit, "videos_in", lambda *_: {"clip": labels / "clip.mp4"}), \
             patch.object(label_audit, "video_meta", lambda *_: VideoMeta(30.0, WIDTH, HEIGHT, 40)), \
-            patch("finetune.training.detect.ball_detector", lambda *_: object()), \
-            patch("finetune.training.detect.detect_points", lambda *_: detector), \
+            patch("finetune.data.detect.ball_detector", lambda *_: object()), \
+            patch("finetune.data.detect.detect_points", lambda *_: detector), \
             contextlib.redirect_stdout(output):
         suspects = audit_labels(None, None, **options)
     return suspects, output.getvalue()

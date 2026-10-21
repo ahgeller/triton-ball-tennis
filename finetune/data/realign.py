@@ -50,7 +50,7 @@ if __name__ == "__main__":          # run as a script: make the repository root 
 
 from finetune.data import workspace as ws
 from finetune.data.alignment import Evidence, Tracks, agreement
-from finetune.training.detect import ball_detector, detect_points
+from finetune.data.detect import ball_detector, detect_points
 from finetune.data.fileio import backup_copy
 from finetune.data.realign_solve import Alignment, segments, solve_alignment, unplaceable_at_cuts
 from finetune.data.labels import LabelRow, format_point, is_visible, read_label_rows, reviewed_frames, write_label_cells
