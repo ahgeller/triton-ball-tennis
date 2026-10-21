@@ -75,9 +75,6 @@ class SelectorConfig:
     timeline_gap_penalty: float = 180.0  # cost per uncovered time fraction between stitched tracks
     timeline_overlap_penalty: float = 130.0  # cost per overlap time fraction
     timeline_jump_penalty: float = 130.0  # stronger cost per normalized spatial jump between stitched tracks
-    timeline_period_switch_penalty: float = 12.0  # small extra cost for switching temporal periods
-    min_track_obs_frac: float = 0.04
-    min_track_obs_abs: int = 20
 
     # Court margin: soft margin around the court polygon
     court_expand_px: float = field(init=False)

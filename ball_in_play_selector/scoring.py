@@ -7,6 +7,17 @@ from .models import Detection, Track
 from .utils import _cfg_diag
 from .physics import _kinematic_motion_frac, _xy_dist
 
+# Timeline handover: below ~1.5% of the diagonal per frame a track's velocity
+# is too uncertain to compare speeds across a handover.
+_MEANINGFUL_SPEED_DIAG_FRAC = 0.015
+# Handover speed ratios outside this band mean two different balls.
+_HANDOVER_SPEED_RATIO_MIN = 0.15
+_HANDOVER_SPEED_RATIO_MAX = 3.5
+# A turn sharper than 0.6 pi (108 deg) between consecutive velocities is jitter.
+_SHARP_TURN_PI_FRAC = 0.6
+# A step more than 2.5x the median step is a jump.
+_JUMP_MEDIAN_SPEED_MULT = 2.5
+
 
 def _track_kinematics(trk: Track) -> Tuple[List[Tuple[float, float]], List[float], float, float]:
     """Return cached (velocities, speeds, avg_speed, peak_speed) for a track."""
@@ -133,8 +144,6 @@ def _select_timeline_chain(
     for j in range(n):
         tj = ordered[j]
         sj = int(tj.first_frame)
-        pj = tj.score_breakdown if tj.score_breakdown else {}
-        pjid = int(float(pj.get("period_id", 0.0)))
         j_start = tj.observations[0]
 
         for i in range(j):
@@ -208,34 +217,24 @@ def _select_timeline_chain(
             if gap > 0:
                 trans -= float(cfg.timeline_gap_penalty) * (gap / float(tden))
 
-            pi = ti.score_breakdown if ti.score_breakdown else {}
-            piid = int(float(pi.get("period_id", 0.0)))
-            if piid != pjid:
-                trans -= float(cfg.timeline_period_switch_penalty)
-
-            # -- Velocity-continuity penalty --
-            # If the outgoing velocity of track i and incoming velocity of track j
-            # are directionally inconsistent, penalize the transition. This catches
-            # cases where the DP picks a path through an unrelated static or
-            # crossing detection cluster just because it's spatially nearby.
+            # -- Speed-continuity penalty --
+            # A handover whose implied speed differs wildly from track i's
+            # outgoing speed suggests two different balls.  Direction is not
+            # judged: racket hits and bounces reverse it legitimately.
             exp_vx, exp_vy = ti.last_vel
             exp_speed = math.sqrt(exp_vx * exp_vx + exp_vy * exp_vy)
             obs_vx = (j_start.cx - i_end.cx) / max(dt, 1)
             obs_vy = (j_start.cy - i_end.cy) / max(dt, 1)
             obs_speed = math.sqrt(obs_vx * obs_vx + obs_vy * obs_vy)
-            fps_ref_speed = max(diag * 0.015, 2.0)  # ~1% diag/frame = meaningful motion
+            meaningful_speed = max(diag * _MEANINGFUL_SPEED_DIAG_FRAC, 2.0)
             if (
                 not hard_discontinuity
                 and gap >= 0
-                and exp_speed > fps_ref_speed
-                and obs_speed > fps_ref_speed
+                and exp_speed > meaningful_speed
+                and obs_speed > meaningful_speed
             ):
-                dot = obs_vx * exp_vx + obs_vy * exp_vy
-                cos_sim = dot / max(obs_speed * exp_speed, 1e-6)
-                # Removed direction reversal penalties because racket hits and bounces reverse direction (cos_sim -> -1.0)
-                # Also penalize large speed-ratio changes that suggest different balls
                 speed_ratio = obs_speed / max(exp_speed, 1e-6)
-                if speed_ratio > 3.5 or speed_ratio < 0.15:
+                if speed_ratio > _HANDOVER_SPEED_RATIO_MAX or speed_ratio < _HANDOVER_SPEED_RATIO_MIN:
                     trans -= float(cfg.timeline_jump_penalty) * 0.5
 
             # -- Tiny-bridge penalty --
@@ -261,8 +260,6 @@ def _select_timeline_chain(
     idx_chain.reverse()
 
     chain = [ordered[k] for k in idx_chain]
-    if not chain:
-        return [max(ordered, key=lambda t: t.score)]
 
     # Continuity chooses between competing overlapping tracks. A validated,
     # disjoint segment can be a separate rally and must not disappear merely
@@ -306,28 +303,14 @@ def _select_timeline_chain(
     return sorted(chain, key=lambda track: (track.first_frame, track.last_obs_frame))
 
 def _stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Track]:
-    """Convert a timeline chain into one stitched track for guide building."""
+    """Merge a timeline chain into one track: per frame, the most confident observation."""
     if not chain:
         return None
     if len(chain) == 1:
         return chain[0]
 
-    kept_chain: List[Track] = []
-    for trk in chain:
-        if not kept_chain:
-            kept_chain.append(trk)
-            continue
-        # Keep timeline segments selected by the DP chain to maximize game coverage.
-        kept_chain.append(trk)
-
-    if not kept_chain:
-        return chain[0]
-    if len(kept_chain) == 1:
-        return kept_chain[0]
-
-    stitched = Track(track_id=chain[0].track_id, cfg=cfg)
     best_obs_by_frame: Dict[int, Detection] = {}
-    for trk in kept_chain:
+    for trk in chain:
         for obs in trk.observations:
             prev = best_obs_by_frame.get(obs.frame)
             if prev is None or obs.conf > prev.conf:
@@ -337,24 +320,20 @@ def _stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Tra
     if len(obs) < 2:
         return chain[0]
 
+    stitched = Track(track_id=chain[0].track_id, cfg=cfg)
     stitched.observations = obs
     stitched.last_pos = (obs[-1].cx, obs[-1].cy)
-    stitched.last_frame = obs[-1].frame
     prev = obs[-2]
     dt = max(obs[-1].frame - prev.frame, 1)
     stitched.last_vel = ((obs[-1].cx - prev.cx) / dt, (obs[-1].cy - prev.cy) / dt)
-    stitched.score = sum(float(t.score) for t in kept_chain)
-
-    sb0 = kept_chain[0].score_breakdown if kept_chain[0].score_breakdown else {}
-    sbn = kept_chain[-1].score_breakdown if kept_chain[-1].score_breakdown else {}
+    stitched.score = sum(float(t.score) for t in chain)
     stitched.score_breakdown = {
         "total": stitched.score,
-        "timeline_tracks": float(len(kept_chain)),
-        "start_frame": float(kept_chain[0].first_frame),
-        "end_frame": float(kept_chain[-1].last_obs_frame),
-        "start_frac": float(sb0.get("start_frac", 0.0)),
-        "end_frac": float(sbn.get("end_frac", 1.0)),
-        "period_id": float(sb0.get("period_id", 0.0)),
+        "timeline_tracks": float(len(chain)),
+        "start_frame": float(chain[0].first_frame),
+        "end_frame": float(chain[-1].last_obs_frame),
+        "start_frac": chain[0].score_value("start_frac"),
+        "end_frac": chain[-1].score_value("end_frac"),
     }
     return stitched
 
@@ -413,10 +392,10 @@ def _motion_consistency(track: Track) -> float:
     if not angle_changes:
         return 0.5
 
-    # Penalize frequent sharp direction changes (>90 deg)
+    # Penalize frequent sharp direction changes (> 108 deg, i.e. 0.6 pi).
     # Tennis ball has smooth arcs with direction changes at bounces/hits
     # But random jitter has constant tiny direction changes
-    sharp = sum(1 for a in angle_changes if a > math.pi * 0.6)
+    sharp = sum(1 for a in angle_changes if a > math.pi * _SHARP_TURN_PI_FRAC)
     smooth_frac = 1.0 - sharp / len(angle_changes)
     return max(0.0, min(1.0, smooth_frac))
 
@@ -431,9 +410,9 @@ def _jump_penalty(track: Track) -> float:
     if not speeds:
         return 0.0
 
-    # Penalize jumps above 2x median speed
+    # Penalize jumps above 2.5x the median speed (never below 5 px/frame)
     median_speed = sorted(speeds)[len(speeds) // 2]
-    threshold = max(median_speed * 2.5, 5.0)
+    threshold = max(median_speed * _JUMP_MEDIAN_SPEED_MULT, 5.0)
     for s in speeds:
         if s > threshold:
             penalty += (s - threshold)
@@ -453,11 +432,17 @@ def score_tracks(
       score = base_add * inside_mult * motion_mult * near_player_mult
 
     with:
-      - obs_add increases with observations
-      - span_add increases with temporal span
-      - inside_mult = in% (strict-inside court fraction)
-      - motion_mult = mot% (motion overlap fraction)
-      - near_player_mult = weaker multiplier from nearP%
+      - obs_add = w_len * observations
+      - span_add = w_span * (span / total_frames)
+      - inside_mult = near-court fraction: inside the polygon or within
+        court_expand_px of it (strict inside is recorded but not multiplied,
+        so near-edge detections do not destroy a track's score)
+      - motion_mult = motion evidence: max(mask overlap fraction,
+        physics.kinematic_motion_frac estimate)
+      - near_player_mult = 0.70 + 0.30 * near-player fraction (weaker term)
+
+    Every term lands in Track.score_breakdown under the keys documented in
+    models.SCORE_BREAKDOWN_DEFAULTS.
     """
     if not tracks:
         return tracks
@@ -469,8 +454,6 @@ def score_tracks(
 
         coverage_frac = (n / max(total_frames, 1)) if total_frames > 0 else 0.0
         span_frac = (span / max(total_frames, 1)) if total_frames > 0 else 0.0
-        min_obs = max(cfg.min_track_obs_abs,
-                      int(cfg.min_track_obs_frac * max(total_frames, 1)))
 
         inside_frac, _, strict_inside_frac = _court_fractions(
             trk, court_poly, cfg.court_expand_px
@@ -506,7 +489,9 @@ def score_tracks(
         motion_kin_frac = _kinematic_motion_frac(
             avg_speed, peak_speed, extent, near_player_frac, cfg, _cfg_diag(cfg)
         )
-        motion_frac = max(motion_frac_raw, motion_kin_frac)
+        # Motion evidence: the mask overlap, or the kinematic estimate when the
+        # mask misses a small, distant or slow ball.  Stored as "motion_frac".
+        motion_evidence = max(motion_frac_raw, motion_kin_frac)
 
         # Positive additive terms requested by user.
         obs_add = cfg.w_len * n
@@ -517,35 +502,30 @@ def score_tracks(
         # Use near_court_frac (inside OR within margin) instead of strict_inside_frac
         # so near-edge detections don't destroy track scores.
         inside_mult = max(0.0, min(1.0, inside_frac))
-        motion_mult = max(0.0, min(1.0, motion_frac))
+        motion_mult = max(0.0, min(1.0, motion_evidence))
         near_player_mult = 0.70 + 0.30 * max(0.0, min(1.0, near_player_frac))
 
-        raw_total_score = base_add * inside_mult * motion_mult * near_player_mult
-        total_score = max(0.0, raw_total_score)
+        # Non-negative by construction: clamped multipliers times a positive sum.
+        total_score = base_add * inside_mult * motion_mult * near_player_mult
 
         trk.score = total_score
         trk.score_breakdown = {
             "total": float(total_score),
-            "total_raw": float(raw_total_score),
-            "score_clamped_nonnegative": 0.0,
             "num_obs": n,
             "span": span,
             "inside_frac": float(inside_frac),
             "inside_strict_frac": float(strict_inside_frac),
-            "redflag_outside_long_bool": 0.0,
-            "motion_frac": float(motion_frac),
+            "motion_frac": float(motion_evidence),
             "motion_frac_raw": float(motion_frac_raw),
             "motion_kin_frac": float(motion_kin_frac),
             "avg_speed_pxpf": float(avg_speed),
             "peak_speed_pxpf": float(peak_speed),
             "extent_px": float(extent),
-            "movement": float(raw_total_score),
             "jump_penalty": float(jump_penalty_raw),
             "near_player_frac": float(near_player_frac),
             "near_player_court_frac": float(near_player_court_frac),
             "coverage_frac": float(coverage_frac),
             "span_frac": float(span_frac),
-            "min_obs_required": float(min_obs),
             "start_frame": float(trk.first_frame),
             "end_frame": float(trk.last_obs_frame),
             "start_frac": (trk.first_frame / float(max(total_frames - 1, 1))) if total_frames > 0 else 0.0,
@@ -556,7 +536,6 @@ def score_tracks(
             "motion_mult": float(motion_mult),
             "inside_mult": float(inside_mult),
             "near_player_mult": float(near_player_mult),
-            "multiplied_core": float(raw_total_score),
             "movement_quality": float(motion_smooth),
         }
 

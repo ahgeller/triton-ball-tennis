@@ -25,28 +25,28 @@ def _selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
     selected = []
     for track in tracks:
         cfg = track.cfg
-        score = track.score_breakdown or {}
-        motion_fraction = float(score.get("motion_frac_raw", 0.0))
+        # Fraction of observations on the motion mask.
+        motion_overlap = track.score_value("motion_frac_raw")
         # max(mask overlap, kinematic estimate) -- see scoring.score_tracks
-        motion_evidence = float(score.get("motion_frac", motion_fraction))
+        motion_evidence = track.score_value("motion_frac")
         confidences = sorted(float(item.conf) for item in track.observations)
         median_confidence = confidences[len(confidences) // 2] if confidences else 0.0
         score_density = track.score / max(track.num_obs, 1)
         # A ball the detector can see is seen on most frames; ten detections
         # sprinkled over seventy frames is a bystander, not a reacquisition.
         observation_density = track.num_obs / max(track.span, 1)
-        inside_strict = float(score.get("inside_strict_frac", 0.0))
-        extent_px = float(score.get("extent_px", 0.0))
+        inside_strict = track.score_value("inside_strict_frac")
+        extent_px = track.score_value("extent_px")
         established = (
             track.num_obs >= cfg.select_min_obs_frames
-            and motion_fraction >= cfg.select_established_motion_frac
+            and motion_overlap >= cfg.select_established_motion_frac
             and score_density >= cfg.select_score_density_min
         )
         reacquired = (
             track.num_obs >= cfg.select_reacquire_obs_frames
-            and motion_fraction >= cfg.select_reacquire_motion_frac
+            and motion_overlap >= cfg.select_reacquire_motion_frac
             and median_confidence >= cfg.select_reacquire_conf
-            and float(score.get("inside_strict_frac", 1.0)) <= cfg.select_outside_strict_max
+            and inside_strict <= cfg.select_outside_strict_max
             and score_density >= cfg.select_score_density_min
             and observation_density >= cfg.select_obs_density_min
         )
@@ -63,7 +63,7 @@ def _selected_tracks(tracks: List[Track], fps: float) -> List[Track]:
         )
         rolling = (
             track.num_obs >= cfg.select_min_obs_frames
-            and motion_fraction >= cfg.select_rolling_motion_frac
+            and motion_overlap >= cfg.select_rolling_motion_frac
             and median_confidence >= cfg.select_rolling_conf
             and inside_strict >= cfg.select_inside_strict_min
             and extent_px >= cfg.select_rolling_extent_frac * cfg.diag

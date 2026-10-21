@@ -148,7 +148,7 @@ def build_tracks(
             if not trk.alive:
                 continue
             pred = predictions[trk.track_id]
-            dt = t - trk.last_frame
+            dt = t - trk.last_obs_frame
             dt_eff = min(max(dt, 1), dt_cap)
             gate = cfg.base_gate_px + cfg.gate_growth_px * dt_eff
             speed_limit = cfg.max_speed_px_per_frame * dt_eff
@@ -226,7 +226,7 @@ def build_tracks(
                             and recent_motion < 0.25
                         ):
                             continue
-                        gap = int(t - trk_prev.last_frame)
+                        gap = int(t - trk_prev.last_obs_frame)
                         if gap < stitch_min_stale or gap > stitch_gap_frames:
                             continue
 
