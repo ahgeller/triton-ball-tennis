@@ -6,14 +6,13 @@ and expected values as they are.
 import numpy as np
 
 from ball_in_play_selector import FrameResult
+from tennis_tracker.court_minimap import _visible_completed_legs, draw_court_minimap
 from tennis_tracker.court_overlay import (
     _build_bounce_features,
     _cluster_bounce_candidates,
     _inside_player,
     _is_service_leg,
-    _visible_completed_legs,
     assemble_rally_legs,
-    draw_court_minimap,
     infer_kinematic_bounces,
 )
 from tennis_tracker.detectors import CourtDetector

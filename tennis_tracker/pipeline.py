@@ -16,7 +16,8 @@ from .motion import filter_boost_mask, _pack_mask_u8, build_protect_mask, comput
 from .tracking import ROIMotionTracker
 from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
 from .rendering import _is_soft_source, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, _build_display_guide, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_CARRY, COLOR_GUIDE, COLOR_GUIDE_INTERP, ENABLE_GAP_CONNECTORS
-from .court_overlay import assemble_rally_legs, detect_player_contacts, draw_court_minimap, infer_kinematic_bounces, predict_bounce_events
+from .court_minimap import draw_court_minimap
+from .court_overlay import assemble_rally_legs, detect_player_contacts, infer_kinematic_bounces, predict_bounce_events
 from .video_io import _cuda_frame_to_chw_f32, _PinnedFrameUploader, _cuda_vs_tensors, ThreadedFrameReader, VideoWriter
 
 
