@@ -19,7 +19,7 @@ def source(clip, count=10, width=1280, height=720):
     capture = SimpleNamespace(release=lambda: None, isOpened=lambda: False)
     return SimpleNamespace(clip=clip, rows=rows, width=width, height=height, frame_cache={},
                            dirty=False, cursor=0, start=0, missing=set(), saved_cursor=0,
-                           capture=capture, position=0)
+                           capture=capture, position=0, release=lambda: None)
 
 
 class LabelWorkflowTests(unittest.TestCase):
@@ -35,10 +35,10 @@ class LabelWorkflowTests(unittest.TestCase):
         tool = self.tool()
         tool.zoom, tool.zoom_target = 5., 9.
         tool.anchor = ((50., 80.), (120., 250.))
-        tool.aim = ("old cursor feedback",)
+        tool.mouse.aim = ("old cursor feedback",)
         tool.move(1)
         self.assertIsNone(tool.anchor)
-        self.assertIsNone(tool.aim)
+        self.assertIsNone(tool.mouse.aim)
         for _ in range(10):
             tool.step_zoom()
             x, y = tool.to_view(tool.rows[1].x, tool.rows[1].y)
@@ -76,14 +76,16 @@ class LabelWorkflowTests(unittest.TestCase):
         tool.zoom = tool.zoom_target = 10.
         tool.follow_ball()
         tool.anchor = ((1000, 600), (10, 10))
+        tool.mouse.aim = ("stale",)
         tool.fit_view(1000, 700)
         self.assertIsNone(tool.anchor)
+        self.assertIsNone(tool.mouse.aim)
         self.assertEqual(tool.to_view(tool.rows[0].x, tool.rows[0].y),
                          (round(tool.view_w/2), round(tool.view_h/2)))
 
     def test_stale_wheel_still_cancels_native_window_zoom(self):
         tool = self.tool()
-        with patch.object(tool, "repay_wheel") as repay:
+        with patch.object(tool.viewport, "repay_wheel") as repay:
             tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
         repay.assert_called_once_with(120)
 
@@ -244,15 +246,12 @@ class LabelWorkflowTests(unittest.TestCase):
             def release(self):
                 pass
 
+        from finetune.label_source import Source
         rows = [Row(i, 10., 10., True, "csv", 0.) for i in range(1, 60, 2)]   # odd phase, as 60 FPS clips
-        clip = source("c")
-        clip.rows, clip.width, clip.height = rows, 64, 36
-        for row in rows:
-            row.clip = "c"
-        clip.label_frames, clip.sig_of, clip.end, clip.cache_limit = {r.frame for r in rows}, {}, None, 64
-        clip.capture, clip.video = Capture(), Path("c.mp4")
-        tool = Tool([clip])
         with patch.object(cv2, "VideoCapture", lambda path: Capture()):
+            clip = Source("c", Path("c.mp4"), rows, 64, 36, Path("c_ball.csv"), Path("c_ball.review.json"))
+            clip.cache_limit = 64
+            tool = Tool([clip])
             tool.cursor = len(rows) - 1
             tool.frame(rows[-1].frame)
             Capture.opened = 0
@@ -280,34 +279,36 @@ class LabelWorkflowTests(unittest.TestCase):
     def test_wheel_in_grid_or_while_calibrating_still_cancels_window_zoom(self):
         tool = self.tool()
         tool.toggle_grid()
-        with patch.object(tool, "repay_wheel") as repay:
+        with patch.object(tool.viewport, "repay_wheel") as repay:
             tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
         repay.assert_called_once_with(120)
         tool.toggle_grid()
-        tool.calibrating = True
-        with patch.object(tool, "repay_wheel") as repay:
+        tool.mouse.calibrating = True
+        with patch.object(tool.viewport, "repay_wheel") as repay:
             tool.on_mouse(cv2.EVENT_MOUSEWHEEL, 100, 100, 120 << 16, None)
         repay.assert_called_once_with(120)
 
     def test_window_rebuilds_stop_when_the_check_keeps_failing(self):
-        import finetune.label_tool as label_tool
+        from finetune import label_window
         tool = self.tool()
-        with patch.object(label_tool, "_user32", None), patch.object(cv2, "destroyWindow"), \
+        with patch.object(label_window, "_user32", None), patch.object(cv2, "destroyWindow"), \
                 patch.object(cv2, "waitKey"), patch.object(tool, "create_window"), patch.object(tool, "show"):
             for _ in range(6):
+                tool.viewport.reset_needed = True
                 tool.reset_window()
-        self.assertEqual(tool.window_resets, 3)
-        self.assertEqual(tool.probe_at, float("inf"))
+        self.assertEqual(tool.viewport.window_resets, 3)
+        self.assertEqual(tool.viewport.probe_at, float("inf"))
+        self.assertFalse(tool.viewport.reset_needed)
 
     def test_function_keys_do_not_pass_for_letters(self):
-        import finetune.label_tool as label_tool
+        from finetune import label_window
         held = {0x71}                                # F2, which reads as "q"
         fake = SimpleNamespace(GetKeyState=lambda vk: 0x8000 if vk in held else 0)
-        with patch.object(label_tool, "_user32", fake):
-            self.assertTrue(label_tool.non_character_key(ord("q")))
+        with patch.object(label_window, "_user32", fake):
+            self.assertTrue(label_window.non_character_key(ord("q")))
             held.clear()                             # the q key itself: VK_F2 is not down
-            self.assertFalse(label_tool.non_character_key(ord("q")))
-            self.assertFalse(label_tool.non_character_key(ord("d")))
+            self.assertFalse(label_window.non_character_key(ord("q")))
+            self.assertFalse(label_window.non_character_key(ord("d")))
 
     def test_save_survives_a_locked_file_and_keeps_the_edits(self):
         import finetune.label_tool as label_tool
@@ -395,8 +396,8 @@ class LabelWorkflowTests(unittest.TestCase):
             # The tool skips such a clip rather than open it on a fresh review file.
             labels = Path(directory)
             (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,20,30\n")
-            with patch("finetune.label_tool.find_video", return_value=labels / "clip.mp4"), \
-                    patch("finetune.label_tool.video_meta", return_value=(30.0, 640, 360, 10)):
+            with patch("finetune.label_source.find_video", return_value=labels / "clip.mp4"), \
+                    patch("finetune.label_source.video_meta", return_value=(30.0, 640, 360, 10)):
                 self.assertIsNone(build_source("clip", labels, labels))
             self.assertEqual(review.read_text(), "{not json")
 
@@ -586,12 +587,13 @@ class CnnRefinerTests(unittest.TestCase):
         tool = LabelWorkflowTests.tool(self)
         first, second = Path("refiner-a.pt"), Path("refiner-b.pt")
         loaded = []
-        with patch("finetune.label_tool.cnn_refiner.current", side_effect=[first, first, second, None]),                 patch("finetune.label_tool.cnn_refiner.load_current",
+        with patch("finetune.label_hints.cnn_refiner.current", side_effect=[first, first, second, None]), \
+                patch("finetune.label_hints.cnn_refiner.load_current",
                       side_effect=lambda: loaded.append(1) or SimpleNamespace(name=f"v{len(loaded)}")):
-            self.assertEqual(tool.current_placer().name, "v1")
-            self.assertEqual(tool.current_placer().name, "v1")       # unchanged: not loaded again
-            self.assertEqual(tool.current_placer().name, "v2")       # retrained: the new version
-            self.assertIsNone(tool.current_placer())                 # none left: the centroid alone
+            self.assertEqual(tool.hints.current_placer().name, "v1")
+            self.assertEqual(tool.hints.current_placer().name, "v1")       # unchanged: not loaded again
+            self.assertEqual(tool.hints.current_placer().name, "v2")       # retrained: the new version
+            self.assertIsNone(tool.hints.current_placer())                 # none left: the centroid alone
         self.assertEqual(len(loaded), 2)
 
 
@@ -639,7 +641,7 @@ class GridKeyboardTests(unittest.TestCase):
         tool.toggle_grid()
         tool.grid_select(2)
         row = tool.rows[2]
-        tool.suggestions["test"] = {2: hint(row, x=row.x + 1)}
+        tool.hints.found["test"] = {2: hint(row, x=row.x + 1)}
         self.assertTrue(tool.take_suggestion())
         tool.grid_step(1)
         self.assertEqual((row.source, tool.cursor), ("refined", 3))
@@ -720,8 +722,8 @@ class DraftTests(unittest.TestCase):
 class TakeSuggestionTests(LabelWorkflowTests.__base__):
     def tool(self):
         tool = LabelWorkflowTests.tool(self)
-        tool.suggestions["test"] = {0: hint(tool.rows[0], 31.0, 25.5)}
-        tool.suggest_version += 1
+        tool.hints.found["test"] = {0: hint(tool.rows[0], 31.0, 25.5)}
+        tool.hints.version += 1
         return tool
 
     def test_y_takes_the_suggestion_as_refined_and_undo_restores_it(self):
@@ -751,8 +753,8 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         hints[6]["x"] = tool.rows[6].x + 2.5
         hints[8]["trusted"] = False                   # the suggestion itself is not trusted here
         hints[8]["x"] = tool.rows[8].x + 2.5
-        tool.suggestions["test"] = hints
-        tool.suggest_version += 1
+        tool.hints.found["test"] = hints
+        tool.hints.version += 1
         self.assertEqual(tool.hint_verdict(0), "agrees")
         self.assertEqual(tool.hint_verdict(3), "differs")
         self.assertIsNone(tool.hint_verdict(8))
@@ -772,36 +774,37 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         tool = LabelWorkflowTests.tool(self)
         row = tool.rows[2]
         row.visible = False
-        tool.suggestions["test"] = {2: hint(row, 300.0, 200.0, trusted=False, seed=None)}
+        tool.hints.found["test"] = {2: hint(row, 300.0, 200.0, trusted=False, seed=None)}
         self.assertIsNone(tool.suggestion_for(2))     # a guess is not enough to put a ball there
-        tool.suggestions["test"][2]["trusted"] = True
+        tool.hints.found["test"][2]["trusted"] = True
         self.assertIsNotNone(tool.suggestion_for(2))
         tool.cursor = 2
         self.assertTrue(tool.take_suggestion())
         self.assertTrue(row.visible and (row.x, row.y) == (300.0, 200.0) and row.source == "refined")
-        tool.suggestions["test"][2]["ball_here"] = False
+        tool.hints.found["test"][2]["ball_here"] = False
         self.assertIsNone(tool.suggestion_for(2))     # nothing ball-like moved: never shown
 
     def test_a_changed_label_is_remeasured_with_checked_labels_steering(self):
         tool = LabelWorkflowTests.tool(self)
         calls = []
-        with patch("finetune.label_tool.refine.suggest",
+        with patch("finetune.label_hints.refine.suggest",
                    side_effect=lambda video, seeds, spacing, stop, confirmed, only, placer:
-                   calls.append((seeds, confirmed, only)) or {}),                 patch("finetune.label_tool.cnn_refiner.current", return_value=None):
+                   calls.append((seeds, confirmed, only)) or {}), \
+                patch("finetune.label_hints.cnn_refiner.current", return_value=None):
             tool.source.video = Path("clip.mp4")
-            tool.suggest_clip(tool.source)
+            tool.hints.suggest_clip(tool.source)
             self.assertEqual(calls[-1][1], [])                     # nothing checked yet
-            before = tool.label_state(tool.source)
+            before = tool.hints.label_state(tool.source)
             tool.cursor = 1
             tool.set_point(80, 40)
-            self.assertNotEqual(tool.label_state(tool.source), before)
-            tool.suggest_clip(tool.source)
+            self.assertNotEqual(tool.hints.label_state(tool.source), before)
+            tool.hints.suggest_clip(tool.source)
             seeds, confirmed, only = calls[-1]
             self.assertEqual(seeds[1], (80.0, 40.0))
             self.assertEqual(confirmed, [1])
             self.assertEqual(only, set(range(10)))                # the stretch around frame 1 (10 rows)
             self.assertIsNone(calls[0][2])                         # the first pass measures everything
-            self.assertEqual(tool.suggested_state["test"], tool.label_state(tool.source))
+            self.assertEqual(tool.hints.measured_state["test"], tool.hints.label_state(tool.source))
 
     def test_suggestion_is_drawn_and_its_arrival_redraws(self):
         tool = LabelWorkflowTests.tool(self)
@@ -810,8 +813,8 @@ class TakeSuggestionTests(LabelWorkflowTests.__base__):
         plain = tool.render()
         orange = lambda image: int(np.sum((image[:, :, 0] == 0) & (image[:, :, 1] == 150) & (image[:, :, 2] == 255)))
         self.assertEqual(orange(plain), 0)
-        tool.suggestions["test"] = {0: hint(tool.rows[0], 33.0, 27.0)}
-        tool.suggest_version += 1
+        tool.hints.found["test"] = {0: hint(tool.rows[0], 33.0, 27.0)}
+        tool.hints.version += 1
         hinted = tool.render()
         self.assertIsNot(hinted, plain)
         self.assertGreater(orange(hinted), 0)
@@ -823,16 +826,16 @@ class OfferTests(LabelWorkflowTests.__base__):
     def test_space_takes_the_offer_and_a_reviewed_label_stays_the_mark(self):
         tool = LabelWorkflowTests.tool(self)
         row = tool.rows[0]
-        tool.suggestions["test"] = {0: hint(row, row.x + 1.0, row.y - 0.5)}
-        tool.suggest_version += 1
+        tool.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y - 0.5)}
+        tool.hints.version += 1
         tool.follow_ball()
         self.assertEqual(tool.target_point(), (31.25, 24.25))    # the view and the mouse go to the offer
         tool.render()
         tool.confirm()
         self.assertEqual((row.x, row.y, row.source), (31.25, 24.25, "refined"))
         self.assertTrue(row.reviewed and row.edited)
-        tool.suggestions["test"][0] = hint(row, row.x + 2.0, row.y)   # re-measured from the new label
-        tool.suggest_version += 1
+        tool.hints.found["test"][0] = hint(row, row.x + 2.0, row.y)   # re-measured from the new label
+        tool.hints.version += 1
         self.assertIsNone(tool.offer_for(0))                     # reviewed: your label is the mark
         self.assertIsNotNone(tool.suggestion_for(0))             # the hint is still shown beside it
         tool.render()
@@ -843,13 +846,13 @@ class OfferTests(LabelWorkflowTests.__base__):
         tool = LabelWorkflowTests.tool(self)
         row = tool.rows[0]
         tool.render()                                            # judged without a suggestion
-        tool.suggestions["test"] = {0: hint(row, row.x + 1.0, row.y)}
-        tool.suggest_version += 1
+        tool.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y)}
+        tool.hints.version += 1
         tool.confirm()                                           # SPACE lands after it arrived
         self.assertEqual((row.x, row.reviewed, row.edited), (30.25, True, False))
         tool.cursor = 1
-        tool.suggestions["test"][1] = hint(tool.rows[1], tool.rows[1].x + 1.0, tool.rows[1].y)
-        tool.suggest_version += 1
+        tool.hints.found["test"][1] = hint(tool.rows[1], tool.rows[1].x + 1.0, tool.rows[1].y)
+        tool.hints.version += 1
         tool.render()
         tool.cursor = 2                                          # drawn for frame 1, pressed on 2
         tool.confirm()
@@ -857,34 +860,34 @@ class OfferTests(LabelWorkflowTests.__base__):
         self.assertTrue(tool.rows[2].reviewed)
 
     def test_x_keeps_the_draft_and_the_offer_rules(self):
-        from finetune import label_tool
+        from finetune import label_hints
         tool = LabelWorkflowTests.tool(self)
         row = tool.rows[0]
-        tool.suggestions["test"] = {0: hint(row, row.x + 1.0, row.y, trusted=False)}
-        tool.suggest_version += 1
-        with patch.object(label_tool, "OFFER_UNSURE", False):
+        tool.hints.found["test"] = {0: hint(row, row.x + 1.0, row.y, trusted=False)}
+        tool.hints.version += 1
+        with patch.object(label_hints, "OFFER_UNSURE", False):
             self.assertIsNone(tool.offer_for(0))
         self.assertIsNotNone(tool.offer_for(0))                  # unsure but near the draft: offered, dull
-        tool.suggestions["test"][0]["x"] = row.x + 2.5           # 3.75 px at 1080p: too far to offer unsure
-        tool.suggest_version += 1
+        tool.hints.found["test"][0]["x"] = row.x + 2.5           # 3.75 px at 1080p: too far to offer unsure
+        tool.hints.version += 1
         self.assertIsNone(tool.offer_for(0))
         self.assertIsNotNone(tool.suggestion_for(0))             # ... but still a hint beside the draft
-        tool.suggestions["test"][0]["trusted"] = True            # sure: offered wherever it is
-        tool.suggest_version += 1
+        tool.hints.found["test"][0]["trusted"] = True            # sure: offered wherever it is
+        tool.hints.version += 1
         self.assertIsNotNone(tool.offer_for(0))
-        tool.suggestions["test"][0] = hint(row, row.x + 1.0, row.y, trusted=False)
-        tool.suggest_version += 1
+        tool.hints.found["test"][0] = hint(row, row.x + 1.0, row.y, trusted=False)
+        tool.hints.version += 1
         tool.render()
         tool.confirm(take_offer=False)                           # x: the draft was right
         self.assertEqual((row.x, row.reviewed, row.edited), (30.25, True, False))
         other = tool.rows[1]
-        tool.suggestions["test"][1] = hint(other, other.x + 0.1, other.y)
-        tool.suggest_version += 1
+        tool.hints.found["test"][1] = hint(other, other.x + 0.1, other.y)
+        tool.hints.version += 1
         self.assertIsNone(tool.offer_for(1))                     # nothing to choose between
         for row in tool.rows:
             row.conf = .9
-        tool.suggestions["test"][2] = hint(tool.rows[2], tool.rows[2].x + 1.0, tool.rows[2].y)
-        tool.suggest_version += 1
+        tool.hints.found["test"][2] = hint(tool.rows[2], tool.rows[2].x + 1.0, tool.rows[2].y)
+        tool.hints.version += 1
         tool.cursor = 1
         tool.render()
         tool.accept_run()                                        # r confirms the drafts, unseen
@@ -894,10 +897,10 @@ class OfferTests(LabelWorkflowTests.__base__):
     def test_confirm_grid_takes_the_offers_it_drew(self):
         tool = LabelWorkflowTests.tool(self)
         rows = tool.rows
-        tool.suggestions["test"] = {0: hint(rows[0], rows[0].x + 1.0, rows[0].y),
+        tool.hints.found["test"] = {0: hint(rows[0], rows[0].x + 1.0, rows[0].y),
                                     3: hint(rows[3], rows[3].x, rows[3].y + 1.0, trusted=False),
                                     9: hint(rows[9], rows[9].x + 1.0, rows[9].y)}
-        tool.suggest_version += 1
+        tool.hints.version += 1
         tool.toggle_grid()
         tool.render_grid()
         tool.confirm_grid()
@@ -913,8 +916,8 @@ class OfferTests(LabelWorkflowTests.__base__):
         row = tool.rows[2]
         row.visible = False
         tool.cursor = 2
-        tool.suggestions["test"] = {2: hint(row, 300.0, 200.0, seed=None)}
-        tool.suggest_version += 1
+        tool.hints.found["test"] = {2: hint(row, 300.0, 200.0, seed=None)}
+        tool.hints.version += 1
         tool.follow_ball()
         self.assertEqual(tool.target_point(), (300.0, 200.0))
         tool.render()
