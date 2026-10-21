@@ -51,8 +51,9 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   on one frame (the change map, its motion centroid and blobs).
 - `finetune/refiner/cnn_refiner.py`: small CNN, trained only on frames the user reviewed, that places
   those suggestions where the user clicks (`refiner_training.py` runs the training: the folds,
-  the "sure" threshold and the promotion check, on crops `refiner_crops.py` gathers and networks
-  `refiner_fitting.py` fits and scores; `hints.py`
+  the "sure" threshold and the promotion check, on crops `refiner_crops.py` gathers, leaving out
+  `exclude.txt` clips and the clips `review_status.json` lists as in progress (`in_progress_clips`),
+  and networks `refiner_fitting.py` fits and scores; `hints.py`
   is their command line, the script `ft.py hints` runs). Versions live in
   `finetune/models/refiner/` (all kept, `current.txt` names the active one); retrain with
   `ft.py hints train` or menu option 10. Its self-check decides "trusted" (threshold set on

@@ -1,5 +1,6 @@
 {
   "verified_video_min": 13,
   "verified_clips": [],
-  "note": "User confirmed video13 and onward manually verified on 2026-09-07. Other clips remain under review and are excluded from evaluation and default training. Update this file when the user clears additional clips."
+  "note": "User confirmed video13 and onward manually verified on 2026-09-07. Other clips remain under review and are excluded from evaluation and default training. Update this file when the user clears additional clips. In-progress clips are ones a person is labelling now; the label tool's suggestion network (the CNN refiner) leaves them out of its training, calibration and checks until they are taken off the list.",
+  "in_progress_clips": ["grid_match36"]
 }

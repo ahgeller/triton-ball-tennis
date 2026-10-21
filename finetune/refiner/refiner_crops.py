@@ -10,6 +10,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from finetune.data import workspace as ws
+from finetune.data.data_policy import is_in_progress, read_review_status
 from finetune.data.labels import Labels, read_labels, reviewed_frames
 from finetune.data.workspace import find_video, label_csv, labelled_clips, read_exclusions, review_json, video_meta
 from finetune.refiner import cnn_refiner, refine
@@ -86,15 +88,20 @@ def crops_from_video(video: Path, points: Dict[int, Tuple[float, float]], step: 
 
 def gather_crops(log: Callable[..., None] = lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
     """{clip: crops} for every clip with reviewed frames that the workspace's exclude.txt does not
-    list. This is the clip set the folds, the "sure" threshold, the self-check and the final network
-    all use. The trust signal is the per-frame review sidecar on top of that exclusion list; the
-    trainable/scorable rules of ``finetune.data.data_policy`` are not consulted, since nothing here
-    selects clips by source."""
+    list and its review_status.json does not list as in progress (``in_progress_clips``: a person is
+    labelling it now, so its partly reviewed frames are not settled). This is the clip set the folds,
+    the "sure" threshold, the self-check and the final network all use. The trust signal is the
+    per-frame review sidecar on top of those two lists; the trainable/scorable rules of
+    ``finetune.data.data_policy`` are not consulted, since nothing here selects clips by source."""
     excluded = set(read_exclusions())
+    status = read_review_status(ws.current().root)
     out = {}
     for clip in labelled_clips():
         if clip in excluded:
             log(f"  {clip}: skipped (listed in exclude.txt)")
+            continue
+        if is_in_progress(clip, status):
+            log(f"  {clip}: skipped (in progress in review_status.json)")
             continue
         crops = clip_crops(clip)
         if crops is not None and len(crops):

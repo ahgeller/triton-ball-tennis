@@ -15,7 +15,9 @@ The label tool's suggestion network (``finetune.refiner.refiner_training``) is t
 that does not ask here. Its trust signal is per frame: the frames a person confirmed or edited,
 from each clip's review sidecar, on top of the workspace exclusion list (``exclude.txt``, read
 through ``finetune.data.workspace``). It never selects clips by source, so the trainable and
-scorable clip rules below do not apply to it.
+scorable clip rules below do not apply to it. It does leave out the clips ``review_status.json``
+lists under ``in_progress_clips`` (``is_in_progress``): ones a person is labelling now, whose
+partly reviewed frames are not yet settled; a clip is used again once it is taken off the list.
 """
 from __future__ import annotations
 
@@ -33,9 +35,15 @@ UNLISTED_SOURCE = "unknown"        # a clip a clips.csv exists but does not list
 
 
 def read_review_status(workspace: Path) -> Optional[dict]:
-    """The review policy (``verified_clips``, ``verified_video_min``), or None when the workspace
+    """The review policy (``verified_clips``, ``verified_video_min``, ``in_progress_clips``), or None when the workspace
     has none. A damaged or non-object file is a ``LabelFormatError`` naming it, like the sidecars."""
     return read_json_object(workspace / REVIEW_STATUS_NAME, "review policy")
+
+
+def is_in_progress(clip: str, status: Optional[dict]) -> bool:
+    """Is a person labelling this clip right now: listed under ``in_progress_clips`` in the review
+    policy. No policy, or no such key, means no clip is in progress."""
+    return status is not None and clip in status.get("in_progress_clips", [])
 
 
 def clip_source(clip: str, manifest: Dict[str, dict]) -> str:

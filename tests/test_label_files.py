@@ -298,6 +298,15 @@ def test_a_damaged_review_policy_is_an_error_that_names_it(tmp_path):
         data_policy.read_review_status(tmp_path)
 
 
+def test_in_progress_clips_come_from_the_review_policy():
+    assert not data_policy.is_in_progress("grid_match36", None)                          # no policy
+    assert not data_policy.is_in_progress("grid_match36", {"verified_video_min": 13})    # no key: none in progress
+    status = {"verified_video_min": 13, "in_progress_clips": ["grid_match36"]}
+    assert data_policy.is_in_progress("grid_match36", status)
+    assert not data_policy.is_in_progress("grid_match31", status)
+    assert not data_policy.is_in_progress("grid_match36", {"in_progress_clips": []})
+
+
 def test_verified_policy_does_not_clear_grid_matches():
     policy = {"verified_video_min": 13}
     for name in ("video3", "video8", "video11", "video12", "grid_match13", "grid_match92"):

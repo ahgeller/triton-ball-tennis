@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from finetune.data.labels import write_labels
-from finetune.data.workspace import add_exclusion, label_csv, review_json
+from finetune.data.workspace import REVIEW_STATUS_NAME, add_exclusion, label_csv, review_json
 from finetune.refiner.cnn_refiner import CROP, WINDOW
 from finetune.refiner.refiner_crops import crops_from_video, cut_label, frame_users, gather_crops
 from finetune.refiner.refiner_fitting import sample_batch, to_device
@@ -73,3 +73,18 @@ def test_gather_crops_skips_clips_listed_in_exclude_txt(workspace_dir):
     crops = gather_crops(lambda *parts: lines.append(" ".join(map(str, parts))))
     assert sorted(crops) == ["clip_a"] and len(crops["clip_a"]) == 4
     assert any("clip_b" in line and "exclude.txt" in line for line in lines)
+
+
+def test_gather_crops_skips_clips_review_status_lists_as_in_progress(workspace_dir):
+    for clip in ("clip_a", "clip_b"):
+        write_clip(workspace_dir / "videos" / f"{clip}.avi", 8, SIZE)
+        write_labels(label_csv(clip), {f: (80.0, 45.0) for f in range(8)}, *SIZE)
+        review_json(clip).write_text(json.dumps({"reviewed": [2, 3, 4, 5]}), encoding="utf-8")
+    (workspace_dir / REVIEW_STATUS_NAME).write_text(
+        json.dumps({"verified_video_min": 13, "verified_clips": [], "in_progress_clips": ["clip_b"]}),
+        encoding="utf-8")
+    lines = []
+    crops = gather_crops(lambda *parts: lines.append(" ".join(map(str, parts))))
+    assert sorted(crops) == ["clip_a"] and len(crops["clip_a"]) == 4
+    assert "  clip_b: skipped (in progress in review_status.json)" in lines
+    assert not any("clip_a" in line and "skipped" in line for line in lines)
