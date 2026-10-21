@@ -54,7 +54,7 @@ def test_queued_click_cannot_edit_an_unshown_next_frame():
     assert tool.cursor == 1
     tool.on_mouse(cv2.EVENT_LBUTTONDBLCLK, tool.view_w//2, tool.view_h//2, 0, None)
     assert tool.cursor == 1
-    assert not tool.rows[1].settled
+    assert not tool.rows[1].reviewed
 
 
 def test_crop_click_maps_to_subpixel_source_coordinates():
@@ -95,15 +95,15 @@ def test_confirm_grid_requires_displayed_page_and_preserves_missing():
     tool = make_tool()
     tool.toggle_grid()
     tool.confirm_grid()
-    assert not any(r.settled for r in tool.rows)
+    assert not any(r.reviewed for r in tool.rows)
     tool.source.missing.add(2)
     tool.render_grid()
     tool.confirm_grid()
-    assert all(r.settled for i, r in enumerate(tool.rows[:8]) if i != 2)
-    assert not tool.rows[2].settled
-    assert not any(r.settled for r in tool.rows[8:])
+    assert all(r.reviewed for i, r in enumerate(tool.rows[:8]) if i != 2)
+    assert not tool.rows[2].reviewed
+    assert not any(r.reviewed for r in tool.rows[8:])
     tool.confirm_grid()  # next page has not been rendered yet
-    assert not any(r.settled for r in tool.rows[8:])
+    assert not any(r.reviewed for r in tool.rows[8:])
 
 
 def test_mixed_resolution_pages_keep_source_identity():
@@ -153,6 +153,24 @@ def test_evidence_survives_resume_without_inventing_confidence(tmp_path):
     resumed = load_rows(csv, 640, 360, "csv")
     apply_review(review, resumed)
     assert (resumed[0].source, resumed[0].conf) == ("det", .43)
+
+
+def test_an_edited_frame_is_a_reviewed_frame_for_the_tool_as_for_every_reader(tmp_path):
+    """One vocabulary: a frame a person confirmed or edited is reviewed. An older sidecar that
+    lists a frame under "edited" only reads back as reviewed too, as labels.reviewed_frames has it."""
+    from finetune.data.labels import reviewed_frames
+    review = tmp_path / "clip_ball.review.json"
+    review.write_text(json.dumps({"reviewed": [1], "edited": [2]}))
+    rows = source("clip", 4).rows
+    apply_review(review, rows)
+    assert [row.reviewed for row in rows] == [False, True, True, False]
+    assert [row.edited for row in rows] == [False, False, True, False]
+    assert reviewed_frames("clip", tmp_path) == {1, 2}
+    tool = make_tool(source("clip", 4))
+    tool.set_point(50.0, 40.0)                                   # an edit in the tool reviews the frame too
+    assert tool.rows[0].reviewed and tool.rows[0].edited
+    save_review(review, tool.rows, 0, 2.0)
+    assert json.loads(review.read_text())["reviewed"] == [0]
 
 
 def test_review_evidence_is_applied_per_frame_and_bad_evidence_is_warned_about(tmp_path):
@@ -315,7 +333,7 @@ def test_point_in_the_no_ball_corner_is_refused():
     before = (tool.rows[0].x, tool.rows[0].y)
     assert not tool.set_point(1270, 10)  # would read back as "no ball"
     assert (tool.rows[0].x, tool.rows[0].y) == before
-    assert not tool.rows[0].settled
+    assert not tool.rows[0].reviewed
     assert tool.set_point(600, 300)
 
 
@@ -325,7 +343,7 @@ def test_click_beyond_the_frame_is_not_a_label():
         tool.show()
     tool.on_mouse(cv2.EVENT_LBUTTONDOWN, 0, 0, 0, None)   # top-left of a view centred near (30, 25)
     assert tool.cursor == 0
-    assert not tool.rows[0].settled
+    assert not tool.rows[0].reviewed
 
 
 def test_wheel_in_grid_or_while_calibrating_still_cancels_window_zoom():
@@ -696,7 +714,7 @@ def test_sheet_draws_a_stretch_and_a_click_opens_that_frame():
     tool.sheet_mouse(cv2.EVENT_LBUTTONDOWN, x + 2, y - 1)
     assert not tool.sheet
     assert tool.cursor == index
-    assert not any(row.settled for row in tool.rows)     # finding a frame edits nothing
+    assert not any(row.reviewed for row in tool.rows)     # finding a frame edits nothing
 
 
 def test_sheet_pages_stay_inside_the_clip():
@@ -822,24 +840,24 @@ def test_no_ball_frame_shows_only_a_trusted_suggestion_and_y_places_it():
     assert tool.suggestion_for(2) is None         # nothing ball-like moved: never shown
 
 
-def test_a_changed_label_is_remeasured_with_checked_labels_steering():
+def test_a_changed_label_is_remeasured_with_reviewed_labels_steering():
     tool = make_tool()
     calls = []
     with patch("finetune.labeling.label_hints.refine.suggest",
                side_effect=lambda video, seeds, options:
-               calls.append((seeds, options.confirmed, options.only)) or {}), \
+               calls.append((seeds, options.reviewed, options.only)) or {}), \
             patch("finetune.labeling.label_hints.cnn_refiner.current", return_value=None):
         tool.source.video = Path("clip.mp4")
         tool.hints.suggest_clip(tool.source)
-        assert calls[-1][1] == []                             # nothing checked yet
+        assert calls[-1][1] == []                             # nothing reviewed yet
         before = tool.hints.label_state(tool.source)
         tool.cursor = 1
         tool.set_point(80, 40)
         assert tool.hints.label_state(tool.source) != before
         tool.hints.suggest_clip(tool.source)
-        seeds, confirmed, only = calls[-1]
+        seeds, reviewed, only = calls[-1]
         assert seeds[1] == (80.0, 40.0)
-        assert confirmed == [1]
+        assert reviewed == [1]
         assert only == set(range(10))                         # the stretch around frame 1 (10 rows)
         assert calls[0][2] is None                            # the first pass measures everything
         assert tool.hints.measured_state["test"] == tool.hints.label_state(tool.source)
@@ -950,7 +968,7 @@ def test_confirm_grid_takes_the_offers_it_drew():
     assert (rows[3].y, rows[3].source) == (34.75, "refined")
     assert all(row.reviewed for row in rows[:8])
     assert not rows[1].edited
-    assert not rows[9].settled                         # next page: not drawn, not taken
+    assert not rows[9].reviewed                         # next page: not drawn, not taken
     assert rows[9].x == 129.25
 
 

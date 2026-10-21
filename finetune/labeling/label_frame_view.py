@@ -159,7 +159,7 @@ class FrameView:
                  f"{source.clip} [{within}]  clip {tool.sources.index(source) + 1}/{len(tool.sources)}"
                  f"  run {tool.cursor + 1}/{len(tool.rows)}")
         if tool.walk:
-            left = sum(1 for i in tool.walk if not tool.rows[i].settled)
+            left = sum(1 for i in tool.walk if not tool.rows[i].reviewed)
             place += f"  UNCERTAIN ONLY {tool.walk_pos + 1}/{len(tool.walk)} ({left} left)"
         return place
 

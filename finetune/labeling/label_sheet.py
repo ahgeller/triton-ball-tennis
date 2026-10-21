@@ -114,7 +114,7 @@ class SheetView:
         differs = self.draw_points(display, selected)
         shown = [rows[i] for i in indices]
         line1 = (f"{rows[indices[0]].clip}  TRAJECTORY  frames {shown[0].frame}-{shown[-1].frame}  "
-                 f"{sum(r.visible for r in shown)} with a ball  reviewed {sum(r.settled for r in shown)}/{len(shown)}"
+                 f"{sum(r.visible for r in shown)} with a ball  reviewed {sum(r.reviewed for r in shown)}/{len(shown)}"
                  + (f"  hint differs {differs} (red)" if differs else ""))
         line2 = "click a point: open that frame   a/d: stretch before/after   w or right click: back   q: save/quit"
         hud = canvas[tool.view_h:]
@@ -143,7 +143,7 @@ class SheetView:
         return points
 
     def draw_points(self, display: np.ndarray, selected: int) -> int:
-        """A dot per label on the trace (green settled, yellow not), ringed red where a trusted
+        """A dot per label on the trace (green reviewed, yellow not), ringed red where a trusted
         suggestion differs, white on the selected frame, every tenth captioned with its frame
         number; how many differ."""
         tool = self.tool
@@ -151,7 +151,7 @@ class SheetView:
         differs = 0
         for index, px, py in self.points:
             row = tool.rows[index]
-            colour = (70, 210, 70) if row.settled else (0, 220, 255)
+            colour = (70, 210, 70) if row.reviewed else (0, 220, 255)
             cv2.circle(display, (px, py), max(2, int(round(3 * ui))), colour, -1, cv2.LINE_AA)
             if tool.hint_verdict(index) == "differs":
                 differs += 1

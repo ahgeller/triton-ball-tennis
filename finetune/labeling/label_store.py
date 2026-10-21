@@ -34,15 +34,10 @@ class Row:
         self.frame, self.x, self.y, self.visible = frame, x, y, visible
         self.clip = ""                # which clip this row belongs to, set by Source
         self.source, self.conf = source, conf
-        self.reviewed = False
-        self.edited = False
+        self.reviewed = False         # a person has dealt with this frame: confirmed it (SPACE) or edited it
+        self.edited = False           # ... and in particular changed its label (a click, v, a nudge)
         self.suspect = False          # flagged by ft.py check --audit --mark; answered by SPACE or an edit
         self.history: List[tuple] = []
-
-    @property
-    def settled(self) -> bool:
-        """You have looked at this frame and said something about it - either way it is dealt with."""
-        return self.reviewed or self.edited
 
     @property
     def uncertain(self) -> bool:
@@ -154,18 +149,19 @@ def apply_flags(path: Path, rows: List[Row]) -> int:
 
 def apply_review(path: Path, rows: List[Row]) -> Optional[dict]:
     """Mark the rows the review sidecar says are reviewed or edited (and restore their evidence),
-    and return the sidecar; None when there is none yet. A damaged file, or a frame list that is
-    not one, is an error naming it (LabelFormatError): the tool never starts afresh over
-    somebody's record of what they checked. Odd evidence inside a parseable file is tolerated
-    frame by frame."""
+    and return the sidecar; None when there is none yet. An edited frame counts as reviewed, as
+    it does for every reader of the sidecar (labels.reviewed_frames). A damaged file, or a frame
+    list that is not one, is an error naming it (LabelFormatError): the tool never starts afresh
+    over somebody's record of what they reviewed. Odd evidence inside a parseable file is
+    tolerated frame by frame."""
     state = read_review(path)
     if state is None:
         return None
     reviewed, edited = set(frame_list(state, "reviewed", path)), set(frame_list(state, "edited", path))
     evidence_of = state.get("evidence") if isinstance(state.get("evidence"), dict) else {}
     for row in rows:
-        row.reviewed = row.frame in reviewed
         row.edited = row.frame in edited
+        row.reviewed = row.frame in reviewed or row.edited
         evidence = evidence_of.get(str(row.frame))
         if isinstance(evidence, dict) and "source" in evidence and "conf" in evidence:
             try:

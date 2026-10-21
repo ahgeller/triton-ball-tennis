@@ -42,7 +42,7 @@ class Suggestions:
     def start(self, current: Callable[[], object], wait: bool = False) -> None:
         """Measure suggestions for every clip, the one you are in first, and then keep the clip you
         are in up to date: a background worker re-measures it shortly after its labels or what you
-        have confirmed change, so a fix on one frame improves the suggestions for its neighbours.
+        have reviewed change, so a fix on one frame improves the suggestions for its neighbours.
         `current` says which clip that is. `wait` measures every clip once in the caller instead
         (tests, headless use)."""
         if wait:
@@ -56,8 +56,8 @@ class Suggestions:
 
     @staticmethod
     def label_state(source: "Source") -> Tuple[Tuple[float, float, bool, bool], ...]:
-        """Everything a clip's suggestions depend on: each label and whether you have checked it."""
-        return tuple((row.x, row.y, row.visible, row.settled) for row in source.rows)
+        """Everything a clip's suggestions depend on: each label and whether you have reviewed it."""
+        return tuple((row.x, row.y, row.visible, row.reviewed) for row in source.rows)
 
     def worker(self, current: Callable[[], object]) -> None:
         for source in self.order(current()):
@@ -82,7 +82,7 @@ class Suggestions:
         most a few label frames away, and Pomona's full pass (1,837 1080p frames) takes 9 s."""
         state = state or self.label_state(source)
         seeds = {row.frame: (row.x, row.y) if row.visible else None for row in source.rows}
-        confirmed = [row.frame for row in source.rows if row.settled and row.visible]
+        reviewed = [row.frame for row in source.rows if row.reviewed and row.visible]
         before = self.measured_state.get(source.clip)
         only = keep = None
         if before is not None and len(before) == len(state) and source.clip in self.found:
@@ -94,7 +94,7 @@ class Suggestions:
             keep = {frames[j] for i in changed for j in range(max(0, i - SUGGEST_REPLACE), min(len(frames), i + SUGGEST_REPLACE + 1))}
         try:
             found = refine.suggest(source.video, seeds, refine.PassOptions(
-                refine.label_spacing(seeds), confirmed=confirmed, only=only, placer=self.current_placer(),
+                refine.label_spacing(seeds), reviewed=reviewed, only=only, placer=self.current_placer(),
                 stop=lambda: self.closing))
         except Exception as error:            # a hint is never worth losing the session over
             print(f"[hint] {source.clip}: no suggestions ({error})")
@@ -144,7 +144,7 @@ class Suggestions:
         return hint
 
     def offer_for(self, row: Row, height: int) -> Optional[Suggestion]:
-        """The suggestion that stands in for a frame's label until you have checked the frame: it is
+        """The suggestion that stands in for a frame's label until you have reviewed the frame: it is
         drawn as the mark, the mouse parks on it, and SPACE takes it - so an unreviewed frame asks
         one question, "is the mark on the ball?", instead of which of two marks is closer.
 
@@ -160,7 +160,7 @@ class Suggestions:
         draft, which y takes. None once you have reviewed or edited the frame (your label is then
         the mark), when there is no suggestion worth showing, or when it is within OFFER_MIN_PX of
         the draft (nothing to choose: SPACE confirms the draft)."""
-        if row.settled:
+        if row.reviewed:
             return None
         hint = self.for_row(row, height)      # on a no-ball row, only ever a trusted one
         if hint is None or not row.visible:

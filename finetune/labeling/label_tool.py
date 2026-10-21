@@ -687,7 +687,7 @@ class Tool:
         A filter on where you go, never on what is saved: every row stays in its clip's list, so
         the frames you skip past are written back exactly as they were.
         """
-        self.walk = [i for i, row in enumerate(self.rows) if row.suspect or (row.uncertain and not row.settled)]
+        self.walk = [i for i, row in enumerate(self.rows) if row.suspect or (row.uncertain and not row.reviewed)]
         self.walk_pos = 0
         if self.walk:
             self.cursor = self.walk[0]
@@ -726,7 +726,7 @@ class Tool:
         if self.walk:                                  # already walking the uncertain ones
             position = self.walk_pos + direction
             while 0 <= position < len(self.walk):
-                if self.rows[self.walk[position]].suspect or not self.rows[self.walk[position]].settled:
+                if self.rows[self.walk[position]].suspect or not self.rows[self.walk[position]].reviewed:
                     self.walk_pos, self.cursor = position, self.walk[position]
                     self.follow_ball()
                     return

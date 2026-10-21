@@ -102,7 +102,7 @@ Once you have reviewed or edited a frame your label is the mark and the suggesti
 is a hint beside it, four small ticks with its distance on the bar, and `y` moves the
 label there. A label taken from a suggestion is recorded as source "refined". The
 clip you are in is re-measured a moment after you change or confirm a label,
-steered by the labels you have checked, so fixing a frame helps its neighbours. A
+steered by the labels you have reviewed, so fixing a frame helps its neighbours. A
 frame labelled "no ball" gets a suggestion only when the video clearly shows a ball
 on its path. Where a trusted suggestion sits beside a label, the bar says whether
 they agree: "hint ok" (within 3 px) or "hint differs" (further), and `e` walks

@@ -90,7 +90,7 @@ def starting_cursor(tool: Tool, sources: List[Source]) -> int:
     """One clip resumes exactly where you left off; a run carries on at the first frame not done."""
     if len(sources) == 1:
         return sources[0].cursor
-    return next((i for i, row in enumerate(tool.rows) if not row.settled), 0)
+    return next((i for i, row in enumerate(tool.rows) if not row.reviewed), 0)
 
 
 def apply_settings(tool: Tool, settings: Settings) -> None:
@@ -112,7 +112,7 @@ def announce(tool: Tool, sources: List[Source], names: List[str], uncertain: boo
         print(f"[open] {source.video.name}: {len(source.rows)} label frames, "
               f"{sum(r.uncertain for r in source.rows)} uncertain")
     else:
-        done = sum(1 for row in tool.rows if row.settled)
+        done = sum(1 for row in tool.rows if row.reviewed)
         print(f"[open] {len(sources)} clips as one run: {names[0]} .. {names[-1]}, {total} label frames, "
               f"{done} already done. Starting at {tool.rows[tool.cursor].clip} "
               f"frame {tool.rows[tool.cursor].frame}.")

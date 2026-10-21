@@ -156,7 +156,7 @@ class GridView:
             tile, ox, oy, scale = self.tile(index, right - left, bottom - y0, offer)
             canvas[y0:bottom, left:right] = tile
             title = self.title(index, slot, offer)
-            color = (70, 210, 70) if row.settled else (0, 210, 255)
+            color = (70, 210, 70) if row.reviewed else (0, 210, 255)
             cv2.putText(canvas, fit_text(title, right - left - 12, .5 * ui, max(1, int(ui))),
                         (left + 6, top + int(round(20 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .5 * ui,
                         color, max(1, int(ui)))

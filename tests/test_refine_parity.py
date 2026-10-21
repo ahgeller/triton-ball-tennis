@@ -47,7 +47,7 @@ def variants():
     noball = {f: (None if f == 3 else p) for f, p in plain.items() if f != 9}
     return {
         "plain": (PATH, dict(seeds=plain, spacing=1)),
-        "confirmed": (PATH, dict(seeds=off, spacing=1, confirmed=[f for f in off if f != 7])),
+        "confirmed": (PATH, dict(seeds=off, spacing=1, reviewed=[f for f in off if f != 7])),
         "unconfirmed_offlabel": (PATH, dict(seeds=off, spacing=1)),
         "only": (PATH, dict(seeds=plain, spacing=1, only={4, 5, 6, 7})),
         "noball": (PATH, dict(seeds=noball, spacing=1)),

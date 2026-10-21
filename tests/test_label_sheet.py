@@ -65,7 +65,7 @@ def test_sheet_click_opens_the_nearest_point_and_keys_only_page_or_leave():
     sheet.render()
     index, x, y = sheet.points[10]
     sheet.on_mouse(cv2.EVENT_LBUTTONDOWN, x + 1, y - 1)
-    assert not sheet.active and tool.cursor == index and not tool.rows[index].settled
+    assert not sheet.active and tool.cursor == index and not tool.rows[index].reviewed
     sheet.toggle()
     sheet.render()
     sheet.on_mouse(cv2.EVENT_LBUTTONDOWN, tool.view_w - 1, tool.view_h - 1)

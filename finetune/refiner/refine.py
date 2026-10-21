@@ -281,14 +281,14 @@ def _never() -> bool:
 class PassOptions:
     """What a measuring pass is told besides the seeds; the defaults measure every label frame once.
 
-    `confirmed` names the frames whose labels a person has checked; where enough of them are near,
+    `reviewed` names the frames whose labels a person has reviewed; where enough of them are near,
     only those decide where the path puts the ball, so a run of wrong drafts cannot vouch for
     itself (elsewhere every label does). `only` limits the measuring to those label frames - after
     an edit, a stretch around it - while every label still informs the path. `stop` is polled so
     a caller can abandon the pass. A `placer` (cnn_refiner.Placer) moves each chosen point to where
     you would click it; None keeps where the measurement itself put it ("centroid")."""
     spacing: Optional[int] = None               # label frames apart; None: measured from the seeds
-    confirmed: Optional[Iterable[int]] = None
+    reviewed: Optional[Iterable[int]] = None
     only: Optional[Iterable[int]] = None
     placer: Optional[CropPlacer] = None         # cnn_refiner.Placer, or anything with cut_crop and place
     stop: Callable[[], bool] = _never
@@ -310,7 +310,7 @@ def suggest(video: Path, seeds: Dict[int, Optional[Tuple[float, float]]],
     """
     if not seeds:
         return {}
-    plan = plan_pass(seeds, options.confirmed, options.only)
+    plan = plan_pass(seeds, options.reviewed, options.only)
     capture = cv2.VideoCapture(str(video))
     try:
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -326,7 +326,7 @@ def suggest(video: Path, seeds: Dict[int, Optional[Tuple[float, float]]],
         capture.release()
     chosen = choose(measured, plan, geometry.to_1080)
     placed = place(chosen, measured, options.placer, height)
-    steer = steering(chosen, plan.anchors)
+    steer = steering(chosen, plan)
     out: Dict[int, Suggestion] = {}
     for frame, point in chosen.items():
         guess = path_guess(steer, chosen, frame, plan.order)
@@ -338,19 +338,23 @@ class Plan(NamedTuple):
     """Which frames a pass measures and which labels steer the path through them."""
     order: List[int]               # every label frame
     labels: Dict[int, Point]       # the frames with a ball
-    checked: Dict[int, Point]      # the labels a person has checked (every label when unknown)
-    anchors: Optional[Set[int]]    # frames whose choices alone steer the path; None: every frame's
+    reviewed: Optional[Dict[int, Point]]   # the labels a person has reviewed, whose measurements alone
+                                   # steer the path; None when that is not known (every label steers)
     frames: List[int]              # the label frames to measure
 
+    @property
+    def steering_labels(self) -> Dict[int, Point]:
+        """The labels the path is first fitted through: the reviewed ones, else every label."""
+        return self.labels if self.reviewed is None else self.reviewed
 
-def plan_pass(seeds: Dict[int, Optional[Point]], confirmed: Optional[Iterable[int]],
+
+def plan_pass(seeds: Dict[int, Optional[Point]], reviewed: Optional[Iterable[int]],
               only: Optional[Iterable[int]]) -> Plan:
     order = sorted(seeds)
     labels = {f: p for f, p in seeds.items() if p is not None}
-    checked = labels if confirmed is None else {f: labels[f] for f in confirmed if f in labels}
-    anchors = None if confirmed is None else set(checked)
+    known = None if reviewed is None else {f: labels[f] for f in reviewed if f in labels}
     frames = order if only is None else sorted(set(only) & set(order))
-    return Plan(order, labels, checked, anchors, frames)
+    return Plan(order, labels, known, frames)
 
 
 def search_centres(plan: Plan, width: int, height: int) -> Dict[int, List[Tuple[str, Point]]]:
@@ -359,7 +363,7 @@ def search_centres(plan: Plan, width: int, height: int) -> Dict[int, List[Tuple[
     labels, centres = plan.labels, {}
     for frame in plan.frames:
         spots = [("label", labels[frame])] if frame in labels else []
-        guess = predict(plan.checked, frame, plan.order) or predict(labels, frame, plan.order)
+        guess = predict(plan.steering_labels, frame, plan.order) or predict(labels, frame, plan.order)
         if guess is not None and 0 <= guess[0] < width and 0 <= guess[1] < height and (
                 frame not in labels or math.hypot(guess[0] - labels[frame][0], guess[1] - labels[frame][1]) > 2.0):
             spots.append(("path", guess))
@@ -442,10 +446,10 @@ def measure_frame(image: np.ndarray, others: List[np.ndarray], spots: List[Tuple
     return Measurement(candidates, base) if candidates else None
 
 
-def steering(chosen: Dict[int, Point], anchors: Optional[Set[int]]) -> Dict[int, Point]:
-    """The points that steer the path: with checked labels known, only their measurements (as for
-    the starting points); otherwise every frame's current choice."""
-    return chosen if anchors is None else {f: p for f, p in chosen.items() if f in anchors}
+def steering(chosen: Dict[int, Point], plan: Plan) -> Dict[int, Point]:
+    """The points that steer the path: with the reviewed labels known, only their measurements (as
+    for the starting points); otherwise every frame's current choice."""
+    return chosen if plan.reviewed is None else {f: p for f, p in chosen.items() if f in plan.reviewed}
 
 
 def path_guess(steer: Dict[int, Point], chosen: Dict[int, Point], frame: int, order: List[int]) -> Optional[Point]:
@@ -459,7 +463,7 @@ def choose(measured: Dict[int, Measurement], plan: Plan, to_1080: float) -> Dict
     each frame's own centroid. Twice, so a choice that moved can pull its neighbours along."""
     chosen = {f: m.base for f, m in measured.items() if m.base is not None}
     for _ in range(2):
-        steer = steering(chosen, plan.anchors)
+        steer = steering(chosen, plan)
         picked: Dict[int, Optional[Point]] = {}
         for frame, found in measured.items():
             guess = path_guess(steer, chosen, frame, plan.order)

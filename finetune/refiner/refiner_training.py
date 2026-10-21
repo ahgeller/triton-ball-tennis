@@ -35,7 +35,7 @@ FAR_PX = 5.0               # a placement this far off (1080p px) counts as a mis
 
 
 def clip_crops(clip: str) -> Optional[np.ndarray]:
-    """Crops around every checked, visible label of a clip; cached until its labels or review change."""
+    """Crops around every reviewed, visible label of a clip; cached until its labels or review change."""
     labels_csv, review = label_csv(clip), review_json(clip)
     video = find_video(clip)
     if video is None or not review.is_file():
@@ -103,13 +103,13 @@ def crops_from_video(video: Path, points: Dict[int, Tuple[float, float]], step: 
 
 
 def gather_crops(log: Callable[..., None] = lambda *parts: print(*parts, flush=True)) -> Dict[str, np.ndarray]:
-    """{clip: crops} for every clip with checked frames."""
+    """{clip: crops} for every clip with reviewed frames."""
     out = {}
     for clip in labelled_clips():
         crops = clip_crops(clip)
         if crops is not None and len(crops):
             out[clip] = crops
-            log(f"  {clip}: {len(crops)} checked frames")
+            log(f"  {clip}: {len(crops)} reviewed frames")
     return out
 
 
@@ -225,15 +225,15 @@ def sure_threshold(errors: np.ndarray, confs: np.ndarray) -> float:
 
 
 def train(epochs: int = EPOCHS, log: Optional[Callable[..., None]] = None, seed: int = 0) -> Optional[Path]:
-    """Calibrate on folds of clips each test network never saw, train on every checked frame, save
+    """Calibrate on folds of clips each test network never saw, train on every reviewed frame, save
     a new version and make it current if it passes."""
     import torch
     log = log or (lambda *parts: print(*parts, flush=True))
-    log("gathering the frames you have checked ...")
+    log("gathering the frames you have reviewed ...")
     crops = gather_crops(log)
     total = sum(len(c) for c in crops.values())
     if total < 500 or len(crops) < FOLDS:
-        log(f"only {total} checked frames in {len(crops)} clips - label more before training")
+        log(f"only {total} reviewed frames in {len(crops)} clips - label more before training")
         return None
     device = "cuda" if torch.cuda.is_available() else "cpu"
     rng = np.random.default_rng(seed)
