@@ -28,6 +28,7 @@ except ImportError:
         ByteTrack = None
 
 from .config import Config
+from .frame_rate import require_phase_stride
 from .utils import _resolve_engine_path
 from .motion import _xywh_to_xyxy_np, _nms_xyxy_np
 
@@ -265,14 +266,13 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         print(f"[detector] GridTrackNet FP16 (confidence={float(cfg.conf):.2f}, device={self.device})")
 
     def source_stride_for(self, fps: float) -> int:
-        override = getattr(self.cfg, "gridtracknet_source_stride", None)
+        override = self.cfg.gridtracknet_source_stride
         if override:
             return max(1, int(override))
-        if 57.0 <= float(fps) <= 62.0:
-            return 2
-        if 22.0 <= float(fps) <= 32.0:
-            return 1
-        raise RuntimeError(f"GridTrackNet expects a 30 or 60 FPS video, got {fps:.3f} FPS")
+        try:
+            return require_phase_stride(fps)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
 
     def prepare_video(self, video_path: Path, fps: float, width: int, height: int, total: int,
                       background: Optional[bool] = None) -> None:
@@ -401,15 +401,34 @@ class GridTrackNetBallDetector(BallDetectorBackend):
         if self._worker_error is not None:
             raise RuntimeError("GridTrackNet prepass failed") from self._worker_error
 
-    def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
+    def detect_clip(self, video_path: Path, fps: float, width: int, height: int,
+                    total: int) -> List[List[Tuple[list, float]]]:
+        """Run the prepass in the foreground and return each source frame's detections.
+
+        Index ``i`` of the result holds frame ``i``'s detections: an empty list
+        when the ball was not found, else one ``(xyxy_box, confidence)`` pair.
+        """
+        self.prepare_video(video_path, fps, width, height, total, background=False)
+        return list(self.precomputed)
+
+    def detections_at(self, index: int) -> List[Tuple[list, float]]:
+        """Detections for source frame ``index``, waiting for the prepass if it is behind."""
         if self.precomputed is None:
             raise RuntimeError("GridTrackNet.prepare_video() must run before detection.")
-        index = self.precomputed_index
-        self.precomputed_index += 1
         if index >= len(self.precomputed):
             return []
         self.wait_until_ready(index)
         return self.precomputed[index]
+
+    def detect(self, frame_bgr: np.ndarray) -> List[Tuple[list, float]]:
+        """Detections for the next source frame in decode order; ``frame_bgr`` is not read.
+
+        The prepass already decoded the video, so this only advances a frame
+        counter.  Callers that may skip frames should use ``detections_at``.
+        """
+        index = self.precomputed_index
+        self.precomputed_index += 1
+        return self.detections_at(index)
 
     def detect_async_start(self, frame_bgr: np.ndarray):
         return self.detect(frame_bgr)
