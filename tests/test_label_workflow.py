@@ -496,7 +496,7 @@ def hint(row, x=None, y=None, trusted=True, ball_here=True, seed="label"):
 
 
 def test_centroid_finds_the_ball_in_label_coordinates():
-    from finetune.refiner.refine import motion_centroid
+    from finetune.refiner.motion_blobs import motion_centroid
     previous, current, following = ball_frames([(40, 30), (50, 40), (60, 50)])
     x, y = motion_centroid(previous, current, following, (52.0, 38.0), 9)
     assert x == pytest.approx(50.5, abs=5e-5)    # pixel 50's centre is 50.5 in label files

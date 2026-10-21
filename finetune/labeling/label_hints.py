@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Tupl
 
 from finetune.refiner import cnn_refiner, refine
 from finetune.labeling.label_store import Row
+from finetune.refiner.motion_blobs import centroid_radius_px
 from finetune.refiner.refine import Suggestion
 from finetune.data.detector_metrics import REFERENCE_HEIGHT
 
@@ -139,7 +140,7 @@ class Suggestions:
             return hint if seed is None and hint["trusted"] else None
         if seed is None:
             return None
-        if math.hypot(row.x - seed[0], row.y - seed[1]) > refine.centroid_radius_px(height) / 2.0:
+        if math.hypot(row.x - seed[0], row.y - seed[1]) > centroid_radius_px(height) / 2.0:
             return None
         return hint
 

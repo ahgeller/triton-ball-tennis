@@ -47,7 +47,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
 - `ball_in_play_selector/`: candidate association (`association.py`), Kalman
   state, track scoring, timeline selection, bounded recovery, trajectory refit.
 - `finetune/refiner/refine.py`: model-free sub-pixel ball suggestions for the label tool
-  (motion centroid, candidates chosen by trajectory, trust score).
+  (candidates chosen by trajectory, trust score); `motion_blobs.py` measures what moved
+  on one frame (the change map, its motion centroid and blobs).
 - `finetune/refiner/cnn_refiner.py`: small CNN, trained only on frames the user reviewed, that places
   those suggestions where the user clicks (`refiner_training.py` runs the training: the folds,
   the "sure" threshold and the promotion check, on crops `refiner_crops.py` gathers and networks
@@ -79,7 +80,7 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   `label_sheet.py` (the grid and trajectory-sheet views, each owning its state,
   picture and keys), `label_draw.py` (the filters, marks and text every view
   draws with) and `label_hints.py` (the suggestions). `finetune/refiner/`: the
-  suggestion model above (`refine.py`, `cnn_refiner.py` with its torch network class in
+  suggestion model above (`refine.py` with `motion_blobs.py`, `cnn_refiner.py` with its torch network class in
   `refiner_network.py`, `refiner_training.py` with `refiner_crops.py` and `refiner_fitting.py`,
   `refiner_sheet.py`, `hints.py`). `finetune/data/`: `labels.py`, the label
   file format; `label_check.py`, checks a label file against its video's facts;

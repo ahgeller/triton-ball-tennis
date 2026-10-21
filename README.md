@@ -205,6 +205,7 @@ finetune/labeling/label_tool.py          Manual label editing (label_session hol
                                          label_mouse, label_frame_view, label_grid, label_sheet, label_draw and
                                          label_hints hold its other pieces)
 finetune/refiner/refine.py, cnn_refiner.py  Sub-pixel label suggestions and the CNN that places them
+finetune/refiner/motion_blobs.py         What moved on one frame: change map, motion centroid, blobs
 finetune/refiner/refiner_sheet.py        A zoomed sheet of where two versions of that CNN disagree
 finetune/refiner/refiner_training.py     Training that CNN on the frames you have reviewed
 finetune/refiner/refiner_crops.py        The crops of those frames; refiner_fitting.py fits and scores one network
