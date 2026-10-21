@@ -65,12 +65,14 @@ def label_frame_size(video: Optional[Path], csv_path: Path) -> Tuple[int, int]:
     """The (width, height) a label file's "no ball" sentinel is read at: the video's, or the 1080p
     reference when there is no video or it cannot be opened. Status only counts rows, so an
     unreadable video costs a possibly miscounted sentinel, not the listing."""
-    if video is not None:
-        try:
-            return video_meta(video)[1:3]
-        except RuntimeError as error:
-            print(f"[warn] {error}; counting {csv_path.name} as 1080p")
-    return int(REFERENCE_WIDTH), int(REFERENCE_HEIGHT)
+    reference = int(REFERENCE_WIDTH), int(REFERENCE_HEIGHT)
+    if video is None:
+        return reference
+    try:
+        return video_meta(video)[1:3]
+    except RuntimeError as error:
+        print(f"[warn] {error}; counting {csv_path.name} as 1080p")
+        return reference
 
 
 def clip_counts(clip: str, csv_path: Path, row: Optional[Dict[str, str]], videos: Dict[str, Path]) -> Tuple[int, int]:

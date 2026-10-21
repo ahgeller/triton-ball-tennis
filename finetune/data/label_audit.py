@@ -123,13 +123,12 @@ class ClipAudit:
 
     def __init__(self, visible: Dict[int, Tuple[float, float]], confident: Dict[int, Tuple[float, float]],
                  stride: int, scale: float, total: int):
-        from finetune.data.alignment import Evidence, Tracks, agreement, errors_at, judges_fast   # numpy: not at ft.py's import
+        from finetune.data.alignment import Evidence, Tracks, errors_at, judges_fast   # numpy: not at ft.py's import
 
         self.stride, self.scale = stride, scale
         frames = sorted(visible)
         self.tracks: Tracks = Tracks.of(frames, [visible[f][0] for f in frames], [visible[f][1] for f in frames], scale)
         self.evidence: Evidence = Evidence.of(confident, total, scale)
-        self._agreement = lambda shift: agreement(self.tracks, self.evidence, shift * stride)
         # Only a fast-moving ball can separate one temporal offset from the next: a slow ball stays
         # inside AGREE_PX for several frames either way, so judging every label equally lets a
         # shifted clip score "ok" on the strength of its slow frames (grid_match92, +2 frames, found
@@ -153,7 +152,8 @@ class ClipAudit:
     def agreement(self, shift: int) -> Tuple[float, int, float]:
         """(share of judged labels the detector agrees with, labels it fired on, median error) at
         `shift` label frames."""
-        return self._agreement(shift)
+        from finetune.data.alignment import agreement   # numpy: not at ft.py's import
+        return agreement(self.tracks, self.evidence, shift * self.stride)
 
     @property
     def fixable(self) -> bool:

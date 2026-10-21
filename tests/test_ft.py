@@ -172,6 +172,44 @@ def test_label_pre_labels_a_clip_that_has_no_labels_yet(workspace_dir, capsys):
     assert "No video named missing.*" in capsys.readouterr().out
 
 
+def test_commands_that_do_not_forward_arguments_refuse_leftovers(workspace_dir, capsys):
+    """check video5 (no --clips) and camera --forse used to run as if nothing had been typed."""
+    for argv in (["check", "video5"], ["camera", "--forse"], ["status", "extra"], ["promote", "--weights", "w", "x"],
+                 ["paths", "--verbose"]):
+        with pytest.raises(SystemExit) as stop:
+            ft.run_cli(argv)
+        assert stop.value.code == 2 and "unrecognized arguments" in capsys.readouterr().err
+    launched = []
+    with patch.object(ft, "run_script", lambda script, arguments: launched.append((script, arguments)) or 0):
+        assert ft.run_cli(["train", "--anything", "goes"]) == 0            # a forwarding command passes it on
+    assert launched == [("training/train_gridtracknet.py", ["--anything", "goes"])]
+
+
+def test_the_menu_adds_a_video_through_add_videos_and_offers_the_label_tool(workspace_dir):
+    source = write_clip(workspace_dir / "my rally!.avi", 3, SIZE)
+    answers = iter([str(source), ""])
+    ran = []
+    with patch.object(ft, "ask", lambda prompt: next(answers)), \
+            patch.object(ft, "run_script", lambda script, arguments: ran.append((script, arguments)) or 0), \
+            patch.object(ft, "run_cli", lambda argv: ran.append(("cli", argv)) or 0):
+        menu._menu_add()
+    assert ft.clip_name(source) == "my_rally_"
+    assert (workspace_dir / "videos" / "my_rally_.avi").is_file()
+    assert ran == [("training/pretrack.py", ["--clips", "my_rally_"]), ("cli", ["label", "my_rally_"])]
+
+
+def test_add_videos_names_copies_and_reports_what_it_could_not_add(workspace_dir, capsys):
+    good = write_clip(workspace_dir / "good.avi", 3, SIZE)
+    (workspace_dir / "bad.avi").write_bytes(b"not a video")
+    with patch.object(ft, "run_script", lambda script, arguments: 7):
+        assert ft.add_videos([good, workspace_dir / "bad.avi", workspace_dir / "missing.avi"], name="ignored") == (["good"], 7)
+        assert ft.add_videos([good], name="renamed", prelabel=False) == (["renamed"], 0)
+        assert ft.add_videos([good], name="renamed", prelabel=False) == (["renamed"], 0)   # kept, still in the workspace
+    out = capsys.readouterr().out
+    assert "[skip] not a file" in out and "[skip] Could not open" in out and "[keep] renamed.avi already exists" in out
+    assert sorted(p.name for p in (workspace_dir / "videos").iterdir()) == ["good.avi", "renamed.avi"]
+
+
 def test_scripts_run_from_the_package_folder_and_modules_from_the_root():
     ran = []
     with patch.object(ft, "wait_child", lambda command, **kwargs: ran.append((command, kwargs)) or 0):
@@ -186,10 +224,10 @@ def test_scripts_run_from_the_package_folder_and_modules_from_the_root():
 def test_menu_dispatches_a_number_or_a_name_and_quits(workspace_dir, capsys):
     answers = iter(["1", "", "status", "q", "nope", "", None])
     ran = []
-    with patch.object(ft, "_ask", lambda prompt: next(answers)), \
+    with patch.object(ft, "ask", lambda prompt: next(answers)), \
             patch.object(ft, "run_cli", lambda argv: ran.append(argv) or 0):
-        assert menu.interactive_menu() == 0                   # 1 -> status, Enter, 'status' -> status, q
-        assert menu.interactive_menu() == 0                   # nope -> not an option, Enter -> ..., EOF quits
+        assert menu.interactive_menu() is None                # 1 -> status, Enter, 'status' -> status, q
+        assert menu.interactive_menu() is None                # nope -> not an option, Enter -> ..., EOF quits
     assert ran == [["status"], ["status"]]
     out = capsys.readouterr().out
     assert "'nope' is not an option" in out and "the workspace is empty" in out

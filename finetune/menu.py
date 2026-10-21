@@ -56,14 +56,14 @@ def _summary_lines() -> List[str]:
 
 def _menu_add() -> None:
     print("tip: drag the video file onto this window instead of typing the path")
-    answer = ft._ask("video file to add (Enter to go back): ")
+    answer = ft.ask("video file to add (Enter to go back): ")
     if not answer:
         return
     path = Path(answer.strip('"').strip("'"))
-    ft.run_cli(["add", str(path)])
-    clip = re.sub(r"[^A-Za-z0-9_.-]+", "_", path.stem)
-    if any(ws.VIDEOS.glob(f"{clip}.*")):
-        follow = ft._ask(f"open the click tool on {clip} now? [Y/n] ")
+    added, status = ft.add_videos([path])
+    if added and status == 0:
+        clip = added[0]
+        follow = ft.ask(f"open the click tool on {clip} now? [Y/n] ")
         if follow is not None and follow.lower() in ("", "y", "yes"):
             ft.run_cli(["label", clip])
 
@@ -183,7 +183,7 @@ def _menu_label() -> None:
         print("nothing to label yet: no videos in finetune/videos (pick 2 to add one, or 8 to import)")
         return
     _print_label_menu(manifest, pending, labelled, tags, suspects)
-    answer = ft._ask("clip number or name (Enter to go back): ")
+    answer = ft.ask("clip number or name (Enter to go back): ")
     if not answer:
         return
     parts = answer.split()
@@ -201,7 +201,7 @@ def _menu_label() -> None:
 
 
 def _menu_check() -> None:
-    audit = ft._ask("also cross-check the labels against the detector? slower, needs the GPU [y/N] ")
+    audit = ft.ask("also cross-check the labels against the detector? slower, needs the GPU [y/N] ")
     if audit is None:
         return
     ft.run_cli(["check", "--audit"] if audit.lower().startswith("y") else ["check"])
@@ -212,10 +212,10 @@ def _menu_train() -> None:
     print("holds out video10 to judge the result, and keeps the better of new vs current.")
     print("Enter uses those defaults; anything you type is passed through, e.g.")
     print("  --sources custom grid --oversample custom=6 --val-clips video10 video11")
-    answer = ft._ask("options: ")
+    answer = ft.ask("options: ")
     if answer is None:
         return
-    confirm = ft._ask("start training now? this ties up the GPU for a while [y/N] ")
+    confirm = ft.ask("start training now? this ties up the GPU for a while [y/N] ")
     if confirm and confirm.lower().startswith("y"):
         ft.run_cli(["train", *answer.split()])
 
@@ -224,7 +224,7 @@ def _menu_promote() -> None:
     if not ws.BEST_WEIGHTS.is_file():
         print("no training winner yet - train first (option 6)")
         return
-    confirm = ft._ask(f"make {ws.BEST_WEIGHTS.name} the tracker's model? the current one is backed up first [y/N] ")
+    confirm = ft.ask(f"make {ws.BEST_WEIGHTS.name} the tracker's model? the current one is backed up first [y/N] ")
     if confirm and confirm.lower().startswith("y"):
         ft.run_cli(["promote"])
 
@@ -243,7 +243,7 @@ def _menu_hints() -> None:
     print("  s <clip>) a PNG of the clip's frames where the current and the previous version disagree")
     print("            most, zoomed, to judge by eye which sits on the ball (hints sheet <clip> a b")
     print("            compares any two; 'centroid' is refine.py alone)")
-    answer = ft._ask("pick, or Enter for the menu: ")
+    answer = ft.ask("pick, or Enter for the menu: ")
     if not answer:
         return
     if answer.lower() in ("t", "train"):
@@ -257,7 +257,7 @@ def _menu_hints() -> None:
 
 
 def _menu_import() -> None:
-    confirm = ft._ask("copy every labelled tennis clip on this PC into finetune/ (~85 clips)? [y/N] ")
+    confirm = ft.ask("copy every labelled tennis clip on this PC into finetune/ (~85 clips)? [y/N] ")
     if confirm and confirm.lower().startswith("y"):
         ft.run_cli(["import", "all"])
 
@@ -276,30 +276,41 @@ MENU = [
 ]
 
 
-def interactive_menu() -> int:
+def _print_menu() -> None:
+    print()
+    for line in _summary_lines():
+        print(f"  {line}")
+    print()
+    for key, name, description, _ in MENU:
+        print(f"  {key}) {name:12s} {description}")
+    print(f"  q) {'quit':12s} (commands still work too: finetune status, finetune label video10, ...)")
+
+
+def _run_option(handler) -> bool:
+    """Run one option. True when the menu should wait for Enter afterwards; an option the user
+    interrupted goes straight back to the menu instead."""
+    try:
+        handler()
+    except KeyboardInterrupt:
+        print("\n[interrupted]")
+        return False
+    return True
+
+
+def interactive_menu() -> None:
+    """Show the menu until the user quits (q, or backing out of a prompt)."""
     print("Tennis ball fine-tuning workspace")
     while True:
-        print()
-        for line in _summary_lines():
-            print(f"  {line}")
-        print()
-        for key, name, description, _ in MENU:
-            print(f"  {key}) {name:12s} {description}")
-        print(f"  q) {'quit':12s} (commands still work too: finetune status, finetune label video10, ...)")
-        choice = ft._ask("\npick an option: ")
+        _print_menu()
+        choice = ft.ask("\npick an option: ")
         if choice is None or choice.lower() in ("q", "quit", "exit"):
-            return 0
-        for key, name, _, handler in MENU:
-            if choice == key or choice.lower() == name.split()[0]:
-                print()
-                try:
-                    handler()
-                except KeyboardInterrupt:
-                    print("\n[interrupted]")
-                if ft._ask("\npress Enter for the menu (q to quit): ") in (None, "q"):
-                    return 0
-                break
-        else:
+            return
+        handler = next((handler for key, name, _, handler in MENU if choice == key or choice.lower() == name.split()[0]), None)
+        if handler is None:
             print(f"  '{choice}' is not an option - type one of the numbers, or q to quit")
+            continue
+        print()
+        if _run_option(handler) and ft.ask("\npress Enter for the menu (q to quit): ") in (None, "q"):
+            return
 
 

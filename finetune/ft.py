@@ -17,9 +17,12 @@ interactive menu that walks through everything below. The commands remain for sc
 
 Runs itself under the training venv automatically (``finetune/interpreter.py``), so plain
 ``python`` works from any shell (``.\\finetune.ps1 <command>`` does the same from PowerShell).
-Sub-commands pass unknown arguments straight through to the underlying script (``ft.py train
---epochs 3 --lr 0.3``). The commands that work in this process (status, check, promote, camera,
-paths) live in ``finetune/commands.py``; the menu, the launchers and the script commands are here.
+The commands that run another script - import, add, prelabel, label, eval, train and hints -
+pass the arguments they do not declare straight through to it (``ft.py train --epochs 3 --lr
+0.3``); every other command refuses an argument it does not know, so a mistyped option or a
+clip name given without ``--clips`` is an error, not silently ignored. The commands that work
+in this process (status, check, promote, camera, paths) live in ``finetune/commands.py``; the
+menu, the launchers and the script commands are here.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Optional, Sequence, Set, Tuple
 
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -66,7 +69,7 @@ def run_module(module: str, arguments: List[str]) -> int:
     return run_command([sys.executable, "-m", module, *arguments])
 
 
-def _ask(prompt: str) -> Optional[str]:
+def ask(prompt: str) -> Optional[str]:
     """One line of input; None means the user backed out (Ctrl+C / Ctrl+Z / end of input)."""
     try:
         return input(prompt).strip()
@@ -81,34 +84,56 @@ def cmd_import(args: argparse.Namespace) -> int:
     return run_script("data/import_data.py", args.rest)
 
 
-def cmd_add(args: argparse.Namespace) -> int:
+def clip_name(source: Path) -> str:
+    """The clip stem a video file gets in the workspace: its file name, every run of characters
+    outside ``A-Za-z0-9_.-`` replaced by one underscore."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", source.stem)
+
+
+def _copy_video_in(source: Path, name: str, force: bool) -> bool:
+    """Copy one video into the workspace as `name`; False when it is not a usable clip (a missing
+    file, an unreadable video, a frame rate that is neither 30 nor 60). An existing copy is kept
+    unless `force`."""
+    if not source.is_file():
+        print(f"[skip] not a file: {source}")
+        return False
+    try:
+        fps, width, height, total = video_meta(source)
+    except RuntimeError as error:
+        print(f"[skip] {error}")
+        return False
+    if phase_stride(fps) is None:
+        print(f"[skip] {source.name}: {fps:.2f} FPS is neither 30 nor 60. Re-encode first, e.g.\n"
+              f"       ffmpeg -i \"{source}\" -vf fps=30 -c:v libx264 -crf 12 \"{ws.VIDEOS / (name + '.mp4')}\"")
+        return False
+    destination = ws.VIDEOS / f"{name}{source.suffix.lower()}"
+    if destination.exists() and not force:
+        print(f"[keep] {destination.name} already exists (use --force to overwrite)")
+    else:
+        shutil.copyfile(source, destination)
+        print(f"[add ] {destination.name}: {width}x{height} @{fps:.2f} FPS, {total} frames")
+    return True
+
+
+def add_videos(sources: List[Path], name: Optional[str] = None, force: bool = False, prelabel: bool = True,
+               pretrack_arguments: Sequence[str] = ()) -> Tuple[List[str], int]:
+    """Copy videos into ``videos/`` (``clip_name`` names them; `name` names a single one) and,
+    with `prelabel`, draft their labels with pretrack.py. Returns the clips now in the workspace
+    and the exit status (pretrack's when it ran, else 0). The menu and ``ft.py add`` both do this."""
     ws.VIDEOS.mkdir(exist_ok=True)
     added = []
-    for source in args.videos:
+    for source in sources:
         source = Path(source)
-        if not source.is_file():
-            print(f"[skip] not a file: {source}")
-            continue
-        name = args.name if (args.name and len(args.videos) == 1) else re.sub(r"[^A-Za-z0-9_.-]+", "_", source.stem)
-        try:
-            fps, width, height, total = video_meta(source)
-        except RuntimeError as error:
-            print(f"[skip] {error}")
-            continue
-        if phase_stride(fps) is None:
-            print(f"[skip] {source.name}: {fps:.2f} FPS is neither 30 nor 60. Re-encode first, e.g.\n"
-                  f"       ffmpeg -i \"{source}\" -vf fps=30 -c:v libx264 -crf 12 \"{ws.VIDEOS / (name + '.mp4')}\"")
-            continue
-        destination = ws.VIDEOS / f"{name}{source.suffix.lower()}"
-        if destination.exists() and not args.force:
-            print(f"[keep] {destination.name} already exists (use --force to overwrite)")
-        else:
-            shutil.copyfile(source, destination)
-            print(f"[add ] {destination.name}: {width}x{height} @{fps:.2f} FPS, {total} frames")
-        added.append(name)
-    if added and not args.no_prelabel:
-        return run_script("training/pretrack.py", ["--clips", *added, *args.rest])
-    return 0
+        clip = name if (name and len(sources) == 1) else clip_name(source)
+        if _copy_video_in(source, clip, force):
+            added.append(clip)
+    if added and prelabel:
+        return added, run_script("training/pretrack.py", ["--clips", *added, *pretrack_arguments])
+    return added, 0
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    return add_videos(args.videos, args.name, args.force, not args.no_prelabel, args.rest)[1]
 
 
 def cmd_prelabel(args: argparse.Namespace) -> int:
@@ -164,7 +189,7 @@ def offer_realign(clip: str, reviewed_before: Set[int]) -> None:
           f"in {clip}; {left} still unplaced.")
     print(f"       realign.py can now re-time those {left} to agree with what you decided - your own "
           f"frames stay exactly where you put them.")
-    answer = _ask("       re-time them now? it re-runs the detector on this clip [y/N] ")
+    answer = ask("       re-time them now? it re-runs the detector on this clip [y/N] ")
     if answer and answer.lower().startswith("y"):
         if run_script("data/realign.py", [clip, clip, "--apply"]) == 0:
             run_cli(["check", "--audit", "--mark", "--clips", clip])
@@ -207,22 +232,24 @@ def run_cli(argv: List[str]) -> int:
 
     subparsers.add_parser("status", help="what is in the workspace").set_defaults(func=cmd_status)
     p = subparsers.add_parser("import", help="import labelled clips (see import_data.py --help)")
-    p.set_defaults(func=cmd_import)
-    p = subparsers.add_parser("add", help="copy new video(s) into videos/ and pre-label them")
+    p.set_defaults(func=cmd_import, forwards=True)
+    p = subparsers.add_parser("add", help="copy new video(s) into videos/ and pre-label them (pretrack.py options pass through)")
     p.add_argument("videos", nargs="+")
     p.add_argument("--name", help="clip stem for a single video (default: the file name)")
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-prelabel", action="store_true")
-    p.set_defaults(func=cmd_add)
-    subparsers.add_parser("prelabel", help="run the detector to draft labels (pretrack.py)").set_defaults(func=cmd_prelabel)
-    p = subparsers.add_parser("label", help="open the click tool on a clip, or a run like video22..video53")
+    p.set_defaults(func=cmd_add, forwards=True)
+    p = subparsers.add_parser("prelabel", help="run the detector to draft labels (pretrack.py; its options pass through)")
+    p.set_defaults(func=cmd_prelabel, forwards=True)
+    p = subparsers.add_parser("label", help="open the click tool on a clip, or a run like video22..video53 "
+                                            "(label_tool.py options pass through)")
     p.add_argument("clip", nargs="+")
     # Declared here, not left to pass through: unknown options mixed in with the clip names were
     # split wrongly (label --zoom 3 video10 read "3" as a clip).
     p.add_argument("--zoom", type=float, help="starting zoom (label_tool.py --zoom)")
     p.add_argument("--grid", action="store_true", help="open in the eight-crop review view")
     p.add_argument("--uncertain", action="store_true", help="only stop on frames that want attention")
-    p.set_defaults(func=cmd_label)
+    p.set_defaults(func=cmd_label, forwards=True)
     p = subparsers.add_parser("check", help="validate every label file against its video")
     p.add_argument("--clips", nargs="*", help="clip stems or globs")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -241,9 +268,11 @@ def run_cli(argv: List[str]) -> int:
     p.add_argument("--all", action="store_true",
                    help="every labelled clip instead, including those still under review or in exclude.txt "
                         "(not for choosing a model)")
-    p.set_defaults(func=cmd_eval)
-    subparsers.add_parser("train", help="train_gridtracknet.py (all its options pass through)").set_defaults(func=cmd_train)
-    subparsers.add_parser("hints", help="cnn_refiner.py: train | list | use <version>").set_defaults(func=cmd_hints)
+    p.set_defaults(func=cmd_eval, forwards=True)
+    p = subparsers.add_parser("train", help="train_gridtracknet.py (all its options pass through)")
+    p.set_defaults(func=cmd_train, forwards=True)
+    p = subparsers.add_parser("hints", help="cnn_refiner.py: train | list | use <version> (its arguments pass through)")
+    p.set_defaults(func=cmd_hints, forwards=True)
     p = subparsers.add_parser("promote", help="copy the winning weights over the tracker's model (with backup)")
     p.add_argument("--weights", help="which .npz to promote (default: finetune/models/gridtracknet_best.npz)")
     p.set_defaults(func=cmd_promote)
@@ -254,6 +283,8 @@ def run_cli(argv: List[str]) -> int:
     subparsers.add_parser("paths", help="show the interpreter, workspace and data source paths").set_defaults(func=cmd_paths)
 
     args, rest = parser.parse_known_args(argv)
+    if rest and not getattr(args, "forwards", False):     # only the script commands take what they did not declare
+        parser.error(f"{args.command}: unrecognized arguments: {' '.join(rest)}")
     args.rest = rest
     status = args.func(args)
     return 0 if status is None else status        # listings (status, paths) report no exit status
@@ -267,7 +298,8 @@ def main() -> int:
         # The menu runs this module's commands, so it imports ft: imported here, when the menu is
         # wanted, rather than at load, or the two would import each other half-made.
         from finetune.menu import interactive_menu
-        return interactive_menu()
+        interactive_menu()
+        return 0
     return run_cli(sys.argv[1:])
 
 
