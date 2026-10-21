@@ -397,16 +397,16 @@ class LabelWorkflowTests(unittest.TestCase):
         self.assertTrue(row.suspect)                 # undo puts the question back
 
     def test_a_later_audit_does_not_reask_an_answered_frame(self):
-        from finetune import ft
+        from finetune import label_audit
         with tempfile.TemporaryDirectory() as directory:
             labels = Path(directory)
             (labels / "clip_ball.csv").write_text("frame,ball_x,ball_y\nframe_001,41.25,27.75\nframe_003,50,30\n")
             (labels / "clip_ball.suspect.json").write_text(json.dumps(
                 {"unplaceable": [], "check": [], "answered": {"1": [41.25, 27.75], "3": [10, 10]}}))
-            with patch.object(ft, "LABELS", labels), patch.object(ft, "read_manifest", lambda *_: {}):
-                ft.write_suspects("clip", "check", [1, 3], "audit")
-                self.assertEqual(ft.read_suspects("clip")["check"], [3])   # 3's label moved since
-                self.assertEqual(ft.outstanding_suspects("clip")["check"], [3])
+            with patch.object(label_audit, "LABELS", labels), patch.object(label_audit, "read_manifest", lambda *_: {}):
+                label_audit.write_suspects("clip", "check", [1, 3], "audit")
+                self.assertEqual(label_audit.read_suspects("clip")["check"], [3])   # 3's label moved since
+                self.assertEqual(label_audit.outstanding_suspects("clip")["check"], [3])
 
     def test_damaged_review_file_is_an_error_that_names_it_and_is_never_replaced(self):
         from finetune.label_tool import LabelFormatError, build_source

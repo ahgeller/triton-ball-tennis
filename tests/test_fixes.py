@@ -23,7 +23,7 @@ from ball_in_play_selector.config import SelectorConfig
 from ball_in_play_selector.physics import BallKalmanFilter, predict_projectile, predict_projectile_velocity
 from ball_in_play_selector.core import motion_near
 from finetune import label_tool, realign
-from finetune import ft
+from finetune import label_audit
 from finetune.data_policy import is_verified
 from validate_tracking import validate
 from ball_in_play_selector.core import frame_result
@@ -102,8 +102,8 @@ class FixTests(unittest.TestCase):
             original = "frame,ball_x,ball_y\nframe_001,20,30\n"
             path.write_text(original)
             path.with_suffix(".review.json").write_text(json.dumps({"reviewed": [1]}))
-            with patch.object(ft, "LABELS", folder), self.assertRaises(ValueError):
-                ft.shift_labels("example", 1, 1920, 1080, 10)
+            with patch.object(label_audit, "LABELS", folder), self.assertRaises(ValueError):
+                label_audit.shift_labels("example", 1, 1920, 1080, 10)
             self.assertEqual(path.read_text(), original)
 
     def test_localization_recall_counts_wrong_positions_and_misses(self):
