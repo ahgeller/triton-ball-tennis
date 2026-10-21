@@ -112,16 +112,24 @@ def choose_encoder(cfg: Config, is_cuda: bool = True) -> EncoderChoice:
     return EncoderChoice(ffmpeg, tuple(chain))
 
 
-def check_capabilities(cfg: Config, device_str: str) -> Tuple[Config, EncoderChoice]:
-    """Report the platform and return the config copy plus the encoder choice.
+def resolve_runtime(cfg: Config, device: str) -> Tuple[Config, EncoderChoice]:
+    """A copy of ``cfg`` with ``device`` set, and the encoder choice for it.
 
-    The returned ``Config`` is a copy of ``cfg``; nothing undeclared is attached
-    to it.  Pass the ``EncoderChoice`` to ``VideoWriter(..., encoder=...)`` so
-    the writer does not have to probe FFmpeg again.
+    ``device`` is the resolved device (see ``detect_device``); the caller's
+    ``cfg`` is left untouched and nothing undeclared is attached to the copy.
+    Pass the ``EncoderChoice`` to ``VideoWriter(..., encoder=...)`` so the
+    writer does not have to probe FFmpeg again.
     """
     cfg = copy.copy(cfg)
-    is_cuda = str(device_str).isdigit()
-    encoder = choose_encoder(cfg, is_cuda=is_cuda)
+    cfg.device = str(device)
+    encoder = choose_encoder(cfg, is_cuda=str(device).isdigit())
+    return cfg, encoder
+
+
+def print_platform_report(cfg: Config, encoder: EncoderChoice) -> None:
+    """The ``[platform]`` lines for a resolved config: device, why NVENC is
+    off when it is, and the accelerations in use."""
+    is_cuda = str(cfg.device).isdigit()
     if cfg.use_nvenc and encoder.preferred != ENCODER_NVENC:
         fallback = "libx264" if encoder.preferred == ENCODER_LIBX264 else "OpenCV"
         if encoder.ffmpeg is None:
@@ -138,9 +146,8 @@ def check_capabilities(cfg: Config, device_str: str) -> Tuple[Config, EncoderCho
     }.get(encoder.preferred, "OpenCV encoding"))
     # Preprocessing has no CPU path; a non-CUDA device fails at detector setup.
     accel.append("CUDA preprocessing" if cfg.enable_preprocess else "no preprocessing")
-    print(f"[platform] Device: {device_str}")
+    print(f"[platform] Device: {cfg.device}")
     print(f"[platform] Accelerations: {', '.join(accel)}")
-    return cfg, encoder
 
 
 def _ffmpeg_candidates() -> List[str]:

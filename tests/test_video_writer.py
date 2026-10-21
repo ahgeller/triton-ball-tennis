@@ -11,8 +11,9 @@ from tennis_tracker.utils import (
     ENCODER_NVENC,
     ENCODER_OPENCV,
     EncoderChoice,
-    check_capabilities,
     choose_encoder,
+    print_platform_report,
+    resolve_runtime,
 )
 from tennis_tracker.video_io import VideoWriter, ffmpeg_command
 
@@ -34,14 +35,19 @@ def test_choose_encoder_orders_nvenc_libx264_opencv(monkeypatch):
     assert choice.chain == (ENCODER_OPENCV,) and choice.ffmpeg is None and choice.ffmpeg_encoders == ()
 
 
-def test_check_capabilities_returns_a_copy_without_private_attributes(monkeypatch, capsys):
+def test_resolve_runtime_sets_the_device_on_a_copy_and_reports_the_platform(monkeypatch, capsys):
     _ffmpeg_with(monkeypatch, "/opt/ffmpeg", {"libx264"})
-    cfg = Config(use_nvenc=True)
-    out, choice = check_capabilities(cfg, "0")
+    cfg = Config(use_nvenc=True, device="auto")
+    out, choice = resolve_runtime(cfg, "0")
     assert out is not cfg and out.use_nvenc is True
+    assert out.device == "0" and cfg.device == "auto"      # the caller's Config is untouched
     assert choice.preferred == ENCODER_LIBX264
     assert not any(name.startswith("_") for name in vars(out))
-    assert "NVENC disabled (ffmpeg lacks h264_nvenc), using libx264" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""                    # resolving is silent
+    print_platform_report(out, choice)
+    report = capsys.readouterr().out
+    assert "NVENC disabled (ffmpeg lacks h264_nvenc), using libx264" in report
+    assert "[platform] Device: 0" in report and "libx264 encoding" in report
 
 
 def test_ffmpeg_command_differs_only_in_codec_options():

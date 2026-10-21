@@ -116,7 +116,7 @@ class VideoWriter:
     """Encode BGR frames to ``path`` through FFmpeg (NVENC, then libx264) or OpenCV.
 
     The encoder order comes from an ``EncoderChoice`` (see
-    ``utils.check_capabilities``); when none is passed it is derived from
+    ``utils.resolve_runtime``); when none is passed it is derived from
     ``cfg`` in the same way.  Each FFmpeg encoder that fails to start is
     reported and the next one is tried; OpenCV is the last resort and raising
     when it cannot open the output.  With ``cfg.use_async_writer`` frames are

@@ -26,7 +26,7 @@ from .player_detector import PlayerDetector
 from .rendering import build_display_path
 from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
 from .summaries import print_selector_track_summary, print_timing_summary
-from .utils import check_capabilities, detect_device
+from .utils import detect_device, print_platform_report, resolve_runtime
 
 _DEFAULT_FPS = 24.0                 # when the container reports none
 # The display path interpolates across at least this much time, within these frame bounds.
@@ -96,8 +96,8 @@ def _open_inputs(cfg: Config) -> RunContext:
     device_index = int(device_str)
     if not torch.cuda.is_available() or device_index >= torch.cuda.device_count():
         raise RuntimeError(f"CUDA device {device_index} is unavailable.")
-    cfg.device = str(device_index)
-    cfg, encoder = check_capabilities(cfg, device_str)
+    cfg, encoder = resolve_runtime(cfg, str(device_index))   # the caller's Config is not changed
+    print_platform_report(cfg, encoder)
     device = torch.device(f"cuda:{device_index}")
 
     # The run owns the process: let cuDNN autotune the fixed-shape convolutions.
