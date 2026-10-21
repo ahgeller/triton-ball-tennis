@@ -355,59 +355,6 @@ def build_court_side_protect_mask(h, w, court_keypoints):
 
     return protect if protect is not None and np.any(protect) else None
 
-def _pack_mask_u8(mask_u8, roi=None):
-    """Pack a uint8/bool 2D mask to bits for compact storage.
-
-    ROI mode packs only a slice for reduced pass1 storage cost:
-    - (packed, h, w) for full-frame packs
-    - ("roi", packed, h, w, x1, y1, x2, y2) for ROI-sparse packs
-    """
-    if mask_u8 is None:
-        return None
-    h, w = mask_u8.shape[:2]
-    if cv2.countNonZero(mask_u8) == 0:
-        return None
-
-    if roi is None:
-        x, y, rw, rh = cv2.boundingRect(mask_u8)
-        roi = (x, y, x + rw, y + rh)
-
-    if roi is not None and len(roi) == 4:
-        x1, y1, x2, y2 = [int(v) for v in roi]
-        x1 = max(0, min(x1, w))
-        x2 = max(0, min(x2, w))
-        y1 = max(0, min(y1, h))
-        y2 = max(0, min(y2, h))
-        if x2 > x1 and y2 > y1:
-            roi_flat = (mask_u8[y1:y2, x1:x2].reshape(-1) > 0).astype(np.uint8)
-            roi_packed = np.packbits(roi_flat)
-            return ("roi", roi_packed, int(h), int(w), x1, y1, x2, y2)
-
-    flat = (mask_u8.reshape(-1) > 0).astype(np.uint8)
-    packed = np.packbits(flat)
-    return packed, int(h), int(w)
-
-def _unpack_mask_u8(mask_obj):
-    """Unpack a mask packed by _pack_mask_u8 back to uint8 {0,255}."""
-    if mask_obj is None:
-        return None
-    if isinstance(mask_obj, tuple) and len(mask_obj) == 8 and mask_obj[0] == "roi":
-        _, packed, h, w, x1, y1, x2, y2 = mask_obj
-        h = int(h); w = int(w)
-        x1 = int(x1); y1 = int(y1); x2 = int(x2); y2 = int(y2)
-        out = np.zeros((h, w), dtype=np.uint8)
-        rh = max(0, y2 - y1)
-        rw = max(0, x2 - x1)
-        if rh > 0 and rw > 0:
-            flat = np.unpackbits(packed, count=rh * rw)
-            out[y1:y2, x1:x2] = flat.reshape(rh, rw).astype(np.uint8) * 255
-        return out
-    if isinstance(mask_obj, tuple) and len(mask_obj) == 3:
-        packed, h, w = mask_obj
-        flat = np.unpackbits(packed, count=int(h) * int(w))
-        return (flat.reshape(int(h), int(w)).astype(np.uint8) * 255)
-    return mask_obj
-
 def _probe_component_boxes(mask_u8: Optional[np.ndarray], limit: int = 100) -> List[Tuple[int, int, int, int]]:
     if mask_u8 is None or mask_u8.size == 0 or cv2.countNonZero(mask_u8) == 0:
         return []

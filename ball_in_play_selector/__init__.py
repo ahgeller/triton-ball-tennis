@@ -27,7 +27,7 @@ from .physics import (
 )
 from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
 from .tracking import build_detections, build_tracks
-from .utils import cfg_diag, clamp01, ensure_mask_u8, fps_norm_pxpf
+from .utils import PackedMask, cfg_diag, clamp01, ensure_mask_u8, fps_norm_pxpf
 
 __all__ = [
     "select_ball_in_play",
@@ -60,5 +60,6 @@ __all__ = [
     "cfg_diag",
     "clamp01",
     "ensure_mask_u8",
+    "PackedMask",
     "fps_norm_pxpf",
 ]

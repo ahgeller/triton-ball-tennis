@@ -7,12 +7,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
-from ball_in_play_selector import select_ball_in_play, FrameResult
+from ball_in_play_selector import PackedMask, select_ball_in_play, FrameResult
 
 from .config import Config
 from .utils import _detect_device, check_capabilities, _resolve_engine_path, find_ball_class_id_from_names, read_engine_class_names
 from .detectors import BallDetectorBackend, CourtDetector, GridTrackNetBallDetector, PlayerDetector, TensorRTRuntimeBallDetector
-from .motion import _pack_mask_u8, preprocess_frame_cuda, _unpack_mask_u8, build_court_side_protect_mask, draw_motion_debug_frame
+from .motion import preprocess_frame_cuda, build_court_side_protect_mask, draw_motion_debug_frame
 from .tracking import ROIMotionTracker
 from .court_geometry import build_court_polygon, build_ground_projection_model, court_axis_spans, court_keypoints_key
 from .rendering import MOTION_DEBUG_SOURCE_COLOR, _trail_base_color, _get_track_color, _trail_jump_fracs, _draw_homography_net_line, _print_timing_summary, _trail_direction_break, _print_selector_track_summary, _trail_prev2, build_display_path, COLOR_DET, COLOR_RAW, COLOR_MOTION, COLOR_SEARCH, COLOR_INTERP, COLOR_DISPLAY_PATH, COLOR_DISPLAY_PATH_INTERP
@@ -113,9 +113,8 @@ def _count_reason(reason_counts: Dict[str, int], reason: str) -> None:
     reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
 
 
-def _mask_has_pixels(mask_obj) -> bool:
-    mask = _unpack_mask_u8(mask_obj)
-    return bool(mask is not None and cv2.countNonZero(mask) > 0)
+def _mask_has_pixels(mask: Optional[PackedMask]) -> bool:
+    return mask is not None      # PackedMask.pack never stores an empty mask
 
 
 def _extract_motion_candidates(
@@ -128,9 +127,9 @@ def _extract_motion_candidates(
     selected_y: Optional[float],
     max_candidates: int = 5,
 ) -> List[Dict[str, Any]]:
-    mask = _unpack_mask_u8(mask_obj)
-    if mask is None or cv2.countNonZero(mask) <= 0:
+    if mask_obj is None:
         return []
+    mask = mask_obj.unpack()
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     candidates: List[Dict[str, Any]] = []
@@ -655,9 +654,9 @@ def run(cfg):
             store_t0 = time.perf_counter()
         dropped_ghost_rois = roi_tracker.update_from_dets(dets, record["frame_idx"])
         all_frame_dets.append(dets)
-        all_boost_masks.append(_pack_mask_u8(record["boost_mask_u8"], roi=record["roi_for_pack"]))
-        all_raw_motions.append(_pack_mask_u8(record["raw_motion_u8"], roi=record["roi_for_pack"]))
-        
+        all_boost_masks.append(PackedMask.pack(record["boost_mask_u8"], roi=record["roi_for_pack"]))
+        all_raw_motions.append(PackedMask.pack(record["raw_motion_u8"], roi=record["roi_for_pack"]))
+
         # Retroactively delete motion from ghost tracks that timed out
         if dropped_ghost_rois:
             for fr_idx, rx1, ry1, rx2, ry2 in dropped_ghost_rois:
@@ -665,7 +664,7 @@ def run(cfg):
                 if 0 <= fr_idx < len(all_raw_motions) and fr_idx != record["frame_idx"]:
                     # (FPS FIX) We no longer unpack/pack masks here retroactively frame-by-frame.
                     # We only record the ghost ROI boxes, and do ONE batched mask erase at the end of Pass 1.
-                                
+
                     # For all_rois (visual boxes on the track-debug video)
                     # We need to find the specific ROI in the list that matches these bounds
                     if all_rois[fr_idx] is not None:
@@ -679,7 +678,7 @@ def run(cfg):
                                 all_ghost_rois[fr_idx].append((rx1, ry1, rx2, ry2))
                                 continue  # This is the ghost ROI, delete it!
                             new_rois.append(r_box)
-                        
+
                         all_rois[fr_idx] = new_rois if len(new_rois) > 0 else None
 
         all_rois.append(record.get("rois_list"))
@@ -938,7 +937,7 @@ def run(cfg):
         if cfg.progress_every and frame_idx % cfg.progress_every == 0:
             elapsed = time.time() - t0
             print(f"  [pass1 {frame_idx}/{total}] {frame_idx/elapsed:.1f} fps")
-        
+
         # Slide window
         if info_timing:
             slide_t0 = time.perf_counter()
@@ -992,17 +991,17 @@ def run(cfg):
     for fr_idx, ghosts in enumerate(all_ghost_rois):
         if not ghosts:
             continue
-            
+
         rm_obj = all_raw_motions[fr_idx] if 0 <= fr_idx < len(all_raw_motions) else None
         bm_obj = all_boost_masks[fr_idx] if 0 <= fr_idx < len(all_boost_masks) else None
-        
+
         if rm_obj is None and bm_obj is None:
             continue
-        
+
         erased_frames += 1
-        rm_unpacked = _unpack_mask_u8(rm_obj) if rm_obj is not None else None
-        bm_unpacked = _unpack_mask_u8(bm_obj) if bm_obj is not None else None
-        
+        rm_unpacked = rm_obj.unpack() if rm_obj is not None else None
+        bm_unpacked = bm_obj.unpack() if bm_obj is not None else None
+
         any_change = False
         for rx1, ry1, rx2, ry2 in ghosts:
             if rm_unpacked is not None and np.any(rm_unpacked[ry1:ry2, rx1:rx2]):
@@ -1011,24 +1010,17 @@ def run(cfg):
             if bm_unpacked is not None and np.any(bm_unpacked[ry1:ry2, rx1:rx2]):
                 bm_unpacked[ry1:ry2, rx1:rx2] = 0
                 any_change = True
-        
+
         if not any_change:
             continue
-                    
+
         if rm_unpacked is not None:
-            if isinstance(rm_obj, tuple) and rm_obj[0] == "roi":
-                all_raw_motions[fr_idx] = _pack_mask_u8(rm_unpacked, roi=rm_obj[4:8])
-            else:
-                all_raw_motions[fr_idx] = _pack_mask_u8(rm_unpacked, roi=None)
-                    
+            all_raw_motions[fr_idx] = PackedMask.pack(rm_unpacked, roi=rm_obj.roi)
         if bm_unpacked is not None:
-            if isinstance(bm_obj, tuple) and bm_obj[0] == "roi":
-                all_boost_masks[fr_idx] = _pack_mask_u8(bm_unpacked, roi=bm_obj[4:8])
-            else:
-                all_boost_masks[fr_idx] = _pack_mask_u8(bm_unpacked, roi=None)
+            all_boost_masks[fr_idx] = PackedMask.pack(bm_unpacked, roi=bm_obj.roi)
 
     print(f"[pass 1] Batched ghost deletion cleaned {erased_frames} frames in {time.perf_counter() - batch_t0:.2f}s")
-    
+
     # ==============================================================
     # SELECTOR - pick the in-play ball track
     # ==============================================================
@@ -1243,7 +1235,7 @@ def run(cfg):
             if debug_frame is not None:
                 cv2.rectangle(debug_frame, (ix1, iy1), (ix2, iy2), COLOR_RAW, 1)
                 cv2.line(debug_frame, (ix1, iy2), (ix2, iy2), (0, 0, 255), 1)
-                
+
         # Draw Motion ROIs (cleaned of ghost histories)
         if debug_frame is not None and all_rois[fi] is not None:
             for rx1, ry1, rx2, ry2 in all_rois[fi]:
@@ -1258,7 +1250,7 @@ def run(cfg):
                 tid = int(trk.track_id)
                 tdata = vis_tracks.get(tid, {})
                 pt = tdata.get(fi)
-                
+
                 # Update trail
                 is_active_frame = (pt is not None)
                 if is_active_frame:
@@ -1266,11 +1258,11 @@ def run(cfg):
                 elif vis_track_trails[tid] and vis_track_trails[tid][-1] is not None:
                     # Add a break for gaps
                     vis_track_trails[tid].append(None)
-                
+
                 # Trim trail
                 while len(vis_track_trails[tid]) > vis_trail_len:
                     vis_track_trails[tid].pop(0)
-                    
+
                 # Draw trail
                 tcolor = _get_track_color(tid)
                 trail_pts = vis_track_trails[tid]
@@ -1287,7 +1279,7 @@ def run(cfg):
                             curr_seg.append(p)
                     if len(curr_seg) > 1:
                         valid_segments.append(curr_seg)
-                        
+
                     for seg in valid_segments:
                         for i in range(1, len(seg)):
                             p0 = (int(seg[i-1][0]), int(seg[i-1][1]))
@@ -1537,11 +1529,11 @@ def run(cfg):
             source_label = {"det": "DET", "motion": "MOT"}.get(display_result.source, "PHY")
             hud_text = f"ID:{chosen_id} {source_label} c={display_result.conf:.2f}"
             cv2.putText(frame_out, hud_text, (60, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
+
             if debug_frame is not None:
                  cv2.putText(debug_frame, f"F{fi}", (10, 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                 cv2.putText(debug_frame, hud_text, (60, 25), 
+                 cv2.putText(debug_frame, hud_text, (60, 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         # Track-debug stream: the chosen track's display path over time.
@@ -1611,8 +1603,8 @@ def run(cfg):
         if dbg_writer is not None:
             if info_timing:
                 dbg_write_t0 = time.perf_counter()
-            raw_m = _unpack_mask_u8(all_raw_motions[fi])
-            boost_m = _unpack_mask_u8(all_boost_masks[fi])
+            raw_m = None if all_raw_motions[fi] is None else all_raw_motions[fi].unpack()
+            boost_m = None if all_boost_masks[fi] is None else all_boost_masks[fi].unpack()
             # Cache the protect mask to avoid recomputing build_court_side_protect_mask
             # every frame - court keypoints rarely change.
             _dbg_protect_key = court_keypoints_key(court_kps)
@@ -1732,7 +1724,7 @@ def run(cfg):
                         unmatched.remove(best_match)
             for b in unmatched:
                 raw_motion_tracks.append([(fi, b[0], b[1], b[2])])
-            
+
             # Periodically prune old tracks
             MAX_AGE = 150
             if fi % 100 == 0:
@@ -1744,17 +1736,17 @@ def run(cfg):
                 # Remove random isolated dots and very short noise tracks
                 if len(valid_pts) < 2:
                     continue
-                
+
                 # Filter out points that are too dense to avoid splprep waves/crashing
                 unique_pts = [valid_pts[0]]
                 for pt in valid_pts[1:]:
                     if math.hypot(pt[1] - unique_pts[-1][1], pt[2] - unique_pts[-1][2]) > 2.0:
                         unique_pts.append(pt)
-                
+
                 # Always append the actual current head if it was filtered out
                 if valid_pts[-1] not in unique_pts:
                     unique_pts.append(valid_pts[-1])
-                
+
                 if len(unique_pts) < 4:
                     # Fallback to straight lines if too few unique points
                     for i in range(1, len(unique_pts)):
@@ -1771,32 +1763,32 @@ def run(cfg):
                         import scipy.ndimage
                         pts_arr = np.array([[pt[1], pt[2]] for pt in unique_pts])
                         x_raw, y_raw = pts_arr[:, 0], pts_arr[:, 1]
-                        
+
                         # Apply a 1D Gaussian smooth to kill the high-frequency pixel jitter
                         # that causes B-splines to severely wiggle/wave
                         x_smooth = scipy.ndimage.gaussian_filter1d(x_raw, sigma=1.5)
                         y_smooth = scipy.ndimage.gaussian_filter1d(y_raw, sigma=1.5)
-                        
+
                         # splprep generates a smooth B-spline. s > 0 allows the spline
                         # to relax further instead of forcing exact intersection
                         tck, u = scipy.interpolate.splprep([x_smooth, y_smooth], s=len(x_smooth))
-                        
+
                         num_smooth_pts = max(100, len(unique_pts) * 5)
                         u_fine = np.linspace(0, 1.0, num_smooth_pts)
                         x_fine, y_fine = scipy.interpolate.splev(u_fine, tck)
-                        
+
                         ages = [fi - pt[0] for pt in unique_pts]
                         ages_fine = np.interp(u_fine, u, ages)
-                        
+
                         for i in range(1, len(x_fine)):
                             age = ages_fine[i]
                             ratio = max(0.0, 1.0 - (age / float(MAX_AGE)))
                             color = (int(0 * ratio), int(140 * ratio), int(255 * ratio))
                             th = max(1, int(4 * ratio))
-                            
+
                             pt1 = (int(x_fine[i-1]), int(y_fine[i-1]))
                             pt2 = (int(x_fine[i]), int(y_fine[i]))
-                            
+
                             if math.hypot(pt2[0]-pt1[0], pt2[1]-pt1[1]) < 80.0:
                                 cv2.line(vis, pt1, pt2, color, th, cv2.LINE_AA)
                     except Exception as e:
@@ -1810,7 +1802,7 @@ def run(cfg):
                             pt2 = (int(unique_pts[i][1]), int(unique_pts[i][2]))
                             if math.hypot(pt2[0]-pt1[0], pt2[1]-pt1[1]) < 60.0:
                                 cv2.line(vis, pt1, pt2, color, th, cv2.LINE_AA)
-                
+
                 # Draw the trail head prominently if active
                 head_age = fi - valid_pts[-1][0]
                 if head_age == 0:
@@ -1818,7 +1810,7 @@ def run(cfg):
                     sr = sr_list[0]
                     for r in sr_list[1:]:
                         sr = 0.10 * r + 0.90 * sr
-                    
+
                     pt_head = (int(valid_pts[-1][1]), int(valid_pts[-1][2]))
                     rad = max(2, int(sr))
                     cv2.circle(vis, pt_head, rad, (0, 140, 255), -1)
