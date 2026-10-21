@@ -9,8 +9,13 @@ import math
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
 
 from validate_tracking import validate
+
+_SHA_BLOCK_BYTES = 1 << 20
+# A full tracker run on the benchmark clip takes minutes; this only stops a hung run.
+_TRACKER_TIMEOUT_S = 4 * 3600
 
 
 BASELINE = {
@@ -47,12 +52,12 @@ def _require(condition: bool, message: str) -> None:
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
+        for block in iter(lambda: handle.read(_SHA_BLOCK_BYTES), b""):
             digest.update(block)
     return digest.hexdigest()
 
 
-def _acceleration_stats(frames: list, soft_only: bool = False) -> dict:
+def _acceleration_stats(frames: List[Dict[str, Any]], soft_only: bool = False) -> Dict[str, Any]:
     values = []
     for previous, current, following in zip(frames, frames[1:], frames[2:]):
         if not all(row.get("present") for row in (previous, current, following)):
@@ -79,7 +84,7 @@ def _acceleration_stats(frames: list, soft_only: bool = False) -> dict:
     }
 
 
-def check(prediction_path: Path, annotation_path: Path, video_path: Path) -> dict:
+def check(prediction_path: Path, annotation_path: Path, video_path: Path) -> Dict[str, Any]:
     prediction = json.loads(prediction_path.read_text(encoding="utf-8"))
     annotation = json.loads(annotation_path.read_text(encoding="utf-8"))
     _require(_sha256(annotation_path) == BASELINE["annotation_sha256"], "annotation manifest changed")
@@ -164,6 +169,8 @@ def main() -> int:
             ],
             cwd=root,
             check=True,
+            shell=False,
+            timeout=_TRACKER_TIMEOUT_S,
         )
     summary = check(prediction_path, annotation_path, video_path)
     smoothness = summary["smoothness"]
