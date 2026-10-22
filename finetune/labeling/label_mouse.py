@@ -88,8 +88,8 @@ class MouseHandler:
 
     def place_click(self, x: int, y: int) -> None:
         """A left click on the picture: the ball is there, and the next frame comes up - or, while a
-        landing between two frames waits for its point (``Tool.toggle_landing``), the ball touched
-        the ground there, and the frame stays up."""
+        landing with no ball label under it waits for its point (``Tool.toggle_landing``), the ball
+        touched the ground there, and the frame stays up."""
         session = self.session
         if session.frame_missing():
             return                                  # nothing to see, so nothing to label

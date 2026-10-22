@@ -50,7 +50,7 @@ you do click.
 | `e` / SHIFT+`e` | jump to the next / previous frame whose label the suggestion disagrees with ("hint differs" on the bar), reviewed or not |
 | `i` / `j` / `k` / `l` | nudge the point one pixel up / left / down / right (stays on the frame); with SHIFT held, a quarter of a pixel |
 | `u` | undo the last change on this frame's label (not a landing mark: `/` again removes one) |
-| `/` | this frame is a landing: the ball is on the ground here. Pressed again, it is not. The frame wears a LANDING badge (its grid tile too) and the bar counts the clip's landings. Pressed on the frame after (or before) one already marked, the ball bounced between the two: the two marks become one landing between them, both frames wear LANDING 1/2, and the bar asks for a click where the ball touched the ground. Saved with the labels to `labels/<clip>_bounces.csv` (see *Landings*) |
+| `/` | this frame is a landing: the ball is on the ground here. Pressed again, it is not. The frame wears a LANDING badge (its grid tile too) and the bar counts the clip's landings. Pressed on the frame after (or before) one already marked, the ball bounced between the two: the two marks become one landing between them and both frames wear LANDING 1/2. When the landing has no ball label under it (one between two frames, or one on a frame labelled "no ball") the bar asks for a click where the ball touched the ground. Saved with the labels to `labels/<clip>_bounces.csv` (see *Landings*) |
 | mouse wheel, `+` / `-` | smooth zoom in / out about the mouse / the ball (kept across frames) |
 | right click | re-centre the view here |
 | `g` / click the badge | auto-centre on / off. On (the default) every frame puts the mark in the middle of the screen with the mouse on it; off leaves the view and the mouse alone, for looking round a frame |
@@ -130,15 +130,20 @@ The ball often lands between two frames: in the air on one, already up on the
 next. Press `/` on both (the frame already marked, then `/` on the next or the
 previous one): the two marks become one landing between them, saved as
 `frame_0412.5` (on a 60 FPS clip labelled every other frame, the unlabelled frame
-between the two), both frames wear LANDING 1/2, and the bar asks you to click where
-the ball touched the ground - the scuff, or the spot under the ball. That click is
-the landing point, drawn as a small cross, and the frame stays up. Any other key
-instead leaves the landing without a point, and the scorer takes the midpoint of
-the two frames' ball labels (for the unlabelled whole frame between two on a 60 FPS
-clip, the ball label of the frame before it; `resolve_points` in
-`finetune/data/bounce_labels.py`). `/` on either of the two frames removes the landing.
-From the grid, `/` on the tile after a marked frame joins the two the same way but
-asks for no click.
+between the two), and both frames wear LANDING 1/2. `/` on either of the two frames
+removes the landing.
+
+A landing with no ball label under it - one between two frames, or one on a frame
+labelled "no ball" (the ball hidden behind a player, say) - has no label to take its
+point from, so the bar asks you to click where the ball touched the ground: the
+scuff, or the spot under the ball. That click is the landing point, drawn as a
+small cross and saved as the row's coordinates, and the frame stays up. Any other
+key instead leaves the landing without a point, and the scorer takes the ball
+labels either side of it: the midpoint of the ball labels on the two frames a
+between landing lies between, or on the frame before and the frame after a landing
+on a frame without a ball label, or the one of them there is (`resolve_points` in
+`finetune/data/bounce_labels.py`). From the grid, `/` marks and joins the same way
+but asks for no click.
 
 ## `--uncertain`
 

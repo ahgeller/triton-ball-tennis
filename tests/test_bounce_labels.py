@@ -85,17 +85,21 @@ def test_the_columns_must_be_the_ball_label_files(tmp_path):
         read_bounce_labels(path)
 
 
-def test_resolve_points_fills_blank_points_from_the_ball_labels_or_the_other_phase():
-    ball_labels = {10: (1.0, 2.0), 19: (7.0, 8.0), 21: (3.0, 4.0), 30: None, 42: (5.0, 6.0)}
-    labels = [BounceLabel(10), BounceLabel(20), BounceLabel(30), BounceLabel(50), BounceLabel(41, (9.0, 9.0))]
+def test_resolve_points_fills_blank_points_from_the_ball_labels_or_midway_between_the_neighbours():
+    ball_labels = {10: (1.0, 2.0), 19: (7.0, 8.0), 21: (3.0, 4.0), 30: None, 42: (5.0, 6.0), 59: (2.0, 2.0), 60: None,
+                   61: (4.0, 6.0)}
+    labels = [BounceLabel(10), BounceLabel(20), BounceLabel(30), BounceLabel(50), BounceLabel(60), BounceLabel(41, (9.0, 9.0))]
     assert resolve_points(labels, ball_labels) == [
         BounceLabel(10, (1.0, 2.0)),       # the ball label at the landing's frame
-        BounceLabel(20, (7.0, 8.0)),       # the other 60 FPS phase: the frame before, then the frame after
+        BounceLabel(20, (5.0, 6.0)),       # the other 60 FPS phase: midway between the frame before and the one after
         BounceLabel(30, None),             # an invisible ball there, and no adjacent label: no point
         BounceLabel(50, None),
+        BounceLabel(60, (3.0, 4.0)),       # the ball hidden there: midway between the neighbours' labels
         BounceLabel(41, (9.0, 9.0)),       # its own point stands
     ]
-    assert resolve_points([BounceLabel(42)], {43: (5.0, 6.0)}) == [BounceLabel(42, (5.0, 6.0))]
+    assert resolve_points([BounceLabel(42)], {43: (5.0, 6.0)}) == [BounceLabel(42, (5.0, 6.0))]   # only the frame after
+    assert resolve_points([BounceLabel(42)], {41: (5.0, 6.0)}) == [BounceLabel(42, (5.0, 6.0))]   # only the frame before
+    assert resolve_points([BounceLabel(42)], {40: (1.0, 1.0), 44: (1.0, 1.0)}) == [BounceLabel(42, None)]   # no reach past them
 
 
 def test_resolve_points_puts_a_landing_between_two_frames_midway_between_their_ball_labels():

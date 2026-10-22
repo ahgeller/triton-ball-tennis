@@ -5,9 +5,10 @@ A file has the ball label files' columns, ``frame,ball_x,ball_y`` (``finetune.da
 between that frame and the next, for a ball that is in the air on both (``landing_frame`` reads
 exactly those two forms, ``landing_name`` writes them); the coordinates are the landing point in
 native image pixels. Both coordinate cells may be left blank: the point is then the clip's ball
-label at that frame, or at the adjacent frame when the clip is labelled on the other 60 FPS
-phase, and for a landing between two frames the midpoint of the ball labels on the two, or the
-one of them there is (``resolve_points``). One coordinate without the other is an error. The file
+label at that frame, or, when the frame has none (the ball hidden, or the clip labelled on the
+other 60 FPS phase), the midpoint of the ball labels on the frames either side of it, or the one
+of them there is; a landing between two frames takes the same midpoint of the two
+(``resolve_points``). One coordinate without the other is an error. The file
 lists every landing of every rally, serves and faults included; a frame within the scorer's
 tolerance (``evaluation.court_events_score``, 0.1 s) of the true landing is close enough, so
 either 60 FPS phase will do.
@@ -27,9 +28,6 @@ from typing import Iterable, List, Mapping, NamedTuple, Optional, Tuple
 from finetune.data.fileio import atomic_csv
 from finetune.data.labels import COLUMNS, COORDINATE_DECIMALS, LabelFormatError, LabelPoint, frame_name
 
-# A landing labelled without a point reads the ball label at its frame, else at one of these
-# offsets, in this order: the adjacent frame on the other 60 FPS phase.
-_ADJACENT_PHASE_OFFSETS = (-1, 1)
 # A landing's frame cell: frame_<index>, or frame_<index>.5 for one between that frame and the next.
 LANDING_FRAME_PATTERN = re.compile(r"frame_(\d+)(\.5)?")
 
@@ -132,25 +130,29 @@ def write_bounce_labels(path: Path, labels: Iterable[BounceLabel]) -> int:
 
 
 def _point_from_ball_labels(frame: float, ball_labels: Mapping[int, LabelPoint]) -> LabelPoint:
-    """Where the ball labels put a landing that has no point of its own (see ``resolve_points``)."""
-    whole = math.floor(frame)
+    """Where the ball labels put a landing that has no point of its own (see ``resolve_points``):
+    the label on its frame, else the midpoint of the labels on the frames either side of it (the
+    two a half frame lies between), or the one of them there is."""
+    whole = int(math.floor(frame))
     if frame == whole:
-        for offset in (0, *_ADJACENT_PHASE_OFFSETS):
-            found = ball_labels.get(int(whole) + offset)
-            if found is not None:
-                return float(found[0]), float(found[1])
+        found = ball_labels.get(whole)
+        if found is not None:
+            return float(found[0]), float(found[1])
+        either_side = (ball_labels.get(whole - 1), ball_labels.get(whole + 1))
+    else:
+        either_side = (ball_labels.get(whole), ball_labels.get(whole + 1))
+    labelled = [point for point in either_side if point is not None]
+    if not labelled:
         return None
-    either_side = [point for point in (ball_labels.get(int(whole)), ball_labels.get(int(whole) + 1)) if point is not None]
-    if not either_side:
-        return None
-    return (sum(float(point[0]) for point in either_side) / len(either_side),
-            sum(float(point[1]) for point in either_side) / len(either_side))
+    return (sum(float(point[0]) for point in labelled) / len(labelled),
+            sum(float(point[1]) for point in labelled) / len(labelled))
 
 
 def resolve_points(labels: Iterable[BounceLabel], ball_labels: Mapping[int, LabelPoint]) -> List[BounceLabel]:
     """The landings with every blank point filled from the clip's ball labels (``labels.read_labels``):
-    the label at the landing's frame, else at the adjacent frame on the other 60 FPS phase; for a
-    landing between two frames, the midpoint of the labels on the two, or the one there is. A
-    landing with no visible ball label there keeps ``None``; its timing is still scored."""
+    the label at the landing's frame, else the midpoint of the labels on the frame before and the
+    frame after it (the ball hidden there, or the clip labelled on the other 60 FPS phase), or the
+    one of them there is; a landing between two frames takes the same midpoint of the two. A landing
+    with no visible ball label on any of those frames keeps ``None``; its timing is still scored."""
     return [BounceLabel(label.frame, _point_from_ball_labels(label.frame, ball_labels) if label.point is None else label.point)
             for label in labels]
