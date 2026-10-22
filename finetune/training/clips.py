@@ -5,7 +5,9 @@ with ``frame,ball_x,ball_y`` rows at 30 FPS cadence (every 2nd frame of a 60 FPS
 frame at 30 FPS; the first labelled frame may be odd) and invisible balls parked in the
 top-right corner. ``clips.csv`` (written by import_data.py) tags every clip with a source and a
 recording group, so a run can pick and hold out by them (``ClipSelection``, ``validation_split``);
-``holdouts.json`` names fixed held-out sets of whole recordings (``--holdout``).
+``holdouts.json`` names fixed held-out sets of whole recordings (``--holdout``). Clips named by
+hand (``--val-clips``) take the rest of their recording with them; a named set is held out as
+listed, the same clips the evaluator's ``--holdout`` scores.
 """
 
 from __future__ import annotations
@@ -100,9 +102,15 @@ def resolve_val_clips(names: List[str], patterns: Optional[List[str]]) -> List[s
 
 def validation_split(clips: List[Clip], labels: Path, patterns: Optional[List[str]],
                      holdout: Optional[str] = None) -> List[str]:
-    """The held-out clips: what --val-clips names (or the --holdout set's members among the run's
-    clips) plus every clip cut from the same recording (``recording_of``: the clips.csv group,
-    else the origin video), all of which must have reviewed labels, and never the whole set."""
+    """The held-out clips, all of which must have reviewed labels, and never the whole set.
+
+    ``--val-clips`` names clips by hand, so the split closes over the recording each was cut
+    from (``recording_of``: the clips.csv group, else the origin video) and no rally of a
+    held-out video trains. A ``--holdout`` set is explicit: exactly its members among the run's
+    clips (``holdout_clips``), with no closure, so the trainer holds out the same clips
+    ``evaluate_archive.py --holdout`` scores. Its author already chose whole recordings, and
+    names the clips of a recording one by one when some of them must stay out of the set.
+    """
     names = [clip for clip, _, _, _ in clips]
     metadata = read_manifest(labels.parent / MANIFEST_NAME)
     if holdout:
@@ -112,9 +120,8 @@ def validation_split(clips: List[Clip], labels: Path, patterns: Optional[List[st
         if not val_clips:
             raise ValueError(f"held-out set {holdout!r} covers none of this run's clips")
     else:
-        val_clips = resolve_val_clips(names, patterns)
-    recordings = {recording_of(name, metadata) for name in val_clips}
-    val_clips = [name for name in names if recording_of(name, metadata) in recordings]
+        recordings = {recording_of(name, metadata) for name in resolve_val_clips(names, patterns)}
+        val_clips = [name for name in names if recording_of(name, metadata) in recordings]
     review_status = read_review_status(labels.parent)
     unverified = [name for name in val_clips if not is_verified(name, review_status)]
     if unverified:

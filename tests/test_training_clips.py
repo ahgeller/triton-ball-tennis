@@ -4,8 +4,12 @@ import json
 
 import pytest
 
+from finetune.data.data_policy import clip_source, is_trainable, read_review_status
+from finetune.data.holdouts import holdout_clips
 from finetune.data.labels import write_labels
+from finetune.data.workspace import HOLDOUTS_NAME, MANIFEST_NAME, read_exclusions, read_manifest
 from finetune.training.clips import DEFAULT_VAL_CLIP, ClipSelection, matches, resolve_val_clips, validation_split
+from tennis_tracker.paths import ROOT
 
 SIZE = (64, 36)
 
@@ -102,3 +106,32 @@ def test_validation_split_takes_a_named_held_out_set(tmp_path):
         validation_split(clips, tmp_path / "labels", ["video13"], "mixed")
     with pytest.raises(ValueError, match="no held-out set 'typo'"):
         validation_split(clips, tmp_path / "labels", None, "typo")
+
+
+def test_a_named_held_out_set_is_taken_as_listed_while_val_clips_take_the_recording(tmp_path):
+    """video1 and video2 are cut from one recording. A set naming video1 alone holds out video1
+    alone, the clips the evaluator's --holdout scores; --val-clips video1 takes video2 with it."""
+    clips = clips_in(tmp_path, ["video1", "video2", "video13"])
+    (tmp_path / "clips.csv").write_text("clip,source,group\nvideo1,custom,own-camera\nvideo2,custom,own-camera\n"
+                                        "video13,prof,prof_game2\n", encoding="utf-8")
+    (tmp_path / "review_status.json").write_text(json.dumps({"verified_video_min": 1, "verified_clips": []}),
+                                                 encoding="utf-8")
+    (tmp_path / "holdouts.json").write_text(json.dumps({"one": {"clips": ["video1"]}}), encoding="utf-8")
+    assert validation_split(clips, tmp_path / "labels", None, "one") == ["video1"]
+    assert validation_split(clips, tmp_path / "labels", ["video1"]) == ["video1", "video2"]
+
+
+def test_mixed_v1_holds_out_the_same_24_clips_in_the_trainer_and_the_evaluator():
+    """The tracked records only: every clips.csv clip the review policy lets the trainer use, as
+    a run over the whole workspace would have them. The trainer's split and the evaluator's
+    ``holdout_clips`` must name the same clips, and never video11 or video12, whose labels were
+    never corrected and who share the own-camera recording with the members video1 to video10."""
+    workspace = ROOT / "finetune"
+    manifest = read_manifest(workspace / MANIFEST_NAME)
+    status, excluded = read_review_status(workspace), set(read_exclusions(workspace))
+    trainable = [clip for clip in manifest if is_trainable(clip, clip_source(clip, manifest), status, excluded)]
+    clips = [(clip, workspace / "videos" / f"{clip}.mp4", workspace / "labels" / f"{clip}_ball.csv", "") for clip in trainable]
+    held_out = validation_split(clips, workspace / "labels", None, "mixed_v1")
+    assert held_out == holdout_clips("mixed_v1", trainable, manifest, workspace / HOLDOUTS_NAME)
+    assert len(held_out) == 24 and "video11" not in held_out and "video12" not in held_out
+    assert "video11" not in trainable and "video12" not in trainable

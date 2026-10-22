@@ -3,11 +3,15 @@ footage it never trained on, and every run that names the same set holds out and
 same clips.
 
 A set names recording groups (the ``group`` column of ``clips.csv``: ``prof_game4``) and single
-clips. ``holdout_clips`` expands a set to the labelled clips it covers; whether each of those
-may be trained on, held out or scored is the caller's policy (``data_policy``), the same one it
-applies to every other clip. A name the record does not know, or an entry ``clips.csv`` has no
-clip for, is an error, not an empty set: a typo in a held-out set would otherwise silently
-train on the footage it meant to hold out.
+clips. ``holdout_clips`` expands a set to the labelled clips it covers, and to those exactly:
+a set is explicit, so a clip of the same recording as a member joins it only when the set names
+it (or its group) too, unlike the trainer's ``--val-clips``, which closes over the recording
+(``workspace.recording_of``). The trainer's ``--holdout`` and the evaluator's both read the set
+this way, so a run holds out the clips its scores are measured on. Whether each of those may be
+trained on, held out or scored is the caller's policy (``data_policy``), the same one it applies
+to every other clip. A name the record does not know, or an entry ``clips.csv`` has no clip for,
+is an error, not an empty set: a typo in a held-out set would otherwise silently train on the
+footage it meant to hold out.
 """
 from __future__ import annotations
 

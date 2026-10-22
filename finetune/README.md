@@ -218,8 +218,12 @@ separately). `ft.py check` flags files that break this rule.
    - `--holdout NAME` holds out a named set of whole recordings from
      `holdouts.json` instead of `--val-clips`; `mixed_v1` is the fixed set
      the detector recipe was chosen on (prof games 4 and 7, video1 to 10,
-     grid_match8, 16 and 22). Either way the split closes over the recording
-     a clip was cut from, so no rally of a held-out video trains.
+     grid_match8, 16 and 22). `--val-clips` closes over the recording a clip
+     was cut from, so no rally of a held-out video trains. A named set is
+     held out exactly as listed, with no such closure: it already names whole
+     recordings (and lists the own-camera clips one by one to keep video11
+     and video12 out), and `evaluate_archive.py --holdout NAME` scores the
+     same clips.
    - `--augment` names the augmentations to draw, any of `basic` (flip +
      ±15% gain, the default), `strong` (flip + gamma / contrast / brightness /
      colour-cast / noise / blur jitter, applied identically to all five

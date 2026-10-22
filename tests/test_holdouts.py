@@ -51,6 +51,16 @@ def test_holdout_clips_expands_groups_and_clips_in_labelled_order(tmp_path):
     assert holdout_clips("mixed", ["video2", "video1"], MANIFEST, path) == ["video2", "video1"]
 
 
+def test_holdout_clips_takes_a_set_as_listed_with_no_recording_closure(tmp_path):
+    """video1 and video2 share the own-camera recording, but a set naming video1 alone holds
+    out video1 alone: a set is explicit (the trainer and the evaluator both read it this way),
+    and only the trainer's --val-clips closes over the recording. Naming the group takes both."""
+    path = record(tmp_path, {"one": {"clips": ["video1"]}, "whole": {"groups": ["own-camera"]}})
+    labelled = ["video1", "video2", "video13"]
+    assert holdout_clips("one", labelled, MANIFEST, path) == ["video1"]
+    assert holdout_clips("whole", labelled, MANIFEST, path) == ["video1", "video2"]
+
+
 def test_holdout_clips_refuses_an_entry_the_manifest_has_no_clip_for(tmp_path):
     """A typo in the record would otherwise hold out nothing and train on the footage it meant to
     keep. The guard reads clips.csv, not the run's clips: a run on one source may still name a
