@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Tuple
 
 from tennis_tracker.config import Config
 from tennis_tracker.paths import BOUNCE_MODEL, COURT_ENGINE, GRIDTRACKNET_WEIGHTS, PLAYER_ENGINE, ROOT
@@ -14,13 +15,22 @@ from evaluation.validate import main as validate_tracking
 
 
 OUTPUT = ROOT / "output"
+# What a run in an output folder is named after its input: ``<stem>_tracked.mp4``
+# and ``<stem>_tracking.json``.
+TRACKED_VIDEO_SUFFIX = "_tracked.mp4"
+TRACKING_JSON_SUFFIX = "_tracking.json"
+_SEPARATORS = tuple(sep for sep in (os.sep, os.altsep) if sep)
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Isolated clean tennis tracker")
     parser.add_argument("-i", "--input", default=str(ROOT / "sample" / "pomona.mp4"))
-    parser.add_argument("-o", "--output", default=str(OUTPUT / "tracking.mp4"))
-    parser.add_argument("--tracking-json", default=str(OUTPUT / "tracking.json"))
+    parser.add_argument("-o", "--output", default=str(OUTPUT / "tracking.mp4"),
+                        help="The tracking video, or a folder (existing, or ending with a separator) "
+                             f"for <input stem>{TRACKED_VIDEO_SUFFIX}")
+    parser.add_argument("--tracking-json",
+                        help=f"Default: <input stem>{TRACKING_JSON_SUFFIX} beside a folder's video, "
+                             f"else {OUTPUT / 'tracking.json'}")
     parser.add_argument("--conf", type=float, default=0.50)
     parser.add_argument("--device", default="0")
     parser.add_argument("--no-video", action="store_true")
@@ -57,6 +67,27 @@ def _self_test() -> int:
                             *(str(ROOT / module) for module in SELF_TEST_MODULES)]))
 
 
+def resolve_output_paths(input_path: str, output: str, tracking_json: Optional[str]) -> Tuple[Path, Path]:
+    """Where the tracking video and the tracking JSON go, as absolute paths.
+
+    ``output`` names the video file, unless it is an existing directory or ends
+    with a path separator: then it is a folder and the video is
+    ``<input stem>_tracked.mp4`` in it.  ``tracking_json`` is used as given;
+    when it is None the JSON goes beside a folder's video as
+    ``<input stem>_tracking.json``, otherwise to ``OUTPUT / "tracking.json"``.
+    """
+    stem = Path(input_path).stem
+    if output.endswith(_SEPARATORS) or Path(output).is_dir():
+        folder = Path(output).resolve()
+        video = folder / f"{stem}{TRACKED_VIDEO_SUFFIX}"
+        default_json = folder / f"{stem}{TRACKING_JSON_SUFFIX}"
+    else:
+        video = Path(output).resolve()
+        default_json = OUTPUT / "tracking.json"
+    json_path = Path(tracking_json).resolve() if tracking_json else default_json
+    return video, json_path
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = _parser().parse_args(argv)
     if args.self_test:
@@ -66,10 +97,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return status
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    output_video, tracking_json = resolve_output_paths(args.input, args.output, args.tracking_json)
+    if not args.no_video:
+        print(f"[init] Tracking video: {output_video}")
+    print(f"[init] Tracking JSON: {tracking_json}")
     cfg = Config(
         input_video=str(Path(args.input).resolve()),
-        output_video=str(Path(args.output).resolve()),
-        tracking_json=str(Path(args.tracking_json).resolve()),
+        output_video=str(output_video),
+        tracking_json=str(tracking_json),
         model_path=str(GRIDTRACKNET_WEIGHTS),
         player_model_path=str(PLAYER_ENGINE),
         court_model_path=str(COURT_ENGINE),
