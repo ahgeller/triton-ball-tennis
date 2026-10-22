@@ -39,12 +39,12 @@ weights (`models/gridtracknet_weights_torch.npz`), training on the 40 clips outs
 | E0 linear | 9b4985b | bundled weights, raw, `--holdout mixed_v1 --cell-histogram` | - | - | 0.925 / 0.012 / 0.210 (109/518) | 0.919 | 0.964 / 0.900 / 0.891 | 2.0 | the reference; cell spread 0.033 (x) and 0.034 (y); prepass 65 fps |
 | E0 area | 9b4985b | same, `RESIZE_INTERPOLATION` flipped to INTER_AREA by `output/e0_area.py` | - | - | 0.931 / 0.009 / 0.205 (106/518) | 0.924 | 0.967 / 0.905 / 0.905 | 2.0 | +0.6 recall, under the 2 point bar, prepass 58 fps: the recipe stays INTER_LINEAR |
 | R0 | 9b4985b | `--epochs 10 --seed 7` (basic augmentation), cancelled in epoch 10 | 7 | 1 (of 9 scored) | 0.938 / 0.011 / 0.305 (epoch 1); 0.936 / 0.007 / 0.230 (epoch 9) | - | - | 1.9 | baseline: recall +1 point over the bundled weights from epoch 1 on, false alarms up and falling with epochs; not scored by source (cancelled) |
-| R1 to R5 | - | see `docs/gridtracknet_recipe_experiments.md` | - | - | - | - | - | - | not run: the chain was cancelled on 2026-10-21 at the user's request (ten more hours); the protocol and commands are in the doc |
+| R1 to R5 | - | see `audit/gridtracknet_recipe_experiments.md` | - | - | - | - | - | - | not run: the chain was cancelled on 2026-10-21 at the user's request (ten more hours); the protocol and commands are in the doc |
 
 ## E0: the current weights, INTER_LINEAR against INTER_AREA
 
 Full tables, the cell histogram and the per-source reading are in
-`docs/gridtracknet_recipe_experiments.md`. Logs: `output/E0/eval_linear.log`, `output/E0/eval_area.log`.
+`audit/gridtracknet_recipe_experiments.md`. Logs: `output/E0/eval_linear.log`, `output/E0/eval_area.log`.
 
 ## Notes
 
