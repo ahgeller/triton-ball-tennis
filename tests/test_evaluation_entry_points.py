@@ -13,10 +13,13 @@ def test_root_scripts_front_the_package_modules():
     import check_parity
     import evaluate_archive
     import score_court_events
+    import track_breaks
     import validate_tracking
     from evaluation import archive, court_events_score, parity, validate
+    from evaluation import track_breaks as track_breaks_module
 
     assert validate_tracking.main is validate.main
+    assert track_breaks.main is track_breaks_module.main
     assert check_parity.main is parity.main
     assert evaluate_archive.main is archive.main
     assert score_court_events.main is court_events_score.main
@@ -27,10 +30,11 @@ def test_every_script_main_takes_argv_and_returns_a_status():
     """main(argv=None) -> int everywhere, invoked as raise SystemExit(main()): a test can drive a
     script without patching sys.argv, and the exit status is the return value, never implicit."""
     import inspect
-    from evaluation import archive, court_events_score, parity, validate
+    from evaluation import archive, court_events_score, parity, track_breaks, validate
     from finetune.data import import_data, realign
     from finetune.training import pretrack, train_gridtracknet
-    for module in (archive, court_events_score, parity, validate, import_data, realign, pretrack, train_gridtracknet):
+    for module in (archive, court_events_score, parity, track_breaks, validate, import_data, realign, pretrack,
+                   train_gridtracknet):
         signature = inspect.signature(module.main)
         assert list(signature.parameters) == ["argv"] and signature.return_annotation in (int, "int"), module.__name__
         source = Path(module.__file__).read_text(encoding="utf-8")
