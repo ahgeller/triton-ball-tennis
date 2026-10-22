@@ -388,10 +388,10 @@ class Tool:
 
         A landing is the clip's (Source.landings), not part of the row's label, so u leaves it
         alone: the key is its own undo. A landing without a point stores none: the court-event
-        scorer takes the ball label of its frame, else of the frame before it, else of the frame
-        after (so the whole frame between two labelled every other frame takes the one before),
-        or the midpoint of the two a half frame lies between (bounce_labels.resolve_points), so it
-        follows the labels wherever they are moved."""
+        scorer takes the ball label of its frame, else the midpoint of the ball labels on the
+        frames either side of it (the two a between landing lies between), or the one of them
+        there is (bounce_labels.resolve_points), so it follows the labels wherever they are
+        moved."""
         session = self.session
         session.awaiting_landing = None
         if session.frame_missing():

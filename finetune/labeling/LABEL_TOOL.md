@@ -139,11 +139,11 @@ point from, so the bar asks you to click where the ball touched the ground: the
 scuff, or the spot under the ball. That click is the landing point, drawn as a
 small cross and saved as the row's coordinates, and the frame stays up. Any other
 key instead leaves the landing without a point, and the scorer takes the ball
-labels around it: for a landing between two frames the midpoint of the two frames'
-ball labels, or the one of them there is; for a landing on a frame without a ball
-label the label of the frame before it, else of the frame after (`resolve_points`
-in `finetune/data/bounce_labels.py`). From the grid, `/` marks and joins the same
-way but asks for no click.
+labels either side of it: the midpoint of the ball labels on the two frames a
+between landing lies between, or on the frame before and the frame after a landing
+on a frame without a ball label, or the one of them there is (`resolve_points` in
+`finetune/data/bounce_labels.py`). From the grid, `/` marks and joins the same way
+but asks for no click.
 
 ## `--uncertain`
 
