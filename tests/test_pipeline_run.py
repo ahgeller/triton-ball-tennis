@@ -596,6 +596,36 @@ def test_zero_frame_video_raises_and_opens_no_writer(tmp_path, monkeypatch, fake
     assert CapturingVideoWriter.streams == {}
 
 
+def test_directory_as_output_video_raises_before_pass_1(tmp_path, monkeypatch, fake_cuda, capsys, clip):
+    """``--output <folder>`` used to reach FFmpeg at the first frame of pass 2, after pass 1
+    and the selector had run; the run now refuses the path before building a detector."""
+    install_fakes(monkeypatch)
+    cfg = make_config(tmp_path, clip, **FULL_OVERRIDES)
+    folder = tmp_path / "out"
+    folder.mkdir()
+    cfg.output_video = str(folder)
+    with pytest.raises(ValueError, match="Tracking video .*is a directory"):
+        pipeline.run(cfg)
+    assert FakeGridTrackNet.instances == []            # no detector was built, so pass 1 never ran
+    assert CapturingVideoWriter.streams == {}
+    assert "[init] Video:" not in capsys.readouterr().out
+    assert not Path(cfg.tracking_json).exists()
+
+
+@pytest.mark.parametrize("field, label", [
+    ("output_debug_path", "Motion debug video"),
+    ("output_detector_input_debug_path", "Detector-input video"),
+    ("output_track_debug_path", "Track-debug video"),
+])
+def test_debug_video_outputs_are_checked_before_pass_1(tmp_path, monkeypatch, fake_cuda, clip, field, label):
+    install_fakes(monkeypatch)
+    cfg = make_config(tmp_path, clip, **FULL_OVERRIDES)
+    setattr(cfg, field, str(tmp_path / "out" / "debug"))     # no container suffix
+    with pytest.raises(ValueError, match=f"{label} .*needs a video container suffix"):
+        pipeline.run(cfg)
+    assert FakeGridTrackNet.instances == [] and CapturingVideoWriter.streams == {}
+
+
 def test_skip_frame_detection_hands_the_detector_the_true_frame_index(tmp_path, monkeypatch, fake_cuda, clip):
     """With ``skip_frame_detect=2`` the detector is asked about every other
     frame; because run() passes ``frame_index``, the frames it is asked about

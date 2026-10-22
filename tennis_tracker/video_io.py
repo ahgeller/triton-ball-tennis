@@ -4,7 +4,8 @@ import contextlib
 import queue
 import subprocess
 import threading
-from typing import List, Optional, Protocol, Tuple
+from pathlib import Path
+from typing import List, Optional, Protocol, Tuple, Union
 
 import cv2
 import numpy as np
@@ -37,6 +38,32 @@ _OPENCV_FOURCC = "mp4v"
 _FFMPEG_CLOSE_TIMEOUT_S = 30.0
 _FFMPEG_KILL_TIMEOUT_S = 5.0
 _QUEUE_POLL_S = 0.1
+# The containers an output video may use: FFmpeg picks the muxer from the suffix
+# and refuses any other ("Unable to choose an output format"), and OpenCV's
+# fallback writes each of these too.
+VIDEO_SUFFIXES = (".mp4", ".mkv", ".mov", ".avi")
+
+
+def check_writable_video_path(path: Union[str, Path], label: str = "Video output") -> None:
+    """Raise ``ValueError`` when ``path`` cannot become a video file.
+
+    FFmpeg only sees the path at the first frame write, after pass 1 and the
+    selector, so the run checks its outputs here before any frame is decoded:
+    the path must not be an existing directory, its suffix must be one of
+    ``VIDEO_SUFFIXES``, and its nearest existing ancestor must be a directory.
+    A missing parent folder passes: the writers create it (``os.makedirs``)
+    when they open.  ``label`` names the output in the message.
+    """
+    target = Path(path).expanduser().resolve()
+    if target.is_dir():
+        raise ValueError(f"{label} {target} is a directory; name a file in it, such as "
+                         f"{target / ('tracking' + VIDEO_SUFFIXES[0])}")
+    if target.suffix.lower() not in VIDEO_SUFFIXES:
+        raise ValueError(f"{label} {target} needs a video container suffix FFmpeg can write "
+                         f"({', '.join(VIDEO_SUFFIXES)})")
+    nearest = next((ancestor for ancestor in target.parents if ancestor.exists()), None)
+    if nearest is None or not nearest.is_dir():
+        raise ValueError(f"{label} {target} cannot be written: {nearest or target.anchor} is not a directory")
 
 
 class PinnedFrameUploader:

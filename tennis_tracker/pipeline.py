@@ -31,6 +31,7 @@ from .render.display_path import build_display_path
 from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
 from .render.summaries import print_selector_track_summary, print_timing_summary
 from .utils import detect_device, print_platform_report, resolve_runtime
+from .video_io import check_writable_video_path
 
 _DEFAULT_FPS = 24.0                 # when the container reports none
 # The display path interpolates across at least this much time, within these frame bounds.
@@ -69,7 +70,10 @@ def _output_label(role: str) -> str:
 
 
 def validate_io_paths(cfg: Config) -> Path:
-    """The resolved input path; raises when an output would overwrite it or another output."""
+    """The resolved input path; raises when an output would overwrite it or
+    another output, or when a video output cannot be written (see
+    ``video_io.check_writable_video_path``), so a bad path fails here and not
+    at the first frame of pass 2."""
     input_path = Path(cfg.input_video).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"Input video not found: {input_path}")
@@ -82,6 +86,8 @@ def validate_io_paths(cfg: Config) -> Path:
             raise ValueError(f"{label} must not overwrite the input video: {path}")
         if path in seen:
             raise ValueError(f"{label} and {seen[path]} resolve to the same output path: {path}")
+        if role != "tracking_json":            # every other output is a video
+            check_writable_video_path(path, label)
         seen[path] = label
     return input_path
 
