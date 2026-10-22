@@ -21,6 +21,7 @@ HINT_UNSURE = (70, 110, 150)     # ... and when it is only a guess
 DRAFT_MARK = (160, 160, 160)     # the draft label's ticks while the suggestion is the mark on offer
 GHOST = (255, 200, 0)            # the dashed guess on a frame with no ball, and its dot in the inset
 LANDING = (255, 190, 80)         # the badge of a frame marked as a landing (/), in the frame view and on its tile
+LANDING_BETWEEN = "LANDING 1/2"  # ... worn by both frames a landing lies between (Hershey fonts have no half sign)
 
 Colour = Tuple[int, int, int]
 
@@ -160,6 +161,24 @@ def draw_badge(image: np.ndarray, text: str, fill: Colour, text_colour: Colour, 
     cv2.rectangle(image, box[0], box[1], fill, -1)
     cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui, text_colour, 2, cv2.LINE_AA)
     return box[0][0], box[0][1], box[1][0], box[1][1]
+
+
+def landing_badge(landing: Optional[float], frame: int) -> Optional[str]:
+    """The text of the LANDING badge a frame wears for `landing` (``LabelSession.landing_for``):
+    LANDING on the landing's own frame, LANDING_BETWEEN when it lies between this frame and the
+    next or previous one; None when the frame wears none."""
+    if landing is None:
+        return None
+    return "LANDING" if landing == frame else LANDING_BETWEEN
+
+
+def draw_landing_point(image: np.ndarray, px: int, py: int, ui: float) -> None:
+    """Where the ball touched the ground, as clicked for a landing between two frames: a small
+    tilted cross in the landing colour, so it cannot be mistaken for the ball mark."""
+    size = max(6, int(round(7 * ui)))
+    thin = max(1, int(round(ui)))
+    cv2.drawMarker(image, (px, py), (0, 0, 0), cv2.MARKER_TILTED_CROSS, size + 2, thin + 2, cv2.LINE_AA)
+    cv2.drawMarker(image, (px, py), LANDING, cv2.MARKER_TILTED_CROSS, size, thin, cv2.LINE_AA)
 
 
 def review_badge(row: Row) -> Optional[Tuple[str, Colour]]:

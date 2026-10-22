@@ -175,9 +175,12 @@ def apply_review(path: Path, rows: List[Row]) -> Optional[dict]:
 
 
 # A clip's landings (``bounce_labels``): frame -> the landing point its row gave, None for a row
-# that left it blank, which means the ball label of that frame. The tool marks frames only, so
-# every landing it adds is a None; a point written by hand is carried through a save unchanged.
-Landings = Dict[int, LabelPoint]
+# that left it blank, which means the ball label of that frame. A landing between two frames is
+# keyed by the half frame between them (3.5) and, on a clip labelled every other frame, by the
+# unlabelled whole frame between (``bounce_labels.between_frames``). The tool marks frames, so a
+# landing it adds is a None until a click places one between two frames; a point written by hand
+# is carried through a save unchanged.
+Landings = Dict[float, LabelPoint]
 
 
 def load_landings(path: Path) -> Landings:

@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from finetune.labeling.label_draw import (FILTERS, LANDING, ZOOM_STEP, draw_badge, draw_ticks, draw_tile_mark, enhance,
-                                          fit_text, hit, mark_plan)
+                                          fit_text, hit, landing_badge, mark_plan)
 from finetune.labeling.label_window import KEYS_CONFIRM, KEYS_ZOOM_IN, KEYS_ZOOM_OUT
 from finetune.refiner.refine import Point, Suggestion
 
@@ -127,9 +127,9 @@ class GridView:
     # ---------------------------------------------------------------- the picture
     def render(self) -> np.ndarray:
         session = self.session
-        rows, landings = session.rows, session.source.landings
+        rows = session.rows
         key = (session.view_w, session.view_h, self.zoom, self.size, session.cursor, session.dirty, session.hints.version,
-               tuple((i, rows[i].x, rows[i].y, rows[i].visible, rows[i].reviewed, rows[i].edited, rows[i].frame in landings)
+               tuple((i, rows[i].x, rows[i].y, rows[i].visible, rows[i].reviewed, rows[i].edited, session.landing_for(i))
                      for i in self.indices))
         if key == self.cache_key:
             return self.cache
@@ -176,7 +176,8 @@ class GridView:
     def tile(self, index: int, width: int, height: int, offer: Optional[Suggestion]) -> Tuple[np.ndarray, float, float, float]:
         """One tile of `width` x `height`: the row's frame about its ball (the whole frame when
         there is none), filtered and marked, with the LANDING badge in its corner on a frame marked
-        as one. (the picture, its frame origin x and y, its scale)."""
+        as one (LANDING 1/2 either side of a landing between two frames). (the picture, its frame
+        origin x and y, its scale)."""
         session = self.session
         row = session.rows[index]
         ui = session.ui
@@ -196,8 +197,9 @@ class GridView:
             draw_ticks(tile, *to_tile(point), colour, ui)
         if plan.mark is not None:
             draw_tile_mark(tile, *to_tile(plan.mark), plan.colour, ui)
-        if row.frame in session.source.landings:
-            draw_badge(tile, "LANDING", LANDING, (0, 0, 0), ui)
+        landing = landing_badge(session.landing_for(index), row.frame)
+        if landing is not None:
+            draw_badge(tile, landing, LANDING, (0, 0, 0), ui)
         return tile, ox, oy, scale
 
     def title(self, index: int, slot: int, offer: Optional[Suggestion]) -> str:

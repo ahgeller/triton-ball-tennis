@@ -36,6 +36,8 @@ class KeyHandler:
             return False  # a mouse callback may have advanced while waitKey dispatched events
         if code in KEYS_QUIT:
             return self.quit_key()
+        if code != ord("/"):
+            self.session.awaiting_landing = None   # any other key: the landing keeps no point (Tool.toggle_landing)
         direction = self.key_direction(key, code)
         if tool.sheet_view.active:
             tool.sheet_view.handle_key(code, direction)

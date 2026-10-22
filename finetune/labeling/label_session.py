@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from finetune.data.bounce_labels import between_frames
 from finetune.labeling.label_draw import FILTERS, ZOOM_STEP
 from finetune.labeling.label_hints import Suggestions
 from finetune.labeling.label_source import Source
@@ -67,6 +68,9 @@ class LabelSession:
         self.ghost: Optional[Point] = None     # a frame with no guess: where the neighbours say the ball is
         self.shown_offers: Dict[int, Point] = {}   # row index -> the suggestion drawn as the mark on
                                                    # offer in the last render; what SPACE takes
+        self.awaiting_landing: Optional[float] = None   # a landing between two frames (its key in the
+                                                        # clip's landings) waiting for the click that says
+                                                        # where the ball touched the ground; see Tool.toggle_landing
         self.disputed_key, self.disputed = None, 0   # disputed_count's cache
 
     # ---------------------------------------------------------------- the clip we are in
@@ -300,6 +304,28 @@ class LabelSession:
         if row.visible:
             return (row.x, row.y)
         return self.ghost
+
+    # ---------------------------------------------------------------- landings
+    def neighbour_frames(self, index: int) -> List[int]:
+        """The frames of the rows before and after row `index` in its clip, in that order; a row at
+        the clip's edge has one. The previous row first: the one you have just come from."""
+        clip = self.rows[index].clip
+        return [self.rows[other].frame for other in (index - 1, index + 1)
+                if 0 <= other < len(self.rows) and self.rows[other].clip == clip]
+
+    def landing_for(self, index: int) -> Optional[float]:
+        """The landing row `index` wears, as its key in the clip's landings: one on its own frame,
+        else one halfway between its frame and the previous or next row's (``between_frames``);
+        None when there is neither."""
+        row = self.rows[index]
+        landings = self.by_clip[row.clip].landings
+        if row.frame in landings:
+            return row.frame
+        for other in self.neighbour_frames(index):
+            between = between_frames(row.frame, other)
+            if between in landings:
+                return between
+        return None
 
     # ---------------------------------------------------------------- suggestions
     def suggestion_for(self, index: int) -> Optional[Suggestion]:
