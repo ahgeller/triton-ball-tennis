@@ -51,8 +51,8 @@ def check_writable_video_path(path: Union[str, Path], label: str = "Video output
     selector, so the run checks its outputs here before any frame is decoded:
     the path must not be an existing directory, its suffix must be one of
     ``VIDEO_SUFFIXES``, and its nearest existing ancestor must be a directory.
-    A missing parent folder passes: the writers create it (``os.makedirs``)
-    when they open.  ``label`` names the output in the message.
+    A missing parent folder passes: pass 1 and pass 2 create it (``os.makedirs``)
+    before they open a writer.  ``label`` names the output in the message.
     """
     target = Path(path).expanduser().resolve()
     if target.is_dir():

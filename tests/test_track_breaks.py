@@ -12,7 +12,10 @@ def _payload(present, chosen_frames, other_frames, width=1000, height=500, fps=3
     frames = [{"frame": f, "present": False} for f in range(10)]
     for f, (x, y) in present.items():
         frames[f] = {"frame": f, "present": True, "x": x, "y": y, "source": "det"}
-    observations = lambda fs: [{"frame": f, "x": 1.0, "y": 1.0} for f in fs]   # noqa: E731
+
+    def observations(fs):
+        return [{"frame": f, "x": 1.0, "y": 1.0} for f in fs]
+
     return {
         "video": {"fps": fps, "width": width, "height": height, "total_frames": 10},
         "chosen_track": {"track_id": 0, "observations": observations(chosen_frames)},

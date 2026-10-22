@@ -72,8 +72,8 @@ class _GroundModelCache:
     the opening frames, wrong whenever the camera moved.
     """
 
-    def __init__(self, initial_kps: Optional[List[float]]) -> None:
-        self.keypoints = initial_kps
+    def __init__(self) -> None:
+        self.keypoints: Optional[List[float]] = None
         self._key: Optional[Tuple[int, ...]] = None     # court_keypoints_key of the model's keypoints
         self.model = None
 
@@ -135,7 +135,7 @@ class _FrameRenderer:
         cfg, video = ctx.cfg, ctx.video
         self.cfg, self.video, self.timing = cfg, video, ctx.timing
         self.pass1, self.selection, self.events, self.writers = pass1, selection, events, writers
-        self.ground_model = _GroundModelCache(None)
+        self.ground_model = _GroundModelCache()
         self.protect_masks = _ProtectMaskCache(video.height, video.width)
         self.sizer = MarkerSizer(cfg)
         self.search_smoother = SearchCentreSmoother()

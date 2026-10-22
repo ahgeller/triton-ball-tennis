@@ -445,11 +445,14 @@ def assert_json_close(actual: Any, expected: Any, what: str, path: str = "") -> 
         assert isinstance(actual, list) and len(actual) == len(expected), f"{what}: length differs at {path or '/'}"
         for index, (left, right) in enumerate(zip(actual, expected)):
             assert_json_close(left, right, what, f"{path}[{index}]")
-    elif isinstance(expected, float) or isinstance(actual, float):
-        assert isinstance(actual, (int, float)) and not isinstance(actual, bool) \
-            and math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9), f"{what}: {path} is {actual!r}, golden {expected!r}"
+    elif isinstance(expected, float):
+        # The same JSON type too: an int where the golden holds a float is a schema change.
+        assert isinstance(actual, float) and math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9), \
+            f"{what}: {path} is {actual!r}, golden {expected!r}"
     else:
-        assert actual == expected, f"{what}: {path} is {actual!r}, golden {expected!r}"
+        # ``40.0 == 40`` and ``True == 1`` in Python; neither is the same JSON value.
+        assert type(actual) is type(expected) and actual == expected, \
+            f"{what}: {path} is {actual!r}, golden {expected!r}"
 
 
 def load_golden() -> Dict[str, Any]:

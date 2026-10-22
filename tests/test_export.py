@@ -11,7 +11,13 @@ from ball_in_play_selector.core import frame_result
 from tennis_tracker import tracking_schema
 from tennis_tracker.court import court_scene
 from tennis_tracker.court.court_scene import BallPoint, BounceEvent, ContactEvent
-from tennis_tracker.export import RunResult, court_events_to_json, frame_result_to_json, frame_row_to_result
+from tennis_tracker.export import (
+    RunResult,
+    court_events_to_json,
+    frame_result_to_json,
+    frame_row_to_result,
+    track_to_json,
+)
 from tennis_tracker.run_context import CourtEvents
 
 
@@ -96,7 +102,6 @@ def test_tracks_and_rows_export_their_provenance_and_the_summary_lists_the_timel
                         selection={"established": True, "reacquired": False, "airborne": False, "rolling": False},
                         in_timeline=True)
     unused = models.Track(track_id=4, cfg=cfg, start_reason="first", end_reason="clip_end")
-    from tennis_tracker.export import track_to_json
     exported = track_to_json(used)
     assert exported["start"] == {"reason": "gate", "rival_track": 1} and exported["end_reason"] == "max_gap"
     assert exported["selection"] == used.selection and exported["in_timeline"] is True

@@ -16,7 +16,7 @@ from ball_in_play_selector.core import (
     selected_tracks,
     trajectory_observations,
 )
-from ball_in_play_selector.scoring import select_timeline_chain
+from ball_in_play_selector.scoring import select_timeline_chain, stitch_track_chain
 
 FRAME_SHAPE = (360, 640)
 WIDTH, HEIGHT = FRAME_SHAPE[1], FRAME_SHAPE[0]
@@ -421,6 +421,33 @@ def test_a_track_records_why_it_started_and_how_it_ended():
     assert (ball.start_reason, ball.start_rival, ball.end_reason) == ("static", static.track_id, "max_gap")
     ends_live = build_tracks(crossing[:12], _cfg(30.0))
     assert {track.end_reason for track in ends_live} == {"clip_end"}
+
+
+def test_a_detection_the_greedy_assignment_passed_over_starts_a_track_as_outbid():
+    # From frame 5 a second detection follows the ball 3 px above it: every gate accepts it, but
+    # the ball's track takes the nearer one, so it starts its own track "outbid" by the ball's,
+    # not "first" (no track was alive) and not with a gate name (none turned it away).
+    frames = 20
+    rows = [[Detection(frame, 100.0 + 8.0 * frame, 100.0, 0, 0, 4, 4, 0.9, 16.0, True)] for frame in range(frames)]
+    for frame in range(5, frames):
+        rows[frame].append(Detection(frame, 100.0 + 8.0 * frame, 97.0, 0, 0, 4, 4, 0.8, 16.0, True))
+    ball, shadow = sorted(build_tracks(rows, _cfg(30.0)), key=lambda track: track.first_frame)
+    assert (ball.start_reason, ball.start_rival) == ("first", None)
+    assert (shadow.start_reason, shadow.start_rival, shadow.first_frame) == ("outbid", ball.track_id, 5)
+
+
+def test_a_stitched_chain_carries_its_tracks_record_and_sits_in_the_timeline():
+    cfg = _cfg(30.0)
+    first = Track(track_id=0, cfg=cfg, start_reason="first", end_reason="max_gap", in_timeline=True)
+    second = Track(track_id=1, cfg=cfg, start_reason="gate", start_rival=0, end_reason="clip_end", in_timeline=True)
+    for frame in range(0, 5):
+        first.update(Detection(frame, 10.0 * frame, 0.0, 0, 0, 4, 4, 0.9, 16.0, True))
+    for frame in range(8, 13):
+        second.update(Detection(frame, 10.0 * frame, 0.0, 0, 0, 4, 4, 0.9, 16.0, True))
+    stitched = stitch_track_chain([first, second], cfg)
+    assert stitched.score_value("timeline_tracks") == 2.0
+    assert (stitched.start_reason, stitched.start_rival, stitched.end_reason) == ("first", None, "clip_end")
+    assert stitched.in_timeline and stitched.selection == {}
 
 
 def test_the_selection_verdicts_and_the_timeline_are_recorded_and_exported():

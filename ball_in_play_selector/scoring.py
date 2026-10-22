@@ -405,7 +405,11 @@ def stitch_track_chain(chain: List[Track], cfg: SelectorConfig) -> Optional[Trac
     if len(obs) < 2:
         return chain[0]
 
-    stitched = Track(track_id=chain[0].track_id, cfg=cfg)
+    # The chain's own record: it begins as its first track did and ends as its last did, and
+    # the timeline used it by construction. ``selection`` stays empty: the chain was never judged.
+    stitched = Track(track_id=chain[0].track_id, cfg=cfg,
+                     start_reason=chain[0].start_reason, start_rival=chain[0].start_rival,
+                     end_reason=chain[-1].end_reason, in_timeline=True)
     stitched.observations = obs
     stitched.last_pos = (obs[-1].cx, obs[-1].cy)
     prev = obs[-2]

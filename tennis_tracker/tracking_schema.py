@@ -77,7 +77,8 @@ class ObservationJson(TypedDict):
 
 class TrackStartJson(TypedDict):
     """Why the detection that started a track joined no live track: ``reason`` is "first" when
-    none was alive, else the association gate that turned it away from ``rival_track``."""
+    none was alive, "outbid" when ``rival_track`` accepted it but took another detection, else
+    the association gate that turned it away from ``rival_track``."""
 
     reason: str
     rival_track: Optional[int]

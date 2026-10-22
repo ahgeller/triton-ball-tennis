@@ -71,7 +71,8 @@ class Track:
     misses: int = 0
     alive: bool = True
     # Why the detection that started this track joined no live track (association.build_tracks):
-    # "first" when none was alive, else the gate of the nearest live track, which is start_rival.
+    # "first" when none was alive, "outbid" when the track that accepted it (start_rival) took
+    # another detection, else the gate of the nearest live track, which is start_rival.
     start_reason: str = ""
     start_rival: Optional[int] = None
     # How the track ended: "max_gap" (missed too long) or "clip_end".
