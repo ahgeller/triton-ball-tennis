@@ -11,7 +11,7 @@ the same first-answer-wins rule and y offset. There is no second copy of that pr
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Sequence, Set
 
 import torch
 
@@ -19,10 +19,11 @@ from finetune.data.detect import ball_detector, detect_points
 from finetune.data.detector_metrics import DetectorMetrics, scale_for_width
 from finetune.data.workspace import video_meta
 from finetune.training.clips import Clip
-from finetune.training.frame_cache import training_targets
+from finetune.training.frame_cache import TrainingUnit, training_targets
 
 METRIC_SLACK = 0.005       # a candidate may be worse by this on wrong/false-alarm rate: 1 frame in 200
 WRONG_PENALTY = 2.0        # ... and each unit of extra wrong-object rate costs this much recall
+FALSE_ALARM_CONF = 0.3     # a detection at or above this on a no-ball frame makes its unit a hard negative
 
 
 def score_weights(weights: Path, clips: List[Clip], device: torch.device, threshold: float = 0.5) -> DetectorMetrics:
@@ -41,6 +42,21 @@ def score_weights(weights: Path, clips: List[Clip], device: torch.device, thresh
             pairs.append((None if label is None else (label[0] * scale, label[1] * scale),
                           None if point is None else (point[0] * scale, point[1] * scale)))
     return DetectorMetrics.of(pairs, 1.0)
+
+
+def false_alarm_units(weights: Path, clips: List[Clip], samples: Sequence[TrainingUnit], device: torch.device,
+                      threshold: float = FALSE_ALARM_CONF) -> Set[int]:
+    """The indices into ``samples`` of the units in which the detector on ``weights`` fired, at or
+    above ``threshold``, on a frame labelled as having no ball: one prepass over each clip the
+    units come from, the hard negatives ``--oversample-false-alarms`` weights up."""
+    detector = ball_detector(weights, conf=threshold, device=str(device.index or 0))
+    videos = {clip: video for clip, video, _, _ in clips}
+    fired: Dict[str, Set[int]] = {}
+    for clip in sorted({sample["clip"] for sample in samples}):
+        fired[clip] = set(detect_points(detector, videos[clip], video_meta(videos[clip])))
+    return {index for index, sample in enumerate(samples)
+            if any(point is None and frame in fired[sample["clip"]]
+                   for frame, point in zip(sample["indices"], sample["points"]))}
 
 
 def promotion_improves(candidate: DetectorMetrics, incumbent: DetectorMetrics) -> bool:

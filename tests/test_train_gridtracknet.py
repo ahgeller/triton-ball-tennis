@@ -1,10 +1,12 @@
 """finetune/training/train_gridtracknet.py and the modules under it: the script's own self-test, and the data
 path - which clips train, the per-clip frame cache, and the flip augmentation's label transform - on
 synthetic clips under tmp_path. No GPU, no real label or video."""
+import csv
 import json
 import os
 import random
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -12,12 +14,16 @@ import pytest
 import torch
 
 from finetune.training import train_gridtracknet as training
+from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.labels import write_labels
 from finetune.training.clips import ClipSelection, find_clips
-from finetune.training.dataset import Augmenter, UnitDataset, make_target
+from finetune.training.dataset import (TRANSLATE_PX, Augmenter, UnitDataset, compress, make_target, reverse, translate,
+                                       translate_limits)
 from finetune.training.frame_cache import DATA_VERSION, TrainingUnit, prepare_clip, training_targets
+from finetune.training.loop import fresh_model
 from finetune.training.metrics import promotion_improves
-from tests._helpers import metric_probe, write_clip
+from tennis_tracker.gridtracknet import load_model
+from tests._helpers import blank_template, metric_probe, write_clip
 
 SIZE = (64, 36)
 
@@ -36,6 +42,20 @@ def test_main_reports_a_run_that_cannot_start_as_status_1(tmp_path, capsys):
     assert training.main(["--videos", str(videos), "--labels", str(labels), "--cameras", "fixed", *folders]) == 1
     assert "[error] --cameras needs camera tags" in capsys.readouterr().err
     assert not (tmp_path / "cache").exists() and not (tmp_path / "run").exists()
+
+
+def test_holdout_and_val_clips_are_alternatives_and_the_config_records_the_choice(capsys):
+    parser = training.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--holdout", "mixed_v1", "--val-clips", "video10"])
+    assert "not allowed with argument" in capsys.readouterr().err
+    args = parser.parse_args(["--holdout", "mixed_v1", "--epochs", "3"])
+    config = training.run_config(args, ["video1", "video13"], ["video1"], {"custom": 2.0})
+    assert config["holdout"] == "mixed_v1" and config["val_clips"] is None and config["validation_clips"] == ["video1"]
+    assert config["clips"] == ["video1", "video13"] and config["epochs"] == 3 and config["oversample"] == {"custom": 2.0}
+    args = parser.parse_args(["--val-clips", "video10", "grid_match*"])
+    config = training.run_config(args, ["video10"], ["video10"], {})
+    assert config["holdout"] is None and config["val_clips"] == ["video10", "grid_match*"]
 
 
 # --------------------------------------------------------------------------- which clips train
@@ -118,28 +138,55 @@ def test_prepare_clip_caches_the_needed_frames_and_describes_the_units(tmp_path)
     assert record["version"] == DATA_VERSION and record["clip"] == "c" and record["source"] == "custom"
     assert (record["stride"], record["size"]) == (1, list(SIZE))
     units = record["samples"]
-    assert [unit["frames"] for unit in units] == [[f"frames/c/{i:06d}.jpg" for i in range(start, start + 5)]
+    assert [unit["frames"] for unit in units] == [[f"frames/c/{i:06d}.png" for i in range(start, start + 5)]
                                                   for start in (0, 2, 4, 6)]
     assert units[0]["points"] == [[10.0, 20.0], [11.0, 20.0], [12.0, 20.0], None, [14.0, 20.0]]
-    assert units[0] == TrainingUnit(clip="c", source="custom", frames=units[0]["frames"], points=units[0]["points"], size=list(SIZE))
+    assert units[0] == TrainingUnit(clip="c", source="custom", indices=[0, 1, 2, 3, 4], frames=units[0]["frames"],
+                                    points=units[0]["points"], size=list(SIZE))
     assert record["visible"] == sum(point is not None for unit in units for point in unit["points"])
     cached = sorted(p.name for p in (data / "frames" / "c").iterdir())
-    assert cached == [f"{i:06d}.jpg" for i in range(11)]            # the last unit is 6..10; frame 11 is in none
-    image = cv2.imread(str(data / "frames" / "c" / "000007.jpg"))
-    assert image.shape == (training.HEIGHT, training.WIDTH, 3) and abs(int(image.mean()) - 7) <= 1
-    assert json.loads((data / "clips" / "c.json").read_text(encoding="utf-8"))["signature"] == record["signature"]
+    assert cached == [f"{i:06d}.png" for i in range(11)]            # the last unit is 6..10; frame 11 is in none
+    assert record["frames"] == list(range(11))
+    image = cv2.imread(str(data / "frames" / "c" / "000007.png"))
+    assert image.shape == (training.HEIGHT, training.WIDTH, 3) and int(image.mean()) == 7      # lossless
+    assert json.loads((data / "clips" / "c.json").read_text(encoding="utf-8")) == record
 
     # a second call is served from the cache: the frames are not re-extracted ...
-    stamp = (data / "frames" / "c" / "000000.jpg").stat().st_mtime_ns
+    stamp = (data / "frames" / "c" / "000000.png").stat().st_mtime_ns
     again = prepare_clip(("c", video, csv_path, "elsewhere"), data, rebuild=False)
-    assert again["samples"] == units and again["source"] == "elsewhere"     # the source follows the manifest
-    assert (data / "frames" / "c" / "000000.jpg").stat().st_mtime_ns == stamp
-    # ... until the label file changes, which changes the signature
+    assert [unit["frames"] for unit in again["samples"]] == [unit["frames"] for unit in units]
+    assert again["source"] == "elsewhere" and {unit["source"] for unit in again["samples"]} == {"elsewhere"}   # the source follows the manifest
+    assert (data / "frames" / "c" / "000000.png").stat().st_mtime_ns == stamp
+    # ... and a label edit only changes the units: the signature is the video's, the frames stay
     write_labels(csv_path, {f: (10.0 + f, 20.0) for f in range(7)}, *SIZE)
     os.utime(csv_path, ns=(stamp + 10 ** 9, stamp + 10 ** 9))
-    rebuilt = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=False)
-    assert len(rebuilt["samples"]) == 2 and rebuilt["signature"] != record["signature"]
-    assert sorted(p.name for p in (data / "frames" / "c").iterdir()) == [f"{i:06d}.jpg" for i in range(7)]
+    edited = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=False)
+    assert len(edited["samples"]) == 2 and edited["signature"] == record["signature"]
+    assert (data / "frames" / "c" / "000000.png").stat().st_mtime_ns == stamp
+    assert sorted(p.name for p in (data / "frames" / "c").iterdir()) == cached
+    # --rebuild-data extracts everything the units need afresh and drops the rest
+    rebuilt = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=True)
+    assert rebuilt["frames"] == list(range(7)) and (data / "frames" / "c" / "000000.png").stat().st_mtime_ns > stamp
+    assert sorted(p.name for p in (data / "frames" / "c").iterdir()) == [f"{i:06d}.png" for i in range(7)]
+
+
+def test_prepare_data_splits_the_units_and_needs_training_units_only(tmp_path, capsys):
+    """The trainer decides whether an empty validation split is an error (--all-clips holds
+    nothing out); the cache only insists on something to train on."""
+    from finetune.training.frame_cache import prepare_data
+    clips = []
+    for name in ("a", "b"):
+        video = write_clip(tmp_path / f"{name}.avi", 8, SIZE, 30.0)
+        csv_path = tmp_path / f"{name}_ball.csv"
+        write_labels(csv_path, {f: (1.0, 1.0) for f in range(7)}, *SIZE)
+        clips.append((name, video, csv_path, "custom"))
+    manifest = prepare_data(clips, tmp_path / "data", ["b"], rebuild=False, workers=1)
+    assert [unit["clip"] for unit in manifest["train"]] == ["a", "a"] and [unit["clip"] for unit in manifest["val"]] == ["b", "b"]
+    assert manifest["validation_clips"] == ["b"] and "2 clips ready" in capsys.readouterr().out
+    everything = prepare_data(clips, tmp_path / "data", [], rebuild=False, workers=1)
+    assert len(everything["train"]) == 4 and everything["val"] == []
+    with pytest.raises(ValueError, match="training split"):
+        prepare_data(clips, tmp_path / "data", ["a", "b"], rebuild=False, workers=1)
 
 
 def test_prepare_clip_refuses_a_video_that_ends_before_its_labels(tmp_path):
@@ -152,14 +199,15 @@ def test_prepare_clip_refuses_a_video_that_ends_before_its_labels(tmp_path):
 
 # --------------------------------------------------------------------------- augmentation
 
-def unit_on_disk(data: Path) -> TrainingUnit:
-    """One unit whose five cached frames carry a mark on their left side."""
-    (data / "frames" / "u").mkdir(parents=True)
+def unit_on_disk(data: Path, stripe=(0, 10)) -> TrainingUnit:
+    """One unit whose five cached frames carry a red stripe over the cache columns `stripe`
+    (the left edge by default)."""
+    (data / "frames" / "u").mkdir(parents=True, exist_ok=True)
     for index in range(5):
         image = np.zeros((training.HEIGHT, training.WIDTH, 3), np.uint8)
-        image[:, :10] = (0, 0, 255)                               # red (BGR) stripe at the left
-        cv2.imwrite(str(data / "frames" / "u" / f"{index:06d}.jpg"), image, [cv2.IMWRITE_JPEG_QUALITY, 100])
-    return TrainingUnit(clip="u", source="custom", frames=[f"frames/u/{i:06d}.jpg" for i in range(5)],
+        image[:, stripe[0]:stripe[1]] = (0, 0, 255)               # red (BGR) stripe
+        cv2.imwrite(str(data / "frames" / "u" / f"{index:06d}.png"), image)
+    return TrainingUnit(clip="u", source="custom", indices=list(range(5)), frames=[f"frames/u/{i:06d}.png" for i in range(5)],
                         points=[[100.0, 200.0], None, [1919.0, 0.0], [0.0, 1079.0], [500.5, 500.5]], size=[1920, 1080])
 
 
@@ -170,12 +218,33 @@ def forced(dataset: UnitDataset, flip: float) -> None:
     dataset.rng.draws.random = lambda: flip
 
 
+def scripted(dataset: UnitDataset, tosses, integers=()) -> None:
+    """Make the coin tosses answer `tosses` in turn and the integer draws `integers`."""
+    dataset.rng = Augmenter(0)
+    dataset.rng.draws = random.Random(0)
+    dataset.rng.draws.random = iter(tosses).__next__
+    dataset.rng.draws.randint = lambda low, high: next(remaining)
+    remaining = iter(integers)
+
+
+def stripe_centre(images: torch.Tensor) -> float:
+    """Where the red stripe's mass sits, in the unit's 1920-wide frame coordinates."""
+    red = images[0].numpy().sum(axis=0)
+    columns = np.arange(training.WIDTH) + 0.5
+    return float((red * columns).sum() / red.sum()) * 1920 / training.WIDTH
+
+
+def decoded_x(target: torch.Tensor, frame: int = 0) -> float:
+    row, col = np.argwhere(target[frame * 3].numpy() == 1)[0]
+    return (col + float(target[frame * 3 + 1, row, col])) * 1920 / training.GRID_COLS
+
+
 def test_flip_mirrors_the_frames_and_the_labels_about_the_image_width(tmp_path):
     unit = unit_on_disk(tmp_path)
     plain = UnitDataset(tmp_path, [unit], augment=False)
     images, target = plain[0]
     assert images.shape == (15, training.HEIGHT, training.WIDTH) and images.dtype == torch.float32
-    assert float(images[0, 0, 0]) > 0.9 and float(images[0, 0, -1]) < 0.1            # red channel first (RGB); JPEG-close
+    assert float(images[0, 0, 0]) == 1.0 and float(images[0, 0, -1]) == 0.0           # red channel first (RGB); lossless
     assert torch.equal(target, make_target(unit["points"], 1920, 1080))
 
     flipped = UnitDataset(tmp_path, [unit], augment=True)
@@ -211,7 +280,257 @@ def test_flipped_label_lands_on_the_flipped_pixels(tmp_path):
     assert decoded_x == pytest.approx(1907.5) and decoded_x == pytest.approx(stripe_centre, abs=0.05)
 
 
+def test_translate_moves_the_stripe_and_the_label_by_the_same_shift(tmp_path):
+    # A stripe on cache pixels 40-49 has its centre at 45 cache pixels, 112.5 in the unit's
+    # 1920-wide frame coordinates; a shift of 16 cache pixels is 40 native ones, so stripe and
+    # label land at 152.5. (The stripe sits away from the edge because the border is replicated,
+    # which would stretch an edge stripe over the gap the shift opens.)
+    unit = unit_on_disk(tmp_path, stripe=(40, 50))
+    unit["points"] = [[112.5, 200.0], None, None, None, None]
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"translate"})
+    scripted(dataset, tosses=[1.0, 0.0], integers=[16, 0])               # no flip; translate, dx=16, dy=0
+    images, target = dataset[0]
+    assert abs(stripe_centre(images) - 152.5) < 0.05
+    assert decoded_x(target) == pytest.approx(152.5) and decoded_x(target) == pytest.approx(stripe_centre(images), abs=0.05)
+    for frame in range(1, 5):                                             # every frame shifted alike
+        assert torch.equal(images[frame * 3:frame * 3 + 3], images[:3])
+    assert float(target[3:].sum()) == 0.0                                 # no ball stays no ball
+    edge = unit_on_disk(tmp_path, stripe=(0, 10))
+    edge["points"] = [[12.5, 200.0], None, None, None, None]
+    dataset = UnitDataset(tmp_path, [edge], augment=True, augmentations={"translate"})
+    scripted(dataset, tosses=[1.0, 0.0], integers=[16, 0])
+    images, target = dataset[0]
+    assert float(images[0, :, :26].mean()) > 0.99 and float(images[0, :, 26:].mean()) < 0.01     # replicated: red fills the gap
+    assert decoded_x(target) == pytest.approx(52.5)
+
+
+def test_translate_is_held_so_that_no_label_leaves_the_image(tmp_path):
+    unit = unit_on_disk(tmp_path)                                         # labels at x=0 and x=1919, y=0 and y=1079
+    assert translate_limits(unit["points"], 1920, 1080, training.WIDTH, training.HEIGHT) == (0, 0, 0, 0)
+    assert translate_limits([[12.5, 200.0], None], 1920, 1080, training.WIDTH, training.HEIGHT) == (-5, 20, -20, 20)
+    assert translate_limits([[1910.0, 1070.0]], 1920, 1080, training.WIDTH, training.HEIGHT) == (-20, 3, -20, 3)
+    assert translate_limits([None] * 5, 1920, 1080, training.WIDTH, training.HEIGHT) == (-TRANSLATE_PX,) * 1 + (TRANSLATE_PX, -TRANSLATE_PX, TRANSLATE_PX)
+    images = np.zeros((15, training.HEIGHT, training.WIDTH), np.float32)
+    images[:, :, :10] = 1.0
+    shifted, points = translate(images, [[1919.0, 1079.0], None, [0.0, 0.0]], 0, 0, 1920, 1080)
+    assert np.array_equal(shifted, images) and points == [[1919.0, 1079.0], None, [0.0, 0.0]]
+    shifted, points = translate(images, [[100.0, 100.0]], -4, 8, 1920, 1080)
+    assert points == [[90.0, 120.0]] and shifted.shape == images.shape
+    assert float(shifted[0, 0, :6].sum()) == 6.0 and float(shifted[0, 0, 6]) == 0.0      # the stripe moved 4 left
+    assert float(shifted[0, 7].sum()) == 6.0 == float(shifted[0, 8].sum())                # rows moved 8 down, the top replicated
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"translate"})
+    scripted(dataset, tosses=[1.0, 0.0], integers=[0, 0])                 # the clamped draw: randint(0, 0)
+    images, target = dataset[0]
+    assert torch.equal(target, make_target(unit["points"], 1920, 1080))
+
+
+def test_reverse_reverses_the_frames_and_the_targets(tmp_path):
+    unit = unit_on_disk(tmp_path)
+    plain, forward = UnitDataset(tmp_path, [unit], augment=False)[0]
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"reverse"})
+    scripted(dataset, tosses=[1.0, 0.0])                                  # no flip; reverse
+    images, target = dataset[0]
+    assert torch.equal(target, make_target(unit["points"][::-1], 1920, 1080))
+    assert torch.equal(images.reshape(5, 3, training.HEIGHT, training.WIDTH).flip(0).reshape(15, training.HEIGHT, training.WIDTH), plain)
+    frames = np.arange(15, dtype=np.float32).reshape(15, 1, 1) * np.ones((15, 2, 2), np.float32)
+    reversed_frames, points = reverse(frames, [[1.0, 1.0], None, [3.0, 3.0], [4.0, 4.0], [5.0, 5.0]])
+    assert reversed_frames[:, 0, 0].tolist() == [12, 13, 14, 9, 10, 11, 6, 7, 8, 3, 4, 5, 0, 1, 2]
+    assert points == [[5.0, 5.0], [4.0, 4.0], [3.0, 3.0], None, [1.0, 1.0]]
+
+
+def test_compress_keeps_the_shape_and_the_labels_and_changes_only_the_pixels(tmp_path):
+    unit = unit_on_disk(tmp_path)
+    plain, forward = UnitDataset(tmp_path, [unit], augment=False)[0]
+    dataset = UnitDataset(tmp_path, [unit], augment=True, augmentations={"compress"})
+    scripted(dataset, tosses=[1.0, 0.0, 1.0], integers=[35])             # no flip; compress at quality 35; no blur
+    images, target = dataset[0]
+    assert images.shape == plain.shape and images.dtype == torch.float32 and torch.equal(target, forward)
+    assert 0.0 <= float(images.min()) <= float(images.max()) <= 1.0
+    assert not torch.equal(images, plain) and float((images - plain).abs().mean()) < 0.05    # artefacts, not another picture
+    assert float(images[0, 100, :5].mean()) > 0.8 and float(images[0, 100, 100:].mean()) < 0.1
+    rough = compress(plain.numpy(), 35)
+    assert np.array_equal(rough, images.numpy())                          # the dataset is the function, no more
+    assert float(np.abs(compress(plain.numpy(), 95) - plain.numpy()).mean()) < float(np.abs(rough - plain.numpy()).mean())
+
+
+def test_new_augmentations_draw_after_the_old_ones_so_old_runs_reproduce(tmp_path):
+    """A run with --augment basic makes exactly the draws it always made: the newer augmentations
+    draw nothing unless named, so the seed still reproduces an old run."""
+    unit = unit_on_disk(tmp_path)
+    before, after = UnitDataset(tmp_path, [unit], augment=True), UnitDataset(tmp_path, [unit], augment=True, augmentations={"basic"})
+    before.rng, after.rng = Augmenter(5), Augmenter(5)
+    for _ in range(3):
+        images, target = before[0]
+        again, target_again = after[0]
+        assert torch.equal(images, again) and torch.equal(target, target_again)
+    assert before.rng.draws.random() == after.rng.draws.random()         # the streams are in step
+    everything = UnitDataset(tmp_path, [unit], augment=True, augmentations=set(training.AUGMENTATIONS))
+    everything.rng = Augmenter(5)
+    images, target = everything[0]
+    assert images.shape == (15, training.HEIGHT, training.WIDTH) and target.shape == (15, training.GRID_ROWS, training.GRID_COLS)
+    with pytest.raises(ValueError, match="unknown augmentation"):
+        UnitDataset(tmp_path, [unit], augment=True, augmentations={"basic", "rotate"})
+    assert UnitDataset(tmp_path, [unit], augment=False, augmentations={"translate"}).augmentations == set()
+
+
 # --------------------------------------------------------------------------- the metric and the winner
+
+def scripted_run(tmp_path, argv, train_losses, val_losses, scored, scoring=True, validate=True):
+    """``fit`` on a fresh CPU model with the epoch losses scripted and the held-out metric answered
+    from `scored` (recall per scored call, wrong 0); returns (args, selection, the metric calls).
+    `scoring` False runs without scoring and `validate` False without a validation loader."""
+    model = fresh_model(torch.device("cpu"))
+    with torch.no_grad():
+        model.convs[0].bias.zero_()
+    template = blank_template(model, tmp_path / "template.npz")
+    args = training.build_parser().parse_args(["--run-dir", str(tmp_path / "run"), "--weights", str(template), *argv])
+    args.run_dir.mkdir()
+    calls = []
+
+    def score(weights):
+        calls.append(weights)
+        return training.metrics_of(scored[len(calls) - 1], 0.0)
+
+    def train_epoch(model, *_):
+        with torch.no_grad():
+            model.convs[0].bias += 1.0          # "training": the first bias counts the epochs, so each saved file is its epoch
+        return train_losses[int(model.convs[0].bias[0]) - 1]
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    with patch.object(training, "train_epoch", side_effect=train_epoch), \
+            patch.object(training, "evaluate_loss", side_effect=val_losses):
+        selection = training.fit(args, model, None, object() if validate else None, optimizer, scaler, torch.device("cpu"),
+                                 score if scoring else None)
+    return args, selection, calls
+
+
+def results_of(run_dir):
+    with (run_dir / "results.csv").open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_best_npz_is_the_epoch_the_detector_metric_prefers_not_the_lowest_loss(tmp_path):
+    """Three epochs: the validation loss keeps falling, the held-out recall peaks at epoch 2 and
+    epoch 3 only ties it. best.npz is epoch 2 (a tie keeps the earlier epoch), best_loss.npz is
+    epoch 3, and results.csv carries both the losses and the metric of every scored epoch."""
+    args, selection, calls = scripted_run(tmp_path, ["--epochs", "3"], [0.6, 0.4, 0.3], [0.5, 0.3, 0.2], [0.80, 0.90, 0.90])
+    assert calls == [args.run_dir / "last.npz"] * 3
+    assert (selection.best_epoch, selection.best_loss_epoch) == (2, 3) and selection.best_loss == 0.2
+    assert selection.best_metrics.recall == 0.90 and selection.best_path == args.run_dir / "best.npz"
+    rows = results_of(args.run_dir)
+    assert [row["epoch"] for row in rows] == ["1", "2", "3"] and list(rows[0]) == list(training.RESULTS_COLUMNS)
+    assert [float(row["val_loss"]) for row in rows] == [0.5, 0.3, 0.2]
+    assert [float(row["recall"]) for row in rows] == [0.80, 0.90, 0.90] and rows[1]["visible"] == "100"
+    assert all(row["score_seconds"] != "" and row["seconds"] != "" for row in rows)
+    # the files are the epochs they claim (the scripted epoch counts in the first bias)
+    assert epoch_of(args.run_dir / "best.npz") == 2 and epoch_of(args.run_dir / "best_loss.npz") == 3
+    assert epoch_of(args.run_dir / "last.npz") == 3
+
+
+def epoch_of(weights: Path) -> int:
+    return int(load_model(weights, torch.device("cpu")).convs[0].bias[0])
+
+
+def test_score_every_leaves_unscored_epochs_blank_and_always_scores_the_last(tmp_path):
+    args, selection, calls = scripted_run(tmp_path, ["--epochs", "3", "--score-every", "2"], [0.6, 0.4, 0.3],
+                                          [0.5, 0.3, 0.2], [0.95, 0.90])
+    assert len(calls) == 2 and selection.best_epoch == 2                 # epochs 2 and 3 scored; 2 preferred
+    assert epoch_of(args.run_dir / "best.npz") == 2 and epoch_of(args.run_dir / "last.npz") == 3
+    rows = results_of(args.run_dir)
+    assert rows[0]["recall"] == "" and rows[0]["score_seconds"] == "" and rows[0]["val_loss"] != ""
+    assert rows[1]["recall"] == "0.950000" and rows[2]["recall"] == "0.900000"
+    assert training.main(["--score-every", "0", "--self-test"]) == 0        # the self-test needs no run
+    assert training.main(["--score-every", "0"]) == 1
+
+
+def test_pick_winner_reuses_the_best_epochs_metrics_and_records_how_it_chose(tmp_path, capsys):
+    args, selection, _ = scripted_run(tmp_path, ["--epochs", "2", "--save", str(tmp_path / "save.npz")],
+                                      [0.6, 0.4], [0.5, 0.3], [0.90, 0.85])
+    clips = [("video1", Path("v1"), Path("c1"), "custom"), ("video10", Path("v10"), Path("c10"), "custom")]
+    with patch.object(training, "score_weights", return_value=training.metrics_of(0.80, 0.0)) as baseline:
+        training.pick_winner(args, clips, ["video10"], selection, torch.device("cpu"))
+    assert baseline.call_args.args[:2] == (args.weights, clips[1:])      # the starting weights, on the held-out clips only
+    winner = json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+    assert Path(winner["winner"]) == args.run_dir / "best.npz" and winner["selected_by"] == "detector_metric"
+    assert winner["best_epoch"] == 1 and winner["best_loss_epoch"] == 2 and winner["validation_clips"] == ["video10"]
+    assert winner["metrics"]["recall"] == 0.90 and winner["starting_weights"]["metrics"]["recall"] == 0.80
+    assert epoch_of(tmp_path / "save.npz") == 1
+    assert "promote it with" in capsys.readouterr().out
+
+    with patch.object(training, "score_weights", return_value=training.metrics_of(0.95, 0.0)):
+        training.pick_winner(args, clips, ["video10"], selection, torch.device("cpu"))
+    winner = json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+    assert Path(winner["winner"]) == args.weights and winner["metrics"]["recall"] == 0.95
+    assert (tmp_path / "save.npz").read_bytes() == args.weights.read_bytes()
+    assert "stayed ahead" in capsys.readouterr().out
+    args.from_scratch = True
+    with patch.object(training, "score_weights") as never:
+        training.pick_winner(args, clips, ["video10"], selection, torch.device("cpu"))
+    assert not never.called and "starting_weights" not in json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+
+
+def test_all_clips_runs_every_epoch_unscored_and_records_the_recipe(tmp_path, capsys):
+    """Nothing held out: no validation loss, no scoring, last.npz is the result, and winner.json
+    says so (selected_by recipe) with the selection run's details copied in; --epochs defaults
+    to that run's best epoch."""
+    selection_dir = tmp_path / "selection"
+    selection_dir.mkdir()
+    (selection_dir / "winner.json").write_text(json.dumps({"winner": "best.npz", "selected_by": "detector_metric", "best_epoch": 2,
+                                                           "metrics": {"recall": 0.9}, "starting_weights": {"metrics": {"recall": 0.8}}}))
+    (selection_dir / "config.json").write_text(json.dumps({"augment": ["basic", "translate"], "oversample": {}, "oversample_absent": 3.0,
+                                                           "oversample_false_alarms": 1.0, "epoch_units": None, "batch_size": 2,
+                                                           "lr": 1.0, "seed": 7, "holdout": "mixed_v1", "validation_clips": ["video1"]}))
+    selection_run = training.read_selection_run(selection_dir)
+    assert selection_run["best_epoch"] == 2 and selection_run["metrics"] == {"recall": 0.9}
+    assert selection_run["recipe"]["augment"] == ["basic", "translate"] and selection_run["recipe"]["holdout"] == "mixed_v1"
+    with pytest.raises(ValueError, match="no readable winner.json"):
+        training.read_selection_run(tmp_path / "nowhere")
+
+    args, selection, calls = scripted_run(tmp_path, ["--epochs", "2", "--all-clips", "--save", str(tmp_path / "save.npz")],
+                                          [0.6, 0.4], [], [], scoring=False, validate=False)
+    assert calls == [] and selection.best_metrics is None and selection.best_epoch == 2
+    assert selection.best_path == args.run_dir / "last.npz" and not (args.run_dir / "best.npz").exists()
+    assert not (args.run_dir / "best_loss.npz").exists() and epoch_of(args.run_dir / "last.npz") == 2
+    rows = results_of(args.run_dir)
+    assert [row["val_loss"] for row in rows] == ["", ""] and [row["recall"] for row in rows] == ["", ""]
+    assert "val=" not in capsys.readouterr().out
+    training.record_recipe_result(args, selection, selection_run)
+    winner = json.loads((args.run_dir / "winner.json").read_text(encoding="utf-8"))
+    assert winner["selected_by"] == "recipe" and winner["epochs"] == 2 and winner["metrics"] is None
+    assert Path(winner["winner"]) == args.run_dir / "last.npz" and winner["selection_run"] == selection_run
+    assert epoch_of(tmp_path / "save.npz") == 2 and "nothing was held out" in capsys.readouterr().out
+
+    parser = training.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--all-clips", "--holdout", "mixed_v1"])
+    assert parser.parse_args([]).epochs is None and training.DEFAULT_EPOCHS == 10
+    args = parser.parse_args(["--all-clips", "--selection-run", str(selection_dir)])
+    assert training.run_config(args, [], [], {})["all_clips"] and training.run_config(args, [], [], {})["selection_run"] == str(selection_dir)
+    assert training.main(["--selection-run", str(selection_dir)]) == 1
+    assert "goes with --all-clips" in capsys.readouterr().err
+
+
+def test_the_seed_is_recorded_and_defaults_to_the_fixed_one():
+    parser = training.build_parser()
+    assert parser.parse_args([]).seed == training.SEED == 7
+    args = parser.parse_args(["--seed", "11", "--score-every", "2"])
+    config = training.run_config(args, [], [], {})
+    assert config["seed"] == 11 and config["score_every"] == 2
+
+
+def test_augment_is_a_set_of_names_and_the_hard_negative_weights_are_recorded(capsys):
+    parser = training.build_parser()
+    assert parser.parse_args([]).augment == ["basic"]
+    args = parser.parse_args(["--augment", "translate", "basic", "reverse", "--oversample-absent", "3",
+                              "--oversample-false-alarms", "2.5"])
+    config = training.run_config(args, [], [], {}, flagged=42)
+    assert config["augment"] == ["basic", "reverse", "translate"] and config["oversample_absent"] == 3.0
+    assert config["oversample_false_alarms"] == 2.5 and config["false_alarm_units"] == 42
+    assert training.run_config(parser.parse_args([]), [], [], {})["false_alarm_units"] == 0
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--augment", "rotate"])
+    assert "invalid choice" in capsys.readouterr().err
+
 
 def test_metric_counts_localization_errors():
     stats = metric_probe(5, {i: [100, 100] if i == 0 else [120, 100] for i in range(5)})

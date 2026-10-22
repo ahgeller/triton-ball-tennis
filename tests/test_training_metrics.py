@@ -8,7 +8,7 @@ import torch
 from finetune.data.detector_metrics import DetectorMetrics
 from finetune.data.workspace import VideoMeta
 from finetune.training import metrics
-from finetune.training.metrics import METRIC_SLACK, promotion_improves, score_weights
+from finetune.training.metrics import FALSE_ALARM_CONF, METRIC_SLACK, false_alarm_units, promotion_improves, score_weights
 from tennis_tracker.engines import ball_detectors
 from tests._helpers import Capture, cpu_detector, metric_probe
 
@@ -62,6 +62,35 @@ def test_score_weights_names_card_zero_for_a_bare_cuda_device():
         except RuntimeError:
             pass
     assert build.call_args.kwargs == {"conf": 0.5, "device": "0"}
+
+
+def test_false_alarm_units_are_the_units_with_a_no_ball_frame_the_detector_fired_on():
+    """One prepass per clip at FALSE_ALARM_CONF; a unit is flagged when any of its five frames is
+    labelled no-ball and the detector answered there, whatever it did on the other frames."""
+    built = {}
+    fired = {"a": {3, 4, 9}, "b": {0}}
+    clips = [("a", Path("a.mp4"), Path("a.csv"), "custom"), ("b", Path("b.mp4"), Path("b.csv"), "grid")]
+    samples = [{"clip": "a", "indices": [0, 1, 2, 3, 4], "points": [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], None, [1.0, 1.0]]},
+               {"clip": "a", "indices": [2, 3, 4, 5, 6], "points": [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], None, None]},
+               {"clip": "a", "indices": [6, 7, 8, 9, 10], "points": [None, None, [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]},
+               {"clip": "b", "indices": [0, 1, 2, 3, 4], "points": [None, [1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]},
+               {"clip": "b", "indices": [2, 3, 4, 5, 6], "points": [None, None, None, None, None]}]
+    detected = []
+
+    def build(weights, conf, device):
+        built.update(weights=weights, conf=conf, device=device)
+        return "detector"
+
+    def detect(detector, video, meta):
+        detected.append(video)
+        return {frame: (1.0, 1.0, 0.9) for frame in fired[video.stem]}
+    with patch.object(metrics, "ball_detector", side_effect=build), \
+            patch.object(metrics, "video_meta", return_value=VideoMeta(30.0, 1920, 1080, 12)), \
+            patch.object(metrics, "detect_points", side_effect=detect):
+        flagged = false_alarm_units(Path("w.npz"), clips, samples, torch.device("cuda"))
+    assert flagged == {0, 3}             # unit 1: fired on 3 and 4, both balls; unit 2: 9 is a ball; unit 4: nothing fired
+    assert built == {"weights": Path("w.npz"), "conf": FALSE_ALARM_CONF, "device": "0"} and FALSE_ALARM_CONF == 0.3
+    assert detected == [Path("a.mp4"), Path("b.mp4")]                    # one prepass per clip
 
 
 def test_score_weights_scores_a_clip_end_to_end():

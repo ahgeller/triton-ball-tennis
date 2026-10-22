@@ -44,9 +44,10 @@ finetune/
               <clip>_ball.csv.draft   detector guess + confidence per frame, written by pretrack.py
               <clip>_ball.review.json your review progress + zoom
   clips.csv   one row per clip: source, group, size, fps, stride, label counts (written by import_data.py)
+  holdouts.json  named held-out sets of whole recordings (`mixed_v1`), for --holdout
   models/     gridtracknet_best.npz   the winner of the last training run
-  runs/       <tag>/results.csv, config.json, winner.json, best.npz, last.npz
-  cache/      768x432 JPEG frames, one folder per clip; rebuilt per clip when its video/labels change (safe to delete)
+  runs/       <tag>/results.csv, config.json, winner.json, best.npz, best_loss.npz, last.npz
+  cache/      768x432 lossless PNG frames (the tracker's own resize), one folder per clip; keyed on the video, a label edit only adds frames (safe to delete; about 12 GB for the whole workspace)
 ```
 
 Own labels (`video1`–`video12`) are tracked in git; imported public labels
@@ -203,6 +204,8 @@ separately). `ft.py check` flags files that break this rule.
    .\finetune.ps1 train --oversample custom=6 tracknetv2-badminton=0.25 --epoch-units 20000 --val-clips video10 video11
    .\finetune.ps1 train --from-scratch --epochs 30 --epoch-units 40000           # new network on everything
    .\finetune.ps1 train --val-clips video10 "grid_match4*" --run-dir finetune\runs\mixed --lr 0.3
+   .\finetune.ps1 train --holdout mixed_v1 --augment basic translate --oversample-absent 3   # the fixed held-out set
+   .\finetune.ps1 train --all-clips --selection-run finetune\runs\r5 --augment basic translate   # the chosen recipe on everything
    ```
 
    - `--sources` picks sources from `clips.csv`; `--cameras fixed` keeps only
@@ -212,17 +215,44 @@ separately). `ft.py check` flags files that break this rule.
      changes the draw probability per source (0 removes it from training);
      `--epoch-units N` fixes how many windows an epoch draws (an epoch over
      everything is ~50k windows, about an hour on the 5080).
-   - `--augment strong` adds gamma / contrast / brightness / colour-cast /
-     noise / blur jitter, applied identically to all five frames of a window,
-     to cover dark courts and other lighting you have not labelled yet. The
-     default `basic` is the old behaviour (flip + ±15% gain).
-   - Frames are cached per clip under `cache/`, so adding one clip does not
-     re-extract the other 244. `--prepare-only` builds the cache and stops.
-   - The run ends by scoring the best-loss checkpoint **and** the starting
-     weights on the held-out clips with the detector metric, and only the
-     winner is written to `models/gridtracknet_best.npz`. A run that lowers
-     recall or adds wrong-object detections cannot replace a good model.
-     `runs/<tag>/winner.json` records the decision.
+   - `--holdout NAME` holds out a named set of whole recordings from
+     `holdouts.json` instead of `--val-clips`; `mixed_v1` is the fixed set
+     the detector recipe was chosen on (prof games 4 and 7, video1 to 10,
+     grid_match8, 16 and 22). Either way the split closes over the recording
+     a clip was cut from, so no rally of a held-out video trains.
+   - `--augment` names the augmentations to draw, any of `basic` (flip +
+     ±15% gain, the default), `strong` (flip + gamma / contrast / brightness /
+     colour-cast / noise / blur jitter, applied identically to all five
+     frames, instead of the gain), `translate` (one shift of up to 20 px at
+     768x432 for all five frames, border replicated, labels moved with it),
+     `reverse` (time reversed) and `compress` (a JPEG re-encode at quality
+     35 to 85 and the occasional blur). `--oversample-absent K` draws units
+     holding an absent-ball label K times as often; `--oversample-false-alarms K`
+     does the same for units in which the starting weights fired on a no-ball
+     frame (one prepass over the training clips before the run).
+   - Frames are cached per clip under `cache/` as lossless 768x432 PNGs made
+     by the tracker's own resize (about 12 GB for the whole workspace), keyed
+     on the video: adding one clip does not re-extract the others, and a label
+     edit only adds the frames it newly needs. `--prepare-only` builds the
+     cache and stops.
+   - After every scored epoch (`--score-every K`, default every epoch, the
+     last one always) the weights are scored on the held-out clips with the
+     detector metric `evaluate_archive.py` reports, and `runs/<tag>/best.npz`
+     is the epoch that metric prefers (a tie keeps the earlier epoch), not the
+     lowest validation loss (`best_loss.npz`, kept for the record);
+     `results.csv` has the losses, the metric and the timings per epoch. The
+     run ends by setting that epoch against the starting weights on the same
+     clips, and only the winner is written to `models/gridtracknet_best.npz`.
+     A run that lowers recall or adds wrong-object detections cannot replace a
+     good model. `winner.json` records the decision (`selected_by`,
+     `best_epoch`). `--seed` changes the augmentation and sampling draws
+     (default 7) for a second opinion on a narrow margin.
+   - `--all-clips` is the last step of a recipe: nothing held out, nothing
+     scored, every clip trained on for `--epochs` (default: the best epoch of
+     the `--selection-run`), and `last.npz` is the result. Its `winner.json`
+     says `selected_by: "recipe"` and copies the selection run's held-out
+     numbers in, because weights that saw every clip carry no honest number
+     of their own.
    - Colab: `GridTrackNet_FineTune_Colab.ipynb` runs the same trainer; put
      `videos/`, `labels/`, `clips.csv`, `models/` and `code/` under
      `MyDrive/tennis_finetune/`.
@@ -240,9 +270,11 @@ separately). `ft.py check` flags files that break this rule.
 - Label whole rallies, including frames where the ball is hidden or out of
   frame (`v`). Those "no ball here" frames are what stop the network firing on
   players' feet, court lines and vans.
-- Keep at least one full own-camera clip held out (`--val-clips`) and never
-  train on it — that is the only honest number you get. video10 and video11 are
-  the ones the bundled model has never seen.
+- Keep whole recordings held out (`--holdout mixed_v1`, or `--val-clips`) and
+  never train on them — that is the only honest number you get. The bundled
+  model has seen every archive clip but video10, so its own numbers on the
+  own-camera clips are not held out; the prof games and grid matches of
+  `mixed_v1` are.
 - Mixed resolutions are fine; coordinates are native pixels and the trainer
   resizes to 768×432 internally.
 - Only ever compare models on the same held-out clips; `ft.py status` shows the

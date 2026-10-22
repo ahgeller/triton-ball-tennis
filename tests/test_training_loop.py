@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from finetune.training.loop import evaluate_loss, fresh_model, gridtracknet_loss, save_weights, train_epoch
 from tennis_tracker.gridtracknet import FRAMES_PER_UNIT, GRID_COLS, GRID_ROWS, HEIGHT, WIDTH, load_model
+from tests._helpers import blank_template
 
 
 def one_unit_loader():
@@ -37,20 +38,8 @@ def test_a_fresh_model_trains_evaluates_and_round_trips_through_the_npz_layout(t
     loss = train_epoch(model, loader, optimizer, scaler, device, epoch=1, epochs=1, max_steps=1)
     assert np.isfinite(loss) and np.isfinite(evaluate_loss(model, loader, device, max_steps=1))
     template = tmp_path / "template.npz"
-    save_weights(model, _blank_template(model, template), tmp_path / "out" / "weights.npz")
+    save_weights(model, blank_template(model, template), tmp_path / "out" / "weights.npz")
     reloaded = load_model(tmp_path / "out" / "weights.npz", device).float()
     with torch.inference_mode():
         probe = torch.rand(1, 3 * FRAMES_PER_UNIT, HEIGHT, WIDTH)
         assert torch.allclose(reloaded(probe), model.eval()(probe), atol=5e-3)   # the tracker loads in float16
-
-
-def _blank_template(model, path):
-    """An .npz with the layout save_weights expects, made from the model's own layers."""
-    arrays = {}
-    for index, layer in enumerate(model.batch_norms):
-        name = "batch_normalization" if index == 0 else f"batch_normalization_{index}"
-        for key, value in (("gamma", layer.gamma), ("beta", layer.beta), ("moving_mean", layer.mean),
-                           ("moving_variance", layer.variance)):
-            arrays[f"{name}/{name}/{key}:0"] = value.detach().numpy()
-    np.savez(path, **arrays)
-    return path

@@ -21,6 +21,10 @@ POOL_AFTER = {1, 3, 5, 8}
 # Keras BatchNormalization default epsilon, baked into the exported statistics.
 BN_EPSILON = 0.001
 
+# The one resize rule: the tracker's prepass and the trainer's frame cache both go through
+# ``resize_to_model``, so the network trains on the very pixels it is run on.
+RESIZE_INTERPOLATION = cv2.INTER_LINEAR
+
 GridPoint = Tuple[Optional[Tuple[float, float]], float]
 
 
@@ -90,9 +94,18 @@ def load_model(weights: Path, device: torch.device) -> GridTrackNet:
     return model.eval().to(device).half()
 
 
+def resize_to_model(frame: np.ndarray) -> np.ndarray:
+    """One BGR uint8 frame at the model's WIDTH x HEIGHT, by ``RESIZE_INTERPOLATION``: the resize
+    the tracker runs and the one the training cache stores. A frame already that size is
+    returned as it is."""
+    if frame.shape[0] == HEIGHT and frame.shape[1] == WIDTH:
+        return frame
+    return cv2.resize(frame, (WIDTH, HEIGHT), interpolation=RESIZE_INTERPOLATION)
+
+
 def frame_tensor(frame: np.ndarray, device: torch.device) -> torch.Tensor:
     """One BGR uint8 frame -> (3, HEIGHT, WIDTH) RGB float16 in [0, 1] on ``device``."""
-    rgb = cv2.cvtColor(cv2.resize(frame, (WIDTH, HEIGHT)), cv2.COLOR_BGR2RGB)
+    rgb = cv2.cvtColor(resize_to_model(frame), cv2.COLOR_BGR2RGB)
     chw = np.moveaxis(rgb, -1, 0).astype(np.float32) / 255.0
     return torch.from_numpy(chw).to(device, dtype=torch.float16)
 

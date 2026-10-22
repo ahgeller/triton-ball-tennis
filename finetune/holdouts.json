@@ -1,0 +1,8 @@
+{
+  "mixed_v1": {
+    "note": "The fixed held-out set for the detector recipe (October 2026): whole recordings the network never trains on, mixed by source, camera and frame rate. prof_game4 is video17 to 23 and prof_game7 is video43 to 46 (video44 is a moving camera). The own-camera clips are listed one by one rather than as their group, because video11 and video12 share the group and their labels were never corrected: they are not ground truth and would be scored with the set. grid_match8: broadcast, moving camera, 60 FPS; grid_match16: daylight gravel, fixed camera, 60 FPS; grid_match22: night, fixed camera, 30 FPS, 110 absent-ball labels. 24 clips, about 9.0k labels, 495 of them absent-ball. The incumbent weights trained on video1 to 9, so their numbers on the own-camera clips are not held out; prof_game4, prof_game7 and the three grid clips are.",
+    "groups": ["prof_game4", "prof_game7"],
+    "clips": ["video1", "video2", "video3", "video4", "video5", "video6", "video7", "video8", "video9", "video10",
+              "grid_match8", "grid_match16", "grid_match22"]
+  }
+}

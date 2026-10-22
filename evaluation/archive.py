@@ -13,6 +13,14 @@ Modes:
   pipeline  run the complete tracker (no video) and score the per-frame
             output the renderer would draw (selector quality)
 
+``--holdout NAME`` scores a named held-out set from the workspace's ``holdouts.json``
+(``finetune.data.holdouts``), the same clips a ``train_gridtracknet.py --holdout NAME`` run
+never trained on. Raw mode reports, besides the pooled sweep and the per-clip table, a
+``macro`` line (the per-clip mean, so a long clip does not outvote a short one), one
+``source=<name>`` line per clips.csv source, the count beside every false-alarm rate (a rate
+over five invisible labels is not a rate), and with ``--cell-histogram`` the recall by where the
+ball sat within its 48x27 grid cell, the diagnostic for balls straddling a cell border.
+
 Caveat: the bundled GridTrackNet weights were fine-tuned on every archive clip
 except video10, so only video10 is held-out for it.
 """
@@ -28,13 +36,16 @@ import time
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
-from finetune.data.data_policy import read_review_status, unscorable_reason
+from finetune.data.data_policy import clip_source, read_review_status, unscorable_reason
 from finetune.data.detect import ball_detector, detect_points
+from finetune.data.holdouts import holdout_clips
 from finetune.data.labels import read_labels
 from finetune.data.detector_metrics import HIT_PX, DetectorMetrics, Point, scale_for_width
 from finetune.data import workspace as ws
-from finetune.data.workspace import clip_of, find_video, natural_key, read_exclusions, video_meta
+from finetune.data.workspace import (HOLDOUTS_NAME, MANIFEST_NAME, clip_of, find_video, natural_key, read_exclusions,
+                                     read_manifest, video_meta)
 from evaluation.pipeline_score import ClipScore, score_pipeline_clip
+from tennis_tracker.gridtracknet import GRID_COLS, GRID_ROWS
 from tennis_tracker.paths import GRIDTRACKNET_WEIGHTS, ROOT
 
 ARCHIVE_VARIABLE = "TENNIS_ARCHIVE"
@@ -44,6 +55,7 @@ MODELS = {
 DEFAULT_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 PER_CLIP_CONF = 0.5         # the per-clip table and the offset report use this threshold
 BAD_FRAMES_LISTED = 40      # how many of a clip's bad frames the pipeline report names
+CELL_BINS = 5               # --cell-histogram: bins across a grid cell, per axis
 
 ClipPair = Tuple[Path, Path]    # (video, label csv)
 
@@ -60,6 +72,7 @@ class RawClip(NamedTuple):
     """One clip's labelled frames against one detector's prepass, in frame order."""
     clip: str
     width: int
+    height: int
     fps: float
     elapsed: float            # seconds the prepass took
     rows: List[LabelledDetection]
@@ -85,16 +98,25 @@ def _skip_reason(clip: str, status: Optional[dict], excluded: Set[str], include_
     return None if include_excluded else unscorable_reason(clip, status, excluded)
 
 
-def list_clips(names: Optional[List[str]], archive: Path, include_excluded: bool = False) -> List[ClipPair]:
+def list_clips(names: Optional[List[str]], archive: Path, include_excluded: bool = False,
+               holdout: Optional[str] = None) -> List[ClipPair]:
     """Pairs of (video, label csv) whose labels may stand as ground truth (reviewed, not in
-    exclude.txt; every clip with ``include_excluded``), narrowed to the stems or globs in `names`."""
+    exclude.txt; every clip with ``include_excluded``), narrowed to the stems or globs in `names`
+    and to the members of the held-out set `holdout` (the archive's holdouts.json)."""
     label_dir, video_dirs = archive_folders(archive)
     review_status = read_review_status(archive)
     excluded = set(read_exclusions(archive))
+    label_paths = sorted(label_dir.glob("*_ball.csv"), key=lambda path: natural_key(path.stem))
+    held_out = None
+    if holdout:
+        labelled = [clip_of(path) for path in label_paths]
+        held_out = set(holdout_clips(holdout, labelled, read_manifest(archive / MANIFEST_NAME), archive / HOLDOUTS_NAME))
     clips = []
-    for csv_path in sorted(label_dir.glob("*_ball.csv"), key=lambda path: natural_key(path.stem)):
+    for csv_path in label_paths:
         clip = clip_of(csv_path)
         if names and not any(fnmatch.fnmatchcase(clip, pattern) for pattern in names):
+            continue
+        if held_out is not None and clip not in held_out:
             continue
         reason = _skip_reason(clip, review_status, excluded, include_excluded)
         if reason:
@@ -108,11 +130,15 @@ def list_clips(names: Optional[List[str]], archive: Path, include_excluded: bool
     return clips
 
 
-def fmt(name: str, stats: DetectorMetrics) -> str:
+def fmt(name: str, stats: DetectorMetrics, alarms: Optional[int] = None) -> str:
+    """One metric line. ``alarms`` is the false-alarm count printed beside the rate (the rate's
+    own numerator by default; a macro line passes the pooled count beside its mean rate)."""
+    if alarms is None:
+        alarms = round(stats.false_alarm * stats.invisible)
     return (
         f"{name:14s} vis={stats.visible:4d} recall={stats.recall:.3f} "
         f"wrong={stats.wrong:.3f} miss={stats.miss:.3f} | "
-        f"invis={stats.invisible:3d} falseAlarm={stats.false_alarm:.3f} | "
+        f"invis={stats.invisible:3d} falseAlarm={stats.false_alarm:.3f} ({alarms}/{stats.invisible}) | "
         f"med={stats.median_px:.1f}px p90={stats.p90_px:.1f}px"
     )
 
@@ -130,7 +156,7 @@ def raw_rows(detector, clips: List[ClipPair], name: str) -> List[RawClip]:
         for frame, label in sorted(labels.items()):
             point = points.get(frame)
             rows.append(LabelledDetection(label, None if point is None else point[:2], 0.0 if point is None else point[2]))
-        out.append(RawClip(video_path.stem, meta.width, meta.fps, elapsed, rows))
+        out.append(RawClip(video_path.stem, meta.width, meta.height, meta.fps, elapsed, rows))
         print(f"[{name}] {video_path.stem}: {meta.total} frames in {elapsed:.1f}s", flush=True)
     return out
 
@@ -160,28 +186,97 @@ def _hit_offset(per_clip: List[RawClip]) -> Tuple[float, float, int]:
     return dx, dy, count
 
 
-def report_raw(name: str, per_clip: List[RawClip], thresholds: List[float]) -> None:
+def _clip_metrics(clip: RawClip, threshold: float) -> DetectorMetrics:
+    """One clip's metrics at `threshold`, distances at 1080p."""
+    pairs = [(label, pred if conf >= threshold else None) for label, pred, conf in clip.rows]
+    return DetectorMetrics.of(pairs, scale_for_width(clip.width))
+
+
+def _mean(values: List[float]) -> float:
+    return sum(values) / len(values) if values else float("nan")
+
+
+def macro_metrics(per_clip: List[DetectorMetrics]) -> DetectorMetrics:
+    """The per-clip mean of every rate and distance, over the clips that have the labels the rate
+    is a share of (visible for recall / wrong / miss, invisible for the false-alarm rate), with the
+    label counts summed: the line where a 900-label clip and a 36-label clip weigh the same."""
+    with_ball = [stats for stats in per_clip if stats.visible]
+    without = [stats for stats in per_clip if stats.invisible]
+    located = [stats for stats in with_ball if not math.isnan(stats.median_px)]
+    return DetectorMetrics(
+        visible=sum(stats.visible for stats in per_clip),
+        recall=_mean([stats.recall for stats in with_ball]),
+        wrong=_mean([stats.wrong for stats in with_ball]),
+        miss=_mean([stats.miss for stats in with_ball]),
+        invisible=sum(stats.invisible for stats in per_clip),
+        false_alarm=_mean([stats.false_alarm for stats in without]),
+        median_px=_mean([stats.median_px for stats in located]),
+        p90_px=_mean([stats.p90_px for stats in located]),
+    )
+
+
+def cell_histogram(per_clip: List[RawClip], threshold: float) -> Dict[str, List[DetectorMetrics]]:
+    """Recall by where the labelled ball sits within its grid cell: for each axis, the visible
+    labels binned by the fractional part of their grid coordinate (``CELL_BINS`` bins from the
+    cell's leading edge to its trailing edge), each bin scored as a clip is. A network that
+    only sees balls at cell centres shows it as low recall in the edge bins."""
+    bins = {axis: [[] for _ in range(CELL_BINS)] for axis in ("x", "y")}
+    for clip in per_clip:
+        scale = scale_for_width(clip.width)
+        cells = (GRID_COLS / clip.width, GRID_ROWS / clip.height)
+        for label, pred, conf in clip.rows:
+            if label is None:
+                continue
+            pair = ((label[0] * scale, label[1] * scale),
+                    (pred[0] * scale, pred[1] * scale) if pred is not None and conf >= threshold else None)
+            for axis, value, per_px in (("x", label[0], cells[0]), ("y", label[1], cells[1])):
+                fraction = value * per_px % 1.0
+                bins[axis][min(CELL_BINS - 1, int(fraction * CELL_BINS))].append(pair)
+    return {axis: [DetectorMetrics.of(pairs, 1.0) for pairs in per_bin] for axis, per_bin in bins.items()}
+
+
+def report_raw(name: str, per_clip: List[RawClip], thresholds: List[float],
+               sources: Optional[Dict[str, str]] = None, histogram: bool = False) -> None:
+    """The raw-mode report for one detector: the pooled sweep, the per-clip table with its macro
+    and per-source lines (``sources``: clip -> clips.csv source), the hit offset, and with
+    ``histogram`` the recall by position within the grid cell."""
     print(f"\n=== {name}: threshold sweep (all clips pooled) ===")
     for threshold in thresholds:
         print(fmt(f"conf>={threshold:.2f}", DetectorMetrics.of(_pooled_pairs(per_clip, threshold), 1.0)))
     print(f"\n=== {name}: per clip at conf>={PER_CLIP_CONF:.2f} ===")
-    for clip in per_clip:
-        pairs = [(label, pred if conf >= PER_CLIP_CONF else None) for label, pred, conf in clip.rows]
-        print(fmt(clip.clip, DetectorMetrics.of(pairs, scale_for_width(clip.width))))
+    per_clip_stats = [_clip_metrics(clip, PER_CLIP_CONF) for clip in per_clip]
+    for clip, stats in zip(per_clip, per_clip_stats):
+        print(fmt(clip.clip, stats))
+    pooled = DetectorMetrics.of(_pooled_pairs(per_clip, PER_CLIP_CONF), 1.0)
+    print(fmt("macro", macro_metrics(per_clip_stats), alarms=round(pooled.false_alarm * pooled.invisible)))
+    for source in sorted({(sources or {}).get(clip.clip, "") for clip in per_clip} - {""}):
+        of_source = [clip for clip in per_clip if sources[clip.clip] == source]
+        print(fmt(f"source={source}", DetectorMetrics.of(_pooled_pairs(of_source, PER_CLIP_CONF), 1.0)))
     dx, dy, count = _hit_offset(per_clip)
     if count:
         print(f"{name}: mean offset on hits dx={dx / count:+.2f}px dy={dy / count:+.2f}px (n={count})")
+    if histogram:
+        print(f"\n=== {name}: recall by position within the grid cell at conf>={PER_CLIP_CONF:.2f} ===")
+        for axis, per_bin in cell_histogram(per_clip, PER_CLIP_CONF).items():
+            for index, stats in enumerate(per_bin):
+                low, high = index / CELL_BINS, (index + 1) / CELL_BINS
+                print(f"{axis} {low:.1f}-{high:.1f}  n={stats.visible:5d} recall={stats.recall:.3f} "
+                      f"wrong={stats.wrong:.3f} miss={stats.miss:.3f}")
+            recalls = [stats.recall for stats in per_bin if stats.visible]
+            if recalls:
+                print(f"{axis} spread: {max(recalls) - min(recalls):.3f} between the best and the worst bin")
 
 
 def run_raw(models: List[str], clips: List[ClipPair], thresholds: List[float], device: str,
-            weights: Optional[Dict[str, Path]] = None, stride: Optional[int] = None) -> None:
+            weights: Optional[Dict[str, Path]] = None, stride: Optional[int] = None,
+            sources: Optional[Dict[str, str]] = None, histogram: bool = False) -> None:
     per_model: Dict[str, List[RawClip]] = {}
     for name in models:
         detector = ball_detector((weights or {}).get(name) or MODELS[name], device=device, source_stride=stride)
         per_model[name] = raw_rows(detector, clips, name)
         del detector
     for name in models:
-        report_raw(name, per_model[name], thresholds)
+        report_raw(name, per_model[name], thresholds, sources, histogram)
 
 
 def run_pipeline(models: List[str], clips: List[ClipPair], conf: Dict[str, float], device: str,
@@ -227,6 +322,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--mode", choices=("raw", "pipeline"), default="raw")
     parser.add_argument("--models", nargs="+", default=["gridtracknet"], choices=sorted(MODELS))
     parser.add_argument("--clips", nargs="*", default=None, help="Clip stems or globs, e.g. video10 'grid_match*'")
+    parser.add_argument("--holdout", metavar="NAME",
+                        help="Only the clips of this named held-out set (the archive's holdouts.json), e.g. mixed_v1; "
+                             "narrows --clips further when both are given")
+    parser.add_argument("--cell-histogram", action="store_true",
+                        help="Raw mode: also report recall by where the ball sat within its grid cell")
     parser.add_argument("--thresholds", nargs="+", type=float, default=DEFAULT_THRESHOLDS)
     parser.add_argument("--gridtracknet-conf", type=float, default=0.50)
     parser.add_argument("--device", default="0")
@@ -249,14 +349,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     archive = Path(args.archive) if args.archive else default_archive()
-    clips = list_clips(args.clips, archive, args.include_excluded)
+    clips = list_clips(args.clips, archive, args.include_excluded, args.holdout)
     if not clips:
         print(f"No clips found in {archive}")
         return 1
-    print(f"[archive] {archive}  ({len(clips)} clips)")
+    print(f"[archive] {archive}  ({len(clips)} clips" + (f", held-out set {args.holdout}" if args.holdout else "") + ")")
     if args.mode == "raw":
         weights = {"gridtracknet": Path(args.gridtracknet_weights)} if args.gridtracknet_weights else None
-        run_raw(args.models, clips, args.thresholds, args.device, weights, args.gridtracknet_stride)
+        manifest = read_manifest(archive / MANIFEST_NAME)
+        sources = {clip_of(csv_path): clip_source(clip_of(csv_path), manifest) for _, csv_path in clips}
+        run_raw(args.models, clips, args.thresholds, args.device, weights, args.gridtracknet_stride, sources,
+                args.cell_histogram)
     else:
         run_pipeline(
             args.models, clips,
