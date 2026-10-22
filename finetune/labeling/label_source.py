@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
 import cv2
 import numpy as np
 
-from finetune.labeling.label_store import Row, apply_flags, apply_review, load_rows
+from finetune.labeling.label_store import Landings, Row, apply_flags, apply_review, load_landings, load_rows
 from finetune.data.labels import LabelFormatError
-from finetune.data.workspace import (clip_of, draft_csv, draft_files, find_video, label_csv, label_files, natural_key,
-                                     review_json, suspect_json, video_meta)
+from finetune.data.workspace import (bounce_csv, clip_of, draft_csv, draft_files, find_video, label_csv, label_files,
+                                     natural_key, review_json, suspect_json, video_meta)
 
 CACHE_BYTES = 400_000_000  # decoded frames kept in memory, as a budget: 1080p frames are 6 MB each
 CACHE_FRAMES_MAX = 96      # ... and never more than this many, nor fewer than CACHE_FRAMES_MIN
@@ -84,14 +84,16 @@ def walk_to(source: "Source", index: int) -> bool:
 
 
 class Source:
-    """One clip in a run: its video, its rows, and the files its work goes back to."""
+    """One clip in a run: its video, its rows, its landings, and the files its work goes back to."""
 
     def __init__(self, clip: str, video: Path, rows: List[Row], width: int, height: int,
-                 out_csv: Path, review: Path, suspects: Optional[Path] = None):
+                 out_csv: Path, review: Path, suspects: Optional[Path] = None, bounces: Optional[Path] = None):
         self.clip, self.video, self.rows = clip, video, rows
         self.width, self.height = width, height
         self.out_csv, self.review = out_csv, review
         self.suspects = suspect_json(clip, review.parent) if suspects is None else suspects
+        self.bounces = bounce_csv(clip, review.parent) if bounces is None else bounces
+        self.landings: Landings = {}  # the frames where the ball hit the ground (label_store.load_landings)
         for row in rows:
             row.clip = clip
         self.capture = cv2.VideoCapture(str(video))
@@ -335,12 +337,14 @@ def build_source(clip: str, videos: Path, labels: Path) -> Optional[Source]:
         print(f"[skip] {clip}: {from_file.name} has no label rows")
         return None
     review = review_json(clip, labels)
-    source = Source(clip, video, rows, width, height, final, review, suspect_json(clip, labels))
+    source = Source(clip, video, rows, width, height, final, review, suspect_json(clip, labels), bounce_csv(clip, labels))
     try:
         source.flagged = apply_flags(source.suspects, rows)
         state = apply_review(review, rows)
+        source.landings = load_landings(source.bounces)
     except LabelFormatError as error:
-        # Somebody's record of what they checked: never started afresh, never written over.
+        # Somebody's record of what they checked, or of where the ball landed: never started
+        # afresh, never written over.
         print(f"[skip] {clip}: {error}")
         return None
     if state is not None:

@@ -1,16 +1,18 @@
-"""What the label tool reads and writes: a clip's rows, the review and flag sidecars, and the
-settings file. The on-disk formats are those of ``finetune.data.labels``; this module turns them into
-``Row`` objects and back. ``load_*`` functions read and return; ``apply_*`` functions write
-what a sidecar says onto the rows they are given."""
+"""What the label tool reads and writes: a clip's rows, the review and flag sidecars, its landings
+and the settings file. The on-disk formats are those of ``finetune.data.labels`` and
+``finetune.data.bounce_labels``; this module turns them into ``Row`` objects and back. ``load_*``
+functions read and return; ``apply_*`` functions write what a sidecar says onto the rows they are
+given."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple, Union
 
+from finetune.data.bounce_labels import BounceLabel, read_bounce_labels, write_bounce_labels
 from finetune.data.fileio import write_atomic
-from finetune.data.labels import (FLAG_KINDS, FlagKind, Flags, answered_point, format_point, frame_list, is_visible,
-                                  read_flags, read_label_rows, read_review, write_flags, write_label_cells)
+from finetune.data.labels import (FLAG_KINDS, FlagKind, Flags, LabelPoint, answered_point, format_point, frame_list,
+                                  is_visible, read_flags, read_label_rows, read_review, write_flags, write_label_cells)
 from finetune.data.workspace import unsaved_csv
 
 if TYPE_CHECKING:
@@ -170,6 +172,31 @@ def apply_review(path: Path, rows: List[Row]) -> Optional[dict]:
                 # reported and skipped so the reviewed/edited record of the whole clip still loads.
                 print(f"[warn] {path.name}: frame {row.frame} has unreadable evidence {evidence!r}; ignored")
     return state
+
+
+# A clip's landings (``bounce_labels``): frame -> the landing point its row gave, None for a row
+# that left it blank, which means the ball label of that frame. The tool marks frames only, so
+# every landing it adds is a None; a point written by hand is carried through a save unchanged.
+Landings = Dict[int, LabelPoint]
+
+
+def load_landings(path: Path) -> Landings:
+    """The clip's landings from its landing file; none when there is no file. A damaged file is
+    its LabelFormatError, naming the file: a record of where the ball landed is never replaced
+    by an empty one."""
+    if not path.is_file():
+        return {}
+    return {label.frame: label.point for label in read_bounce_labels(path)}
+
+
+def save_landings(path: Path, landings: Landings) -> None:
+    """Write the landings, or remove the file when there are none left: the court-event scorer
+    reads any landing file, empty included, as the whole truth about its clip, so a clip with
+    no landings marked must have no file."""
+    if landings:
+        write_bounce_labels(path, (BounceLabel(frame, point) for frame, point in landings.items()))
+    else:
+        path.unlink(missing_ok=True)
 
 
 # The settings file holds the toggles worth keeping between sessions: filter, inset, grid size, trail.

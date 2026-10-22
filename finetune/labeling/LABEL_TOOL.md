@@ -49,7 +49,8 @@ you do click.
 | `f` / `b` | jump to the next / previous unreviewed uncertain frame, and to any frame an audit (`ft.py check --audit --mark`) has flagged, drawn in magenta, even one you had reviewed before the audit. SPACE answers a flag as well as a click does (it is good where it is), and a later audit does not raise it again unless the label moves |
 | `e` / SHIFT+`e` | jump to the next / previous frame whose label the suggestion disagrees with ("hint differs" on the bar), reviewed or not |
 | `i` / `j` / `k` / `l` | nudge the point one pixel up / left / down / right (stays on the frame); with SHIFT held, a quarter of a pixel |
-| `u` | undo the last change on this frame |
+| `u` | undo the last change on this frame's label (not a landing mark: `/` again removes one) |
+| `/` | this frame is a landing: the ball is on the ground here. Pressed again, it is not. The frame wears a LANDING badge (its grid tile too) and the bar counts the clip's landings; saved with the labels to `labels/<clip>_bounces.csv` (see *Landings*) |
 | mouse wheel, `+` / `-` | smooth zoom in / out about the mouse / the ball (kept across frames) |
 | right click | re-centre the view here |
 | `g` / click the badge | auto-centre on / off. On (the default) every frame puts the mark in the middle of the screen with the mouse on it; off leaves the view and the mouse alone, for looking round a frame |
@@ -68,8 +69,9 @@ TAB (or `--grid`) shows a page of crops around each ball, 8 or 16 to a page (`z`
 switches). Click a crop to correct it without moving the crop; right click opens the
 full frame; `1`-`9` or `,` / `.` pick the tile the keys act on; `y` takes its
 suggestion and moves on, `x` keeps its draft instead; `v` marks it absent; `i` / `j`
-/ `k` / `l` nudge it; SPACE confirms the displayed page, hints on offer (orange
-crosses) included; `a` / `d` change pages; `+` / `-` zoom the crops.
+/ `k` / `l` nudge it; `/` marks it as a landing; SPACE confirms the displayed page,
+hints on offer (orange crosses) included; `a` / `d` change pages; `+` / `-` zoom the
+crops.
 
 ## The trajectory sheet
 
@@ -110,6 +112,20 @@ those. Agreeing never skips a frame or marks it reviewed; that is still your SPA
 `r` (accept run) confirms the detector's own guesses, not the suggestions: it is for
 frames you are not looking at.
 
+## Landings
+
+The court events a `--court` run exports are scored against the frames where the
+ball hit the ground (`score_court_events.py`), and those frames are labelled here.
+Step to the frame where the ball is on the ground and press `/`: the frame wears a
+LANDING badge, the bar says `LANDING` beside its state and counts the clip's
+landings, and `/` again unmarks it. Mark every landing of every rally, serves and
+faults included; on a 60 FPS clip the label frame nearest the landing is close
+enough (the scorer allows 0.1 s). The marks are saved with the labels to
+`labels/<clip>_bounces.csv` with blank coordinates: the landing point is the ball
+label of that frame (`finetune/data/bounce_labels.py`), so it follows the label if
+you move it. A clip with no landings marked has no landing file, and the scorer
+leaves it out; a file written by hand with coordinates keeps them.
+
 ## `--uncertain`
 
 `--uncertain` walks only the frames that want attention (no confident guess, or
@@ -122,7 +138,8 @@ centering errors in every imported label.
 ## Output
 
 `labels/<clip>_ball.csv` (`frame,ball_x,ball_y`). Review progress lives in
-`labels/<clip>_ball.review.json` so you can quit and resume. Everything is autosaved
+`labels/<clip>_ball.review.json` so you can quit and resume, and the landings in
+`labels/<clip>_bounces.csv` (see *Landings*). Everything is autosaved
 every few seconds and on any exit; a frame you already dealt with shows a REVIEWED
 (space) or EDITED (click / `v` / nudge) badge in the top-right corner when you come
 back to it, and the top-left corner counts how many frames are left to do.

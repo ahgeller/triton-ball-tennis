@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import cv2
 import numpy as np
 
-from finetune.labeling.label_draw import (FILTERS, GHOST, ChipRow, draw_badge, draw_ghost, draw_mark, draw_ticks, enhance,
-                                          fit_text, hit, label_mark_colour, mark_plan, review_badge)
+from finetune.labeling.label_draw import (FILTERS, GHOST, LANDING, ChipRow, draw_badge, draw_ghost, draw_mark, draw_ticks,
+                                          enhance, fit_text, hit, label_mark_colour, mark_plan, review_badge)
 from finetune.labeling.label_store import Row
 from finetune.refiner.refine import Suggestion
 from finetune.data.detector_metrics import REFERENCE_HEIGHT
@@ -142,11 +142,15 @@ class FrameView:
         self.inset_box = (left, top, left + width - 1, top + height - 1)
 
     def draw_badges(self, display: np.ndarray, row: Row) -> None:
-        """The row's review badge at the top right and the frames-left counter at the top left."""
+        """The row's review badge at the top right, the LANDING badge to its left on a frame marked
+        as one (/), and the frames-left counter at the top left."""
         session = self.session
+        edge = session.view_w
         badge = review_badge(row)
         if badge is not None:
-            draw_badge(display, badge[0], badge[1], (0, 0, 0), session.ui, right_edge=session.view_w)
+            edge = draw_badge(display, badge[0], badge[1], (0, 0, 0), session.ui, right_edge=edge)[0]
+        if row.frame in session.source.landings:
+            draw_badge(display, "LANDING", LANDING, (0, 0, 0), session.ui, right_edge=edge)
         remaining = len(session.rows) - sum(r.reviewed for r in session.rows)
         counter = "ALL DONE" if remaining == 0 else f"{remaining} LEFT"
         fill, text_colour = ((70, 190, 70), (0, 0, 0)) if remaining == 0 else ((50, 50, 50), (255, 255, 255))
@@ -189,14 +193,19 @@ class FrameView:
         return state
 
     def hud_lines(self, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> Tuple[str, str]:
-        """The two text lines of the HUD: this frame, and the counts with the keys that matter."""
+        """The two text lines of the HUD: this frame (its landing mark and the clip's landing count
+        among its state), and the counts with the keys that matter."""
         session = self.session
+        landings = session.source.landings
         tag = "EDITED" if row.edited else "ok" if row.reviewed else "unreviewed"
+        if row.frame in landings:
+            tag += "  LANDING"
         line1 = (f"{self.hud_place()}  frame {row.frame}  {self.hud_state(row, hint, offer)}  "
-                 f"from {row.source} {row.conf:.2f}  {tag}  zoom x{session.zoom:.1f}{'  *unsaved*' if session.dirty else ''}")
+                 f"from {row.source} {row.conf:.2f}  {tag}  zoom x{session.zoom:.1f}  landings {len(landings)}"
+                 f"{'  *unsaved*' if session.dirty else ''}")
         keys = ("SPACE=take hint  x=keep draft  v=invisible" if offer is not None else
                 "SPACE=good  y=take hint  v=invisible")
-        return line1, f"{self.hud_counts()}{keys}  r=accept run  f=uncertain  q=quit"
+        return line1, f"{self.hud_counts()}{keys}  /=landing  r=accept run  f=uncertain  q=quit"
 
     def hud_counts(self) -> str:
         """How much of the run is reviewed, uncertain, flagged and disputed, as the HUD says it."""

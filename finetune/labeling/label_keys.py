@@ -117,7 +117,7 @@ class KeyHandler:
         toggles = {ord("w"): tool.sheet_view.toggle, KEY_TAB: tool.grid_view.toggle, ord("z"): tool.grid_view.toggle_size,
                    ord("t"): tool.toggle_trail, ord("g"): tool.toggle_follow, ord("h"): tool.cycle_filter,
                    ord("o"): tool.toggle_inset, ord("m"): tool.toggle_fullscreen, ord("s"): tool.save,
-                   ord("u"): tool.undo}
+                   ord("u"): tool.undo, ord("/"): tool.toggle_landing}
         if code in toggles:
             toggles[code]()
         elif code in KEYS_NUDGE:

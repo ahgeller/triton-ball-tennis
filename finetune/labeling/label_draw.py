@@ -20,6 +20,7 @@ HINT_TRUSTED = (0, 150, 255)     # BGR: the suggestion's mark when it is trusted
 HINT_UNSURE = (70, 110, 150)     # ... and when it is only a guess
 DRAFT_MARK = (160, 160, 160)     # the draft label's ticks while the suggestion is the mark on offer
 GHOST = (255, 200, 0)            # the dashed guess on a frame with no ball, and its dot in the inset
+LANDING = (255, 190, 80)         # the badge of a frame marked as a landing (/), in the frame view and on its tile
 
 Colour = Tuple[int, int, int]
 
@@ -144,9 +145,10 @@ def draw_ghost(image: np.ndarray, gx: int, gy: int, radius: int, ui: float) -> N
 
 
 def draw_badge(image: np.ndarray, text: str, fill: Colour, text_colour: Colour, ui: float,
-               right_edge: Optional[int] = None) -> None:
+               right_edge: Optional[int] = None) -> Tuple[int, int, int, int]:
     """A filled box with bold text along the top of the view: at the top-left corner, or ending a
-    little short of `right_edge` when one is given."""
+    little short of `right_edge` when one is given. Returns its box (x0, y0, x1, y1), so the next
+    badge along can end short of it."""
     (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui, 2)
     if right_edge is None:
         box = ((int(10 * ui), int(10 * ui)), (int(26 * ui) + text_w, int(24 * ui) + text_h))
@@ -157,6 +159,7 @@ def draw_badge(image: np.ndarray, text: str, fill: Colour, text_colour: Colour, 
         origin = (left + int(8 * ui), int(17 * ui) + text_h)
     cv2.rectangle(image, box[0], box[1], fill, -1)
     cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6 * ui, text_colour, 2, cv2.LINE_AA)
+    return box[0][0], box[0][1], box[1][0], box[1][1]
 
 
 def review_badge(row: Row) -> Optional[Tuple[str, Colour]]:

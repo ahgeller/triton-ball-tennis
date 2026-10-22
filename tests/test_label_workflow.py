@@ -10,15 +10,16 @@ import cv2
 import numpy as np
 import pytest
 
+from finetune.data.bounce_labels import read_bounce_labels
 from finetune.data.workspace import Workspace
 from finetune.labeling import label_window as win
-from finetune.labeling.label_draw import ZOOM_STEP
+from finetune.labeling.label_draw import LANDING, ZOOM_STEP
 from finetune.labeling.label_grid import GridView
 from finetune.labeling.label_sheet import SheetView
 from finetune.labeling.label_store import Row, apply_flags, apply_review, load_rows, save_flags, save_review
 from finetune.labeling.label_tool import Tool
 from finetune.labeling.label_window import KEYS_NEXT, KEYS_PREV
-from tests._helpers import ball_frames, fake_source, fake_tool, write_frames
+from tests._helpers import ball_frames, fake_source, fake_tool, write_clip, write_frames
 
 
 def source(clip, count=10, width=1280, height=720):
@@ -262,6 +263,7 @@ def test_idle_render_is_cached_and_every_change_redraws():
         "pan": lambda t: setattr(t.session, "center", (t.session.center[0] + 7, t.session.center[1])),
         "walk": lambda t: t.session.only_uncertain(),
         "ghost": lambda t: setattr(t.session, "ghost", (400., 300.)),
+        "landing": lambda t: t.toggle_landing(),
         "next frame": lambda t: t.move(1),
         "frame re-decoded": lambda t: frames.update({t.session.rows[t.session.cursor].frame: np.ones((720, 1280, 3), np.uint8)}),
         "window resized": lambda t: t.fit_view(900, 600),
@@ -388,13 +390,80 @@ def test_function_keys_do_not_pass_for_letters():
         assert not label_window.non_character_key(ord("d"))
 
 
+def clip_files(clip, folder):
+    """Point a fake source's label file, sidecars and landing file into `folder`, as build_source does."""
+    clip.out_csv = folder / f"{clip.clip}_ball.csv"
+    clip.review = folder / f"{clip.clip}_ball.review.json"
+    clip.suspects = folder / f"{clip.clip}_ball.suspect.json"
+    clip.bounces = folder / f"{clip.clip}_bounces.csv"
+    return clip
+
+
+def press_slash(tool):
+    """/ through the key handler, as from the window: the view is up and SHIFT is not held."""
+    with patch.object(Tool, "view_ready", return_value=True), patch.object(win, "shift_held", return_value=False), \
+            patch.object(win, "non_character_key", return_value=False):
+        tool.keys.handle(ord("/"))
+
+
+def landing_badge_drawn(canvas):
+    """Whether the LANDING badge's fill is anywhere in the picture (the synthetic frames are black)."""
+    return bool((canvas == LANDING).all(axis=2).any())
+
+
+def test_slash_marks_the_frame_as_a_landing_and_pressing_it_again_unmarks_it():
+    tool = make_tool()
+    session = tool.session
+    session.cursor = 3
+    row = session.rows[3]
+    assert not landing_badge_drawn(tool.render())
+    press_slash(tool)
+    assert session.source.landings == {3: None} and session.dirty and session.source.dirty
+    tool.undo()                                                      # u: the label's history, not a landing
+    assert session.source.landings == {3: None}
+    line1 = tool.frame_view.hud_lines(row, None, None)[0]
+    assert "  LANDING  " in line1 and "landings 1" in line1
+    assert landing_badge_drawn(tool.render()[:session.view_h])
+    tool.grid_view.toggle()
+    assert landing_badge_drawn(tool.render()[:session.view_h])      # its tile wears the badge too
+    press_slash(tool)                                                # the grid's selected tile is frame 3
+    assert session.source.landings == {}
+    assert not landing_badge_drawn(tool.render())
+    tool.grid_view.toggle()
+    line1 = tool.frame_view.hud_lines(row, None, None)[0]
+    assert "LANDING" not in line1 and "landings 0" in line1
+    assert not landing_badge_drawn(tool.render())
+
+
+def test_landings_are_saved_with_the_labels_and_read_back_when_the_clip_is_opened(tmp_path):
+    from finetune.labeling.label_source import build_source
+    clip = clip_files(source("clip", 6), tmp_path)
+    tool = make_tool(clip)
+    for index in (4, 1):
+        tool.session.cursor = index
+        tool.toggle_landing()
+    tool.save(quiet=True)
+    assert clip.bounces.read_text().splitlines() == ["frame,ball_x,ball_y", "frame_001,,", "frame_004,,"]
+    assert [(label.frame, label.point) for label in read_bounce_labels(clip.bounces)] == [(1, None), (4, None)]
+    write_clip(tmp_path / "clip.avi", 6, size=(1280, 720))
+    reopened = build_source("clip", tmp_path, tmp_path)
+    assert reopened.landings == {1: None, 4: None}
+    reopened.release()
+    for index in (1, 4):                                             # the last mark removed: no file,
+        tool.session.cursor = index                                  # not a file saying "no landings"
+        tool.toggle_landing()
+    tool.save(quiet=True)
+    assert not clip.bounces.exists()
+    reopened = build_source("clip", tmp_path, tmp_path)
+    assert reopened.landings == {}                                   # a clip without a landing file
+    reopened.release()
+
+
 def test_save_survives_a_locked_file_and_keeps_the_edits(tmp_path):
     import finetune.labeling.label_tool as label_tool
     a, b = source("a", 2), source("b", 2)
     for clip in (a, b):
-        clip.out_csv = tmp_path / f"{clip.clip}_ball.csv"
-        clip.review = tmp_path / f"{clip.clip}_ball.review.json"
-        clip.suspects = tmp_path / f"{clip.clip}_ball.suspect.json"
+        clip_files(clip, tmp_path)
     tool = make_tool(a, b)
     a.dirty = b.dirty = tool.session.dirty = True
     real = label_tool.save_rows
@@ -999,7 +1068,7 @@ def test_a_no_ball_draft_with_a_sure_hint_offers_it():
 # grid's and the sheet's are mocked on their views under the names the table has always used.
 TOOL_HANDLERS = ("save", "confirm", "move", "jump", "jump_disputed", "take_suggestion", "mark_invisible", "accept_run",
                  "nudge", "zoom_key", "toggle_fullscreen", "remember_settings", "toggle_follow", "cycle_filter",
-                 "toggle_inset", "follow_ball")
+                 "toggle_inset", "follow_ball", "toggle_landing")
 VIEW_HANDLERS = {GridView: {"toggle": "toggle_grid", "toggle_size": "toggle_grid_size", "confirm_page": "confirm_grid",
                             "page": "grid_page", "step": "grid_step", "select": "grid_select", "prepare": "prepare_grid"},
                  SheetView: {"toggle": "toggle_sheet", "page": "sheet_page"}}
@@ -1041,7 +1110,8 @@ PLAIN_BINDINGS = (
        (ord("r"), [call.accept_run()])]
     + [(key, [call.move(1)]) for key in FORWARD] + [(key, [call.move(-1)]) for key in BACKWARD]
     + [(key, []) for key in keys("1", "2", "4", "6", "8")]       # the step, checked below
-    + [(ord("f"), [call.jump(1)]), (ord("b"), [call.jump(-1)]), (ord("u"), [call.follow_ball()])]
+    + [(ord("f"), [call.jump(1)]), (ord("b"), [call.jump(-1)]), (ord("u"), [call.follow_ball()]),
+       (ord("/"), [call.toggle_landing()])]
     + nudges(1.0) + nudges(.25, "IJKL")
     + [(key, [call.zoom_key(1.0)]) for key in keys("+", "=")] + [(key, [call.zoom_key(-1.0)]) for key in keys("-", "_")]
     + [(ord("m"), [call.toggle_fullscreen()]), (ord("t"), [call.remember_settings()]), (ord("g"), [call.toggle_follow()]),
@@ -1062,7 +1132,7 @@ GRID_BINDINGS = (
        (ord("e"), [call.jump_disputed(1), call.prepare_grid(0)]),
        (ord("v"), [call.mark_invisible()]),
        (ord("f"), [call.jump(1), call.prepare_grid(0)]), (ord("b"), [call.jump(-1), call.prepare_grid(0)]),
-       (ord("u"), [call.follow_ball()])]
+       (ord("u"), [call.follow_ball()]), (ord("/"), [call.toggle_landing()])]
     + nudges(1.0) + nudges(.25, "IJKL")
     + [(key, []) for key in keys("+", "=", "-", "_")]            # the grid's own zoom, checked below
     + [(ord("m"), [call.toggle_fullscreen()]), (ord("t"), [call.remember_settings()]), (ord("g"), [call.toggle_follow()]),
@@ -1073,7 +1143,7 @@ SHEET_BINDINGS = (
     + [(ord("w"), [call.toggle_sheet()]), (9, [call.toggle_sheet(), call.toggle_grid()])]
     + [(key, [call.sheet_page(1)]) for key in FORWARD] + [(key, [call.sheet_page(-1)]) for key in BACKWARD]
     + [(key, []) for key in keys(" ", 13, "c", "e", "y", "x", "v", "r", "1", "f", "b", "u", "i", "I", "+", "-",
-                                 "m", "t", "g", "h", "o", "s", "z", ",", ".")]
+                                 "m", "t", "g", "h", "o", "s", "z", ",", ".", "/")]
 )
 BINDINGS = {"plain": PLAIN_BINDINGS, "grid": GRID_BINDINGS, "sheet": SHEET_BINDINGS}
 

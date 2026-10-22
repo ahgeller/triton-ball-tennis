@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from finetune.labeling.label_draw import (FILTERS, ZOOM_STEP, draw_ticks, draw_tile_mark, enhance, fit_text, hit, mark_plan)
+from finetune.labeling.label_draw import (FILTERS, LANDING, ZOOM_STEP, draw_badge, draw_ticks, draw_tile_mark, enhance,
+                                          fit_text, hit, mark_plan)
 from finetune.labeling.label_window import KEYS_CONFIRM, KEYS_ZOOM_IN, KEYS_ZOOM_OUT
 from finetune.refiner.refine import Point, Suggestion
 
@@ -126,9 +127,10 @@ class GridView:
     # ---------------------------------------------------------------- the picture
     def render(self) -> np.ndarray:
         session = self.session
-        rows = session.rows
+        rows, landings = session.rows, session.source.landings
         key = (session.view_w, session.view_h, self.zoom, self.size, session.cursor, session.dirty, session.hints.version,
-               tuple((i, rows[i].x, rows[i].y, rows[i].visible, rows[i].reviewed, rows[i].edited) for i in self.indices))
+               tuple((i, rows[i].x, rows[i].y, rows[i].visible, rows[i].reviewed, rows[i].edited, rows[i].frame in landings)
+                     for i in self.indices))
         if key == self.cache_key:
             return self.cache
         canvas = np.zeros((session.view_h + session.hud_h, session.view_w, 3), np.uint8)
@@ -162,7 +164,8 @@ class GridView:
         cv2.putText(canvas, fit_text(caption, session.view_w - 12, .48 * ui, thin),
                     (6, session.view_h + int(round(21 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .48 * ui, (255, 255, 255), thin)
         keys = ("1-9 or ,/. select | y: take hint | x: keep draft | i/j/k/l: 1px (SHIFT 0.25px) | u: undo | "
-                f"v: absent | +/- zoom | z: {GRID_SIZES[(GRID_SIZES.index(self.size) + 1) % len(GRID_SIZES)]} tiles | q: save/quit")
+                f"v: absent | /: landing | +/- zoom | z: {GRID_SIZES[(GRID_SIZES.index(self.size) + 1) % len(GRID_SIZES)]} tiles"
+                " | q: save/quit")
         cv2.putText(canvas, fit_text(keys, session.view_w - 12, .42 * ui, thin),
                     (6, session.view_h + int(round(44 * ui))), cv2.FONT_HERSHEY_SIMPLEX, .42 * ui, (200, 200, 200), thin)
         self.tiles = tiles
@@ -172,7 +175,8 @@ class GridView:
 
     def tile(self, index: int, width: int, height: int, offer: Optional[Suggestion]) -> Tuple[np.ndarray, float, float, float]:
         """One tile of `width` x `height`: the row's frame about its ball (the whole frame when
-        there is none), filtered and marked. (the picture, its frame origin x and y, its scale)."""
+        there is none), filtered and marked, with the LANDING badge in its corner on a frame marked
+        as one. (the picture, its frame origin x and y, its scale)."""
         session = self.session
         row = session.rows[index]
         ui = session.ui
@@ -192,6 +196,8 @@ class GridView:
             draw_ticks(tile, *to_tile(point), colour, ui)
         if plan.mark is not None:
             draw_tile_mark(tile, *to_tile(plan.mark), plan.colour, ui)
+        if row.frame in session.source.landings:
+            draw_badge(tile, "LANDING", LANDING, (0, 0, 0), ui)
         return tile, ox, oy, scale
 
     def title(self, index: int, slot: int, offer: Optional[Suggestion]) -> str:

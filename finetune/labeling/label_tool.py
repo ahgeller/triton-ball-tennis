@@ -8,7 +8,8 @@ Every label frame comes up with the mark drawn and the mouse on it: SPACE if the
 ball, a click where the ball is if not, v if there is no ball. Every key, the grid and sheet
 views, and what the marks, hints and badges mean: finetune/labeling/LABEL_TOOL.md (the bar at the bottom
 of the window names the keys that matter on the frame you are on). Output is
-labels/<clip>_ball.csv, with progress in labels/<clip>_ball.review.json, autosaved.
+labels/<clip>_ball.csv, with progress in labels/<clip>_ball.review.json and the landings marked
+with / in labels/<clip>_bounces.csv, autosaved.
 
 ``Tool`` is the actions - the edits and the navigation the keys name (``label_keys``), the window,
 the picture and the loop; the state they act on is one ``LabelSession`` (``label_session``), which
@@ -38,7 +39,8 @@ from finetune.labeling.label_mouse import MouseHandler
 from finetune.labeling.label_session import LabelSession
 from finetune.labeling.label_sheet import SheetView
 from finetune.labeling.label_source import Prefetcher, Source
-from finetune.labeling.label_store import Row, rescue_unsaved, save_flags, save_review, save_rows, save_settings
+from finetune.labeling.label_store import (Row, rescue_unsaved, save_flags, save_landings, save_review, save_rows,
+                                           save_settings)
 from finetune.labeling.label_window import WINDOW
 from finetune.data.labels import LabelFormatError, is_visible
 
@@ -258,11 +260,15 @@ class Tool:
         the inset, the HUD) READ SOMETHING NEW, ADD IT HERE - a screen that does not change when it should is far worse than
         the CPU this saves. Any write to any Row bumps Row.revision, which covers the labels, review
         flags, trail and every counter in the HUD; the frame images are keyed by identity, which
-        changes when one is decoded, evicted or replaced by a placeholder."""
+        changes when one is decoded, evicted or replaced by a placeholder. The landings are the
+        clip's, not the rows', so what the view reads of them is keyed by hand: whether this frame
+        is one, and how many there are."""
         s = self.session
+        landings = s.source.landings
         return (Row.revision, s.cursor, s.origin, s.scale, s.zoom, s.view_w, s.view_h, s.hud_h, s.ui, s.width,
                 s.height, s.filter, s.inset, s.trail, s.follow, s.step, s.dirty, id(s.walk), len(s.walk), s.walk_pos,
-                s.ghost, len(s.sources), id(image), id(before), s.hints.version)
+                s.ghost, len(s.sources), id(image), id(before), s.hints.version,
+                s.rows[s.cursor].frame in landings, len(landings))
 
     def render(self) -> np.ndarray:
         if self.sheet_view.active:
@@ -365,6 +371,22 @@ class Tool:
         row.reviewed = row.edited = True
         session.dirty = session.source.dirty = True
 
+    def toggle_landing(self) -> None:
+        """/: the ball is on the ground on this frame - or, pressed again, it is not. A landing is
+        the clip's (Source.landings), not part of the row's label, so u leaves it alone: the key is
+        its own undo. No point is stored: the court-event scorer takes the ball label of the frame
+        (bounce_labels.resolve_points), so the landing follows the label wherever it is moved."""
+        session = self.session
+        if session.frame_missing():
+            return                    # a black placeholder is not a frame the ball can be seen on
+        frame = session.rows[session.cursor].frame
+        landings = session.source.landings
+        if frame in landings:
+            del landings[frame]
+        else:
+            landings[frame] = None
+        session.dirty = session.source.dirty = True
+
     def confirm(self, take_offer: bool = True) -> None:
         """SPACE: the mark on screen is right. When that mark was a suggestion on offer, the label
         moves there (recorded as source "refined", like y); otherwise the label is confirmed where
@@ -445,7 +467,8 @@ class Tool:
 
     # ---------------------------------------------------------------- saving
     def save(self, quiet: bool = False) -> None:
-        """Write back every clip that has changed - and only those, so an untouched clip is left alone.
+        """Write back every clip that has changed - and only those, so an untouched clip is left alone:
+        its labels, its review and flag sidecars and its landings (label_store.save_landings).
 
         The clip you are in gets its review file refreshed even with no edits, so quitting after
         only stepping through frames still resumes where you stopped rather than where you last
@@ -465,6 +488,7 @@ class Tool:
                 save_rows(source.out_csv, source.rows, source.width, source.height)
                 save_review(source.review, source.rows, source.cursor, session.zoom)
                 save_flags(source.suspects, source.rows)
+                save_landings(source.bounces, source.landings)
             except (OSError, LabelFormatError) as error:
                 # Another program has the file open, most likely (or a sidecar was damaged under
                 # us). Keep the edits in memory and keep going: the next autosave tries again, and
@@ -481,7 +505,8 @@ class Tool:
         if not quiet and written:
             for source in written:
                 print(f"[save] {source.out_csv.name} ({sum(r.visible for r in source.rows)} visible, "
-                      f"{sum(r.reviewed for r in source.rows)}/{len(source.rows)} reviewed)")
+                      f"{sum(r.reviewed for r in source.rows)}/{len(source.rows)} reviewed"
+                      f"{f', {len(source.landings)} landing(s)' if source.landings else ''})")
 
     def rescue_unsaved(self) -> None:
         """At exit, the labels of every clip that still could not be written go beside the real
