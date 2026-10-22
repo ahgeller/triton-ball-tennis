@@ -68,8 +68,8 @@ class LabelSession:
         self.ghost: Optional[Point] = None     # a frame with no guess: where the neighbours say the ball is
         self.shown_offers: Dict[int, Point] = {}   # row index -> the suggestion drawn as the mark on
                                                    # offer in the last render; what SPACE takes
-        self.awaiting_landing: Optional[float] = None   # a landing between two frames (its key in the
-                                                        # clip's landings) waiting for the click that says
+        self.awaiting_landing: Optional[float] = None   # a landing with no ball label under it (its key in
+                                                        # the clip's landings) waiting for the click that says
                                                         # where the ball touched the ground; see Tool.toggle_landing
         self.disputed_key, self.disputed = None, 0   # disputed_count's cache
 

@@ -173,8 +173,8 @@ def landing_badge(landing: Optional[float], frame: int) -> Optional[str]:
 
 
 def draw_landing_point(image: np.ndarray, px: int, py: int, ui: float) -> None:
-    """Where the ball touched the ground, as clicked for a landing between two frames: a small
-    tilted cross in the landing colour, so it cannot be mistaken for the ball mark."""
+    """Where the ball touched the ground, as clicked for a landing with no ball label under it: a
+    small tilted cross in the landing colour, so it cannot be mistaken for the ball mark."""
     size = max(6, int(round(7 * ui)))
     thin = max(1, int(round(ui)))
     cv2.drawMarker(image, (px, py), (0, 0, 0), cv2.MARKER_TILTED_CROSS, size + 2, thin + 2, cv2.LINE_AA)

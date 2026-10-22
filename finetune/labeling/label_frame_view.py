@@ -84,7 +84,7 @@ class FrameView:
     def draw_marks(self, display: np.ndarray, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> None:
         """The trail, the mark (the suggestion on offer or the label, with the other ticked beside
         it) or, on a frame with no ball and no offer, the dashed guess; and the landing point, where
-        the frame's landing has one (a click for a landing between two frames)."""
+        the frame's landing has one (the click a landing with no ball label under it asks for)."""
         session = self.session
         landing = session.landing_for(session.cursor)
         touched = session.source.landings.get(landing) if landing is not None else None
@@ -202,8 +202,8 @@ class FrameView:
 
     def hud_lines(self, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> Tuple[str, str]:
         """The two text lines of the HUD: this frame (its landing mark and the clip's landing count
-        among its state), and the counts with the keys that matter - or, while a landing between
-        two frames waits for its point, the ask for the click."""
+        among its state), and the counts with the keys that matter - or, while a landing with no
+        ball label under it waits for its point, the ask for the click."""
         session = self.session
         landings = session.source.landings
         tag = "EDITED" if row.edited else "ok" if row.reviewed else "unreviewed"

@@ -1,6 +1,7 @@
 """Headless label-tool tests on synthetic frames; never open workspace labels."""
 import io
 import json
+import re
 from contextlib import ExitStack, contextmanager, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -403,11 +404,17 @@ def clip_files(clip, folder):
     return clip
 
 
-def press_slash(tool):
-    """/ through the key handler, as from the window: the view is up and SHIFT is not held."""
+def press_key(tool, character):
+    """A character key through the key handler, as from the window: the view is up and SHIFT is
+    not held."""
     with patch.object(Tool, "view_ready", return_value=True), patch.object(win, "shift_held", return_value=False), \
             patch.object(win, "non_character_key", return_value=False):
-        tool.keys.handle(ord("/"))
+        tool.keys.handle(ord(character))
+
+
+def press_slash(tool):
+    """/ through the key handler: the landing key."""
+    press_key(tool, "/")
 
 
 def landing_badge_drawn(canvas):
@@ -423,6 +430,8 @@ def test_slash_marks_the_frame_as_a_landing_and_pressing_it_again_unmarks_it():
     assert not landing_badge_drawn(tool.render())
     press_slash(tool)
     assert session.source.landings == {3: None} and session.dirty and session.source.dirty
+    assert session.awaiting_landing is None                          # the ball label is its point: no click asked
+    assert "/=landing" in tool.frame_view.hud_lines(row, None, None)[1]
     tool.undo()                                                      # u: the label's history, not a landing
     assert session.source.landings == {3: None}
     line1 = tool.frame_view.hud_lines(row, None, None)[0]
@@ -485,9 +494,7 @@ def test_any_other_key_leaves_a_between_landing_without_a_point_and_the_grid_nev
     session.cursor = 3
     press_slash(tool)                                                # frame 3, before the marked frame 4
     assert session.source.landings == {3.5: None} and session.awaiting_landing == 3.5
-    with patch.object(Tool, "view_ready", return_value=True), patch.object(win, "shift_held", return_value=False), \
-            patch.object(win, "non_character_key", return_value=False):
-        tool.keys.handle(ord("t"))
+    press_key(tool, "t")
     assert session.awaiting_landing is None and session.source.landings == {3.5: None}
     click_picture(tool, 200.0, 150.0)                                # a click now is a ball label
     assert session.rows[3].edited and session.source.landings == {3.5: None}
@@ -498,6 +505,41 @@ def test_any_other_key_leaves_a_between_landing_without_a_point_and_the_grid_nev
     tool.toggle_landing()
     assert session.source.landings == {3.5: None, 7.5: None} and session.awaiting_landing is None
     assert landing_badge_drawn(tool.render()[:session.view_h])
+
+
+def test_slash_on_a_frame_with_no_ball_asks_where_the_ball_landed_and_the_click_is_saved_as_its_point(tmp_path):
+    clip = clip_files(source("clip", 6), tmp_path)
+    tool = make_tool(clip)
+    session = tool.session
+    session.cursor = 3
+    session.rows[3].visible = False                                  # the row says there is no ball here
+    press_slash(tool)
+    assert session.source.landings == {3: None} and session.awaiting_landing == 3   # a whole frame, waiting
+    assert "  LANDING  " in tool.frame_view.hud_lines(session.rows[3], None, None)[0]
+    assert "CLICK WHERE THE BALL BOUNCED" in tool.frame_view.hud_lines(session.rows[3], None, None)[1]
+    press_key(tool, "t")                                             # any other key: the landing keeps no point
+    assert session.awaiting_landing is None and session.source.landings == {3: None}
+    press_slash(tool)                                                # / again removes it ...
+    assert session.source.landings == {}
+    press_slash(tool)                                                # ... and marking it anew asks again
+    assert session.source.landings == {3: None} and session.awaiting_landing == 3
+    before = tool.render()
+    click_picture(tool, 200.0, 150.0)                                # the click is where it touched the ground
+    assert session.awaiting_landing is None and session.cursor == 3  # ... and the frame stays up
+    (point,) = session.source.landings.values()
+    assert point == (pytest.approx(200.0, abs=1.0), pytest.approx(150.0, abs=1.0))
+    assert not session.rows[3].visible and not session.rows[3].edited   # the ball label was not touched
+    assert tool.render() is not before
+    tool.save(quiet=True)
+    header, line = clip.bounces.read_text().splitlines()             # frame_003,x,y: the point is in the file
+    assert header == "frame,ball_x,ball_y" and re.fullmatch(r"frame_003,\d+\.\d\d,\d+\.\d\d", line)
+    (saved,) = read_bounce_labels(clip.bounces)
+    assert saved.frame == 3 and saved.point == (pytest.approx(200.0, abs=1.0), pytest.approx(150.0, abs=1.0))
+    tool.grid_view.toggle()                                          # the grid has no picture to click on
+    session.cursor = 5
+    session.rows[5].visible = False
+    tool.toggle_landing()
+    assert session.source.landings == {3: point, 5: None} and session.awaiting_landing is None
 
 
 def test_a_between_landing_on_a_clip_labelled_every_other_frame_is_the_frame_between():
