@@ -133,10 +133,11 @@ def test_scene_from_payload_rebuilds_the_selection_the_stages_read():
     detected = frame_result(100.5, 103.25, "det", detection=type("D", (), dict(cx=100., cy=103., conf=.9, x1=98, y1=101, x2=102, y2=105))())
     filled = frame_result(7.0, 8.0, "interp")
     rows = [frame_result_to_json(0, None), frame_result_to_json(1, detected), frame_result_to_json(2, filled)]
-    rows[1]["player_boxes"] = {"1": [0.0, 0.0, 4.0, 4.0]}
+    rows[1]["player_boxes"] = json.loads(json.dumps({1: [0.0, 0.0, 4.0, 4.0]}))   # the file's keys are strings
+    rows[2]["player_boxes"] = {}
     scene = scene_from_payload(_payload(rows, fps=60.0, width=1280, height=720))
     assert scene.per_frame == [None, detected, filled]
-    assert scene.player_boxes_by_frame == [None, {"1": [0.0, 0.0, 4.0, 4.0]}, None]
+    assert scene.player_boxes_by_frame == [None, {1: [0.0, 0.0, 4.0, 4.0]}, {}]   # the run's int player ids again
     assert (scene.fps, scene.width, scene.height, scene.stride) == (60.0, 1280, 720, 2)
 
 

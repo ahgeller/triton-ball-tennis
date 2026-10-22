@@ -230,8 +230,8 @@ def _court_events(ctx: RunContext, pass1: Pass1Result, selection: Selection) -> 
         f"({inferred_legs} inferred, {volleys} volley) "
         f"in {time.perf_counter() - t0:.3f}s"
     )
-    return CourtEvents(True, list(bounces.confirmed), list(bounces.candidates), list(kinematic_bounces),
-                       list(contacts), list(rally_legs))
+    return CourtEvents(computed=True, bounces=list(bounces.confirmed), bounce_candidates=list(bounces.candidates),
+                       kinematic_bounces=list(kinematic_bounces), contacts=list(contacts), rally_legs=list(rally_legs))
 
 
 def _finish(ctx: RunContext, pass1: Pass1Result, selection: Selection, events: CourtEvents,

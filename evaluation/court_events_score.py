@@ -44,12 +44,12 @@ from finetune.data.detector_metrics import scale_for_width
 from finetune.data.labels import read_labels
 from tennis_tracker.court.bounce_events import infer_kinematic_bounces, predict_bounce_events
 from tennis_tracker.court.contact_events import detect_player_contacts
-from tennis_tracker.court.court_scene import EVENT_MERGE_S, BounceEvent, CourtScene, seconds_to_frames
+from tennis_tracker.court.court_scene import EVENT_MERGE_S, BounceEvent, CourtScene, PlayerBoxes, seconds_to_frames
 from tennis_tracker.court.rally_legs import assemble_rally_legs, inferred_landings
 from tennis_tracker.export import court_events_to_json, frame_row_to_result
 from tennis_tracker.paths import BOUNCE_MODEL
 from tennis_tracker.run_context import CourtEvents
-from tennis_tracker.tracking_schema import BounceEventJson, CourtEventsJson, TrackingJson
+from tennis_tracker.tracking_schema import BounceEventJson, CourtEventsJson, FrameRow, TrackingJson
 
 TOLERANCE_S = 0.1          # a landing this close in time to a label is that label's landing
 TIERS = ("confirmed", "placed", "all")
@@ -269,13 +269,21 @@ def compare(before: Dict[str, LandingScore], after: Dict[str, LandingScore]) -> 
 
 # --------------------------------------------------------------------------- recomputing from a JSON
 
+def _player_boxes(row: FrameRow) -> Optional[PlayerBoxes]:
+    """The row's player boxes keyed as the run had them: JSON keys are strings, the tracked
+    player ids (``PlayerDetector.player_boxes_by_slot``) are ints, and a recomputed contact
+    names its player by that id."""
+    boxes = row.get("player_boxes")
+    return None if boxes is None else {int(player): box for player, box in boxes.items()}
+
+
 def scene_from_payload(payload: TrackingJson) -> CourtScene:
     """The ``CourtScene`` the run's court-event stages read, rebuilt from its tracking JSON."""
     rows = payload["frames"]
     video = payload["video"]
     return CourtScene(
         [frame_row_to_result(row) for row in rows],
-        [row.get("player_boxes") for row in rows],
+        [_player_boxes(row) for row in rows],
         float(video["fps"]), int(video["width"]), int(video["height"]),
     )
 
@@ -288,8 +296,9 @@ def recompute_block(payload: TrackingJson, bounce_model: Path) -> CourtEventsJso
     kinematic = infer_kinematic_bounces(scene)
     legs = assemble_rally_legs(scene, [row.get("court_keypoints") for row in payload["frames"]],
                                contacts, bounces, kinematic)
-    return court_events_to_json(CourtEvents(True, list(bounces.confirmed), list(bounces.candidates),
-                                            list(kinematic), list(contacts), list(legs)))
+    return court_events_to_json(CourtEvents(computed=True, bounces=list(bounces.confirmed),
+                                            bounce_candidates=list(bounces.candidates), kinematic_bounces=list(kinematic),
+                                            contacts=list(contacts), rally_legs=list(legs)))
 
 
 # --------------------------------------------------------------------------- the command
