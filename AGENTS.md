@@ -94,8 +94,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   the raw GridTrackNet prepass over one clip (torch only when a detector is built), which
   the audit, `realign.py`, `pretrack.py`, `evaluation/archive.py` and the trainer's winner
   metric all run; `bounce_labels.py`, the landing labels (`labels/<clip>_bounces.csv`, the
-  frames where the ball landed, points optional) the label tool's `/` key writes and the
-  court-event scorer reads;
+  frames where the ball landed, `frame_###.5` for a landing between two frames, points
+  optional) the label tool's `/` key writes and the court-event scorer reads;
   `workspace.py`, where the workspace keeps things and a clip's video
   facts, and the one place `clips.csv` and `exclude.txt` are read and written
   (`TENNIS_WORKSPACE` relocates the workspace); `detector_metrics.py`, the detector metric (`DetectorMetrics`);

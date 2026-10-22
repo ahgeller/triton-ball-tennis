@@ -59,6 +59,22 @@ def test_match_landings_is_greedy_one_to_one_closest_pair_first():
     assert match_landings([], [1, 2], 3) == [] and match_landings([1], [], 3) == []
 
 
+def test_a_label_between_two_frames_matches_a_landing_on_either_and_is_printed_as_a_half_frame():
+    assert match_landings([412.5], [412], 0.5) == [(0, 0)] and match_landings([412.5], [413], 0.5) == [(0, 0)]
+    assert match_landings([412.5], [414], 1.4) == [] and match_landings([412.5], [414], 1.5) == [(0, 0)]
+    assert match_landings([412.5], [412, 413], 3.0) == [(0, 0)]        # the tie goes to the earlier landing
+    labels = [BounceLabel(412.5, (10.0, 10.0)), BounceLabel(600.5, None)]
+    score = score_clip("video6", labels, [BounceEvent(413, 13.0, 14.0, 0.9)], fps=30.0, tolerance_s=0.1, px_scale=1.0)
+    assert (score.labels, score.found, score.hits) == (2, 1, 1)
+    assert score.timing_errors_s == pytest.approx([0.5 / 30]) and score.px_errors == [5.0]
+    assert format_line(score).startswith("video6         labels=   2 found=   1 hits=   1 precision=1.000 recall=0.500 | dt med=  17ms p90=  17ms | px med=  5.0px")
+    assert scorer.unmatched_lines(score, 30.0) == ["    unmatched labels:   600.5 (20.02s)"]
+    # The tolerance is a fraction of a frame, not rounded: 0.1 s at 25 FPS is 2.5 frames, so a
+    # landing 3 frames from a whole-frame label misses and one 2.5 frames from a half-frame label hits.
+    assert score_clip("v", [BounceLabel(100)], [BounceEvent(103, 0.0, 0.0, 1.0)], 25.0, 0.1, 1.0).hits == 0
+    assert score_clip("v", [BounceLabel(100.5)], [BounceEvent(103, 0.0, 0.0, 1.0)], 25.0, 0.1, 1.0).hits == 1
+
+
 def test_score_clip_counts_hits_timing_and_pixels_and_lists_the_rest():
     labels = [BounceLabel(100, (100.0, 200.0)), BounceLabel(200, None), BounceLabel(300, (0.0, 0.0))]
     events = [BounceEvent(102, 103.0, 204.0, 0.9), BounceEvent(199, 1.0, 1.0, 0.8), BounceEvent(500, 1.0, 1.0, 0.7, "kink")]
@@ -132,7 +148,7 @@ def _archive(tmp_path: Path) -> Path:
     (archive / "videos" / "video1.mp4").write_bytes(b"")                # only the name is looked at
     (archive / "videos" / "video2.mp4").write_bytes(b"")
     (archive / "labels" / "video1_ball.csv").write_text("frame,ball_x,ball_y\nframe_100,100,200\nframe_300,10,10\n", encoding="utf-8")
-    (archive / "labels" / "video1_bounces.csv").write_text("frame,ball_x,ball_y\nframe_100,,\nframe_300,,\n", encoding="utf-8")
+    (archive / "labels" / "video1_bounces.csv").write_text("frame,ball_x,ball_y\nframe_100,,\nframe_300.5,,\n", encoding="utf-8")
     (archive / "labels" / "video2_ball.csv").write_text("frame,ball_x,ball_y\n", encoding="utf-8")   # no landing labels
     return archive
 
@@ -153,7 +169,7 @@ def test_main_scores_the_clips_with_landing_labels(tmp_path, capsys):
     assert "(1 clips with landing labels: video1)" in text                # video2 has none, and is not an error
     assert "=== landings [gridtracknet] tier=confirmed tolerance=0.10s ===" in text
     assert "video1         labels=   2 found=   1 hits=   1 precision=1.000 recall=0.500 | dt med=  33ms p90=  33ms | px med=  5.0px" in text
-    assert "    unmatched labels:   300 (10.00s)" in text
+    assert "    unmatched labels:   300.5 (10.02s)" in text               # a landing between frames 300 and 301
     assert "ALL            labels=   2 found=   1 hits=   1 precision=1.000 recall=0.500" in text
 
 
