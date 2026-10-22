@@ -51,7 +51,15 @@ class _Candidate(TypedDict):
 
 
 class ROITrack:
-    """One ball hypothesis: last position, velocity and how long since the detector saw it."""
+    """One ball hypothesis: last position, velocity and how long since the detector saw it.
+
+    ``frames_since_det`` counts the frames without a detection through the frame
+    last processed.  The track's position on that frame is therefore ``last_pos``
+    when it was matched there (no misses) and its projectile prediction
+    ``frames_since_det`` frames past the last detection otherwise
+    (``current_center``); the frame about to be assigned is one further on,
+    ``predict_roi(frames_since_det + 1)``.
+    """
 
     def __init__(self, start_pos: Point, frame_index: int, conf: float = 1.0, diag_box: float = 0.0) -> None:
         self.last_pos = start_pos
@@ -67,8 +75,11 @@ class ROITrack:
         projectile model, so the ROI and the selector agree on where the ball is going."""
         return predict_projectile(self.last_pos, self.last_vel, dt, phys_cfg)
 
-    def predicted_center(self, phys_cfg: SelectorConfig) -> Point:
-        return self.predict_roi(max(self.frames_since_det, 1), phys_cfg)
+    def current_center(self, phys_cfg: SelectorConfig) -> Point:
+        """Where the track puts the ball on the frame last processed (see the class docstring)."""
+        if self.frames_since_det == 0:
+            return self.last_pos
+        return self.predict_roi(self.frames_since_det, phys_cfg)
 
     def update(self, pos: Point, frame_index: int, conf: float = 1.0, diag_box: float = 0.0) -> None:
         """Take a detection at ``pos``; the coasting history is cleared except this frame's ROI.
@@ -134,9 +145,9 @@ class ROIMotionTracker:
             if not unassigned:
                 t.frames_since_det += 1
                 continue
-            # The frame being assigned is one past the misses counted so far: a track last seen
-            # two frames ago holds frames_since_det 1 here, and predicting one frame on put its
-            # acceptance circle a step behind the ball on every frame after the first miss.
+            # The frame being assigned is one past the misses counted so far (see ROITrack):
+            # predicting one frame on put the acceptance circle a step behind the ball on
+            # every frame after the first miss.
             pred = t.predict_roi(t.frames_since_det + 1, self.phys_cfg)
             best_idx = min(range(len(unassigned)),
                            key=lambda i: _distance(unassigned[i]["pos"], pred) - unassigned[i]["conf"] * _ASSIGN_CONF_BONUS_PX)
@@ -173,12 +184,13 @@ class ROIMotionTracker:
         self.tracks = [t for t in self.tracks if t.frames_since_det < _MAX_FRAMES_LOST]
 
         # Tracks that drifted onto the same ball: keep the freshest, so a lost
-        # expanding box cannot shadow a new tight box on the same ball.
+        # expanding box cannot shadow a new tight box on the same ball. Both are
+        # placed on this frame (ROITrack.current_center), not one on the next.
         if len(self.tracks) > 1:
             keep: List[ROITrack] = []
             for t in sorted(self.tracks, key=lambda t: t.frames_since_det):
-                pred = t.predicted_center(self.phys_cfg)
-                duplicate = any(_distance(pred, kt.predicted_center(self.phys_cfg)) < _DUPLICATE_TRACK_DIAG_FRAC * self.diag
+                center = t.current_center(self.phys_cfg)
+                duplicate = any(_distance(center, kt.current_center(self.phys_cfg)) < _DUPLICATE_TRACK_DIAG_FRAC * self.diag
                                 for kt in keep)
                 if duplicate:
                     dropped_rois.extend(t.coasting_rois)    # a ghost that merged onto a real ball

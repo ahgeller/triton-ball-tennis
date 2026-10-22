@@ -39,3 +39,23 @@ def test_a_lost_track_predicts_the_frame_being_assigned_not_the_one_before():
     tracker.update_from_dets([([28.0, -2.0, 32.0, 2.0], 0.9), ([18.0, -2.0, 22.0, 2.0], 0.9)], 3)
     moving = [t for t in tracker.tracks if t.last_vel != (0.0, 0.0)]
     assert [t.last_pos for t in moving] == [(30.0, 0.0)]
+
+
+def _det(x: float, y: float = 0.0, conf: float = 0.9):
+    return ([x - 2.0, y - 2.0, x + 2.0, y + 2.0], conf)
+
+
+def test_duplicate_tracks_are_compared_on_the_frame_just_processed():
+    # Ball B is seen on every frame, 80 px/frame to the right. Ball A, 70 px/frame to the left,
+    # is seen twice and then lost; its coasting prediction reaches B's frame-3 position on frame 3.
+    # The two must be compared there: B at its detection, A predicted two frames past its last one.
+    # Comparing B one frame ahead instead (the frame nobody has processed) kept them 77 px apart.
+    tracker = ROIMotionTracker(Config(), 1920, 1080, 30.0)
+    tracker.update_from_dets([_det(0.0), _det(450.0)], 0)
+    tracker.update_from_dets([_det(80.0), _det(380.0)], 1)
+    assert [t.last_pos for t in tracker.tracks] == [(80.0, 0.0), (380.0, 0.0)]
+    tracker.update_from_dets([_det(160.0)], 2)                       # A misses; predicted at 310, kept
+    assert [t.frames_since_det for t in tracker.tracks] == [0, 1]
+    tracker.update_from_dets([_det(240.0)], 3)                       # A misses again; predicted at 242
+    assert [(t.last_pos, t.frames_since_det) for t in tracker.tracks] == [((240.0, 0.0), 0)]
+    assert tracker.ball_visible
