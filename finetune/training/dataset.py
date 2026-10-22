@@ -5,8 +5,9 @@ they hold (absent-ball frames, the frames the starting weights fired on).
 Each augmentation is behind a name in ``AUGMENTATIONS`` (``--augment``), so a run can switch one
 on and be measured against the same run without it:
 
-- ``basic``: the mirror flip and a small gain jitter (the trainer's original augmentation);
-- ``strong``: the flip and ``photometric_augment`` in place of the gain jitter;
+- ``basic``: a small gain jitter (with the mirror flip, the trainer's original augmentation; the
+  flip is drawn whenever the dataset augments, whatever names are on);
+- ``strong``: ``photometric_augment`` in place of the gain jitter;
 - ``translate``: one integer shift of up to ``TRANSLATE_PX`` cache pixels, the same for all
   five frames, border replicated (not reflected, which would copy a ball near the edge), held
   so that no label leaves the frame; the labels move by the shift in native pixels;
@@ -103,7 +104,8 @@ def photometric_augment(images: np.ndarray, rng: Augmenter) -> np.ndarray:
 def translate_limits(points: Sequence[Target], width: int, height: int, cache_width: int, cache_height: int,
                      reach: int = TRANSLATE_PX) -> Tuple[int, int, int, int]:
     """(dx_min, dx_max, dy_min, dy_max): the integer shifts in cache pixels, within `reach`, that
-    keep every label of the unit on the image (labels sit in [0, width - 1] x [0, height - 1])."""
+    keep every label of the unit on the image (labels sit in [0, width - 1] x [0, height - 1]; a
+    mirrored label can sit at ``width``, and the limits then shift it back onto the image)."""
     dx_min, dx_max, dy_min, dy_max = -reach, reach, -reach, reach
     for point in points:
         if point is None:

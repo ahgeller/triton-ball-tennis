@@ -222,9 +222,9 @@ def scripted(dataset: UnitDataset, tosses, integers=()) -> None:
     """Make the coin tosses answer `tosses` in turn and the integer draws `integers`."""
     dataset.rng = Augmenter(0)
     dataset.rng.draws = random.Random(0)
+    remaining = iter(integers)
     dataset.rng.draws.random = iter(tosses).__next__
     dataset.rng.draws.randint = lambda low, high: next(remaining)
-    remaining = iter(integers)
 
 
 def stripe_centre(images: torch.Tensor) -> float:
@@ -309,7 +309,7 @@ def test_translate_is_held_so_that_no_label_leaves_the_image(tmp_path):
     assert translate_limits(unit["points"], 1920, 1080, training.WIDTH, training.HEIGHT) == (0, 0, 0, 0)
     assert translate_limits([[12.5, 200.0], None], 1920, 1080, training.WIDTH, training.HEIGHT) == (-5, 20, -20, 20)
     assert translate_limits([[1910.0, 1070.0]], 1920, 1080, training.WIDTH, training.HEIGHT) == (-20, 3, -20, 3)
-    assert translate_limits([None] * 5, 1920, 1080, training.WIDTH, training.HEIGHT) == (-TRANSLATE_PX,) * 1 + (TRANSLATE_PX, -TRANSLATE_PX, TRANSLATE_PX)
+    assert translate_limits([None] * 5, 1920, 1080, training.WIDTH, training.HEIGHT) == (-TRANSLATE_PX, TRANSLATE_PX, -TRANSLATE_PX, TRANSLATE_PX)
     images = np.zeros((15, training.HEIGHT, training.WIDTH), np.float32)
     images[:, :, :10] = 1.0
     shifted, points = translate(images, [[1919.0, 1079.0], None, [0.0, 0.0]], 0, 0, 1920, 1080)
@@ -441,6 +441,7 @@ def test_score_every_leaves_unscored_epochs_blank_and_always_scores_the_last(tmp
     assert rows[1]["recall"] == "0.950000" and rows[2]["recall"] == "0.900000"
     assert training.main(["--score-every", "0", "--self-test"]) == 0        # the self-test needs no run
     assert training.main(["--score-every", "0"]) == 1
+    assert training.main(["--epochs", "0"]) == 1                            # no epoch: no best.npz to score or save
 
 
 def test_pick_winner_reuses_the_best_epochs_metrics_and_records_how_it_chose(tmp_path, capsys):

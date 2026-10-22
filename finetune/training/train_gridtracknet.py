@@ -95,7 +95,8 @@ class Selection(NamedTuple):
     """What the epochs left behind: the epoch the detector metric chose (``best.npz``) with its
     metrics, and the epoch of the lowest validation loss (``best_loss.npz``), for the record. A
     run with nothing held out (``--all-clips``) scores nothing: its result is ``last.npz``, the
-    final epoch, and the metrics and the loss epoch are absent."""
+    final epoch, the metrics are None and the loss fields keep their starting values (epoch 0,
+    an infinite loss), since no validation loss was ever measured."""
     best_path: Path
     best_epoch: int
     best_metrics: Optional[DetectorMetrics]
@@ -113,8 +114,9 @@ def results_row(epoch: int, train_loss: float, val_loss: Optional[float], second
     return row + [f"{score_seconds:.0f}"] + [f"{value:.6f}" if isinstance(value, float) else str(value) for value in metrics]
 
 
-def fit(args: argparse.Namespace, model: torch.nn.Module, train_loader, val_loader, optimizer, scaler,
-        device: torch.device, score: Optional[Callable[[Path], DetectorMetrics]]) -> Selection:
+def fit(args: argparse.Namespace, model: torch.nn.Module, train_loader: DataLoader, val_loader: Optional[DataLoader],
+        optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: torch.device,
+        score: Optional[Callable[[Path], DetectorMetrics]]) -> Selection:
     """Run the epochs. After each one ``last.npz`` is written and ``results.csv`` gets its row; on a
     scored epoch (every ``--score-every``, and always the last) ``score(last.npz)`` measures the
     held-out detector metric and ``best.npz`` follows it by ``promotion_improves`` (a tie keeps
@@ -385,6 +387,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     if args.score_every < 1:
         print("[error] --score-every must be at least 1", file=sys.stderr)
+        return 1
+    if args.epochs is not None and args.epochs < 1:
+        # Zero epochs would leave no best.npz to score and nothing to copy to --save.
+        print("[error] --epochs must be at least 1", file=sys.stderr)
         return 1
     if args.selection_run and not args.all_clips:
         print("[error] --selection-run goes with --all-clips", file=sys.stderr)
