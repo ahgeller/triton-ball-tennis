@@ -148,13 +148,16 @@ def extract_frames(video: Path, frame_dir: Path, needed: Set[int]) -> None:
 
 def prepare_clip(entry: Clip, data_dir: Path, rebuild: bool) -> ClipRecord:
     """Describe one clip's training units from its labels as they are now, and extract the
-    768x432 frames they need that the cache does not hold yet (every frame with ``rebuild``)."""
+    768x432 frames they need that the cache does not hold yet: every frame with ``rebuild``, and
+    every frame when no record vouches for what is on disk (the video or the record format
+    changed, or the record is unreadable), since frames of another video or format would
+    otherwise sit beside the new ones for good."""
     clip, video, csv_path, source = entry
     meta_path = data_dir / "clips" / f"{clip}.json"
     frame_dir = data_dir / "frames" / clip
     signature = clip_signature(video)
     cached = None if rebuild else cached_record(meta_path, signature)
-    if rebuild and frame_dir.exists():
+    if cached is None and frame_dir.exists():
         shutil.rmtree(frame_dir)
     on_disk = {index for index in (cached or {"frames": []})["frames"] if (frame_dir / frame_name(index)).is_file()}
     fps, width, height, _ = video_meta(video)

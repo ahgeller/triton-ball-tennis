@@ -118,6 +118,29 @@ def test_a_label_edit_extracts_only_the_frames_it_newly_needs(tmp_path):
     assert not extract.called
 
 
+def test_frames_no_record_vouches_for_are_dropped_before_extracting(tmp_path):
+    """A record that no longer matches (the video changed, the format version moved on, the
+    JSON is damaged) says nothing about what is on disk: those frames go, the needed ones are
+    extracted afresh, and a stray file of another format does not stay for good."""
+    video = write_clip(tmp_path / "c.avi", 8, SIZE)
+    csv_path = tmp_path / "c_ball.csv"
+    write_labels(csv_path, {f: (1.0, 1.0) for f in range(5)}, *SIZE)
+    data = tmp_path / "data"
+    first = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=False)
+    frame_dir = data / "frames" / "c"
+    (frame_dir / "000000.jpg").write_bytes(b"x")                              # the old cache's format
+    stamp = video.stat().st_mtime_ns + 10 ** 9
+    os.utime(video, ns=(stamp, stamp))                                        # the video changed
+    with patch.object(frame_cache, "extract_frames", wraps=frame_cache.extract_frames) as extract:
+        second = prepare_clip(("c", video, csv_path, "custom"), data, rebuild=False)
+    assert extract.call_args.args[2] == set(range(5)) and second["signature"] != first["signature"]
+    assert sorted(p.name for p in frame_dir.iterdir()) == [f"{i:06d}.png" for i in range(5)]
+    (data / "clips" / "c.json").write_text("{not json", encoding="utf-8")   # a damaged record
+    (frame_dir / "stray.png").write_bytes(b"x")
+    prepare_clip(("c", video, csv_path, "custom"), data, rebuild=False)
+    assert sorted(p.name for p in frame_dir.iterdir()) == [f"{i:06d}.png" for i in range(5)]
+
+
 def test_a_frame_that_cannot_be_written_fails_the_clip_before_any_record_is_cached(tmp_path):
     """cv2.imwrite answers False instead of raising; left unchecked, prepare_clip cached a record
     pointing at PNGs that were never written, which only surfaced as a FileNotFoundError during
