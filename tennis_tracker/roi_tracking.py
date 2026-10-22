@@ -134,7 +134,10 @@ class ROIMotionTracker:
             if not unassigned:
                 t.frames_since_det += 1
                 continue
-            pred = t.predicted_center(self.phys_cfg)
+            # The frame being assigned is one past the misses counted so far: a track last seen
+            # two frames ago holds frames_since_det 1 here, and predicting one frame on put its
+            # acceptance circle a step behind the ball on every frame after the first miss.
+            pred = t.predict_roi(t.frames_since_det + 1, self.phys_cfg)
             best_idx = min(range(len(unassigned)),
                            key=lambda i: _distance(unassigned[i]["pos"], pred) - unassigned[i]["conf"] * _ASSIGN_CONF_BONUS_PX)
             dist = _distance(unassigned[best_idx]["pos"], pred)

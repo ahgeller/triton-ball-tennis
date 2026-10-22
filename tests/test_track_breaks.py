@@ -1,10 +1,9 @@
 """evaluation/track_breaks.py: where a run lost the ball, on hand-built tracking payloads and labels."""
 import json
+from collections import Counter
 
 from finetune.data.labels import write_labels
 from finetune.data.workspace import label_csv
-from collections import Counter
-
 from evaluation.track_breaks import (ClipBreaks, clip_breaks, compare, fmt, pool, read_scores, report, start_lines,
                                      track_starts)
 
