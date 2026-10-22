@@ -47,7 +47,7 @@ finetune/
   holdouts.json  named held-out sets of whole recordings (`mixed_v1`), for --holdout
   models/     gridtracknet_best.npz   the winner of the last training run
   runs/       <tag>/results.csv, config.json, winner.json, best.npz, best_loss.npz, last.npz
-  cache/      768x432 lossless PNG frames (the tracker's own resize), one folder per clip; keyed on the video, a label edit only adds frames (safe to delete; about 12 GB for the whole workspace)
+  cache/      768x432 lossless PNG frames (the tracker's own resize), one folder per clip; keyed on the video, a label edit only adds frames (safe to delete; about 8 GB for the 64 trainable clips, measured 7.9 GB)
 ```
 
 Own labels (`video1`–`video12`) are tracked in git; imported public labels
@@ -235,10 +235,10 @@ separately). `ft.py check` flags files that break this rule.
      does the same for units in which the starting weights fired on a no-ball
      frame (one prepass over the training clips before the run).
    - Frames are cached per clip under `cache/` as lossless 768x432 PNGs made
-     by the tracker's own resize (about 12 GB for the whole workspace), keyed
-     on the video: adding one clip does not re-extract the others, and a label
-     edit only adds the frames it newly needs. `--prepare-only` builds the
-     cache and stops.
+     by the tracker's own resize (about 8 GB for the 64 trainable clips,
+     measured 7.9 GB), keyed on the video: adding one clip does not re-extract
+     the others, and a label edit only adds the frames it newly needs.
+     `--prepare-only` builds the cache and stops.
    - After every scored epoch (`--score-every K`, default every epoch, the
      last one always) the weights are scored on the held-out clips with the
      detector metric `evaluate_archive.py` reports, and `runs/<tag>/best.npz`

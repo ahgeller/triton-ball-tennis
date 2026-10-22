@@ -116,7 +116,8 @@ rendering. Outputs are an annotated MP4 and per-frame JSON. It is not a calibrat
   (which clips it trains on and holds out: `--val-clips`, `--holdout NAME`, or nothing
   with `--all-clips`), `frame_cache.py` (the per-clip cache of frames and training
   units: lossless 768x432 PNGs through `gridtracknet.resize_to_model`, the tracker's
-  own resize, keyed on the video, about 12 GB for the workspace), `dataset.py`
+  own resize, keyed on the video, about 8 GB for the 64 trainable clips, measured
+  7.9 GB), `dataset.py`
   (targets, the named augmentations behind `--augment`, the Dataset and the sampler
   with `--oversample-absent` and `--oversample-false-alarms`) and `pretrack.py` (drafts).
   `audit/records/gridtracknet_recipe_2026-10.md` is the ledger of the recipe runs.
