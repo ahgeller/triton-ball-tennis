@@ -249,8 +249,9 @@ def report_raw(name: str, per_clip: List[RawClip], thresholds: List[float],
         print(fmt(clip.clip, stats))
     pooled = DetectorMetrics.of(_pooled_pairs(per_clip, PER_CLIP_CONF), 1.0)
     print(fmt("macro", macro_metrics(per_clip_stats), alarms=round(pooled.false_alarm * pooled.invisible)))
-    for source in sorted({(sources or {}).get(clip.clip, "") for clip in per_clip} - {""}):
-        of_source = [clip for clip in per_clip if sources[clip.clip] == source]
+    source_of = sources or {}
+    for source in sorted({source_of.get(clip.clip, "") for clip in per_clip} - {""}):
+        of_source = [clip for clip in per_clip if source_of.get(clip.clip) == source]
         print(fmt(f"source={source}", DetectorMetrics.of(_pooled_pairs(of_source, PER_CLIP_CONF), 1.0)))
     dx, dy, count = _hit_offset(per_clip)
     if count:

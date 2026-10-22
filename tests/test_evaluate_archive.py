@@ -223,7 +223,7 @@ def test_report_raw_adds_a_macro_line_and_one_line_per_source(capsys):
                sources={"video13": "prof", "video1": "custom", "grid_match8": "grid"})
     out = capsys.readouterr().out
     scores = read_scores(out)
-    assert scores["conf>=0.50"].recall == pytest.approx(115 / 130, abs=5e-4) and scores["ALL" if "ALL" in scores else "conf>=0.50"].visible == 130
+    assert scores["conf>=0.50"].recall == pytest.approx(115 / 130, abs=5e-4) and scores["conf>=0.50"].visible == 130
     assert scores["macro"].recall == pytest.approx((0.9 + 0.5 + 1.0) / 3, abs=5e-4) and scores["macro"].visible == 130
     assert scores["macro"].false_alarm == pytest.approx((0.05 + 0.5) / 2, abs=5e-4)       # over the clips with invisible labels
     assert scores["macro"].invisible == 24
@@ -234,6 +234,9 @@ def test_report_raw_adds_a_macro_line_and_one_line_per_source(capsys):
     assert "falseAlarm=0.500 (2/4) |" in lines["grid_match8"] and "falseAlarm=0.125 (3/24) |" in lines["conf>=0.50"]
     assert "falseAlarm=0.275 (3/24) |" in lines["macro"]                       # the mean rate, beside the pooled count
     assert list(lines)[-4:] == ["macro", "source=custom", "source=grid", "source=prof"]
+    report_raw("probe", [long_prof, short_own, grid], [0.5], sources={"video13": "prof"})      # a clip without a source
+    names = [line.split()[0] for line in capsys.readouterr().out.splitlines() if " vis=" in line]
+    assert names[-2:] == ["macro", "source=prof"]
     stats = macro_metrics([])
     assert stats.visible == 0 and stats.invisible == 0 and stats.recall != stats.recall      # nan: no clip to average
 
