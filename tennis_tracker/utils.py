@@ -143,7 +143,7 @@ def choose_encoder(cfg: EncoderSettings, is_cuda: bool = True) -> EncoderChoice:
         return EncoderChoice(None, (ENCODER_OPENCV,))
     ffmpeg = find_ffmpeg()
     chain: List[str] = []
-    nvenc_failure = None
+    nvenc_failure: Optional[str] = None
     if ffmpeg:
         if is_cuda and ffmpeg_has_encoder(ffmpeg, FFMPEG_ENCODER_NAMES[ENCODER_NVENC]):
             nvenc_failure = ffmpeg_encoder_failure(ffmpeg, FFMPEG_ENCODER_NAMES[ENCODER_NVENC])
