@@ -96,7 +96,7 @@ def _speed_reference(observations: Sequence[Detection], frame: int, stride: int)
 
 
 def _implausibility(
-    trk: "Track",
+    trk: Track,
     det: Detection,
     dt: int,
     cfg: SelectorConfig,
@@ -156,9 +156,10 @@ def _implausibility(
     return ""
 
 
-def _association_plausible(trk: "Track", det: Detection, dt: int, cfg: SelectorConfig, diag: float) -> bool:
+def _association_plausible(trk: Track, det: Detection, dt: int, cfg: SelectorConfig, diag: float) -> bool:
     """Whether ``det`` is a plausible continuation of ``trk`` (``_implausibility`` says why not)."""
     return _implausibility(trk, det, dt, cfg, diag) == ""
+
 
 class _TrailGuards:
     """Pixel/frame thresholds of the trail-creation and reconnect guards.
@@ -315,9 +316,12 @@ def _assignment_costs(
 ) -> Tuple[List[Tuple[float, int, int]], Dict[int, Tuple[str, int]]]:
     """Every (cost, track index, detection index) pair of frame `t` a gate lets through, in track
     then detection order (the order the greedy assignment breaks cost ties in), and for each
-    detection the (gate, track id) of the nearest live track that turned it away."""
+    detection why it would start a track of its own: ("outbid", the cheapest track that accepted
+    it) when one did, since the greedy assignment can only have spent that track on another
+    detection, else the (gate, track id) of the nearest live track that turned it away."""
     assignments = []
     nearest_rejection: Dict[int, Tuple[float, str, int]] = {}
+    best_bid: Dict[int, Tuple[float, int]] = {}
     for ti, trk in enumerate(active):
         pred = trk.predict(t)
         dt = t - trk.last_obs_frame
@@ -326,9 +330,13 @@ def _assignment_costs(
             verdict = _association_cost(trk, det, pred, dt, dt_eff, cfg, diag, guards)
             if verdict.cost is not None:
                 assignments.append((verdict.cost, ti, di))
+                if di not in best_bid or verdict.cost < best_bid[di][0]:
+                    best_bid[di] = (verdict.cost, trk.track_id)
             elif di not in nearest_rejection or verdict.dist < nearest_rejection[di][0]:
                 nearest_rejection[di] = (verdict.dist, verdict.reason, trk.track_id)
-    return assignments, {di: (reason, track_id) for di, (_, reason, track_id) in nearest_rejection.items()}
+    start_reasons = {di: (reason, track_id) for di, (_, reason, track_id) in nearest_rejection.items()}
+    start_reasons.update({di: ("outbid", track_id) for di, (_, track_id) in best_bid.items()})
+    return assignments, start_reasons
 
 
 def _assign_greedily(
@@ -374,7 +382,7 @@ def build_tracks(
     guards = _TrailGuards(cfg, diag)
 
     for t, frame_dets in enumerate(all_dets):
-        assignments, rejections = _assignment_costs(active, frame_dets, t, dt_cap, cfg, diag, guards)
+        assignments, start_reasons = _assignment_costs(active, frame_dets, t, dt_cap, cfg, diag, guards)
         used_tracks, used_dets = _assign_greedily(assignments, active, frame_dets)
         _count_misses(active, used_tracks, cfg.max_gap_frames)
 
@@ -391,10 +399,10 @@ def build_tracks(
                 trk.misses = 0
                 trk.end_reason = ""
             else:
-                # A live track may have been the ball's; the gate that turned the detection away
-                # (and the greedy assignment that may have spent the track on another detection)
-                # is why this one starts a track of its own.
-                reason, rival = rejections.get(di, ("first", None))
+                # A live track may have been the ball's; the gate that turned the detection away,
+                # or the greedy assignment that spent the track that accepted it on another
+                # detection, is why this one starts a track of its own.
+                reason, rival = start_reasons.get(di, ("first", None))
                 trk = Track(track_id=next_id, cfg=cfg, start_reason=reason, start_rival=rival)
                 next_id += 1
             trk.update(det)

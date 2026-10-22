@@ -15,7 +15,8 @@ compare with ``--compare``; positive deltas in the miss buckets, switches and ga
 
 When the JSONs record why each track started (schema 4), a second table counts, per frame
 rate and over all clips, the tracks that started because a live track's gate turned their first
-detection away, by gate: that is where the association fragments, and which gate did it.
+detection away, by gate (or because the track that accepted it took another detection,
+``outbid``): that is where the association fragments, and which gate did it.
 """
 from __future__ import annotations
 
@@ -24,13 +25,14 @@ import json
 import math
 import re
 import sys
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set
 
 from finetune.data.data_policy import clip_source
-from finetune.data.labels import read_labels
+from finetune.data.labels import Labels, read_labels
 from finetune.data.workspace import label_csv, natural_key, read_manifest
+from tennis_tracker.tracking_schema import TrackingJson
 
 SWITCH_DIAG_FRAC = 0.03     # a present row this far from the previous present row is a switch
 LINE = re.compile(
@@ -54,7 +56,7 @@ class ClipBreaks(NamedTuple):
         return self.visible - self.hit
 
 
-def clip_breaks(payload: dict, labels: Dict[int, Optional[tuple]], switch_frac: float = SWITCH_DIAG_FRAC) -> ClipBreaks:
+def clip_breaks(payload: TrackingJson, labels: Labels, switch_frac: float = SWITCH_DIAG_FRAC) -> ClipBreaks:
     """Bucket a run's losses on one clip against its labels (frame -> point, or None for no ball)."""
     frames = payload["frames"]
     present = {int(row["frame"]): (float(row["x"]), float(row["y"])) for row in frames if row.get("present")}
@@ -151,14 +153,15 @@ def _rate_name(fps: float) -> str:
     return f"fps={int(round(fps / 30.0) * 30)}"
 
 
-def track_starts(payload: dict) -> Counter:
+def track_starts(payload: TrackingJson) -> Counter[str]:
     """{start reason: tracks} for the run's tracks (empty when the JSON predates the record)."""
     return Counter(track["start"]["reason"] for track in payload.get("tracks") or () if "start" in track)
 
 
-def start_lines(starts_by_group: Dict[str, Counter]) -> List[str]:
+def start_lines(starts_by_group: Dict[str, Counter[str]]) -> List[str]:
     """One line per group listing its track starts by reason, most common first."""
-    lines = ["track starts by the gate that turned the first detection away (first = no live track):"]
+    lines = ["track starts by the gate that turned the first detection away "
+             "(first = no live track, outbid = the track that accepted it took another detection):"]
     for name, counter in sorted(starts_by_group.items()):
         total = sum(counter.values())
         parts = ", ".join(f"{reason}={count}" for reason, count in counter.most_common())
@@ -166,37 +169,48 @@ def start_lines(starts_by_group: Dict[str, Counter]) -> List[str]:
     return lines
 
 
+class _ClipReport(NamedTuple):
+    """One clip's part of the report: its counts, the pooled lines it belongs to (``fps=<rate>``
+    and ``source=<name>``) and its track starts by reason."""
+
+    clip: str
+    rate: str
+    source: str
+    breaks: ClipBreaks
+    starts: Counter[str]
+
+
 def report(out_dir: Path, model: str, switch_frac: float = SWITCH_DIAG_FRAC) -> List[str]:
     """The per-clip lines, then the pooled lines, for the run in ``out_dir``."""
     manifest = read_manifest()
     suffix = f"_{model}.json"
-    per_clip: List[tuple] = []
+    per_clip: List[_ClipReport] = []
     for path in sorted(out_dir.glob(f"*{suffix}"), key=lambda item: natural_key(item.name)):
         clip = path.name[:-len(suffix)]
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload: TrackingJson = json.loads(path.read_text(encoding="utf-8"))
         labels_path = label_csv(clip)
         if not labels_path.is_file():
             print(f"[skip] {clip}: no label file", file=sys.stderr)
             continue
         labels = read_labels(labels_path, int(payload["video"]["width"]), int(payload["video"]["height"]))
-        breaks = clip_breaks(payload, labels, switch_frac)
-        per_clip.append((clip, _rate_name(float(payload["video"]["fps"])), f"source={clip_source(clip, manifest)}",
-                         breaks, track_starts(payload)))
-    lines = [fmt(clip, breaks) for clip, _, _, breaks, _ in per_clip]
+        per_clip.append(_ClipReport(clip, _rate_name(float(payload["video"]["fps"])),
+                                    f"source={clip_source(clip, manifest)}",
+                                    clip_breaks(payload, labels, switch_frac), track_starts(payload)))
+    lines = [fmt(item.clip, item.breaks) for item in per_clip]
     if per_clip:
         lines.append("")
         groups: Dict[str, List[ClipBreaks]] = {}
-        for _, rate, source, breaks, _ in per_clip:
-            groups.setdefault(rate, []).append(breaks)
-            groups.setdefault(source, []).append(breaks)
+        for item in per_clip:
+            groups.setdefault(item.rate, []).append(item.breaks)
+            groups.setdefault(item.source, []).append(item.breaks)
         for name in sorted(groups):
             lines.append(fmt(name, pool(groups[name])))
-        lines.append(fmt("ALL", pool(breaks for _, _, _, breaks, _ in per_clip)))
-        starts_by_group: Dict[str, Counter] = {}
-        for _, rate, _, _, starts in per_clip:
-            if starts:
-                starts_by_group.setdefault(rate, Counter()).update(starts)
-                starts_by_group.setdefault("ALL", Counter()).update(starts)
+        lines.append(fmt("ALL", pool(item.breaks for item in per_clip)))
+        starts_by_group: Dict[str, Counter[str]] = {}
+        for item in per_clip:
+            if item.starts:
+                starts_by_group.setdefault(item.rate, Counter()).update(item.starts)
+                starts_by_group.setdefault("ALL", Counter()).update(item.starts)
         if starts_by_group:
             lines.append("")
             lines.extend(start_lines(starts_by_group))
