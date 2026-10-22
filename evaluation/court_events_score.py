@@ -7,10 +7,10 @@ For every clip that may be scored (``evaluation.archive.list_clips``: reviewed, 
 a landing label file (``labels/<clip>_bounces.csv``, ``finetune.data.bounce_labels``), the run's tracking
 JSON ``<out-dir>/<clip>_<model>.json`` is read; it must have been written with ``--court``, so that its
 ``court_events`` block is filled. The block's landings at the chosen tier are matched one to one to the
-labelled landings within the tolerance (greedy, closest pair first). A label may sit halfway between
-two frames (``frame_412.5``, a ball that landed between them): the tolerance is kept as a fractional
-number of frames (``tolerance_s * fps``, never rounded), so a landing on either frame is half a frame
-from it, and the timing error is that fraction. Per clip and pooled (``ALL``):
+labelled landings within the tolerance (greedy, closest pair first), a whole number of frames
+(``seconds_to_frames``: 3 at 30 FPS, 6 at 60). A label may sit halfway between two frames
+(``frame_412.5``, a ball that landed between them): a landing on either frame is half a frame from
+it, well within the tolerance, and its timing error is that half frame. Per clip and pooled (``ALL``):
 labels, landings found, hits, precision, recall, the median and p90 timing error of the hits, and the
 median pixel error at 1080p scale where the label has a point (``resolve_points`` takes it from the ball
 labels when the row left it blank). The unmatched labels and landings are listed under each clip.
@@ -100,8 +100,8 @@ def landings_at_tier(block: CourtEventsJson, tier: str, fps: float) -> List[Boun
 
 def match_landings(label_frames: Sequence[float], event_frames: Sequence[float], tolerance: float) -> List[Tuple[int, int]]:
     """Greedy one-to-one matching: (label index, event index) pairs no further apart than
-    ``tolerance`` frames, the closest pair taken first (ties by label, then event, order). Frames
-    and the tolerance may be fractional: a label between two frames, a tolerance in seconds."""
+    ``tolerance`` frames, the closest pair taken first (ties by label, then event, order). A label
+    frame may be a half frame (a landing between two frames); the tolerance is whole."""
     pairs = sorted(
         (abs(label - event), li, ei)
         for li, label in enumerate(label_frames)
@@ -143,7 +143,7 @@ class ClipLandingScore(NamedTuple):
 
 def score_clip(clip: str, labels: Sequence[BounceLabel], events: Sequence[BounceEvent], fps: float,
                tolerance_s: float, px_scale: float) -> ClipLandingScore:
-    tolerance = max(0.0, tolerance_s * fps)      # fractional: a label between two frames is half a frame from either
+    tolerance = max(0, seconds_to_frames(tolerance_s, fps))
     pairs = match_landings([label.frame for label in labels], [event.frame for event in events], tolerance)
     timing, px = [], []
     for li, ei in pairs:

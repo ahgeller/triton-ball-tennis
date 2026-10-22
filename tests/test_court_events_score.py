@@ -69,10 +69,11 @@ def test_a_label_between_two_frames_matches_a_landing_on_either_and_is_printed_a
     assert score.timing_errors_s == pytest.approx([0.5 / 30]) and score.px_errors == [5.0]
     assert format_line(score).startswith("video6         labels=   2 found=   1 hits=   1 precision=1.000 recall=0.500 | dt med=  17ms p90=  17ms | px med=  5.0px")
     assert scorer.unmatched_lines(score, 30.0) == ["    unmatched labels:   600.5 (20.02s)"]
-    # The tolerance is a fraction of a frame, not rounded: 0.1 s at 25 FPS is 2.5 frames, so a
-    # landing 3 frames from a whole-frame label misses and one 2.5 frames from a half-frame label hits.
-    assert score_clip("v", [BounceLabel(100)], [BounceEvent(103, 0.0, 0.0, 1.0)], 25.0, 0.1, 1.0).hits == 0
-    assert score_clip("v", [BounceLabel(100.5)], [BounceEvent(103, 0.0, 0.0, 1.0)], 25.0, 0.1, 1.0).hits == 1
+    # The tolerance stays a whole number of frames (0.1 s is 3 frames at 30 FPS, and still 3 at
+    # 29.94): a landing 3.5 frames from a half-frame label misses, 2.5 frames from it hits.
+    assert score_clip("v", [BounceLabel(100.5)], [BounceEvent(104, 0.0, 0.0, 1.0)], 30.0, 0.1, 1.0).hits == 0
+    assert score_clip("v", [BounceLabel(100.5)], [BounceEvent(103, 0.0, 0.0, 1.0)], 30.0, 0.1, 1.0).hits == 1
+    assert score_clip("v", [BounceLabel(100)], [BounceEvent(103, 0.0, 0.0, 1.0)], 29.94, 0.1, 1.0).hits == 1
 
 
 def test_score_clip_counts_hits_timing_and_pixels_and_lists_the_rest():
