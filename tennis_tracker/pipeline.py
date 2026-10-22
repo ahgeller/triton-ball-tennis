@@ -65,6 +65,11 @@ def _written_outputs(cfg: Config) -> Dict[str, Path]:
     return {output.role: Path(getattr(cfg, output.path)) for output in _OUTPUTS if getattr(cfg, output.flag)}
 
 
+def _video_outputs(cfg: Config) -> Dict[str, Path]:
+    """The videos this run writes, by role: every output but the tracking JSON."""
+    return {role: path for role, path in _written_outputs(cfg).items() if role != "tracking_json"}
+
+
 def _output_label(role: str) -> str:
     return next(output.label for output in _OUTPUTS if output.role == role)
 
@@ -79,6 +84,7 @@ def validate_io_paths(cfg: Config) -> Path:
         raise FileNotFoundError(f"Input video not found: {input_path}")
 
     seen: Dict[Path, str] = {}
+    videos = _video_outputs(cfg)
     for role, value in _written_outputs(cfg).items():
         label = _output_label(role)
         path = value.expanduser().resolve()
@@ -86,7 +92,7 @@ def validate_io_paths(cfg: Config) -> Path:
             raise ValueError(f"{label} must not overwrite the input video: {path}")
         if path in seen:
             raise ValueError(f"{label} and {seen[path]} resolve to the same output path: {path}")
-        if role != "tracking_json":            # every other output is a video
+        if role in videos:
             check_writable_video_path(path, label)
         seen[path] = label
     return input_path
@@ -125,7 +131,9 @@ def _open_inputs(cfg: Config) -> RunContext:
     device_index = int(device_str)
     if not torch.cuda.is_available() or device_index >= torch.cuda.device_count():
         raise RuntimeError(f"CUDA device {device_index} is unavailable.")
-    cfg, encoder = resolve_runtime(cfg, str(device_index))   # the caller's Config is not changed
+    # The caller's Config is not changed. A run that writes no video gets no encoder: FFmpeg is
+    # not probed or dry-run for it.
+    cfg, encoder = resolve_runtime(cfg, str(device_index), writes_video=bool(_video_outputs(cfg)))
     print_platform_report(cfg, encoder)
     device = torch.device(f"cuda:{device_index}")
 

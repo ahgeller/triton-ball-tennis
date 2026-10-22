@@ -75,7 +75,7 @@ class RunContext:
     video: VideoInfo
     capture: cv2.VideoCapture        # what pass 1 decodes from
     device: torch.device
-    encoder: EncoderChoice
+    encoder: Optional[EncoderChoice]    # None when the run writes no video: no writer is opened
     detector: BallDetectorBackend
     court_detector: CourtDetector
     player_detector: PlayerDetector

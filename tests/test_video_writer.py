@@ -53,11 +53,18 @@ def test_writable_video_path_rejects_a_parent_that_is_a_file(tmp_path):
 
 
 def _ffmpeg_with(monkeypatch, path, encoders, failing=()):
-    """An FFmpeg at `path` listing `encoders`, of which `failing` cannot encode when tried."""
+    """An FFmpeg at `path` listing `encoders`, of which `failing` cannot encode when tried.
+    Returns the list the dry run appends each encoder it is asked about to."""
+    dry_runs = []
+
+    def encoder_failure(ffmpeg, encoder):
+        dry_runs.append(encoder)
+        return f"{encoder} refused the test frame" if encoder in failing else None
+
     monkeypatch.setattr(utils, "find_ffmpeg", lambda prefer_encoder="h264_nvenc": path)
     monkeypatch.setattr(utils, "ffmpeg_has_encoder", lambda ffmpeg, encoder: bool(ffmpeg) and encoder in encoders)
-    monkeypatch.setattr(utils, "ffmpeg_encoder_failure",
-                        lambda ffmpeg, encoder: f"{encoder} refused the test frame" if encoder in failing else None)
+    monkeypatch.setattr(utils, "ffmpeg_encoder_failure", encoder_failure)
+    return dry_runs
 
 
 def test_choose_encoder_orders_nvenc_libx264_opencv(monkeypatch):
@@ -76,14 +83,16 @@ def test_choose_encoder_drops_an_nvenc_that_lists_but_cannot_encode(monkeypatch,
     # FFmpeg lists h264_nvenc on a box whose driver it cannot load (or whose sessions are all
     # taken); the encoder only fails at the first frame, after pass 1 and selection. The dry run
     # finds out first, the chain starts at libx264 and the platform report says why.
-    _ffmpeg_with(monkeypatch, "/opt/ffmpeg", {"h264_nvenc", "libx264"}, failing={"h264_nvenc"})
+    dry_runs = _ffmpeg_with(monkeypatch, "/opt/ffmpeg", {"h264_nvenc", "libx264"}, failing={"h264_nvenc"})
     choice = choose_encoder(Config(use_nvenc=True))
     assert choice.chain == (ENCODER_LIBX264, ENCODER_OPENCV)
     assert choice.nvenc_failure == "h264_nvenc refused the test frame"
+    assert dry_runs == ["h264_nvenc"]                                   # only NVENC needs the dry run
     print_platform_report(Config(use_nvenc=True, device="0"), choice)
     assert "NVENC disabled (h264_nvenc cannot encode here: h264_nvenc refused the test frame), using libx264" \
         in capsys.readouterr().out
     assert choose_encoder(Config(use_nvenc=True), is_cuda=False).nvenc_failure is None   # not even tried without CUDA
+    assert dry_runs == ["h264_nvenc"]
 
 
 def test_encoder_dry_run_reports_the_last_stderr_line_and_remembers_the_answer(monkeypatch):
@@ -120,7 +129,7 @@ def test_encoder_dry_run_reports_the_last_stderr_line_and_remembers_the_answer(m
 def test_resolve_runtime_sets_the_device_on_a_copy_and_reports_the_platform(monkeypatch, capsys):
     _ffmpeg_with(monkeypatch, "/opt/ffmpeg", {"libx264"})
     cfg = Config(use_nvenc=True, device="auto")
-    out, choice = resolve_runtime(cfg, "0")
+    out, choice = resolve_runtime(cfg, "0", writes_video=True)
     assert out is not cfg and out.use_nvenc is True
     assert out.device == "0" and cfg.device == "auto"      # the caller's Config is untouched
     assert choice.preferred == ENCODER_LIBX264
@@ -130,6 +139,19 @@ def test_resolve_runtime_sets_the_device_on_a_copy_and_reports_the_platform(monk
     report = capsys.readouterr().out
     assert "NVENC disabled (ffmpeg lacks h264_nvenc), using libx264" in report
     assert "[platform] Device: 0" in report and "libx264 encoding" in report
+
+
+def test_resolve_runtime_chooses_no_encoder_and_runs_no_ffmpeg_when_no_video_is_written(monkeypatch, capsys):
+    # A --no-video run and every headless evaluation run write only the JSON; the NVENC dry run
+    # cost each of them a second for an encoder nothing would use.
+    dry_runs = _ffmpeg_with(monkeypatch, "/opt/ffmpeg", {"h264_nvenc", "libx264"})
+    monkeypatch.setattr(utils, "find_ffmpeg", lambda prefer_encoder="h264_nvenc": pytest.fail("looked for ffmpeg"))
+    out, choice = resolve_runtime(Config(use_nvenc=True, device="auto"), "0", writes_video=False)
+    assert out.device == "0" and choice is None and dry_runs == []
+    print_platform_report(out, choice)
+    report = capsys.readouterr().out
+    assert "[platform] Device: 0" in report and "no video written" in report
+    assert "encoding" not in report and "NVENC disabled" not in report
 
 
 def test_ffmpeg_command_differs_only_in_codec_options():
