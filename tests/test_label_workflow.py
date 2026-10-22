@@ -264,6 +264,10 @@ def test_idle_render_is_cached_and_every_change_redraws():
         "walk": lambda t: t.session.only_uncertain(),
         "ghost": lambda t: setattr(t.session, "ghost", (400., 300.)),
         "landing": lambda t: t.toggle_landing(),
+        "landing between": lambda t: (t.move(1), t.toggle_landing(), t.move(-1)),
+        "landing awaited": lambda t: setattr(t.session, "awaiting_landing", None),
+        "landing placed": lambda t: t.session.source.landings.update({
+            t.session.landing_for(t.session.cursor): (300.0, 200.0)}),
         "next frame": lambda t: t.move(1),
         "frame re-decoded": lambda t: frames.update({t.session.rows[t.session.cursor].frame: np.ones((720, 1280, 3), np.uint8)}),
         "window resized": lambda t: t.fit_view(900, 600),
@@ -435,6 +439,82 @@ def test_slash_marks_the_frame_as_a_landing_and_pressing_it_again_unmarks_it():
     assert not landing_badge_drawn(tool.render())
 
 
+def click_picture(tool, fx, fy):
+    """A left click on frame point (fx, fy) through the mouse handler, the view being up."""
+    vx, vy = tool.session.to_view(fx, fy)
+    with patch.object(Tool, "view_ready", return_value=True):
+        tool.pointer.on_mouse(cv2.EVENT_LBUTTONDOWN, vx, vy, 0, None)
+
+
+def test_slash_on_two_consecutive_frames_makes_one_landing_between_them_and_waits_for_the_click():
+    tool = make_tool()
+    session = tool.session
+    session.cursor = 3
+    press_slash(tool)
+    tool.move(1)
+    press_slash(tool)                                                # frame 4, after the marked frame 3
+    assert session.source.landings == {3.5: None} and session.awaiting_landing == 3.5
+    for index in (3, 4):                                             # both frames wear the between badge
+        session.cursor = index
+        assert session.landing_for(index) == 3.5
+        line1 = tool.frame_view.hud_lines(session.rows[index], None, None)[0]
+        assert "  LANDING 1/2  " in line1 and "landings 1" in line1
+        assert landing_badge_drawn(tool.render()[:session.view_h])
+    assert session.landing_for(2) is None and session.landing_for(5) is None
+    session.cursor = 4
+    assert "CLICK WHERE THE BALL BOUNCED" in tool.frame_view.hud_lines(session.rows[4], None, None)[1]
+    before = tool.render()
+    click_picture(tool, 200.0, 150.0)                                # the click says where it touched the ground
+    assert session.awaiting_landing is None and session.cursor == 4   # ... and the frame stays up
+    (point,) = session.source.landings.values()
+    assert point == (pytest.approx(200.0, abs=1.0), pytest.approx(150.0, abs=1.0))
+    assert not session.rows[4].edited                                # the ball label was not touched
+    assert tool.render() is not before and "/=landing" in tool.frame_view.hud_lines(session.rows[4], None, None)[1]
+    click_picture(tool, 210.0, 150.0)                                # a plain click again: the ball, next frame
+    assert session.rows[4].edited and session.cursor == 5
+    session.cursor = 3
+    press_slash(tool)                                                # / on either frame removes it
+    assert session.source.landings == {} and session.landing_for(4) is None
+
+
+def test_any_other_key_leaves_a_between_landing_without_a_point_and_the_grid_never_waits():
+    tool = make_tool()
+    session = tool.session
+    session.cursor = 4
+    press_slash(tool)
+    session.cursor = 3
+    press_slash(tool)                                                # frame 3, before the marked frame 4
+    assert session.source.landings == {3.5: None} and session.awaiting_landing == 3.5
+    with patch.object(Tool, "view_ready", return_value=True), patch.object(win, "shift_held", return_value=False), \
+            patch.object(win, "non_character_key", return_value=False):
+        tool.keys.handle(ord("t"))
+    assert session.awaiting_landing is None and session.source.landings == {3.5: None}
+    click_picture(tool, 200.0, 150.0)                                # a click now is a ball label
+    assert session.rows[3].edited and session.source.landings == {3.5: None}
+    tool.grid_view.toggle()
+    session.cursor = 7
+    tool.toggle_landing()
+    session.cursor = 8
+    tool.toggle_landing()
+    assert session.source.landings == {3.5: None, 7.5: None} and session.awaiting_landing is None
+    assert landing_badge_drawn(tool.render()[:session.view_h])
+
+
+def test_a_between_landing_on_a_clip_labelled_every_other_frame_is_the_frame_between():
+    clip = source("sixty", 6)
+    for row in clip.rows:
+        row.frame *= 2                                               # the even 60 FPS phase: 0, 2, 4, ...
+    tool = make_tool(clip)
+    session = tool.session
+    session.cursor = 2
+    tool.toggle_landing()
+    session.cursor = 3
+    tool.toggle_landing()
+    assert session.source.landings == {5: None} and session.awaiting_landing == 5
+    assert session.landing_for(2) == 5 and session.landing_for(3) == 5 and session.landing_for(4) is None
+    assert "LANDING 1/2" in tool.frame_view.hud_lines(session.rows[3], None, None)[0]
+
+
 def test_landings_are_saved_with_the_labels_and_read_back_when_the_clip_is_opened(tmp_path):
     from finetune.labeling.label_source import build_source
     clip = clip_files(source("clip", 6), tmp_path)
@@ -457,6 +537,27 @@ def test_landings_are_saved_with_the_labels_and_read_back_when_the_clip_is_opene
     reopened = build_source("clip", tmp_path, tmp_path)
     assert reopened.landings == {}                                   # a clip without a landing file
     reopened.release()
+
+
+def test_a_between_landing_is_saved_as_a_half_frame_with_its_point_and_read_back(tmp_path):
+    from finetune.labeling.label_source import build_source
+    clip = clip_files(source("clip", 6), tmp_path)
+    tool = make_tool(clip)
+    tool.session.cursor = 3
+    tool.toggle_landing()
+    tool.session.cursor = 4
+    tool.toggle_landing()
+    tool.place_landing(200.25, 150.5)
+    tool.session.cursor = 1
+    tool.toggle_landing()
+    tool.save(quiet=True)
+    assert clip.bounces.read_text().splitlines() == ["frame,ball_x,ball_y", "frame_001,,", "frame_003.5,200.25,150.50"]
+    write_clip(tmp_path / "clip.avi", 6, size=(1280, 720))
+    reopened = build_source("clip", tmp_path, tmp_path)
+    assert reopened.landings == {1: None, 3.5: (200.25, 150.5)}
+    reopened.release()
+    reopened_tool = make_tool(reopened)
+    assert reopened_tool.session.landing_for(3) == 3.5 and reopened_tool.session.landing_for(4) == 3.5
 
 
 def test_save_survives_a_locked_file_and_keeps_the_edits(tmp_path):

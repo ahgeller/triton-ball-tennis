@@ -16,8 +16,9 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 import cv2
 import numpy as np
 
-from finetune.labeling.label_draw import (FILTERS, GHOST, LANDING, ChipRow, draw_badge, draw_ghost, draw_mark, draw_ticks,
-                                          enhance, fit_text, hit, label_mark_colour, mark_plan, review_badge)
+from finetune.labeling.label_draw import (FILTERS, GHOST, LANDING, ChipRow, draw_badge, draw_ghost, draw_landing_point,
+                                          draw_mark, draw_ticks, enhance, fit_text, hit, label_mark_colour, landing_badge,
+                                          mark_plan, review_badge)
 from finetune.labeling.label_store import Row
 from finetune.refiner.refine import Suggestion
 from finetune.data.detector_metrics import REFERENCE_HEIGHT
@@ -82,8 +83,13 @@ class FrameView:
 
     def draw_marks(self, display: np.ndarray, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> None:
         """The trail, the mark (the suggestion on offer or the label, with the other ticked beside
-        it) or, on a frame with no ball and no offer, the dashed guess."""
+        it) or, on a frame with no ball and no offer, the dashed guess; and the landing point, where
+        the frame's landing has one (a click for a landing between two frames)."""
         session = self.session
+        landing = session.landing_for(session.cursor)
+        touched = session.source.landings.get(landing) if landing is not None else None
+        if touched is not None:
+            draw_landing_point(display, *session.to_view(*touched), session.ui)
         ui = session.ui
         thin = max(1, int(round(ui)))
         if session.trail:
@@ -143,14 +149,16 @@ class FrameView:
 
     def draw_badges(self, display: np.ndarray, row: Row) -> None:
         """The row's review badge at the top right, the LANDING badge to its left on a frame marked
-        as one (/), and the frames-left counter at the top left."""
+        as one (/, LANDING 1/2 on either side of a landing between two frames), and the frames-left
+        counter at the top left."""
         session = self.session
         edge = session.view_w
         badge = review_badge(row)
         if badge is not None:
             edge = draw_badge(display, badge[0], badge[1], (0, 0, 0), session.ui, right_edge=edge)[0]
-        if row.frame in session.source.landings:
-            draw_badge(display, "LANDING", LANDING, (0, 0, 0), session.ui, right_edge=edge)
+        landing = landing_badge(session.landing_for(session.cursor), row.frame)
+        if landing is not None:
+            draw_badge(display, landing, LANDING, (0, 0, 0), session.ui, right_edge=edge)
         remaining = len(session.rows) - sum(r.reviewed for r in session.rows)
         counter = "ALL DONE" if remaining == 0 else f"{remaining} LEFT"
         fill, text_colour = ((70, 190, 70), (0, 0, 0)) if remaining == 0 else ((50, 50, 50), (255, 255, 255))
@@ -194,18 +202,23 @@ class FrameView:
 
     def hud_lines(self, row: Row, hint: Optional[Suggestion], offer: Optional[Suggestion]) -> Tuple[str, str]:
         """The two text lines of the HUD: this frame (its landing mark and the clip's landing count
-        among its state), and the counts with the keys that matter."""
+        among its state), and the counts with the keys that matter - or, while a landing between
+        two frames waits for its point, the ask for the click."""
         session = self.session
         landings = session.source.landings
         tag = "EDITED" if row.edited else "ok" if row.reviewed else "unreviewed"
-        if row.frame in landings:
-            tag += "  LANDING"
+        landing = landing_badge(session.landing_for(session.cursor), row.frame)
+        if landing is not None:
+            tag += f"  {landing}"
         line1 = (f"{self.hud_place()}  frame {row.frame}  {self.hud_state(row, hint, offer)}  "
                  f"from {row.source} {row.conf:.2f}  {tag}  zoom x{session.zoom:.1f}  landings {len(landings)}"
                  f"{'  *unsaved*' if session.dirty else ''}")
-        keys = ("SPACE=take hint  x=keep draft  v=invisible" if offer is not None else
-                "SPACE=good  y=take hint  v=invisible")
-        return line1, f"{self.hud_counts()}{keys}  /=landing  r=accept run  f=uncertain  q=quit"
+        if session.awaiting_landing is not None:
+            keys = "CLICK WHERE THE BALL BOUNCED  /=unmark  other key=no point"
+        else:
+            keys = ("SPACE=take hint  x=keep draft  v=invisible" if offer is not None else
+                    "SPACE=good  y=take hint  v=invisible") + "  /=landing  r=accept run  f=uncertain  q=quit"
+        return line1, f"{self.hud_counts()}{keys}"
 
     def hud_counts(self) -> str:
         """How much of the run is reviewed, uncertain, flagged and disputed, as the HUD says it."""

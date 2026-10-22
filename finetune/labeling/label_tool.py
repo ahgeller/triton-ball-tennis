@@ -29,6 +29,7 @@ import numpy as np
 if __name__ == "__main__":          # run as a script: make the repository root importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from finetune.data.bounce_labels import between_frames
 from finetune.labeling import label_window as win
 from finetune.labeling.label_cursor import CursorPlacer
 from finetune.labeling.label_draw import FILTERS
@@ -261,14 +262,15 @@ class Tool:
         the CPU this saves. Any write to any Row bumps Row.revision, which covers the labels, review
         flags, trail and every counter in the HUD; the frame images are keyed by identity, which
         changes when one is decoded, evicted or replaced by a placeholder. The landings are the
-        clip's, not the rows', so what the view reads of them is keyed by hand: whether this frame
-        is one, and how many there are."""
+        clip's, not the rows', so what the view reads of them is keyed by hand: the landing this
+        frame wears and its point, whether one is waiting for its click, and how many there are."""
         s = self.session
         landings = s.source.landings
+        landing = s.landing_for(s.cursor)
         return (Row.revision, s.cursor, s.origin, s.scale, s.zoom, s.view_w, s.view_h, s.hud_h, s.ui, s.width,
                 s.height, s.filter, s.inset, s.trail, s.follow, s.step, s.dirty, id(s.walk), len(s.walk), s.walk_pos,
                 s.ghost, len(s.sources), id(image), id(before), s.hints.version,
-                s.rows[s.cursor].frame in landings, len(landings))
+                landing, landings.get(landing) if landing is not None else None, s.awaiting_landing, len(landings))
 
     def render(self) -> np.ndarray:
         if self.sheet_view.active:
@@ -372,19 +374,50 @@ class Tool:
         session.dirty = session.source.dirty = True
 
     def toggle_landing(self) -> None:
-        """/: the ball is on the ground on this frame - or, pressed again, it is not. A landing is
-        the clip's (Source.landings), not part of the row's label, so u leaves it alone: the key is
-        its own undo. No point is stored: the court-event scorer takes the ball label of the frame
-        (bounce_labels.resolve_points), so the landing follows the label wherever it is moved."""
+        """/: the ball is on the ground on this frame - or, pressed again, it is not. Pressed on the
+        row after (or before) a frame marked that way, the ball bounced between the two: that mark
+        becomes one landing halfway between them (3.5 between frames 3 and 4; on a 60 FPS clip
+        labelled every other frame, the unlabelled frame between), both frames wear it, and in the
+        single-frame view the tool then waits for a click on where the ball touched the ground
+        (session.awaiting_landing, taken by MouseHandler.place_click; any other key leaves the
+        landing without a point). / on either of the two frames removes it again.
+
+        A landing is the clip's (Source.landings), not part of the row's label, so u leaves it
+        alone: the key is its own undo. A landing without a point stores none: the court-event
+        scorer takes the ball label of its frame, or the midpoint of the two it lies between
+        (bounce_labels.resolve_points), so it follows the labels wherever they are moved."""
         session = self.session
+        session.awaiting_landing = None
         if session.frame_missing():
             return                    # a black placeholder is not a frame the ball can be seen on
-        frame = session.rows[session.cursor].frame
+        index = session.cursor
+        frame = session.rows[index].frame
         landings = session.source.landings
-        if frame in landings:
-            del landings[frame]
+        worn = session.landing_for(index)
+        if worn is not None:
+            del landings[worn]        # on this frame, or between it and the next: unmarked either way
         else:
-            landings[frame] = None
+            for other in session.neighbour_frames(index):   # the previous row first: the one just marked
+                if other in landings:
+                    del landings[other]
+                    between = between_frames(frame, other)
+                    landings[between] = None
+                    if not self.overview:
+                        session.awaiting_landing = between   # the grid has no picture to click on
+                    break
+            else:
+                landings[frame] = None
+        session.dirty = session.source.dirty = True
+
+    def place_landing(self, x: float, y: float) -> None:
+        """The click a landing between two frames waits for (toggle_landing): the ball touched the
+        ground at (x, y), kept on the frame. The frame stays up, so the spot can be seen marked."""
+        session = self.session
+        landing, session.awaiting_landing = session.awaiting_landing, None
+        if landing is None or landing not in session.source.landings:
+            return                    # removed since, or never there: nothing to place
+        session.source.landings[landing] = (float(min(max(x, 0.0), session.width - 1.0)),
+                                            float(min(max(y, 0.0), session.height - 1.0)))
         session.dirty = session.source.dirty = True
 
     def confirm(self, take_offer: bool = True) -> None:

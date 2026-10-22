@@ -87,14 +87,18 @@ class MouseHandler:
         return event != cv2.EVENT_MOUSEMOVE and not tool.view_ready()
 
     def place_click(self, x: int, y: int) -> None:
-        """A left click on the picture: the ball is there, and the next frame comes up."""
+        """A left click on the picture: the ball is there, and the next frame comes up - or, while a
+        landing between two frames waits for its point (``Tool.toggle_landing``), the ball touched
+        the ground there, and the frame stays up."""
         session = self.session
         if session.frame_missing():
             return                                  # nothing to see, so nothing to label
         fx, fy = session.to_frame(x + 0.5, y + 0.5)  # highgui floors the pointer to a pixel: aim at
         if not (-2 <= fx < session.width + 2 and -2 <= fy < session.height + 2):   # its middle
             return                                # a click in the black beyond the frame
-        if self.tool.set_point(fx, fy):
+        if session.awaiting_landing is not None:
+            self.tool.place_landing(fx, fy)
+        elif self.tool.set_point(fx, fy):
             self.tool.move(1)
 
     @staticmethod

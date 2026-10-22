@@ -7,7 +7,10 @@ For every clip that may be scored (``evaluation.archive.list_clips``: reviewed, 
 a landing label file (``labels/<clip>_bounces.csv``, ``finetune.data.bounce_labels``), the run's tracking
 JSON ``<out-dir>/<clip>_<model>.json`` is read; it must have been written with ``--court``, so that its
 ``court_events`` block is filled. The block's landings at the chosen tier are matched one to one to the
-labelled landings within the tolerance (greedy, closest pair first). Per clip and pooled (``ALL``):
+labelled landings within the tolerance (greedy, closest pair first), a whole number of frames
+(``seconds_to_frames``: 3 at 30 FPS, 6 at 60). A label may sit halfway between two frames
+(``frame_412.5``, a ball that landed between them): a landing on either frame is half a frame from
+it, well within the tolerance, and its timing error is that half frame. Per clip and pooled (``ALL``):
 labels, landings found, hits, precision, recall, the median and p90 timing error of the hits, and the
 median pixel error at 1080p scale where the label has a point (``resolve_points`` takes it from the ball
 labels when the row left it blank). The unmatched labels and landings are listed under each clip.
@@ -36,7 +39,7 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from evaluation.archive import archive_folders, default_archive, list_clips
 from finetune.data import workspace as ws
-from finetune.data.bounce_labels import BounceLabel, read_bounce_labels, resolve_points
+from finetune.data.bounce_labels import BounceLabel, landing_text, read_bounce_labels, resolve_points
 from finetune.data.detector_metrics import scale_for_width
 from finetune.data.labels import read_labels
 from tennis_tracker.court.bounce_events import infer_kinematic_bounces, predict_bounce_events
@@ -95,9 +98,10 @@ def landings_at_tier(block: CourtEventsJson, tier: str, fps: float) -> List[Boun
 
 # --------------------------------------------------------------------------- matching and scoring
 
-def match_landings(label_frames: Sequence[int], event_frames: Sequence[int], tolerance: int) -> List[Tuple[int, int]]:
+def match_landings(label_frames: Sequence[float], event_frames: Sequence[float], tolerance: float) -> List[Tuple[int, int]]:
     """Greedy one-to-one matching: (label index, event index) pairs no further apart than
-    ``tolerance`` frames, the closest pair taken first (ties by label, then event, order)."""
+    ``tolerance`` frames, the closest pair taken first (ties by label, then event, order). A label
+    frame may be a half frame (a landing between two frames); the tolerance is whole."""
     pairs = sorted(
         (abs(label - event), li, ei)
         for li, label in enumerate(label_frames)
@@ -191,7 +195,7 @@ def unmatched_lines(score: ClipLandingScore, fps: float) -> List[str]:
     lines = []
     if score.unmatched_labels:
         lines.append("    unmatched labels:   " + ", ".join(
-            f"{label.frame} ({label.frame / fps:.2f}s)" for label in score.unmatched_labels))
+            f"{landing_text(label.frame)} ({label.frame / fps:.2f}s)" for label in score.unmatched_labels))
     if score.unmatched_events:
         lines.append("    unmatched landings: " + ", ".join(
             f"{event.frame} ({event.frame / fps:.2f}s, {event.origin}, score {event.score:.2f})"
