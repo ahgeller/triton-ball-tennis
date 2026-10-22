@@ -16,8 +16,40 @@ from tennis_tracker.utils import (
     print_platform_report,
     resolve_runtime,
 )
-from tennis_tracker.video_io import ThreadedFrameReader, VideoWriter, ffmpeg_command
+from tennis_tracker.video_io import (
+    VIDEO_SUFFIXES,
+    ThreadedFrameReader,
+    VideoWriter,
+    check_writable_video_path,
+    ffmpeg_command,
+)
 from tests._helpers import Capture, FailingWriter
+
+
+@pytest.mark.parametrize("suffix", VIDEO_SUFFIXES + (".MP4",))
+def test_writable_video_path_accepts_a_muxable_suffix_in_a_folder_to_create(tmp_path, suffix):
+    # The writers create missing parents when they open, so a path under a
+    # folder that does not exist yet is fine; the suffix is matched case-insensitively.
+    check_writable_video_path(tmp_path / "later" / "deeper" / f"tracking{suffix}")
+    check_writable_video_path(str(tmp_path / f"tracking{suffix}"))
+
+
+def test_writable_video_path_rejects_a_directory(tmp_path):
+    # The user's case: --output <folder> reached FFmpeg, which refused it after pass 1.
+    with pytest.raises(ValueError, match=r"Tracking video .*is a directory; name a file in it, such as .*tracking\.mp4"):
+        check_writable_video_path(tmp_path, "Tracking video")
+
+
+@pytest.mark.parametrize("name", ["tracking", "tracking.txt", "tracking.webm", ".mp4"])
+def test_writable_video_path_rejects_a_suffix_ffmpeg_cannot_mux(tmp_path, name):
+    with pytest.raises(ValueError, match=r"Video output .*needs a video container suffix.*\.mp4, \.mkv, \.mov, \.avi"):
+        check_writable_video_path(tmp_path / name)
+
+
+def test_writable_video_path_rejects_a_parent_that_is_a_file(tmp_path):
+    (tmp_path / "taken").write_bytes(b"")
+    with pytest.raises(ValueError, match=r"cannot be written: .*taken is not a directory"):
+        check_writable_video_path(tmp_path / "taken" / "deeper" / "tracking.mp4")
 
 
 def _ffmpeg_with(monkeypatch, path, encoders, failing=()):
