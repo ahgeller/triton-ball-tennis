@@ -58,6 +58,7 @@ class FrameRow(_FrameRowAlways, total=False):
     bbox: Optional[List[float]]
     measurement: Optional[MeasurementJson]
     position_kind: PositionKind
+    track_id: Optional[int]             # the selector track whose observation this is; None for a recovered row
     search: SearchJson
     selection: SelectionJson
     court_keypoints: Optional[List[float]]
@@ -74,8 +75,17 @@ class ObservationJson(TypedDict):
     on_motion: bool
 
 
+class TrackStartJson(TypedDict):
+    """Why the detection that started a track joined no live track: ``reason`` is "first" when
+    none was alive, else the association gate that turned it away from ``rival_track``."""
+
+    reason: str
+    rival_track: Optional[int]
+
+
 class TrackJson(TypedDict):
-    """A selector track: its score and every detection it holds (``track_to_json``)."""
+    """A selector track: its score, how it began and ended, what the selection made of it and
+    every detection it holds (``track_to_json``)."""
 
     track_id: int
     score: float
@@ -83,6 +93,10 @@ class TrackJson(TypedDict):
     span: int
     first_frame: int
     last_obs_frame: int
+    start: TrackStartJson
+    end_reason: str                     # "max_gap" or "clip_end"
+    selection: Dict[str, bool]          # core.selected_tracks' tests: established, reacquired, airborne, rolling
+    in_timeline: bool                   # whether the timeline chain used it
     score_breakdown: Dict[str, float]
     observations: List[ObservationJson]
 
@@ -232,6 +246,7 @@ class SummaryJson(TypedDict):
     pass2_frames_rendered: int
     chosen_track_id: Optional[int]
     track_count: int
+    timeline_track_ids: List[int]
 
 
 class TrackingFrames(TypedDict):

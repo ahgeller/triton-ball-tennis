@@ -1,7 +1,7 @@
 """Candidate association: per-frame detector candidates become ``Detection`` rows, and the
 rows become tracks by greedy assignment with stale reconnect and anti-jump trail guards."""
 import math
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from .config import SelectorConfig
 from .models import Detection, RawDetection, Track
@@ -79,30 +79,31 @@ def _static_track_jumps(trk: Track, det: Detection, obs_speed: float, cfg: Selec
     return recent_speed <= static_speed and recent_motion < 0.25 and obs_speed > 2.0 * static_speed
 
 
-def _association_plausible(
+def _implausibility(
     trk: "Track",
     det: Detection,
     dt: int,
     cfg: SelectorConfig,
     diag: float
-) -> bool:
-    """Reject implausible associations so bad jumps form new tracks instead."""
+) -> str:
+    """The test that makes ``det`` an implausible continuation of ``trk``, or "" when it is
+    plausible: bad jumps form new tracks instead, and the name says which gate turned them."""
     if dt <= 0:
-        return False
+        return "no_time"
     if trk.num_obs < 2:
-        return True
+        return ""
 
     last_obs = trk.observations[-1]
     area_ratio = det.area / max(last_obs.area, 1.0)
     if area_ratio < cfg.assoc_area_ratio_min or area_ratio > cfg.assoc_area_ratio_max:
-        return False
+        return "area"
 
     obs_vx = (det.cx - trk.last_pos[0]) / dt
     obs_vy = (det.cy - trk.last_pos[1]) / dt
     obs_speed = math.sqrt(obs_vx * obs_vx + obs_vy * obs_vy)
 
     if _static_track_jumps(trk, det, obs_speed, cfg, diag):
-        return False
+        return "static"
 
     exp_vx, exp_vy = trk.last_vel
     exp_speed = math.sqrt(exp_vx * exp_vx + exp_vy * exp_vy)
@@ -111,19 +112,24 @@ def _association_plausible(
     if exp_speed >= min_speed_for_dir:
         speed_ratio = obs_speed / max(exp_speed, 1e-6)
         if speed_ratio < cfg.assoc_speed_ratio_min or speed_ratio > cfg.assoc_speed_ratio_max:
-            return False
+            return "speed_ratio"
         dot = obs_vx * exp_vx + obs_vy * exp_vy
         cos_sim = dot / max(obs_speed * exp_speed, 1e-6)
         if cos_sim < cfg.assoc_dir_cos_min:
-            return False
+            return "direction"
 
     dvx = obs_vx - exp_vx
     dvy = obs_vy - exp_vy
     accel = math.sqrt(dvx * dvx + dvy * dvy)
     if accel > max(8.0, cfg.assoc_accel_frac * diag):
-        return False
+        return "accel"
 
-    return True
+    return ""
+
+
+def _association_plausible(trk: "Track", det: Detection, dt: int, cfg: SelectorConfig, diag: float) -> bool:
+    """Whether ``det`` is a plausible continuation of ``trk`` (``_implausibility`` says why not)."""
+    return _implausibility(trk, det, dt, cfg, diag) == ""
 
 class _TrailGuards:
     """Pixel/frame thresholds of the trail-creation and reconnect guards.
@@ -216,6 +222,15 @@ def _stale_reconnect_score(
     return 0.60 * pred_resid + 0.40 * raw_dist
 
 
+class _Verdict(NamedTuple):
+    """What a track made of a detection: its assignment cost (None when a gate rejected it), the
+    gate that rejected it ("" when accepted) and how far the detection sat from the track."""
+
+    cost: Optional[float]
+    reason: str
+    dist: float
+
+
 def _association_cost(
     trk: Track,
     det: Detection,
@@ -225,12 +240,13 @@ def _association_cost(
     cfg: SelectorConfig,
     diag: float,
     guards: _TrailGuards,
-) -> Optional[float]:
-    """Assignment cost of ``det`` for ``trk`` (lower is better), or None when a gate rejects it.
+) -> _Verdict:
+    """Assignment cost of ``det`` for ``trk`` (lower is better), and the gate that rejected it.
 
     ``pred`` is the track's prediction for the detection's frame, ``dt`` the
     frames since its last observation and ``dt_eff`` that count capped for the
-    gate growth.
+    gate growth. The gate names are what a track's ``start_reason`` records
+    when the detection went on to start a track of its own.
     """
     gate = cfg.base_gate_px + cfg.gate_growth_px * dt_eff
     speed_limit = cfg.max_speed_px_per_frame * dt_eff
@@ -238,22 +254,25 @@ def _association_cost(
     # The distance from the last known position handles direction reversals.
     dist_raw = math.sqrt((trk.last_pos[0] - det.cx) ** 2 + (trk.last_pos[1] - det.cy) ** 2)
     dist = min(dist_pred, dist_raw)
-    if not (dist <= gate and dist_raw <= speed_limit):
-        return None
+    if dist > gate:
+        return _Verdict(None, "gate", dist)
+    if dist_raw > speed_limit:
+        return _Verdict(None, "speed_limit", dist)
     if trk.misses > 0:
         # A track already missing for a few frames must agree with its own
         # prediction more closely, so it cannot grab a different ball instantly.
         if dist > min(gate, guards.stitch_dist_px):
-            return None
+            return _Verdict(None, "stale_distance", dist)
         if dist / dt_eff > guards.stitch_max_step_px:
-            return None
+            return _Verdict(None, "stale_step", dist)
         if dist_pred > guards.stitch_pred_resid_px * (1.0 + 0.25 * (dt_eff - 1)):
-            return None
+            return _Verdict(None, "stale_prediction", dist)
     if dist_raw > guards.jump_break_px + guards.jump_break_growth_px * (dt_eff - 1):
-        return None
-    if not _association_plausible(trk, det, max(dt, 1), cfg, diag):
-        return None
-    return dist + (0.15 * dist_pred if trk.misses > 0 else 0.0)
+        return _Verdict(None, "jump", dist)
+    implausible = _implausibility(trk, det, max(dt, 1), cfg, diag)
+    if implausible:
+        return _Verdict(None, implausible, dist)
+    return _Verdict(dist + (0.15 * dist_pred if trk.misses > 0 else 0.0), "", dist)
 
 
 def _assignment_costs(
@@ -264,19 +283,23 @@ def _assignment_costs(
     cfg: SelectorConfig,
     diag: float,
     guards: _TrailGuards,
-) -> List[Tuple[float, int, int]]:
+) -> Tuple[List[Tuple[float, int, int]], Dict[int, Tuple[str, int]]]:
     """Every (cost, track index, detection index) pair of frame `t` a gate lets through, in track
-    then detection order (the order the greedy assignment breaks cost ties in)."""
+    then detection order (the order the greedy assignment breaks cost ties in), and for each
+    detection the (gate, track id) of the nearest live track that turned it away."""
     assignments = []
+    nearest_rejection: Dict[int, Tuple[float, str, int]] = {}
     for ti, trk in enumerate(active):
         pred = trk.predict(t)
         dt = t - trk.last_obs_frame
         dt_eff = min(max(dt, 1), dt_cap)
         for di, det in enumerate(frame_dets):
-            cost = _association_cost(trk, det, pred, dt, dt_eff, cfg, diag, guards)
-            if cost is not None:
-                assignments.append((cost, ti, di))
-    return assignments
+            verdict = _association_cost(trk, det, pred, dt, dt_eff, cfg, diag, guards)
+            if verdict.cost is not None:
+                assignments.append((verdict.cost, ti, di))
+            elif di not in nearest_rejection or verdict.dist < nearest_rejection[di][0]:
+                nearest_rejection[di] = (verdict.dist, verdict.reason, trk.track_id)
+    return assignments, {di: (reason, track_id) for di, (_, reason, track_id) in nearest_rejection.items()}
 
 
 def _assign_greedily(
@@ -306,6 +329,7 @@ def _count_misses(active: List[Track], used_tracks: Set[int], max_gap_frames: in
             trk.misses += 1
             if trk.misses > max_gap_frames:
                 trk.alive = False
+                trk.end_reason = "max_gap"
 
 
 def build_tracks(
@@ -321,7 +345,7 @@ def build_tracks(
     guards = _TrailGuards(cfg, diag)
 
     for t, frame_dets in enumerate(all_dets):
-        assignments = _assignment_costs(active, frame_dets, t, dt_cap, cfg, diag, guards)
+        assignments, rejections = _assignment_costs(active, frame_dets, t, dt_cap, cfg, diag, guards)
         used_tracks, used_dets = _assign_greedily(assignments, active, frame_dets)
         _count_misses(active, used_tracks, cfg.max_gap_frames)
 
@@ -336,8 +360,13 @@ def build_tracks(
                 trk = finished.pop(best_idx)
                 trk.alive = True
                 trk.misses = 0
+                trk.end_reason = ""
             else:
-                trk = Track(track_id=next_id, cfg=cfg)
+                # A live track may have been the ball's; the gate that turned the detection away
+                # (and the greedy assignment that may have spent the track on another detection)
+                # is why this one starts a track of its own.
+                reason, rival = rejections.get(di, ("first", None))
+                trk = Track(track_id=next_id, cfg=cfg, start_reason=reason, start_rival=rival)
                 next_id += 1
             trk.update(det)
             active.append(trk)
@@ -352,6 +381,7 @@ def build_tracks(
 
     # Finalize remaining active tracks
     for trk in active:
+        trk.end_reason = "clip_end"
         if trk.num_obs >= 2:
             finished.append(trk)
 

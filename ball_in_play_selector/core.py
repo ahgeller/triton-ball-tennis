@@ -139,6 +139,8 @@ def selected_tracks(tracks: List[Track]) -> List[Track]:
             and extent_px >= cfg.select_rolling_extent_frac * cfg.diag
             and score_density >= cfg.select_rolling_score_density_min
         )
+        track.selection = {"established": established, "reacquired": reacquired,
+                           "airborne": airborne, "rolling": rolling}
         if established or reacquired or airborne or rolling:
             selected.append(track)
     return sorted(selected, key=lambda track: (track.first_frame, track.last_obs_frame))
@@ -323,8 +325,10 @@ def frame_result(
     detection: Optional[Detection] = None,
     motion: Optional[MotionBlob] = None,
     search_radius: float = 0.0,
+    track_id: Optional[int] = None,
 ) -> FrameResult:
-    """Build one output row; `detection` or `motion` supplies bbox/confidence."""
+    """Build one output row; `detection` or `motion` supplies bbox/confidence, `track_id` says
+    whose observation a detection is."""
     bbox = None
     confidence = 0.0
     if detection is not None:
@@ -340,6 +344,7 @@ def frame_result(
         interpolated=source != "det",
         source=source,
         measurement=(float(detection.cx), float(detection.cy)) if detection is not None else None,
+        track_id=track_id,
         search_cx=float(x),
         search_cy=float(y),
         # Reported so the pipeline diagnostics judge a blob against the radius
@@ -605,7 +610,7 @@ def _place_detections(
             current = results[detection.frame]
             if current is None or detection.conf > current.conf:
                 results[detection.frame] = frame_result(
-                    detection.cx, detection.cy, "det", detection=detection
+                    detection.cx, detection.cy, "det", detection=detection, track_id=track.track_id
                 )
 
 
@@ -911,6 +916,8 @@ def select_ball_in_play(
         total_frames=total,
     )
     selected = select_timeline_chain(selected_tracks(tracks), cfg, total)
+    for track in selected:
+        track.in_timeline = True
     chosen = stitch_track_chain(selected, cfg)
     selected_observations = {
         id(track): trajectory_observations(track, fps) for track in selected

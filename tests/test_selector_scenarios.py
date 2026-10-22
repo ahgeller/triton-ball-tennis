@@ -406,3 +406,27 @@ def test_moving_ball_crossing_a_live_static_track_starts_its_own_track():
     crossing_tracks = build_tracks(crossing, _cfg(30.0))
     assert len(crossing_tracks) == 2
     assert sorted(track.num_obs for track in crossing_tracks) == [5, 10]
+
+
+def test_a_track_records_why_it_started_and_how_it_ended():
+    # The static track ends at frame 9, misses past max_gap_frames and dies with "max_gap"; the
+    # crossing ball's first detection was turned away by that live track's static-jump gate.
+    crossing = [[] for _ in range(60)]
+    for frame in range(10):
+        crossing[frame] = [Detection(frame, 100.0, 100.0, 0, 0, 4, 4, 0.9, 16.0, False)]
+    for frame in range(10, 15):
+        crossing[frame] = [Detection(frame, 112.0 + 8.0 * (frame - 10), 100.0, 0, 0, 4, 4, 0.9, 16.0, True)]
+    static, ball = sorted(build_tracks(crossing, _cfg(30.0)), key=lambda track: track.first_frame)
+    assert (static.start_reason, static.start_rival, static.end_reason) == ("first", None, "max_gap")
+    assert (ball.start_reason, ball.start_rival, ball.end_reason) == ("static", static.track_id, "max_gap")
+    ends_live = build_tracks(crossing[:12], _cfg(30.0))
+    assert {track.end_reason for track in ends_live} == {"clip_end"}
+
+
+def test_the_selection_verdicts_and_the_timeline_are_recorded_and_exported():
+    detections, masks = _moving_ball()
+    results, chosen, tracks = select_ball_in_play(detections, 30.0, WIDTH, HEIGHT, boost_masks=masks)
+    [track] = tracks
+    assert set(track.selection) == {"established", "reacquired", "airborne", "rolling"}
+    assert track.selection["established"] and track.in_timeline
+    assert all(row.track_id == track.track_id for row in results if row is not None and row.source == "det")

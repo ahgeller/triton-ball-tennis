@@ -88,3 +88,25 @@ def test_court_events_block_is_empty_until_computed_and_then_holds_every_list():
     assert block["contacts"][1]["player_id"] == "p2" and block["contacts"][1]["ball"] is None
     assert block["rally_legs"][0]["start"] == [0.5, 0.9] and block["rally_legs"][0]["landing_origin"] == "model"
     assert json.loads(json.dumps(block)) == block                        # nothing the JSON writer cannot take
+
+
+def test_tracks_and_rows_export_their_provenance_and_the_summary_lists_the_timeline():
+    cfg = models.SelectorConfig(fps=30.0, width=640, height=360).auto_scale()
+    used = models.Track(track_id=3, cfg=cfg, start_reason="gate", start_rival=1, end_reason="max_gap",
+                        selection={"established": True, "reacquired": False, "airborne": False, "rolling": False},
+                        in_timeline=True)
+    unused = models.Track(track_id=4, cfg=cfg, start_reason="first", end_reason="clip_end")
+    from tennis_tracker.export import track_to_json
+    exported = track_to_json(used)
+    assert exported["start"] == {"reason": "gate", "rival_track": 1} and exported["end_reason"] == "max_gap"
+    assert exported["selection"] == used.selection and exported["in_timeline"] is True
+    assert track_to_json(unused)["selection"] == {} and track_to_json(unused)["in_timeline"] is False
+    row = frame_result_to_json(5, FrameResult(cx=1.0, cy=2.0, source="det", track_id=3))
+    assert row["track_id"] == 3 and frame_row_to_result(row).track_id == 3
+    assert frame_result_to_json(6, FrameResult(cx=1.0, cy=2.0, source="motion"))["track_id"] is None
+    result = RunResult(
+        per_frame=[], chosen_track=used, all_tracks=[used, unused], frame_count=0, court_keypoints=[],
+        player_boxes=[], last_valid_court_keypoints=None, elapsed_sec=1.0, timing={}, pass2_frames_rendered=0,
+        outputs={"tracking_json": Path("out.json")},
+    )
+    assert [t.track_id for t in result.all_tracks if t.in_timeline] == [3]

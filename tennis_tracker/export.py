@@ -45,7 +45,10 @@ _MAX_CANDIDATES_PER_FRAME = 5
 # became ``detector_gap_frames``, the reason ``yolo_detection_available`` became
 # ``detection_available``, and the chosen track's ``score_breakdown`` keys were renamed.
 # Tracking version 3: the ``court_events`` block (``court_events_to_json``) was added.
-_TRACKING_SCHEMA_VERSION = 3
+# Tracking version 4: frame rows say which track supplied them (``track_id``), tracks say how
+# they started and ended and what the selection made of them (``start``, ``end_reason``,
+# ``selection``, ``in_timeline``) and the summary lists the timeline's ``timeline_track_ids``.
+_TRACKING_SCHEMA_VERSION = 4
 _MOTION_DIAGNOSTICS_SCHEMA_VERSION = 2
 
 
@@ -82,6 +85,7 @@ def frame_result_to_json(frame_index: int, result: Optional[FrameResult]) -> Fra
             if result.measurement is not None else None
         ),
         "position_kind": result.position_kind,
+        "track_id": None if result.track_id is None else int(result.track_id),
         "search": {
             "x": float(result.search_cx),
             "y": float(result.search_cy),
@@ -112,6 +116,7 @@ def frame_row_to_result(row: FrameRow) -> Optional[FrameResult]:
         search_radius=float(search.get("radius", 0.0)),
         source_reason=str(selection.get("reason", "")),
         measurement=None if measurement is None else (float(measurement["x"]), float(measurement["y"])),
+        track_id=None if row.get("track_id") is None else int(row["track_id"]),
     )
 
 
@@ -177,6 +182,11 @@ def track_to_json(track: Optional[Track]) -> Optional[TrackJson]:
         "span": int(track.span),
         "first_frame": int(track.first_frame),
         "last_obs_frame": int(track.last_obs_frame),
+        "start": {"reason": str(track.start_reason),
+                  "rival_track": None if track.start_rival is None else int(track.start_rival)},
+        "end_reason": str(track.end_reason),
+        "selection": {name: bool(value) for name, value in track.selection.items()},
+        "in_timeline": bool(track.in_timeline),
         "score_breakdown": json_safe(track.score_breakdown),
         "observations": observations,
     }
@@ -482,6 +492,7 @@ def write_tracking_json(ctx: RunContext, pass1: Pass1Result, result: RunResult) 
             "pass2_frames_rendered": int(result.pass2_frames_rendered),
             "chosen_track_id": None if chosen is None else int(chosen.track_id),
             "track_count": int(len(result.all_tracks)),
+            "timeline_track_ids": [int(t.track_id) for t in result.all_tracks if t.in_timeline],
         },
         "config": json_safe(vars(cfg)),
         "timing": json_safe(result.timing),

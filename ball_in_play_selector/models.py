@@ -70,6 +70,16 @@ class Track:
     last_vel: Tuple[float, float] = (0.0, 0.0)
     misses: int = 0
     alive: bool = True
+    # Why the detection that started this track joined no live track (association.build_tracks):
+    # "first" when none was alive, else the gate of the nearest live track, which is start_rival.
+    start_reason: str = ""
+    start_rival: Optional[int] = None
+    # How the track ended: "max_gap" (missed too long) or "clip_end".
+    end_reason: str = ""
+    # Which of core.selected_tracks' tests admitted it (every test, True or False), once judged.
+    selection: Dict[str, bool] = field(default_factory=dict)
+    # Whether the timeline chain used it (core.select_ball_in_play).
+    in_timeline: bool = False
     # Created on the first observation; None only while the track is empty.
     kf: Optional[BallKalmanFilter] = None
     # Scoring
@@ -191,6 +201,8 @@ class FrameResult:
     source_reason: str = ""
     # Immutable detector location, separate from the selected/refitted coordinates.
     measurement: Optional[Tuple[float, float]] = None
+    # The selector track whose observation this row is; None for a motion or fitted row.
+    track_id: Optional[int] = None
 
     @property
     def position_kind(self) -> PositionKind:

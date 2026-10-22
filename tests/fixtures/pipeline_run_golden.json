@@ -1,7 +1,9 @@
 {
  "json": {
   "chosen_track": {
+   "end_reason": "clip_end",
    "first_frame": 0,
+   "in_timeline": true,
    "last_obs_frame": 39,
    "num_obs": 34,
    "observations": [
@@ -512,7 +514,17 @@
     "start_frame": 0.0,
     "total": 86.56470588235294
    },
+   "selection": {
+    "airborne": true,
+    "established": true,
+    "reacquired": false,
+    "rolling": true
+   },
    "span": 40,
+   "start": {
+    "reason": "first",
+    "rival_track": null
+   },
    "track_id": 0
   },
   "court_events": {},
@@ -594,6 +606,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 100.09458648582016,
     "y": 300.0998436980854
    },
@@ -674,6 +687,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 111.26779324971415,
     "y": 283.0009606376714
    },
@@ -754,6 +768,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 122.56024875962305,
     "y": 266.9122930374991
    },
@@ -834,6 +849,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 133.8655236376329,
     "y": 251.73140052251622
    },
@@ -914,6 +930,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 145.16837665136958,
     "y": 237.4434032479679
    },
@@ -994,6 +1011,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 156.4651562611439,
     "y": 224.04453455382725
    },
@@ -1074,6 +1092,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 167.75576307445291,
     "y": 211.5344528381955
    },
@@ -1154,6 +1173,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 179.04134098524278,
     "y": 199.9140523011357
    },
@@ -1234,6 +1254,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 190.32459383248494,
     "y": 189.1856201247987
    },
@@ -1304,6 +1325,7 @@
      "source": "motion"
     },
     "source": "motion",
+    "track_id": null,
     "x": 201.59768097812486,
     "y": 179.3302087723648
    },
@@ -1374,6 +1396,7 @@
      "source": "motion"
     },
     "source": "motion",
+    "track_id": null,
     "x": 212.8786839889305,
     "y": 170.39617819987396
    },
@@ -1454,6 +1477,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 224.16009645172934,
     "y": 162.35286898608186
    },
@@ -1534,6 +1558,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 235.44021791398552,
     "y": 155.20138505660043
    },
@@ -1614,6 +1639,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 246.7184150183322,
     "y": 148.94170349871996
    },
@@ -1694,6 +1720,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 257.9946540679417,
     "y": 143.5739397087207
    },
@@ -1774,6 +1801,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 269.2688501680744,
     "y": 139.0980948541095
    },
@@ -1854,6 +1882,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 280.54075473742074,
     "y": 135.51401429278272
    },
@@ -1934,6 +1963,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 291.80930935935135,
     "y": 132.8075344384468
    },
@@ -2014,6 +2044,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 303.070155218573,
     "y": 130.97939126258686
    },
@@ -2084,6 +2115,7 @@
      "source": "motion"
     },
     "source": "motion",
+    "track_id": null,
     "x": 314.31382686218484,
     "y": 130.03167990296012
    },
@@ -2164,6 +2196,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 325.63762351396116,
     "y": 130.11278939833923
    },
@@ -2244,6 +2277,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 336.9313797945999,
     "y": 131.0455665012524
    },
@@ -2324,6 +2358,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 348.21291479004657,
     "y": 132.8472266724595
    },
@@ -2404,6 +2439,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 359.4942176771677,
     "y": 135.53960584350983
    },
@@ -2484,6 +2520,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 370.7751955052553,
     "y": 139.12356619496853
    },
@@ -2564,6 +2601,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 382.05576499265726,
     "y": 143.59914624772
    },
@@ -2644,6 +2682,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 393.3358454777201,
     "y": 148.96647850268246
    },
@@ -2709,6 +2748,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 404.61519347999695,
     "y": 155.22400939999054
    },
@@ -2774,6 +2814,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 415.89347380615834,
     "y": 162.37194470997449
    },
@@ -2839,6 +2880,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 427.17271875823775,
     "y": 170.41087557685543
    },
@@ -2919,6 +2961,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 438.46153846153834,
     "y": 179.3676423267819
    },
@@ -2999,6 +3042,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 449.74358974358955,
     "y": 189.20180778339474
    },
@@ -3079,6 +3123,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 461.0256410256411,
     "y": 199.9261118454166
    },
@@ -3159,6 +3204,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 472.3076923076925,
     "y": 211.5395872833967
    },
@@ -3239,6 +3285,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 483.5897435897437,
     "y": 224.04160291800193
    },
@@ -3319,6 +3366,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 494.8717948717948,
     "y": 237.43197150080994
    },
@@ -3399,6 +3447,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 506.1538461538462,
     "y": 251.7101515120932
    },
@@ -3479,6 +3528,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 517.4358974358973,
     "y": 266.86024729741854
    },
@@ -3559,6 +3609,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 528.7179487179484,
     "y": 283.0210564094717
    },
@@ -3639,6 +3690,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 539.9999999999999,
     "y": 300.0389511065312
    }
@@ -3884,17 +3936,22 @@
     }
    }
   },
-  "schema_version": 3,
+  "schema_version": 4,
   "summary": {
    "chosen_track_id": 0,
    "filled_frames": 40,
    "filled_percent": 100.0,
    "pass2_frames_rendered": 40,
+   "timeline_track_ids": [
+    0
+   ],
    "track_count": 1
   },
   "tracks": [
    {
+    "end_reason": "clip_end",
     "first_frame": 0,
+    "in_timeline": true,
     "last_obs_frame": 39,
     "num_obs": 34,
     "observations": [
@@ -4405,7 +4462,17 @@
      "start_frame": 0.0,
      "total": 86.56470588235294
     },
+    "selection": {
+     "airborne": true,
+     "established": true,
+     "reacquired": false,
+     "rolling": true
+    },
     "span": 40,
+    "start": {
+     "reason": "first",
+     "rival_track": null
+    },
     "track_id": 0
    }
   ],
@@ -4418,7 +4485,9 @@
  },
  "no_preprocess_json": {
   "chosen_track": {
+   "end_reason": "clip_end",
    "first_frame": 0,
+   "in_timeline": true,
    "last_obs_frame": 39,
    "num_obs": 34,
    "observations": [
@@ -4929,7 +4998,17 @@
     "start_frame": 0.0,
     "total": 86.56470588235294
    },
+   "selection": {
+    "airborne": true,
+    "established": false,
+    "reacquired": false,
+    "rolling": false
+   },
    "span": 40,
+   "start": {
+    "reason": "first",
+    "rival_track": null
+   },
    "track_id": 0
   },
   "court_events": {},
@@ -5011,6 +5090,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 99.99999999999999,
     "y": 300.0740019450944
    },
@@ -5091,6 +5171,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 111.28205128205127,
     "y": 283.0055885448697
    },
@@ -5171,6 +5252,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 122.56410256410255,
     "y": 266.9142437989892
    },
@@ -5251,6 +5333,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 133.84615384615384,
     "y": 251.72412754984992
    },
@@ -5331,6 +5414,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 145.12820512820517,
     "y": 237.42746693360036
    },
@@ -5411,6 +5495,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 156.41025641025638,
     "y": 224.02230905109565
    },
@@ -5491,6 +5576,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 167.69230769230765,
     "y": 211.50844649430553
    },
@@ -5571,6 +5657,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 178.974358974359,
     "y": 199.8863400823977
    },
@@ -5651,6 +5738,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 190.25641025641016,
     "y": 189.15722444122426
    },
@@ -5716,6 +5804,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 201.53846153846135,
     "y": 179.31475441525748
    },
@@ -5781,6 +5870,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 212.82051282051285,
     "y": 170.3746500620241
    },
@@ -5861,6 +5951,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 224.10256410256414,
     "y": 162.32805364622283
    },
@@ -5941,6 +6032,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 235.38461538461553,
     "y": 155.17475947236966
    },
@@ -6021,6 +6113,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 246.6666666666668,
     "y": 148.91459011644946
    },
@@ -6101,6 +6194,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 257.94871794871796,
     "y": 143.54757390792585
    },
@@ -6181,6 +6275,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 269.23076923076917,
     "y": 139.07369447496592
    },
@@ -6261,6 +6356,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 280.5128205128205,
     "y": 135.49283978040938
    },
@@ -6341,6 +6437,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 291.79487179487165,
     "y": 132.79084183978668
    },
@@ -6421,6 +6518,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 303.07692307692304,
     "y": 130.96915067868974
    },
@@ -6486,6 +6584,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 314.3589743589744,
     "y": 130.0264856400478
    },
@@ -6566,6 +6665,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 325.6410256410256,
     "y": 130.10605996501275
    },
@@ -6646,6 +6746,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 336.92307692307685,
     "y": 131.0327799058355
    },
@@ -6726,6 +6827,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 348.20512820512835,
     "y": 132.8353983535584
    },
@@ -6806,6 +6908,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 359.4871794871796,
     "y": 135.52898564338292
    },
@@ -6886,6 +6989,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 370.7692307692308,
     "y": 139.11456710381154
    },
@@ -6966,6 +7070,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 382.051282051282,
     "y": 143.5923407896845
    },
@@ -7046,6 +7151,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 393.3333333333333,
     "y": 148.96261950046042
    },
@@ -7111,6 +7217,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 404.61538461538476,
     "y": 155.22430788556483
    },
@@ -7176,6 +7283,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 415.897435897436,
     "y": 162.37824913632176
    },
@@ -7241,6 +7349,7 @@
      "source": "interp"
     },
     "source": "interp",
+    "track_id": null,
     "x": 427.17948717948724,
     "y": 170.42167984624726
    },
@@ -7321,6 +7430,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 438.46153846153834,
     "y": 179.3676423267819
    },
@@ -7401,6 +7511,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 449.74358974358955,
     "y": 189.20180778339474
    },
@@ -7481,6 +7592,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 461.0256410256411,
     "y": 199.9261118454166
    },
@@ -7561,6 +7673,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 472.3076923076925,
     "y": 211.5395872833967
    },
@@ -7641,6 +7754,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 483.5897435897437,
     "y": 224.04160291800193
    },
@@ -7721,6 +7835,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 494.8717948717948,
     "y": 237.43197150080994
    },
@@ -7801,6 +7916,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 506.1538461538462,
     "y": 251.7101515120932
    },
@@ -7881,6 +7997,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 517.4358974358973,
     "y": 266.86024729741854
    },
@@ -7961,6 +8078,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 528.7179487179484,
     "y": 283.0210564094717
    },
@@ -8041,6 +8159,7 @@
      "source": "det"
     },
     "source": "det",
+    "track_id": 0,
     "x": 539.9999999999999,
     "y": 300.0389511065312
    }
@@ -8223,17 +8342,22 @@
     }
    }
   },
-  "schema_version": 3,
+  "schema_version": 4,
   "summary": {
    "chosen_track_id": 0,
    "filled_frames": 40,
    "filled_percent": 100.0,
    "pass2_frames_rendered": 0,
+   "timeline_track_ids": [
+    0
+   ],
    "track_count": 1
   },
   "tracks": [
    {
+    "end_reason": "clip_end",
     "first_frame": 0,
+    "in_timeline": true,
     "last_obs_frame": 39,
     "num_obs": 34,
     "observations": [
@@ -8744,7 +8868,17 @@
      "start_frame": 0.0,
      "total": 86.56470588235294
     },
+    "selection": {
+     "airborne": true,
+     "established": false,
+     "reacquired": false,
+     "rolling": false
+    },
     "span": 40,
+    "start": {
+     "reason": "first",
+     "rival_track": null
+    },
     "track_id": 0
    }
   ],
