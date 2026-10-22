@@ -22,6 +22,15 @@ def test_write_then_read_keeps_frames_in_order_and_points_optional(tmp_path):
     assert read_bounce_labels(path) == [BounceLabel(35, (640.5, 300.25)), BounceLabel(80, None), BounceLabel(120, None)]
 
 
+def test_a_frame_given_twice_is_refused_before_the_file_is_touched(tmp_path):
+    path = tmp_path / "video6_bounces.csv"
+    write_bounce_labels(path, [BounceLabel(5)])
+    # One with a point and one without: ordered by frame alone, not by comparing the points.
+    with pytest.raises(ValueError, match="frame 80 is given twice"):
+        write_bounce_labels(path, [BounceLabel(80, (1.0, 2.0)), BounceLabel(120), BounceLabel(80, None)])
+    assert read_bounce_labels(path) == [BounceLabel(5, None)]
+
+
 def test_a_landing_between_two_frames_is_written_and_read_as_a_half_frame(tmp_path):
     path = tmp_path / "video6_bounces.csv"
     assert write_bounce_labels(path, [BounceLabel(413), BounceLabel(412.5, (640.5, 300.25)), BounceLabel(3.5)]) == 3

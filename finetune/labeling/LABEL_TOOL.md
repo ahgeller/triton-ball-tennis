@@ -134,7 +134,9 @@ between the two), both frames wear LANDING 1/2, and the bar asks you to click wh
 the ball touched the ground - the scuff, or the spot under the ball. That click is
 the landing point, drawn as a small cross, and the frame stays up. Any other key
 instead leaves the landing without a point, and the scorer takes the midpoint of
-the two frames' ball labels. `/` on either of the two frames removes the landing.
+the two frames' ball labels (for the unlabelled whole frame between two on a 60 FPS
+clip, the ball label of the frame before it; `resolve_points` in
+`finetune/data/bounce_labels.py`). `/` on either of the two frames removes the landing.
 From the grid, `/` on the tile after a marked frame joins the two the same way but
 asks for no click.
 

@@ -112,13 +112,17 @@ def read_bounce_labels(path: Path) -> List[BounceLabel]:
         if label.frame in seen:
             raise LabelFormatError(f"{path}: frame {landing_text(label.frame)} is listed twice")
         seen.add(label.frame)
-    return sorted(labels)
+    return sorted(labels, key=lambda label: label.frame)
 
 
 def write_bounce_labels(path: Path, labels: Iterable[BounceLabel]) -> int:
     """Write the landings, sorted by frame, atomically; a landing without a point gets blank
-    coordinate cells. Returns the row count."""
-    ordered = sorted(labels)
+    coordinate cells. Returns the row count. A frame given twice is a ValueError before anything
+    is written: ``read_bounce_labels`` would refuse the file."""
+    ordered = sorted(labels, key=lambda label: label.frame)   # by frame alone: a point is not an order
+    for earlier, later in zip(ordered, ordered[1:]):
+        if earlier.frame == later.frame:
+            raise ValueError(f"frame {landing_text(later.frame)} is given twice; a file holds one landing per frame")
     with atomic_csv(path) as writer:
         writer.writerow(list(COLUMNS))
         for frame, point in ordered:

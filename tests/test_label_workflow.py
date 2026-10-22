@@ -560,6 +560,20 @@ def test_a_between_landing_is_saved_as_a_half_frame_with_its_point_and_read_back
     assert reopened_tool.session.landing_for(3) == 3.5 and reopened_tool.session.landing_for(4) == 3.5
 
 
+def test_a_damaged_landing_file_keeps_the_clip_out_and_is_never_written_over(tmp_path, capsys):
+    from finetune.labeling.label_source import build_source
+    clip = clip_files(source("clip", 6), tmp_path)
+    clip.dirty = True
+    make_tool(clip).save(quiet=True)                                   # the label file the clip is opened from
+    write_clip(tmp_path / "clip.avi", 6, size=(1280, 720))
+    damaged = "frame,ball_x,ball_y\nframe_002,5,\n"                    # one coordinate without the other
+    clip.bounces.write_text(damaged, encoding="utf-8")
+    assert build_source("clip", tmp_path, tmp_path) is None
+    out = capsys.readouterr().out
+    assert "[skip] clip:" in out and "one coordinate without the other" in out
+    assert clip.bounces.read_text(encoding="utf-8") == damaged
+
+
 def test_save_survives_a_locked_file_and_keeps_the_edits(tmp_path):
     import finetune.labeling.label_tool as label_tool
     a, b = source("a", 2), source("b", 2)
