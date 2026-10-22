@@ -45,11 +45,12 @@ import cv2
 import numpy as np
 import pytest
 
-from tennis_tracker import pass1, pass2, pipeline
+from tennis_tracker import pass1, pass2, pipeline, utils
 from tennis_tracker.config import Config
 from tennis_tracker.court.court_geometry import LINE_PAIRS_14
 from tennis_tracker.engines.court_detector import CourtDetector
 from tennis_tracker.export import RunResult
+from tennis_tracker.headless import headless_config
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "pipeline_run_golden.json"
 UPDATE_ENV = "UPDATE_PIPELINE_GOLDEN"
@@ -558,6 +559,22 @@ def test_json_only_run_matches_golden_without_rendering(tmp_path, monkeypatch, f
     assert "[pass 2] Skipped (no video outputs selected)" in out
     assert not Path(result["cfg"].output_video).exists()
     assert_json_close(result["json"], expected, "JSON-only run differs from the golden")
+
+
+def test_json_only_run_never_probes_or_dry_runs_an_encoder(tmp_path, monkeypatch, fake_cuda, capsys, clip):
+    """``--no-video`` (and ``headless_config``, the evaluator's Config) write no video, so the run
+    chooses no encoder: an FFmpeg with NVENC is neither looked for nor dry-run for them."""
+    monkeypatch.setattr(utils, "find_ffmpeg", lambda prefer_encoder="h264_nvenc": "/opt/ffmpeg")
+    monkeypatch.setattr(utils, "ffmpeg_has_encoder", lambda ffmpeg, encoder: True)
+    monkeypatch.setattr(utils, "ffmpeg_encoder_failure",
+                        lambda ffmpeg, encoder: pytest.fail(f"dry-ran {encoder} for a run that writes no video"))
+    result = run_pipeline(tmp_path, monkeypatch, clip, **dict(JSON_ONLY_OVERRIDES, use_nvenc=True))
+    report = [line for line in capsys.readouterr().out.splitlines() if line.startswith("[platform]")]
+    assert result["streams"] == {}
+    assert report == ["[platform] Device: 0", "[platform] Accelerations: TensorRT, no video written, CUDA preprocessing"]
+    headless = headless_config(clip, model_path=Path(result["cfg"].model_path), conf=0.5, device="0",
+                               tracking_json=Path(result["cfg"].tracking_json))
+    assert pipeline._video_outputs(headless) == {}
 
 
 def test_disabling_preprocess_runs_on_detections_alone(tmp_path, monkeypatch, fake_cuda, capsys, clip):

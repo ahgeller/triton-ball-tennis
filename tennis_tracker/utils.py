@@ -155,25 +155,29 @@ def choose_encoder(cfg: EncoderSettings, is_cuda: bool = True) -> EncoderChoice:
     return EncoderChoice(ffmpeg, tuple(chain), nvenc_failure)
 
 
-def resolve_runtime(cfg: Config, device: str) -> Tuple[Config, EncoderChoice]:
+def resolve_runtime(cfg: Config, device: str, *, writes_video: bool) -> Tuple[Config, Optional[EncoderChoice]]:
     """A copy of ``cfg`` with ``device`` set, and the encoder choice for it.
 
     ``device`` is the resolved device (see ``detect_device``); the caller's
     ``cfg`` is left untouched and nothing undeclared is attached to the copy.
     Pass the ``EncoderChoice`` to ``VideoWriter(..., encoder=...)`` so the
-    writer does not have to probe FFmpeg again.
+    writer does not have to probe FFmpeg again.  ``writes_video`` says whether
+    the run writes any video at all; when it does not, the choice is None and
+    FFmpeg is neither looked for nor dry-run, so a JSON-only run never pays the
+    second the NVENC dry run costs.
     """
     cfg = copy.copy(cfg)
     cfg.device = str(device)
-    encoder = choose_encoder(cfg, is_cuda=str(device).isdigit())
+    encoder = choose_encoder(cfg, is_cuda=str(device).isdigit()) if writes_video else None
     return cfg, encoder
 
 
-def print_platform_report(cfg: Config, encoder: EncoderChoice) -> None:
+def print_platform_report(cfg: Config, encoder: Optional[EncoderChoice]) -> None:
     """The ``[platform]`` lines for a resolved config: device, why NVENC is
-    off when it is, and the accelerations in use."""
+    off when it is, and the accelerations in use (``encoder`` is None when
+    the run writes no video, which the report then says in the encoder's place)."""
     is_cuda = str(cfg.device).isdigit()
-    if cfg.use_nvenc and encoder.preferred != ENCODER_NVENC:
+    if encoder is not None and cfg.use_nvenc and encoder.preferred != ENCODER_NVENC:
         fallback = "libx264" if encoder.preferred == ENCODER_LIBX264 else "OpenCV"
         if encoder.ffmpeg is None:
             reason = "ffmpeg not found"
@@ -185,10 +189,13 @@ def print_platform_report(cfg: Config, encoder: EncoderChoice) -> None:
             reason = "ffmpeg lacks h264_nvenc"
         print(f"[info] NVENC disabled ({reason}), using {fallback}")
     accel = ["TensorRT"]
-    accel.append({
-        ENCODER_NVENC: "NVENC encoding",
-        ENCODER_LIBX264: "libx264 encoding",
-    }.get(encoder.preferred, "OpenCV encoding"))
+    if encoder is None:
+        accel.append("no video written")
+    else:
+        accel.append({
+            ENCODER_NVENC: "NVENC encoding",
+            ENCODER_LIBX264: "libx264 encoding",
+        }.get(encoder.preferred, "OpenCV encoding"))
     # Preprocessing has no CPU path; a non-CUDA device fails at detector setup.
     accel.append("CUDA preprocessing" if cfg.enable_preprocess else "no preprocessing")
     print(f"[platform] Device: {cfg.device}")
