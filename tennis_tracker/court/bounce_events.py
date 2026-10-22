@@ -20,7 +20,6 @@ from .court_scene import (
     ball_point,
     inside_player,
     nearest_player,
-    sample_xy,
 )
 
 
@@ -44,8 +43,8 @@ def _build_bounce_features(scene: CourtScene) -> Tuple[np.ndarray, List[int]]:
     center_frames = []
 
     for frame, points in det_windows(scene.per_frame, scene.stride):
-        samples = np.asarray([sample_xy(point) for point in points], dtype=np.float64)
-        xs, ys = samples[:, 0] * x_scale, samples[:, 1] * y_scale
+        xs = np.asarray([point.cx * x_scale for point in points], dtype=np.float64)
+        ys = np.asarray([point.cy * y_scale for point in points], dtype=np.float64)
         if not np.isfinite(xs).all() or not np.isfinite(ys).all():
             continue
 
@@ -145,8 +144,10 @@ def _kink_bounces(scene: CourtScene) -> List[BounceEvent]:
     for frame, points in det_windows(scene.per_frame, stride):
         incoming, outgoing = window_velocities(points)
         in_speed, out_speed, cosine = turn_metrics(incoming, outgoing)
-        heights = [sample_xy(point)[1] for point in points]
-        prominence = min(heights[2] - heights[0], heights[2] - heights[4])
+        prominence = min(
+            float(points[2].cy) - float(points[0].cy),
+            float(points[2].cy) - float(points[4].cy),
+        )
         if not (
             incoming[1] >= 4.0 * scale
             and outgoing[1] <= -1.5 * scale
@@ -157,7 +158,10 @@ def _kink_bounces(scene: CourtScene) -> List[BounceEvent]:
         ):
             continue
         if any(
-            inside_player(*sample_xy(points[index]), scene.player_boxes_by_frame[frame + (index - 2) * stride])
+            inside_player(
+                float(points[index].cx), float(points[index].cy),
+                scene.player_boxes_by_frame[frame + (index - 2) * stride],
+            )
             for index in (1, 2, 3)
         ):
             continue
@@ -182,7 +186,9 @@ def _gap_bounces(scene: CourtScene) -> List[BounceEvent]:
         impact_point = extrapolate_incoming(gap.history, event_frame)
         if impact_point is None:
             continue
-        prominence = float(impact_point[1] - max(sample_xy(gap.before[-1][1])[1], sample_xy(gap.after[0][1])[1]))
+        prominence = float(impact_point[1] - max(
+            float(gap.before[-1][1].cy), float(gap.after[0][1].cy)
+        ))
         if not (
             incoming[1] >= 2.0 * speed_scale
             and outgoing[1] <= -1.0 * speed_scale

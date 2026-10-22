@@ -38,7 +38,6 @@ from .court_scene import (
     PlayerBoxesByFrame,
     RallyLeg,
     box_distance,
-    sample_xy,
     seconds_to_frames,
     usable_point,
 )
@@ -211,7 +210,7 @@ def _closest_opposite_player(
             foot = project(frame, 0.5 * (x1 + x2), y2)
             if foot is None or _court_side(foot) != -bounce_side:
                 continue
-            distance = box_distance(*sample_xy(ball), box)
+            distance = box_distance(float(ball.cx), float(ball.cy), box)
             if best is None or distance < best[0]:
                 best = (distance, frame, foot, player_id)
     return best

@@ -20,7 +20,6 @@ from .court_scene import (
     ball_point,
     box_distance,
     nearest_player,
-    sample_xy,
     seconds_to_frames,
 )
 
@@ -34,13 +33,12 @@ def _striking_player(
     ball: FrameResult, boxes: Optional[PlayerBoxes], diagonal: float
 ) -> Optional[Tuple[Hashable, PlayerBox]]:
     """The player whose box the ball is touching at or above the feet."""
-    x, y = sample_xy(ball)
-    nearest = nearest_player(x, y, boxes)
+    nearest = nearest_player(float(ball.cx), float(ball.cy), boxes)
     if nearest is None or nearest[0] > 0.045 * diagonal:
         return None
     _, player_id, box = nearest
     _, y1, _, y2 = map(float, box[:4])
-    if y > y2 + 0.05 * max(y2 - y1, 1.0):
+    if float(ball.cy) > y2 + 0.05 * max(y2 - y1, 1.0):
         return None
     return player_id, box
 
@@ -84,7 +82,10 @@ def _nearest_player_to_either(
     for player_id, box in (boxes or {}).items():
         if box is None or len(box) < 4:
             continue
-        distance = min(box_distance(*sample_xy(a), box), box_distance(*sample_xy(b), box))
+        distance = min(
+            box_distance(float(a.cx), float(a.cy), box),
+            box_distance(float(b.cx), float(b.cy), box),
+        )
         if nearest is None or distance < nearest[0]:
             nearest = (distance, player_id, box)
     return nearest
