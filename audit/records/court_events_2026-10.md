@@ -113,6 +113,9 @@ false candidates at the placed tier; the pixel error of the hits improves (measu
 rule set before the labels existed (recall not down, precision down by at most 0.02) it is rejected:
 precision falls 0.042 confirmed and 0.133 placed. The decision is the user's.
 
+1d2 was reverted (f965b18): the stages judge the turns on the refitted track again, and 1d1's
+`ball_point` still places each event at the detector's measurement where the frame has one.
+
 The larger finding is the level: the bounce model confirms fewer than half the landings (grid_match4
 1 of 9, Pomona 13 of 29, video6 4 of 8) while almost never inventing one. Landing recall, not
 provenance, is where court events lose.
