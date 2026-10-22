@@ -49,6 +49,12 @@ class SelectorConfig:
     base_gate_px: float = field(init=False)           # association gate at dt=1
     gate_growth_px: float = field(init=False)         # gate growth per missed frame
     max_speed_px_per_frame: float = field(init=False) # absolute speed ceiling
+    # Source frames between the 30 FPS samples the detector was tuned on (the
+    # rule CourtScene.stride uses).  A 60 FPS clip is detected as two separate
+    # 30 FPS streams, the even and the odd source frames, each with its own
+    # sub-pixel bias, so a single-frame step crosses phases and alternates
+    # fast and slow; a step this many frames long stays in one phase.
+    detector_phase_stride: int = field(init=False)
     assoc_gate_growth_cap_frames: int = 6   # gate stops growing after this many misses
     assoc_min_speed_for_dir: float = 2.5    # 30 FPS px/frame below which direction is not judged
     assoc_speed_ratio_min: float = 0.15
@@ -183,6 +189,7 @@ class SelectorConfig:
         self.base_gate_px = 0.085 * diag      # stricter to reduce cross-court track snaps
         self.gate_growth_px = 0.010 * diag    # slower growth on missed frames
         self.max_speed_px_per_frame = 0.16 * diag * frame_scale  # tighter speed ceiling normalized across FPS
+        self.detector_phase_stride = max(1, int(round(fps_now / REFERENCE_FPS)))
         self.court_expand_px = 0.12 * diag
         self.select_min_obs_frames = _frames_for_seconds(self.select_min_obs_sec, min_frames=3)
         self.select_reacquire_obs_frames = _frames_for_seconds(self.select_reacquire_obs_sec, min_frames=10)

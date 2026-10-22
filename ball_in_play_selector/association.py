@@ -79,6 +79,22 @@ def _static_track_jumps(trk: Track, det: Detection, obs_speed: float, cfg: Selec
     return recent_speed <= static_speed and recent_motion < 0.25 and obs_speed > 2.0 * static_speed
 
 
+def _speed_reference(observations: Sequence[Detection], frame: int, stride: int) -> Detection:
+    """The observation a detection on ``frame`` is judged for speed against.
+
+    With a detector phase stride above 1 the clip is detected as ``stride``
+    interleaved streams, each with its own sub-pixel bias, so the step is
+    measured inside the detection's own stream: the latest of the last
+    ``2 * stride`` observations a whole number of strides back.  When there is
+    none (a stride of 1, or a track that has only seen the other phases) it is
+    the last observation.
+    """
+    for obs in reversed(observations[-2 * stride:]):
+        if (frame - obs.frame) % stride == 0:
+            return obs
+    return observations[-1]
+
+
 def _implausibility(
     trk: "Track",
     det: Detection,
@@ -87,7 +103,13 @@ def _implausibility(
     diag: float
 ) -> str:
     """The test that makes ``det`` an implausible continuation of ``trk``, or "" when it is
-    plausible: bad jumps form new tracks instead, and the name says which gate turned them."""
+    plausible: bad jumps form new tracks instead, and the name says which gate turned them.
+
+    ``dt`` is the frames since the track's last observation.  At a detector
+    phase stride above 1 the observed step is taken from the last same-phase
+    observation instead (see ``SelectorConfig.detector_phase_stride``): a step
+    across phases carries each phase's bias and reads fast or slow by turns.
+    """
     if dt <= 0:
         return "no_time"
     if trk.num_obs < 2:
@@ -98,8 +120,15 @@ def _implausibility(
     if area_ratio < cfg.assoc_area_ratio_min or area_ratio > cfg.assoc_area_ratio_max:
         return "area"
 
-    obs_vx = (det.cx - trk.last_pos[0]) / dt
-    obs_vy = (det.cy - trk.last_pos[1]) / dt
+    stride = cfg.detector_phase_stride
+    if stride > 1:
+        reference = _speed_reference(trk.observations, det.frame, stride)
+        ref_pos = (reference.cx, reference.cy)
+        dt = det.frame - reference.frame
+    else:
+        ref_pos = trk.last_pos
+    obs_vx = (det.cx - ref_pos[0]) / dt
+    obs_vy = (det.cy - ref_pos[1]) / dt
     obs_speed = math.sqrt(obs_vx * obs_vx + obs_vy * obs_vy)
 
     if _static_track_jumps(trk, det, obs_speed, cfg, diag):

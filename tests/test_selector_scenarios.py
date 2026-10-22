@@ -9,7 +9,7 @@ from typing import List, Tuple
 import numpy as np
 
 from ball_in_play_selector import Detection, FrameResult, SelectorConfig, Track, select_ball_in_play
-from ball_in_play_selector.association import build_tracks
+from ball_in_play_selector.association import _speed_reference, build_tracks
 from ball_in_play_selector.core import (
     direction_cosine,
     refine_trajectory,
@@ -430,3 +430,42 @@ def test_the_selection_verdicts_and_the_timeline_are_recorded_and_exported():
     assert set(track.selection) == {"established", "reacquired", "airborne", "rolling"}
     assert track.selection["established"] and track.in_timeline
     assert all(row.track_id == track.track_id for row in results if row is not None and row.source == "det")
+
+
+def _phase_biased_ball(odd_frame_offset: float, frames: int = 40) -> List[List[Detection]]:
+    """A ball moving 4 px/frame along x whose odd-frame detections sit ``odd_frame_offset``
+    px ahead of the even-frame ones: the two detector phases of a 60 FPS clip, each with its
+    own bias.  Every same-phase step is 8 px over two frames."""
+    rows = []
+    for frame in range(frames):
+        x = 100.0 + 4.0 * frame + (odd_frame_offset if frame % 2 else 0.0)
+        rows.append([Detection(frame, x, 100.0, x - 2, 98, x + 2, 102, 0.9, 16.0, True)])
+    return rows
+
+
+def test_phase_biased_detections_stay_one_track_at_60fps():
+    # Single-frame steps alternate 7.5 and 0.5 px. Judged against the ball's 4 px/frame
+    # speed the slow one fell under the speed-ratio floor and split the track 21 + 19,
+    # until the step was measured inside one phase.
+    tracks = build_tracks(_phase_biased_ball(3.5), _cfg(60.0))
+    assert [track.num_obs for track in tracks] == [40]
+
+
+def test_unbiased_detections_stay_one_track_at_30fps():
+    tracks = build_tracks(_phase_biased_ball(0.0), _cfg(30.0))
+    assert [track.num_obs for track in tracks] == [40]
+
+
+def _observations(frames) -> List[Detection]:
+    return [Detection(frame, float(frame), 0.0, 0, 0, 4, 4, 0.9, 16.0, True) for frame in frames]
+
+
+def test_speed_reference_is_the_last_same_phase_observation():
+    observations = _observations([10, 11, 12, 13])
+    assert _speed_reference(observations, 14, 2).frame == 12
+    assert _speed_reference(observations, 15, 2).frame == 13
+    # The last observation at a stride of 1, and when the lookback holds no
+    # same-phase observation: the other phase alone, or the phase too far back.
+    assert _speed_reference(observations, 14, 1).frame == 13
+    assert _speed_reference(_observations([11, 13]), 14, 2).frame == 13
+    assert _speed_reference(_observations([10, 11, 13, 15, 17]), 18, 2).frame == 17
