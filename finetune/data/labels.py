@@ -2,9 +2,9 @@
 
 ``labels/<clip>_ball.csv`` has the columns ``frame,ball_x,ball_y``: one row per labelled frame,
 ``frame_###`` naming the zero-based source frame, the ball's centre in native image pixels
-(pixel k's centre is at k + 0.5), and an invisible ball parked at the top-right corner,
-``(width - 1, 0)``. Any point in that corner - the top 5% of the height and the right 5% of the
-width - reads as "no ball". A label file is not a list of absent-ball frames: a frame with no
+(pixel k's centre is at k + 0.5), and an invisible ball parked at the top-right pixel,
+``(width - 1, 0)``. Only that pixel (within ``SENTINEL_REACH_PX`` of it, ``is_visible``) reads as
+"no ball"; the rest of the corner is image. A label file is not a list of absent-ball frames: a frame with no
 row has no label at all. On a 60 FPS clip the rows may sit on either the even or the odd
 frames; the readers here never change that.
 
