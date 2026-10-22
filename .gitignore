@@ -17,6 +17,8 @@ finetune/labels/label_tool.settings.json
 finetune/labels/*.tmp
 finetune/labels/tnv2_*
 finetune/labels/grid_*
+# landing labels are hand-made and small: kept for every clip, whatever its source
+!finetune/labels/*_bounces.csv
 # the prof set (public TrackNet tennis) imports as video13..video53 to sit under video12 in the
 # clip lists, so the own-labels rule cannot tell it apart by name: spell the range out instead.
 finetune/labels/video1[3-9]_ball.csv

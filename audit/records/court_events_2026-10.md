@@ -95,3 +95,24 @@ To decide: run the reference folder through `score_court_events.py --archive fin
 blocks are the 1b/1d1 events), then the same with `--recompute --compare before.log` for 1d2,
 and keep 1d2 only if pooled recall does not fall and precision falls by at most 0.02; else
 revert 0f6e543 and record the numbers in `bounce_events.py`'s docstring.
+
+## 1d2 judged against landing labels (2026-10-21, later the same day)
+
+The user labelled every landing (bounces only, not hits) on Pomona (29), grid_match4 (9) and video6 (8):
+46 landings. Scored with `score_court_events.py` on the reference run `output/court_events_1d/pipeline_1b`
+(events as 1b/1d1 found them) and recomputed with 1d2 (commit 0f6e543), logs in
+`output/court_events_1d2_decision/`:
+
+| tier | before: found / hits / precision / recall / px | after 1d2 |
+|---|---|---|
+| confirmed | 19 / 18 / 0.947 / 0.391 / 3.8 px | 21 / 19 / 0.905 / 0.413 / 2.6 px |
+| placed | 25 / 20 / 0.800 / 0.435 / 4.0 px | 30 / 20 / 0.667 / 0.435 / 3.1 px |
+
+1d2 finds one more true landing (Pomona) and one more false one at the confirmed tier, and five more
+false candidates at the placed tier; the pixel error of the hits improves (measured positions). By the
+rule set before the labels existed (recall not down, precision down by at most 0.02) it is rejected:
+precision falls 0.042 confirmed and 0.133 placed. The decision is the user's.
+
+The larger finding is the level: the bounce model confirms fewer than half the landings (grid_match4
+1 of 9, Pomona 13 of 29, video6 4 of 8) while almost never inventing one. Landing recall, not
+provenance, is where court events lose.
