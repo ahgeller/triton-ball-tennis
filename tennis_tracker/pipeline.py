@@ -26,7 +26,7 @@ from .engines.engine_files import find_ball_class_id_from_names, read_engine_cla
 from .export import RunResult, write_tracking_json
 from .pass1 import Pass1Result, collect_pass1, erase_ghost_rois
 from .pass2 import render_pass2
-from .engines.player_detector import PlayerDetector
+from .engines.player_detector import PlayerDetector, prefetch_bytetrack
 from .render.display_path import build_display_path
 from .run_context import CourtEvents, RunContext, Selection, Timing, VideoInfo
 from .render.summaries import print_selector_track_summary, print_timing_summary
@@ -124,6 +124,8 @@ def _open_inputs(cfg: Config) -> RunContext:
     started_at = time.time()
     timing = Timing(cfg.info_timing)
     init_t0 = timing.start()
+    if cfg.player_model_path:
+        prefetch_bytetrack()        # overlaps boxmot's import with everything below
 
     device_str, _ = detect_device(cfg.device)
     if not str(device_str).isdigit():

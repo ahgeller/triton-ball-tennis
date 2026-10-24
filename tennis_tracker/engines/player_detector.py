@@ -7,6 +7,7 @@ player tracking.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,13 +21,44 @@ from .engine_session import TensorRTRuntimeSession, open_engine_session
 _PLAYER_CLASS = 0  # the player ("person") class of the player engine
 
 
-def _load_bytetrack() -> Tuple[Optional[type], Optional[str]]:
-    """Returns ``(ByteTrack, None)``, or ``(None, reason)`` when boxmot is not importable."""
+ByteTrackImport = Tuple[Optional[type], Optional[str]]   # (ByteTrack, None) or (None, why not)
+_bytetrack: Optional[ByteTrackImport] = None
+_bytetrack_import: Optional[threading.Thread] = None
+
+
+def _import_bytetrack() -> None:
+    global _bytetrack
     try:
         from boxmot import ByteTrack
     except ImportError as error:
-        return None, str(error)
-    return ByteTrack, None
+        _bytetrack = (None, str(error))
+    else:
+        _bytetrack = (ByteTrack, None)
+
+
+def prefetch_bytetrack() -> None:
+    """Start importing boxmot on a thread.
+
+    The import takes close to three seconds (boxmot's package init pulls in its ReID backbones
+    and ultralytics) and is Python work that nothing else needs.  A run that will build a
+    ``PlayerDetector`` calls this first, so the import overlaps the CUDA context, the ball
+    model and the TensorRT engines being set up; ``_load_bytetrack`` waits for it.
+    """
+    global _bytetrack_import
+    if _bytetrack is None and _bytetrack_import is None:
+        _bytetrack_import = threading.Thread(target=_import_bytetrack, name="boxmot-import", daemon=True)
+        _bytetrack_import.start()
+
+
+def _load_bytetrack() -> ByteTrackImport:
+    """Returns ``(ByteTrack, None)``, or ``(None, reason)`` when boxmot is not importable;
+    waits for a ``prefetch_bytetrack`` import in flight."""
+    if _bytetrack_import is not None:
+        _bytetrack_import.join()
+    if _bytetrack is None:
+        _import_bytetrack()
+    assert _bytetrack is not None
+    return _bytetrack
 
 
 @dataclass
