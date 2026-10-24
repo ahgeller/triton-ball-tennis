@@ -332,6 +332,7 @@ class BackgroundModel:
         self.var_v: Optional[torch.Tensor] = None
         self.var_s: Optional[torch.Tensor] = None
         self._prev_motion: Optional[torch.Tensor] = None    # bool, last frame's raw motion
+        self._prev_motion_buffer: Optional[torch.Tensor] = None   # the ROI-uploaded mask lives here
 
     @property
     def ready(self) -> bool:
@@ -358,12 +359,29 @@ class BackgroundModel:
         self.mean_v.mul_(1.0 - alpha).add_(curr_v * alpha)
         self.mean_s.mul_(1.0 - alpha).add_(curr_s * alpha)
 
-    def remember_motion(self, raw_motion_u8: Optional[np.ndarray]) -> None:
-        """Keep this frame's raw motion on the GPU for the next update's slow-adaptation mask."""
+    def remember_motion(self, raw_motion_u8: Optional[np.ndarray],
+                        roi: Optional[Tuple[int, int, int, int]] = None) -> None:
+        """Keep this frame's raw motion on the GPU for the next update's slow-adaptation mask.
+
+        ``roi`` is the ``(x1, y1, x2, y2)`` rectangle outside which the mask is known to be zero
+        (the union of the frame's motion ROIs); only that part is uploaded, into a buffer that
+        is zeroed first, so a frame costs one small copy instead of a 2 MB one.  Without it the
+        whole mask is uploaded.
+        """
         if raw_motion_u8 is None:
             self._prev_motion = None
+            return
+        if roi is None:
+            self._prev_motion = torch.from_numpy(raw_motion_u8).to(self.device) > 0
+            return
+        x1, y1, x2, y2 = roi
+        if self._prev_motion_buffer is None or self._prev_motion_buffer.shape != raw_motion_u8.shape:
+            self._prev_motion_buffer = torch.zeros(raw_motion_u8.shape, dtype=torch.bool, device=self.device)
         else:
-            self._prev_motion = torch.from_numpy(raw_motion_u8).to(self.device, non_blocking=True) > 0
+            self._prev_motion_buffer.zero_()
+        crop = np.ascontiguousarray(raw_motion_u8[y1:y2, x1:x2])
+        self._prev_motion_buffer[y1:y2, x1:x2] = torch.from_numpy(crop).to(self.device) > 0
+        self._prev_motion = self._prev_motion_buffer
 
 
 @dataclass(frozen=True)
@@ -493,8 +511,9 @@ class _BoostMasks(NamedTuple):
 
 
 def _nonempty(mask_u8: np.ndarray) -> Optional[np.ndarray]:
-    """``mask_u8`` when it has a set pixel, else None."""
-    return mask_u8 if mask_u8.any() else None
+    """``mask_u8`` when it has a set pixel, else None.  ``cv2.countNonZero`` is one SIMD pass;
+    NumPy's ``any`` took 0.6 ms per 1080p mask, two to three times a frame."""
+    return mask_u8 if cv2.countNonZero(mask_u8) else None
 
 
 class _MaskReader:

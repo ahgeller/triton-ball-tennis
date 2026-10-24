@@ -338,7 +338,7 @@ class _Pass1Collector:
                 prev_pending = None
             out.det_pending = self.detector.detect_async_start(out.detector_input, frame_index=frame_index)
         post_t0 = self.timing.start()
-        self.background.remember_motion(out.raw_motion_u8)
+        self.background.remember_motion(out.raw_motion_u8, roi=out.pack_roi)
         self.timing.add("pass1_pre_postmask", post_t0)
         return out, prev_pending
 

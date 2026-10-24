@@ -190,8 +190,14 @@ class TensorRTRuntimeSession:
         else:
             return None, None
         h0, w0 = int(t.shape[-2]), int(t.shape[-1])
-        t = t[:, [2, 1, 0], :, :].contiguous()
-        return self._finish_preprocess(t, h0, w0)
+        # Resize first: bilinear interpolation is per channel, so swapping BGR to RGB on the
+        # engine-sized tensor gives the same values while touching a tenth of the memory.
+        if h0 != self.input_h or w0 != self.input_w:
+            t = F.interpolate(t, size=(self.input_h, self.input_w), mode="bilinear", align_corners=False)
+        t = t[:, [2, 1, 0], :, :]
+        if self.fp16:
+            t = t.half()
+        return t.contiguous(), (w0 / float(self.input_w), h0 / float(self.input_h))
 
     def preprocess_cuda_hwc_frame(self, frame_bgr: torch.Tensor
                                   ) -> Tuple[Optional[torch.Tensor], Optional[Tuple[float, float]]]:
