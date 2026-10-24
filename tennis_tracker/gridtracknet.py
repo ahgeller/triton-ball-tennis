@@ -104,10 +104,18 @@ def resize_to_model(frame: np.ndarray) -> np.ndarray:
 
 
 def frame_tensor(frame: np.ndarray, device: torch.device) -> torch.Tensor:
-    """One BGR uint8 frame -> (3, HEIGHT, WIDTH) RGB float16 in [0, 1] on ``device``."""
+    """One BGR uint8 frame -> (3, HEIGHT, WIDTH) RGB float16 in [0, 1] on ``device``.
+
+    The resize and the colour conversion stay in OpenCV on the host (they define the
+    model's picture and release the interpreter lock); the layout change, the float
+    conversion and the scaling happen on ``device`` after a 1 MB uint8 upload, so the
+    prepass worker holds the lock for a fraction of a millisecond per frame instead of
+    the two milliseconds the NumPy conversion and the 4 MB float upload took.  The
+    result is bit-identical: uint8 -> float32 -> / 255 -> float16 on either side.
+    """
     rgb = cv2.cvtColor(resize_to_model(frame), cv2.COLOR_BGR2RGB)
-    chw = np.moveaxis(rgb, -1, 0).astype(np.float32) / 255.0
-    return torch.from_numpy(chw).to(device, dtype=torch.float16)
+    u8 = torch.from_numpy(np.ascontiguousarray(rgb)).to(device)
+    return u8.permute(2, 0, 1).to(torch.float32).div_(255.0).to(torch.float16)
 
 
 def decode_predictions(output: torch.Tensor, output_width: int, output_height: int,

@@ -58,6 +58,29 @@ def test_frame_tensor_is_resize_to_model_in_rgb_over_255():
     np.testing.assert_array_equal(resize_to_model(model_sized), model_sized)
 
 
+def _numpy_frame_tensor(frame: np.ndarray, device: torch.device) -> torch.Tensor:
+    """The conversion the prepass ran on the host until the GPU-side one replaced it: the
+    reference ``frame_tensor`` must match bit for bit."""
+    rgb = cv2.cvtColor(resize_to_model(frame), cv2.COLOR_BGR2RGB)
+    chw = np.moveaxis(rgb, -1, 0).astype(np.float32) / 255.0
+    return torch.from_numpy(chw).to(device, dtype=torch.float16)
+
+
+@pytest.mark.parametrize("device", [
+    CPU,
+    pytest.param(torch.device("cuda:0"), marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")),
+])
+def test_frame_tensor_matches_the_numpy_conversion_bit_for_bit(device):
+    """``frame_tensor`` uploads the uint8 picture and converts on the device; the result is the
+    same float16 tensor the NumPy conversion produced, exactly, on every pixel of a 1080p frame."""
+    frame = np.random.default_rng(2).integers(0, 256, (1080, 1920, 3), dtype=np.uint8)
+    produced = frame_tensor(frame, device)
+    expected = _numpy_frame_tensor(frame, device)
+    assert produced.device == expected.device and produced.dtype == torch.float16
+    assert produced.shape == expected.shape == (3, HEIGHT, WIDTH)
+    assert torch.equal(produced, expected)
+
+
 def _synthetic_npz(path):
     """An NPZ with the upstream layer names, HWIO kernels and values that
     identify the kernel position, input channel and output channel."""
