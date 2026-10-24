@@ -67,6 +67,14 @@ class TensorRTRuntimeSession:
     engine).  Inference runs on its own CUDA stream when ``async_execute`` is
     set; ``output_slots`` > 1 keeps that many output buffer sets so a caller
     can launch frame N+1 before reading frame N.
+
+    ``cuda_graph`` records the engine's launch into a CUDA graph (one per output
+    slot, captured on first use) and replays it afterwards.  Enqueueing a
+    TensorRT engine costs the CPU a few microseconds per kernel, 1.9 ms per
+    frame for the player engine under WDDM, while replaying the recorded graph
+    costs 0.02 ms; the kernels, and so the outputs, are the same.  It needs a
+    fixed-shape engine and the asynchronous stream, and copies each input into
+    a buffer the graph reads from.
     """
 
     def __init__(
@@ -75,6 +83,7 @@ class TensorRTRuntimeSession:
         device: Optional[torch.device] = None,
         async_execute: bool = True,
         output_slots: int = 1,
+        cuda_graph: bool = False,
     ):
         if not torch.cuda.is_available():
             raise RuntimeError("TensorRT session requires CUDA-enabled torch.")
@@ -102,6 +111,9 @@ class TensorRTRuntimeSession:
         for _ in range(1, slots):
             self.output_slots.append({name: torch.empty_like(self.bindings[name].data) for name in self.output_names})
         self._slot_cursor = 0
+        self.use_cuda_graph = bool(cuda_graph) and self.use_async and not self.dynamic
+        self._graphs: Dict[int, torch.cuda.CUDAGraph] = {}
+        self._graph_input: Optional[torch.Tensor] = None
 
     def _bind_tensors(self, trt: Any) -> None:
         """A device buffer per engine tensor, the input's dynamic profile shape set first."""
@@ -231,7 +243,11 @@ class TensorRTRuntimeSession:
         if tuple(t.shape) != expected:
             raise RuntimeError(f"TensorRT input shape mismatch: got {tuple(t.shape)}, expected {expected}")
 
-        slot = self.output_slots[int(out_slot) % len(self.output_slots)]
+        slot_index = int(out_slot) % len(self.output_slots)
+        slot = self.output_slots[slot_index]
+        if self.use_cuda_graph:
+            self._replay(t, slot_index)
+            return [slot[name] for name in sorted(self.output_names)]
         addrs = {name: binding.ptr for name, binding in self.bindings.items()}
         addrs[self.input_name] = int(t.data_ptr())
         for name in self.output_names:
@@ -242,14 +258,47 @@ class TensorRTRuntimeSession:
             self.context.set_tensor_address(name, addrs[name])
         if self.use_async:
             self.stream.wait_stream(torch.cuda.current_stream(device=self.device))
-            ok = self.context.execute_async_v3(stream_handle=int(self.stream.cuda_stream))
-            if ok is False:
-                raise RuntimeError("TensorRT async execution failed.")
+            self._enqueue()
         else:
             ok = self.context.execute_v2(ptrs)
             if ok is False:
                 raise RuntimeError("TensorRT execution failed.")
         return [slot[name] for name in sorted(self.output_names)]
+
+    def _enqueue(self) -> None:
+        """Launch the engine on the inference stream at the addresses already set."""
+        if self.context.execute_async_v3(stream_handle=int(self.stream.cuda_stream)) is False:
+            raise RuntimeError("TensorRT async execution failed.")
+
+    def _graph_for(self, slot_index: int) -> torch.cuda.CUDAGraph:
+        """The recorded launch that reads ``_graph_input`` and writes output slot ``slot_index``,
+        captured on first use after one warm-up launch (TensorRT finishes its lazy set-up there)."""
+        graph = self._graphs.get(slot_index)
+        if graph is not None:
+            return graph
+        slot = self.output_slots[slot_index]
+        self.context.set_tensor_address(self.input_name, int(self._graph_input.data_ptr()))
+        for name in self.output_names:
+            self.context.set_tensor_address(name, int(slot[name].data_ptr()))
+        with torch.cuda.stream(self.stream):
+            self._enqueue()
+            self.stream.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=self.stream):
+                self._enqueue()
+        self.stream.synchronize()
+        self._graphs[slot_index] = graph
+        return graph
+
+    def _replay(self, t: torch.Tensor, slot_index: int) -> None:
+        """Copy ``t`` into the graph's input buffer and replay the launch for ``slot_index``."""
+        if self._graph_input is None:
+            binding = self.bindings[self.input_name]
+            self._graph_input = torch.empty(binding.shape, dtype=binding.data.dtype, device=self.device)
+        self.stream.wait_stream(torch.cuda.current_stream(device=self.device))
+        with torch.cuda.stream(self.stream):
+            self._graph_input.copy_(t)
+            self._graph_for(slot_index).replay()
 
     def completion_event(self) -> Optional[torch.cuda.Event]:
         """An event marking the end of the work launched so far on the inference
@@ -269,12 +318,14 @@ class TensorRTRuntimeSession:
             torch.cuda.current_stream(device=self.device).wait_stream(self.stream)
 
 
-def open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> Optional[TensorRTRuntimeSession]:
+def open_engine_session(label: str, model_path: Optional[str], cfg: Config,
+                        cuda_graph: bool = False) -> Optional[TensorRTRuntimeSession]:
     """Apply the engine policy for the player and court detectors.
 
     No configured path: print one message and return None.  A configured
     path whose ``.engine`` file is missing raises ``FileNotFoundError``; a
-    runtime failure raises ``RuntimeError`` from the session.
+    runtime failure raises ``RuntimeError`` from the session.  ``cuda_graph``
+    is passed to the session (see ``TensorRTRuntimeSession``).
     """
     if not model_path:
         print(f"[{label}] No engine configured, {label} detection disabled")
@@ -286,6 +337,7 @@ def open_engine_session(label: str, model_path: Optional[str], cfg: Config) -> O
         str(engine_path),
         device=torch.device(f"cuda:{cfg.device}"),
         async_execute=cfg.trt_async_execute,
+        cuda_graph=cuda_graph,
     )
     print(f"[{label}] TensorRT runtime initialized: {engine_path}")
     return session

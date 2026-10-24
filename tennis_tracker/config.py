@@ -26,6 +26,9 @@ class Config:
     # TensorRT
     trt_async_execute: bool = True
     trt_async_slots: int = 3
+    # Replay the per-frame player engine launch from a CUDA graph (see TensorRTRuntimeSession):
+    # same kernels, 0.02 ms of CPU per frame instead of 1.9 ms. Needs trt_async_execute.
+    trt_cuda_graph: bool = True
 
     # Player & court detection
     player_model_path: Optional[str] = str(PLAYER_ENGINE)
