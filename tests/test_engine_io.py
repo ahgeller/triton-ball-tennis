@@ -322,3 +322,39 @@ def test_ball_engine_backend_runs_through_the_shared_session(monkeypatch, tmp_pa
     assert isinstance(pending, TensorRTBallPending) and pending.event is None
     assert detector.detect_async_finish(pending) == [([2.0, 4.0, 6.0, 8.0], pytest.approx(0.9))]
     assert detector.detect(torch.zeros((16, 16, 3), dtype=torch.uint8), 8) == [([2.0, 4.0, 6.0, 8.0], pytest.approx(0.9))]
+
+
+def test_session_cuda_graph_needs_the_asynchronous_stream(monkeypatch, tmp_path, cuda_available):
+    """``cuda_graph`` is a property of the asynchronous path: a synchronous session ignores it and
+    launches the engine directly, as before."""
+    engine = FakeEngine10([
+        _tensor("images", "HALF", True, (1, 3, 8, 8)),
+        _tensor("output0", "FLOAT", False, (1, 4, 6)),
+    ])
+    session = _session_for(monkeypatch, engine, tmp_path, cuda_graph=True)
+    assert not session.use_cuda_graph
+    t = torch.zeros((1, 3, 8, 8), dtype=torch.float16)
+    outputs = session.forward_tensor(t)
+    assert session.context.executions == [[t.data_ptr(), outputs[0].data_ptr()]]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA and the shipped player engine")
+def test_player_engine_graph_replay_matches_a_direct_launch():
+    """On the real player engine, the launch replayed from the CUDA graph writes the same output as
+    the direct enqueue, for several random inputs in a row."""
+    from tennis_tracker.paths import PLAYER_ENGINE
+    if not PLAYER_ENGINE.is_file():
+        pytest.skip("player.engine is not present")
+    device = torch.device("cuda:0")
+    direct = TensorRTRuntimeSession(str(PLAYER_ENGINE), device=device, async_execute=True)
+    graphed = TensorRTRuntimeSession(str(PLAYER_ENGINE), device=device, async_execute=True, cuda_graph=True)
+    assert graphed.use_cuda_graph
+    shape = direct.bindings[direct.input_name].shape
+    for seed in range(3):
+        frame = torch.rand(shape, device=device, generator=torch.Generator(device=device).manual_seed(seed)).half()
+        expected = direct.forward_tensor(frame)[0]
+        direct.wait(); torch.cuda.synchronize()
+        expected = expected.clone()
+        got = graphed.forward_tensor(frame)[0]
+        graphed.wait(); torch.cuda.synchronize()
+        assert torch.equal(got, expected)
