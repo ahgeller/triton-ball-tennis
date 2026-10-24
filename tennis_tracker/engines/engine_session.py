@@ -41,8 +41,8 @@ def _deserialize_engine(trt: Any, engine_path: str) -> Tuple[Any, Any]:
     and create its execution context."""
     _, raw = read_engine_header(Path(engine_path))
     logger = trt.Logger(trt.Logger.INFO)
-    with trt.Runtime(logger) as runtime:
-        engine = runtime.deserialize_cuda_engine(raw)
+    # TensorRT 10 deprecates its context managers; the runtime is freed with its last reference.
+    engine = trt.Runtime(logger).deserialize_cuda_engine(raw)
     if engine is None:
         raise RuntimeError(f"Failed to load TensorRT engine: {engine_path}")
     context = engine.create_execution_context()
