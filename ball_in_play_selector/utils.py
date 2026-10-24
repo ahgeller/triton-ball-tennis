@@ -1,5 +1,6 @@
 from typing import Dict, Hashable, NamedTuple, Optional, Sequence, Tuple, Union
 
+import cv2
 import numpy as np
 
 from .config import REFERENCE_FPS, fps_scale
@@ -55,8 +56,10 @@ class PackedMask(NamedTuple):
         if mask_u8 is None:
             return None
         height, width = mask_u8.shape[:2]
-        set_pixels = np.flatnonzero(mask_u8)
-        if set_pixels.size == 0:
+        # One SIMD pass over the frame. np.flatnonzero built an int64 index of every set pixel
+        # instead: 3 ms per 1080p mask, and pass 1 packs two masks a frame.
+        view = mask_u8 if mask_u8.dtype == np.uint8 else mask_u8.view(np.uint8)
+        if cv2.countNonZero(view) == 0:
             return None
         rect = None
         if roi is not None and len(roi) == 4:
@@ -66,8 +69,8 @@ class PackedMask(NamedTuple):
             if x2 > x1 and y2 > y1:
                 rect = (x1, y1, x2, y2)
         if rect is None:
-            rows, cols = np.divmod(set_pixels, width)
-            rect = (int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1)
+            x, y, w, h = cv2.boundingRect(view)
+            rect = (int(x), int(y), int(x + w), int(y + h))
         x1, y1, x2, y2 = rect
         flat = (mask_u8[y1:y2, x1:x2].reshape(-1) > 0).astype(np.uint8)
         return cls(np.packbits(flat), int(height), int(width), x1, y1, x2, y2)
