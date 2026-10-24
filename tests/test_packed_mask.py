@@ -46,3 +46,14 @@ def test_ensure_mask_u8_accepts_packed_and_raw_masks():
     assert ensure_mask_u8(None) is None
     assert ensure_mask_u8(raw) is raw
     np.testing.assert_array_equal(ensure_mask_u8(PackedMask.pack(raw)), raw)
+
+
+def test_unpack_rect_is_the_packed_rectangle_of_the_full_mask():
+    mask = np.zeros((40, 60), dtype=np.uint8)
+    mask[10:14, 20:25] = 255
+    mask[30, 50] = 255
+    packed = PackedMask.pack(mask, roi=(18, 8, 55, 33))
+    rect = packed.unpack_rect()
+    assert rect.shape == (25, 37) and rect.dtype == np.uint8
+    np.testing.assert_array_equal(rect, packed.unpack()[8:33, 18:55])
+    np.testing.assert_array_equal(rect, mask[8:33, 18:55])

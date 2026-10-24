@@ -75,6 +75,14 @@ class PackedMask(NamedTuple):
         flat = (mask_u8[y1:y2, x1:x2].reshape(-1) > 0).astype(np.uint8)
         return cls(np.packbits(flat), int(height), int(width), x1, y1, x2, y2)
 
+    def unpack_rect(self) -> np.ndarray:
+        """The packed rectangle alone as a uint8 {0, 255} array of ``y2 - y1`` by ``x2 - x1``.
+        Every set pixel of the frame lies inside it, so a component analysis of this array is
+        one of the whole frame, offset by ``(x1, y1)``."""
+        rh, rw = self.y2 - self.y1, self.x2 - self.x1
+        flat = np.unpackbits(self.bits, count=rh * rw)
+        return flat.reshape(rh, rw).astype(np.uint8) * 255
+
     def unpack(self) -> np.ndarray:
         """The full-frame uint8 {0, 255} mask."""
         out = np.zeros((self.height, self.width), dtype=np.uint8)

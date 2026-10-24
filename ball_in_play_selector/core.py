@@ -18,7 +18,7 @@ from .models import Detection, FrameResult, RawDetection, Source, Track
 from .physics import predict_projectile
 from .scoring import is_near_player, score_tracks, select_timeline_chain, stitch_track_chain
 from .association import build_detections, build_tracks
-from .utils import MaskLike, PlayerBoxesByFrame, ensure_mask_u8, pxpf_at_fps
+from .utils import MaskLike, PackedMask, PlayerBoxesByFrame, ensure_mask_u8, pxpf_at_fps
 
 # -- Tuned constants (30 FPS, 1080p reference unless stated) ----------------
 # Longest internal gap, and longest tail, the selector will fill: 0.30 s.
@@ -230,8 +230,13 @@ def motion_near(
     Returns the closest component whose pixel area lies in
     ``[2, area_ratio_max * reference_area]``.
     """
-    mask = ensure_mask_u8(mask_obj)
-    if mask is None or not cv2.countNonZero(mask):
+    # A packed mask is analysed inside its own rectangle, which holds every set pixel: the
+    # same components as the frame's, at a fraction of the cost of the full 1080p scan.
+    if isinstance(mask_obj, PackedMask):
+        mask, offset_x, offset_y = mask_obj.unpack_rect(), mask_obj.x1, mask_obj.y1
+    else:
+        mask, offset_x, offset_y = ensure_mask_u8(mask_obj), 0, 0
+    if mask is None or mask.size == 0 or not cv2.countNonZero(mask):
         return None
 
     best = None
@@ -239,12 +244,13 @@ def motion_near(
     count, _, stats, centers = cv2.connectedComponentsWithStats(mask, connectivity=8)
     for index in range(1, count):
         bx, by, bw, bh, pixels = stats[index]
+        bx, by = bx + offset_x, by + offset_y
         area = float(pixels)
         # GridTrackNet's bbox is synthetic, not a measured ball diameter.
         # Keep small components; location/color/temporal evidence supplies the gate.
         if not 2 <= area <= area_ratio_max * reference_area:
             continue
-        cx, cy = map(float, centers[index])
+        cx, cy = float(centers[index][0]) + offset_x, float(centers[index][1]) + offset_y
         distance = math.hypot(cx - x, cy - y)
         if distance <= gate and distance < best_distance:
             best = MotionBlob(cx, cy, (int(bx), int(by), int(bx + bw), int(by + bh)), area)
