@@ -69,12 +69,13 @@ class TensorRTRuntimeSession:
     can launch frame N+1 before reading frame N.
 
     ``cuda_graph`` records the engine's launch into a CUDA graph (one per output
-    slot, captured on first use) and replays it afterwards.  Enqueueing a
-    TensorRT engine costs the CPU a few microseconds per kernel, 1.9 ms per
-    frame for the player engine under WDDM, while replaying the recorded graph
-    costs 0.02 ms; the kernels, and so the outputs, are the same.  It needs a
-    fixed-shape engine and the asynchronous stream, and copies each input into
-    a buffer the graph reads from.
+    slot; slot 0 is captured here, the others on first use) and replays it
+    afterwards.  Enqueueing a TensorRT engine costs the CPU a few microseconds
+    per kernel, 1.9 ms per frame for the player engine under WDDM, while
+    replaying the recorded graph costs 0.02 ms; the kernels, and so the
+    outputs, are the same.  It needs a fixed-shape engine and the asynchronous
+    stream, and copies each input into a buffer the graph reads from.  Build
+    the session before any other thread issues CUDA work (see ``_graph_for``).
     """
 
     def __init__(
@@ -114,6 +115,10 @@ class TensorRTRuntimeSession:
         self.use_cuda_graph = bool(cuda_graph) and self.use_async and not self.dynamic
         self._graphs: Dict[int, torch.cuda.CUDAGraph] = {}
         self._graph_input: Optional[torch.Tensor] = None
+        if self.use_cuda_graph:
+            binding = self.bindings[self.input_name]
+            self._graph_input = torch.empty(binding.shape, dtype=binding.data.dtype, device=self.device)
+            self._graph_for(0)
 
     def _bind_tensors(self, trt: Any) -> None:
         """A device buffer per engine tensor, the input's dynamic profile shape set first."""
@@ -245,8 +250,7 @@ class TensorRTRuntimeSession:
 
         slot_index = int(out_slot) % len(self.output_slots)
         slot = self.output_slots[slot_index]
-        if self.use_cuda_graph:
-            self._replay(t, slot_index)
+        if self.use_cuda_graph and self._replay(t, slot_index):
             return [slot[name] for name in sorted(self.output_names)]
         addrs = {name: binding.ptr for name, binding in self.bindings.items()}
         addrs[self.input_name] = int(t.data_ptr())
@@ -270,9 +274,18 @@ class TensorRTRuntimeSession:
         if self.context.execute_async_v3(stream_handle=int(self.stream.cuda_stream)) is False:
             raise RuntimeError("TensorRT async execution failed.")
 
-    def _graph_for(self, slot_index: int) -> torch.cuda.CUDAGraph:
+    def _graph_for(self, slot_index: int) -> Optional[torch.cuda.CUDAGraph]:
         """The recorded launch that reads ``_graph_input`` and writes output slot ``slot_index``,
-        captured on first use after one warm-up launch (TensorRT finishes its lazy set-up there)."""
+        captured on first use after one warm-up launch (TensorRT finishes its lazy set-up there).
+
+        A capture is invalidated by CUDA work another thread issues while it is open, whatever
+        the error mode (the GridTrackNet prepass worker did so, on its own stream, when the
+        graph was captured at the first frame), and a stream whose capture was invalidated
+        stays unusable.  So slot 0 is captured when the session is built, which the pipeline
+        does before it starts any worker, in ``thread_local`` mode.  Should a capture fail,
+        graphs are given up for this session (with a note) and None is returned: the caller
+        launches directly, as it would without graphs.
+        """
         graph = self._graphs.get(slot_index)
         if graph is not None:
             return graph
@@ -280,25 +293,33 @@ class TensorRTRuntimeSession:
         self.context.set_tensor_address(self.input_name, int(self._graph_input.data_ptr()))
         for name in self.output_names:
             self.context.set_tensor_address(name, int(slot[name].data_ptr()))
-        with torch.cuda.stream(self.stream):
-            self._enqueue()
-            self.stream.synchronize()
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, stream=self.stream):
+        try:
+            with torch.cuda.stream(self.stream):
                 self._enqueue()
-        self.stream.synchronize()
+                self.stream.synchronize()
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph, stream=self.stream, capture_error_mode="thread_local"):
+                    self._enqueue()
+            self.stream.synchronize()
+        except RuntimeError as error:
+            print(f"[engine] CUDA graph capture failed; launching the engine directly from now on "
+                  f"({str(error).splitlines()[0]})")
+            self.use_cuda_graph = False
+            return None
         self._graphs[slot_index] = graph
         return graph
 
-    def _replay(self, t: torch.Tensor, slot_index: int) -> None:
-        """Copy ``t`` into the graph's input buffer and replay the launch for ``slot_index``."""
-        if self._graph_input is None:
-            binding = self.bindings[self.input_name]
-            self._graph_input = torch.empty(binding.shape, dtype=binding.data.dtype, device=self.device)
+    def _replay(self, t: torch.Tensor, slot_index: int) -> bool:
+        """Copy ``t`` into the graph's input buffer and replay the launch for ``slot_index``;
+        False when there is no graph to replay (the capture failed), so the caller launches directly."""
+        graph = self._graph_for(slot_index)
+        if graph is None:
+            return False
         self.stream.wait_stream(torch.cuda.current_stream(device=self.device))
         with torch.cuda.stream(self.stream):
             self._graph_input.copy_(t)
-            self._graph_for(slot_index).replay()
+            graph.replay()
+        return True
 
     def completion_event(self) -> Optional[torch.cuda.Event]:
         """An event marking the end of the work launched so far on the inference

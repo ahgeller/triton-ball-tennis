@@ -154,6 +154,10 @@ def _open_inputs(cfg: Config) -> RunContext:
         frame_count_hint=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
     )
     print(f"[init] Video: {video.width}x{video.height} @ {video.fps:.1f}fps, ~{video.frame_count_hint} frames")
+    # The court and player engines are built, and the player engine's CUDA graph captured, before
+    # the prepass worker starts: a capture is invalidated by CUDA work from another thread.
+    court_detector = CourtDetector(cfg)
+    player_detector = PlayerDetector(cfg, court_keypoints=None)
     detector.prepare_video(input_path, video.fps, video.width, video.height, video.frame_count_hint)
 
     return RunContext(
@@ -163,8 +167,8 @@ def _open_inputs(cfg: Config) -> RunContext:
         device=device,
         encoder=encoder,
         detector=detector,
-        court_detector=CourtDetector(cfg),
-        player_detector=PlayerDetector(cfg, court_keypoints=None),
+        court_detector=court_detector,
+        player_detector=player_detector,
         timing=timing,
         started_at=started_at,
         init_t0=init_t0,

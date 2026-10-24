@@ -109,7 +109,8 @@ class PlayerDetector:
                 f"[player] player tracking requires boxmot ({reason}): pip install boxmot, "
                 "or unset player_model_path to run without players"
             )
-        # The engine runs every frame, so its launch is replayed from a CUDA graph.
+        # The engine runs every frame, so its launch is replayed from a CUDA graph, captured as the
+        # session is built (the pipeline builds this detector before any worker thread starts).
         self.session = open_engine_session("player", cfg.player_model_path, cfg, cuda_graph=cfg.trt_cuda_graph)
         self.tracker = bytetrack(
             min_conf=0.1,

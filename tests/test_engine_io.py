@@ -339,6 +339,35 @@ def test_session_cuda_graph_needs_the_asynchronous_stream(monkeypatch, tmp_path,
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA and the shipped player engine")
+def test_player_engine_falls_back_to_a_direct_launch_when_the_capture_fails(monkeypatch, capsys):
+    """A capture that fails (here: forced) gives up graphs for the session with a note; the frame
+    is still answered by the direct launch, with the same output."""
+    from tennis_tracker.paths import PLAYER_ENGINE
+    if not PLAYER_ENGINE.is_file():
+        pytest.skip("player.engine is not present")
+    device = torch.device("cuda:0")
+    direct = TensorRTRuntimeSession(str(PLAYER_ENGINE), device=device, async_execute=True)
+
+    def failing_capture(*args, **kwargs):
+        raise RuntimeError("CUDA error: operation failed due to a previous error during capture")
+
+    monkeypatch.setattr(torch.cuda, "graph", failing_capture)
+    graphed = TensorRTRuntimeSession(str(PLAYER_ENGINE), device=device, async_execute=True, cuda_graph=True)
+    frame = torch.rand(direct.bindings[direct.input_name].shape, device=device).half()
+    expected = direct.forward_tensor(frame)[0]
+    direct.wait(); torch.cuda.synchronize()
+    expected = expected.clone()
+    got = graphed.forward_tensor(frame)[0]
+    graphed.wait(); torch.cuda.synchronize()
+    assert torch.equal(got, expected)
+    assert not graphed.use_cuda_graph
+    assert "CUDA graph capture failed" in capsys.readouterr().out
+    got_again = graphed.forward_tensor(frame)[0]           # the direct path from now on
+    graphed.wait(); torch.cuda.synchronize()
+    assert torch.equal(got_again, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA and the shipped player engine")
 def test_player_engine_graph_replay_matches_a_direct_launch():
     """On the real player engine, the launch replayed from the CUDA graph writes the same output as
     the direct enqueue, for several random inputs in a row."""
