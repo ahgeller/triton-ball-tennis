@@ -181,6 +181,7 @@ class _Pass1Collector:
         if self.use_cuda_detector_input:
             print("[pass 1] CUDA zero-copy preprocess->detector path enabled")
         self.result = Pass1Result(cached_frames=_new_frame_cache(ctx))
+        self._progress_frame, self._progress_elapsed = 0, 0.0   # where the last progress line was
 
     # -- per-frame steps -------------------------------------------------------
 
@@ -358,9 +359,15 @@ class _Pass1Collector:
         return PendingDetection(det_pending, record)
 
     def _progress(self, frame_index: int) -> None:
+        """Every ``progress_every`` frames: the average since the run began (init included, so it
+        climbs for a while) and the rate over the frames since the previous line, which is the
+        speed pass 1 is actually running at."""
         if self.cfg.progress_every and frame_index % self.cfg.progress_every == 0:
             elapsed = self.ctx.elapsed()
-            print(f"  [pass1 {frame_index}/{self.video.frame_count_hint}] {frame_index/elapsed:.1f} fps")
+            recent = (frame_index - self._progress_frame) / max(elapsed - self._progress_elapsed, 1e-9)
+            self._progress_frame, self._progress_elapsed = frame_index, elapsed
+            print(f"  [pass1 {frame_index}/{self.video.frame_count_hint}] "
+                  f"{frame_index/elapsed:.1f} fps avg, {recent:.1f} fps now")
 
     def run(self, reader: ThreadedFrameReader) -> Pass1Result:
         cfg, window, timing = self.cfg, self.window, self.timing
