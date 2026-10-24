@@ -234,7 +234,8 @@ class VideoWriter:
             if self._proc.poll() is not None:
                 self._raise_proc_write_error("FFmpeg process exited before frame write")
             try:
-                self._proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+                # The array's own buffer goes to the pipe; tobytes() copied the 6 MB frame first.
+                self._proc.stdin.write(np.ascontiguousarray(frame).data)
             except OSError:
                 self._raise_proc_write_error("Failed writing frame bytes to FFmpeg")
         else:

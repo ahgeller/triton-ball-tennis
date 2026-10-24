@@ -27,7 +27,7 @@ from .render.rendering import (
 )
 from .render.trails import BallTrail, CandidateTrackTrails, DisplayPathTrail
 from .run_context import CourtEvents, RunContext, Selection
-from .video_io import VideoWriter
+from .video_io import ThreadedFrameReader, VideoWriter
 
 COLOR_ROI_THIN = (0, 255, 0)
 
@@ -39,29 +39,38 @@ def _open_writer(ctx: RunContext, path: str) -> VideoWriter:
 
 
 class _FrameSource:
-    """Pass-2 frames from the RAM cache when it holds the whole clip, else a fresh decode."""
+    """Pass-2 frames from the RAM cache when it holds the whole clip, else a fresh decode.
+
+    The decode runs on a reader thread ahead of the renderer, as in pass 1, so a frame's
+    decoding overlaps the drawing of the one before it.  ``owns_frames`` says whether the
+    frames handed out are the renderer's to draw on: a decoded frame is, a cached one is not.
+    """
 
     def __init__(self, ctx: RunContext, cached: Optional[List[np.ndarray]], frame_count: int) -> None:
         self._cached = cached if (cached is not None and len(cached) == frame_count) else None
-        self._capture = None
+        self._reader: Optional[ThreadedFrameReader] = None
         if self._cached is not None:
             print(f"[pass 2] Using RAM frame cache ({len(self._cached)} frames)")
         else:
-            self._capture = cv2.VideoCapture(str(ctx.video.path))
-            if not self._capture.isOpened():
+            capture = cv2.VideoCapture(str(ctx.video.path))
+            if not capture.isOpened():
                 raise RuntimeError(f"Could not reopen the input video for pass 2: {ctx.video.path}")
             if cached is not None:
                 print("[pass 2] RAM frame cache incomplete; falling back to video decode")
+            self._reader = ThreadedFrameReader(capture, prefetch=max(2, ctx.cfg.frame_reader_prefetch))
+
+    @property
+    def owns_frames(self) -> bool:
+        return self._cached is None
 
     def read(self, frame_index: int) -> Optional[np.ndarray]:
         if self._cached is not None:
             return self._cached[frame_index]
-        ok, frame = self._capture.read()
-        return frame if ok else None
+        return self._reader.read()
 
     def release(self) -> None:
-        if self._capture is not None:
-            self._capture.release()
+        if self._reader is not None:
+            self._reader.release()
 
 
 class _GroundModelCache:
@@ -144,10 +153,15 @@ class _FrameRenderer:
         self.candidate_trails = CandidateTrackTrails(selection.all_tracks, selection.chosen_track)
         self.raw_motion_trails = RawMotionTrails(video.width)
 
-    def _draw(self, fi: int, frame: np.ndarray, result, court_kps) -> Canvas:
-        """The tracking frame and, when the track-debug video is on, its debug twin."""
+    def _draw(self, fi: int, frame: np.ndarray, result, court_kps, draw_in_place: bool) -> Canvas:
+        """The tracking frame and, when the track-debug video is on, its debug twin.
+
+        ``draw_in_place`` draws the tracking frame onto ``frame`` itself instead of a copy: a
+        decoded frame nothing else reads (6 MB copied per frame otherwise).
+        """
         cfg, pass1, selection = self.cfg, self.pass1, self.selection
-        canvas = Canvas(frame.copy(), frame.copy() if self.writers.track_debug is not None else None)
+        canvas = Canvas(frame if draw_in_place else frame.copy(),
+                        frame.copy() if self.writers.track_debug is not None else None)
         model = self.ground_model.update(court_kps)
 
         draw_court_layer(canvas.both, cfg, court_kps, model, selection.court_polygon)
@@ -199,14 +213,16 @@ class _FrameRenderer:
         self.writers.motion_debug.write(vis)
         timing.add("pass2_write_debug", write_t0)
 
-    def render(self, fi: int, frame: np.ndarray) -> None:
-        """Draw frame ``fi`` and write it to every output that is on."""
+    def render(self, fi: int, frame: np.ndarray, owned: bool = False) -> None:
+        """Draw frame ``fi`` and write it to every output that is on.  ``owned``: ``frame`` is
+        the renderer's to draw on (nothing else holds it), which saves the copy unless the
+        motion-debug video needs the undrawn frame."""
         timing, writers = self.timing, self.writers
         render_t0 = timing.start()
         debug_write_elapsed = 0.0
         result = self.selection.per_frame[fi]
         court_kps = self.pass1.court_keypoints[fi]
-        canvas = self._draw(fi, frame, result, court_kps)
+        canvas = self._draw(fi, frame, result, court_kps, draw_in_place=owned and writers.motion_debug is None)
 
         if writers.track_debug is not None:
             write_t0 = timing.start()
@@ -248,7 +264,7 @@ def render_pass2(ctx: RunContext, pass1: Pass1Result, selection: Selection, even
             if frame is None:
                 break
             timing.add("pass2_read", read_t0)
-            renderer.render(fi, frame)
+            renderer.render(fi, frame, owned=source.owns_frames)
             rendered += 1
             if cfg.progress_every and (fi + 1) % cfg.progress_every == 0:
                 print(f"  [pass2 {fi+1}/{n}] rendering...")
